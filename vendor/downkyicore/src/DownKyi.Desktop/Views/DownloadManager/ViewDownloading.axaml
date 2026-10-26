@@ -1,0 +1,436 @@
+﻿<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="DownKyi.Views.DownloadManager.ViewDownloading"
+             xmlns:images="clr-namespace:DownKyi.Images"
+             xmlns:vmdm="clr-namespace:DownKyi.ViewModels.DownloadManager"
+             xmlns:vmwm="clr-namespace:DownKyi.ViewModels.DownloadManager;assembly=DownKyi.Worker"
+             x:DataType="vmdm:ViewDownloadingViewModel"
+             Background="{DynamicResource SpacePaper}">
+    <UserControl.Resources>
+        <ControlTheme x:Key="DownloadingStyle" TargetType="{x:Type ListBoxItem}" x:DataType="vmwm:DownloadingItem">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ListBoxItem}">
+                        <Border
+                            Name="NameTaskRow"
+                            MinHeight="86"
+                            Padding="14,0"
+                            BorderBrush="{DynamicResource SpaceRule}" BorderThickness="0,0,0,1"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="0">
+                            <Grid ColumnDefinitions="52,1.25*,1.75*,92" RowDefinitions="85,Auto">
+
+                                <Border
+                                    Name="NameZoneIconFrame"
+                                    Grid.Column="0"
+                                    Width="40"
+                                    Height="40"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Background="{DynamicResource SpaceHover}"
+                                    CornerRadius="0">
+                                    <Image
+                                        Width="32"
+                                        Height="32"
+                                        Source="{Binding ZoneImage}" />
+                                </Border>
+
+                                <!--  标题等视频信息  -->
+                                <StackPanel
+                                    Grid.Column="1"
+                                    Margin="0,0,16,0"
+                                    VerticalAlignment="Center"
+                                    Spacing="6">
+
+                                    <TextBlock
+                                        Name="NameTaskTitle"
+                                        FontSize="16"
+                                        FontWeight="Bold"
+                                        Foreground="{DynamicResource SpaceInk}"
+                                        TextTrimming="CharacterEllipsis">
+                                        <ToolTip.Tip>
+                                            <TextBlock>
+                                                <TextBlock.Text>
+                                                    <MultiBinding StringFormat="{}{0}-{1}">
+                                                        <Binding Path="MainTitle" />
+                                                        <Binding Path="Name" />
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
+                                        </ToolTip.Tip>
+                                        <TextBlock.Text>
+                                            <MultiBinding StringFormat="{}{0}-{1}-{2}">
+                                                <Binding Path="Order" />
+                                                <Binding Path="MainTitle" />
+                                                <Binding Path="Name" />
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
+
+                                    <TextBlock
+                                        Name="NameTaskMetadata"
+                                        FontSize="12"
+                                        Foreground="{DynamicResource SpaceMuted}"
+                                        TextTrimming="CharacterEllipsis">
+                                        <TextBlock.Text>
+                                            <MultiBinding StringFormat="{}{0} · {1} · {2} · {3}">
+                                                <Binding Path="Duration" />
+                                                <Binding Path="Resolution.Name" />
+                                                <Binding Path="VideoCodecName" />
+                                                <Binding Path="AudioCodec.Name" />
+                                            </MultiBinding>
+                                        </TextBlock.Text>
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <!--  进度条  -->
+                                <Grid
+                                    Grid.Column="2"
+                                    Margin="0,0,16,0"
+                                    VerticalAlignment="Center"
+                                    RowDefinitions="Auto,6,Auto"
+                                    RowSpacing="6">
+
+                                    <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+
+                                        <StackPanel
+                                            Grid.Column="0"
+                                            Orientation="Horizontal">
+                                            <TextBlock
+                                                Name="NameTaskContent"
+                                                FontSize="12"
+                                                Foreground="{DynamicResource SpaceInk}"
+                                                Text="{Binding DownloadContent}" />
+                                            <TextBlock Text=" · " FontSize="12" Foreground="{DynamicResource SpaceMuted}"
+                                                       IsVisible="{Binding DownloadContent, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                                            <TextBlock
+                                                Name="NameTaskStatus"
+                                                Classes.failed="{Binding HasFailureDetails}"
+                                                FontSize="12"
+                                                Text="{Binding DownloadStatusTitle}" />
+                                        </StackPanel>
+
+                                        <TextBlock
+                                            Name="NameTaskProgressPercentage"
+                                            FontFamily="Cascadia Mono,Consolas,monospace"
+                                            Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            FontSize="14" FontWeight="Bold"
+                                            Foreground="{DynamicResource SpaceMuted}"
+                                            Text="{Binding Progress, StringFormat={}{0:0}%}" />
+                                    </Grid>
+
+                                    <ProgressBar
+                                        Name="NameTaskProgress"
+                                        Theme="{StaticResource DownloadProgress}"
+                                        Classes.failed="{Binding HasFailureDetails}"
+                                        Grid.Row="1"
+                                        Height="6"
+                                        BorderBrush="{x:Null}"
+                                        BorderThickness="0"
+                                        Value="{Binding Progress}" />
+
+                                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto">
+                                        <TextBlock
+                                            Name="NameTaskSize"
+                                            FontFamily="Cascadia Mono,Consolas,monospace"
+                                            FontSize="12"
+                                            Foreground="{DynamicResource SpaceMuted}"
+                                            Text="{Binding DownloadingFileSize}"
+                                            TextTrimming="CharacterEllipsis" />
+                                        <TextBlock
+                                            Name="NameTaskSpeed"
+                                            FontFamily="Cascadia Mono,Consolas,monospace"
+                                            Grid.Column="1"
+                                            Margin="12,0,0,0"
+                                            FontSize="12" FontWeight="SemiBold"
+                                            Foreground="{DynamicResource SpaceInk}"
+                                            IsVisible="{Binding !HasFailureDetails}"
+                                            Text="{Binding SpeedDisplay}" />
+                                        <Button
+                                            Name="NameTaskFailureDetailsButton"
+                                            Theme="{StaticResource DownloadActionButton}"
+                                            Classes="danger"
+                                            Grid.Column="1"
+                                            Height="24"
+                                            MinHeight="24"
+                                            Padding="4,0"
+                                            Background="Transparent"
+                                            BorderThickness="0"
+                                            Command="{Binding ElementName=DownloadingList,Path=((vmdm:ViewDownloadingViewModel)DataContext).ToggleFailureDetailsCommand}"
+                                            CommandParameter="{Binding}"
+                                            Content="{Binding FailureDetailsToggleText}"
+                                            Cursor="Hand"
+                                            FontSize="12"
+                                            Foreground="{DynamicResource DownloadWarning}"
+                                            IsVisible="{Binding HasFailureDetails}" />
+                                    </Grid>
+                                </Grid>
+
+                                <!--  控制面板，暂停继续删除  -->
+                                <StackPanel
+                                    Grid.Column="3"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Orientation="Horizontal"
+                                    Spacing="8">
+
+                                    <Button
+                                        Name="NameTaskToggleButton"
+                                        Width="36"
+                                        Height="36"
+                                        MinWidth="36"
+                                        MinHeight="36"
+                                        Padding="0"
+                                        Command="{Binding ElementName=DownloadingList,Path=((vmdm:ViewDownloadingViewModel)DataContext).ToggleDownloadingCommand}"
+                                        CommandParameter="{Binding}"
+                                        IsVisible="{Binding IsToggleVisible}"
+                                        Theme="{StaticResource DownloadActionButton}"
+                                        ToolTip.Tip="{Binding OperationTip}">
+                                        <ContentControl Width="18" Height="18">
+                                            <Path
+                                                Width="{Binding StartOrPause.Width}"
+                                                Height="{Binding StartOrPause.Height}"
+                                                Data="{Binding StartOrPause.Data}"
+                                                Fill="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type Button}}, Path=Foreground}"
+                                                Stretch="Uniform" />
+                                        </ContentControl>
+                                    </Button>
+
+                                    <Button
+                                        Name="NameTaskDeleteButton"
+                                        Width="36"
+                                        Height="36"
+                                        MinWidth="36"
+                                        MinHeight="36"
+                                        Padding="0"
+                                        Command="{Binding ElementName=DownloadingList,Path=((vmdm:ViewDownloadingViewModel)DataContext).DeleteCommand}"
+                                        CommandParameter="{Binding}"
+                                        Classes="danger"
+                                        Foreground="{DynamicResource DownloadWarning}"
+                                        Theme="{StaticResource DownloadActionButton}"
+                                        ToolTip.Tip="{DynamicResource DeleteDownload}">
+                                        <ContentControl Width="18" Height="18">
+                                            <Path
+                                                Width="18"
+                                                Height="18"
+                                                Data="{Binding Data, Source={x:Static images:ButtonIcon.Trash}}"
+                                                Fill="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type Button}}, Path=Foreground}"
+                                                Stretch="Uniform" />
+                                        </ContentControl>
+                                    </Button>
+                                </StackPanel>
+
+                                <Border
+                                    Name="NameTaskFailureDetailsPanel"
+                                    Grid.Row="1"
+                                    Grid.Column="1"
+                                    Grid.ColumnSpan="3"
+                                    Margin="0,0,0,12"
+                                    Padding="12,10"
+                                    BorderBrush="{DynamicResource DownloadWarning}" BorderThickness="3,0,0,0"
+                                    Background="{DynamicResource SpaceHover}"
+                                    CornerRadius="0"
+                                    IsVisible="{Binding IsFailureDetailsExpanded}">
+                                    <TextBlock
+                                        Name="NameTaskFailureDetailsText"
+                                        FontSize="12"
+                                        Foreground="{DynamicResource SpaceMuted}"
+                                        Text="{Binding FailureDetailsText}"
+                                        TextWrapping="Wrap" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style Selector="^ /template/ TextBlock#NameTaskStatus">
+                <Setter Property="Foreground" Value="{DynamicResource SpaceInk}" />
+            </Style>
+            <Style Selector="^ /template/ TextBlock#NameTaskStatus.failed">
+                <Setter Property="Foreground" Value="{DynamicResource DownloadWarning}" />
+            </Style>
+            <Style Selector="^:pointerover">
+                <Setter Property="Background" Value="{DynamicResource SpaceHover}" />
+            </Style>
+        </ControlTheme>
+    </UserControl.Resources>
+    <Grid>
+        <Grid
+            Name="NameDownloadingContent"
+            Height="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type UserControl}}, Path=Bounds.Height}"
+            RowDefinitions="32,*,1,58"
+            IsVisible="{Binding DownloadingList.Count}">
+            <Grid Name="DownloadColumnHeader" Margin="14,0,26,0" ColumnDefinitions="52,1.25*,1.75*,92">
+                <TextBlock Grid.Column="1" Text="{DynamicResource DownloadTaskColumn}" FontSize="12"
+                           Foreground="{DynamicResource SpaceMuted}" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="2" Text="{DynamicResource DownloadTransferColumn}" FontSize="12"
+                           Foreground="{DynamicResource SpaceMuted}" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="3" Text="{DynamicResource DownloadActionsColumn}" FontSize="12"
+                           Foreground="{DynamicResource SpaceMuted}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+            </Grid>
+
+            <ListBox
+                Name="DownloadingList"
+                Grid.Row="1"
+                Margin="0,0,12,0"
+                BorderThickness="0"
+                ItemContainerTheme="{StaticResource DownloadingStyle}"
+                ItemsSource="{Binding DownloadingList}">
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.Theme>
+                    <ControlTheme TargetType="ListBox">
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ListBox">
+                                    <Border
+                                        x:Name="Bd"
+                                        Padding="0"
+                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                        BorderThickness="{TemplateBinding BorderThickness}">
+                                        <ScrollViewer
+                                            Focusable="False"
+                                            HorizontalScrollBarVisibility="Disabled"
+                                            VerticalScrollBarVisibility="Auto">
+                                            <ItemsPresenter ItemsPanel="{TemplateBinding ItemsPanel}"
+                                                            Width="{TemplateBinding Width}"
+                                                            Height="{TemplateBinding Height}" />
+                                        </ScrollViewer>
+                                    </Border>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </ControlTheme>
+                </ListBox.Theme>
+            </ListBox>
+
+            <TextBlock Grid.Row="2" Background="{DynamicResource SpaceRule}" />
+
+            <Border
+                Name="NameBatchActionBar"
+                Grid.Row="3"
+                Padding="16,0"
+                Background="{DynamicResource SpacePaper}">
+                <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel
+                        Name="NameBatchSummary"
+                        Grid.Column="0"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Center"
+                        Orientation="Horizontal">
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            FontSize="14"
+                            Foreground="{DynamicResource SpaceInk}"
+                            Text="{DynamicResource DownloadQueueLabel}" />
+                        <TextBlock
+                            Name="NameDownloadingCount"
+                            Margin="4,0"
+                            VerticalAlignment="Center"
+                            FontSize="22" FontFamily="Cascadia Mono,Consolas,monospace"
+                            FontWeight="Bold"
+                            Foreground="{DynamicResource SpaceInk}"
+                            Text="{Binding DownloadingList.Count}" />
+                        <TextBlock
+                            VerticalAlignment="Center"
+                            FontSize="14"
+                            Foreground="{DynamicResource SpaceInk}"
+                            Text="{DynamicResource DownloadTaskUnit}" />
+                    </StackPanel>
+
+                    <StackPanel
+                        Grid.Column="1"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        Orientation="Horizontal"
+                        Spacing="10">
+                        <StackPanel
+                            Name="NameSafeBatchActions"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            Spacing="6">
+                            <Button
+                                Name="NamePauseAllButton"
+                                MinWidth="104"
+                                Command="{Binding PauseAllDownloadingCommand}"
+                                FontSize="12"
+                                Theme="{StaticResource DownloadActionButton}">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Path
+                                        Width="16"
+                                        Height="16"
+                                        Data="{Binding Data, Source={x:Static images:ButtonIcon.Pause}}"
+                                        Fill="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type Button}}, Path=Foreground}"
+                                        Stretch="Uniform" />
+                                    <TextBlock
+                                        VerticalAlignment="Center"
+                                        Text="{DynamicResource PauseAllDownloading}" />
+                                </StackPanel>
+                            </Button>
+                            <Button
+                                Name="NameContinueAllButton"
+                                MinWidth="104"
+                                Command="{Binding ContinueAllDownloadingCommand}"
+                                FontSize="12"
+                                Theme="{StaticResource PersonalActionButton}">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Path
+                                        Width="16"
+                                        Height="16"
+                                        Data="{Binding Data, Source={x:Static images:ButtonIcon.Start}}"
+                                        Fill="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type Button}}, Path=Foreground}"
+                                        Stretch="Uniform" />
+                                    <TextBlock
+                                        VerticalAlignment="Center"
+                                        Text="{DynamicResource ContinueAllDownloading}" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <Border
+                            Name="NameDeleteBatchDivider"
+                            Width="1"
+                            Height="24"
+                            VerticalAlignment="Center"
+                            Background="{DynamicResource SpaceRule}" />
+
+                        <Button
+                            Name="NameDeleteAllButton"
+                            MinWidth="104"
+                            Command="{Binding DeleteAllDownloadingCommand}"
+                            FontSize="12"
+                            Classes="danger"
+                            Foreground="{DynamicResource DownloadWarning}"
+                            Theme="{StaticResource DownloadActionButton}">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Path
+                                    Width="16"
+                                    Height="16"
+                                    Data="{Binding Data, Source={x:Static images:ButtonIcon.Trash}}"
+                                    Fill="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType={x:Type Button}}, Path=Foreground}"
+                                    Stretch="Uniform" />
+                                <TextBlock
+                                    VerticalAlignment="Center"
+                                    Text="{DynamicResource DeleteAllDownloading}" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+        <StackPanel Name="DownloadEmptyState" MaxWidth="400" Margin="32" Spacing="12"
+                    HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="{Binding !DownloadingList.Count}">
+            <Border Width="40" Height="4" HorizontalAlignment="Left" Background="{DynamicResource SpaceAccent}" />
+            <TextBlock Text="{DynamicResource DownloadQueueEmptyTitle}" FontSize="26" FontWeight="Bold"
+                       Foreground="{DynamicResource SpaceInk}" TextWrapping="Wrap" />
+            <TextBlock Text="{DynamicResource DownloadQueueEmptyHint}" FontSize="14" LineHeight="24"
+                       Foreground="{DynamicResource SpaceMuted}" TextWrapping="Wrap" />
+        </StackPanel>
+    </Grid>
+</UserControl>

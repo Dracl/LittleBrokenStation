@@ -1,0 +1,412 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using DownKyi.CentralTestRunner;
+using DownKyi.ProcessSupervision;
+using DownKyi.TestInfrastructure;
+
+namespace DownKyi.Architecture.Tests;
+
+public sealed class CentralTestRunnerCancellationComponentTests
+{
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(5);
+
+    [Fact]
+    public void BuildInvocationDisablesPersistentBuildServers()
+    {
+        var startInfo = BuildProcessRunner.CreateBuildStartInfo(
+            "tests/Fixture.Tests/Fixture.Tests.csproj",
+            "Release",
+            noRestore: true);
+
+        Assert.Contains("--disable-build-servers", startInfo.ArgumentList);
+    }
+
+    [Fact]
+    public async Task BuildRunnerReturnsTheOwnedChildExitCodeOnNormalCompletion()
+    {
+        var exitCode = await BuildProcessRunner.RunAsync(
+            CreateFixtureStartInfo("fixture-pass"),
+            TestContext.Current.CancellationToken,
+            TestTimeout).ConfigureAwait(true);
+
+        Assert.Equal(0, exitCode);
+    }
+
+    [Fact]
+    public async Task BuildRunnerReportsOwnedChildStartupFailure()
+    {
+        var startInfo = new ProcessStartInfo(
+            Path.Combine(Path.GetTempPath(), $"missing-build-{Guid.NewGuid():N}"))
+        {
+            UseShellExecute = false
+        };
+
+        var failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => BuildProcessRunner.RunAsync(
+                startInfo,
+                TestContext.Current.CancellationToken,
+                TestTimeout)).ConfigureAwait(true);
+
+        Assert.Contains("did not launch", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OwnedScopeStartupHonorsCallerCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => OwnedProcessScope.StartAsync(
+                CreateFixtureStartInfo("fixture-hold"),
+                cancellation.Token)).ConfigureAwait(true);
+    }
+
+    [Fact]
+    public async Task RelationshipSnapshotCommandSuccessReturnsAParentMap()
+    {
+        var parentIds = await ProcessTreeSnapshot.ReadParentIdsAsync(
+            CreateFixtureStartInfo("fixture-pass"),
+            TestTimeout).ConfigureAwait(true);
+
+        Assert.NotNull(parentIds);
+    }
+
+    [Fact]
+    public async Task RelationshipSnapshotCommandTimeoutIsTyped()
+    {
+        var exception = await Assert.ThrowsAsync<TimeoutException>(
+            () => ProcessTreeSnapshot.ReadParentIdsAsync(
+                CreateFixtureStartInfo("fixture-hold"),
+                TimeSpan.Zero)).ConfigureAwait(true);
+
+        Assert.Contains("bounded cleanup window", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RelationshipSnapshotCommandFailureIsTyped()
+    {
+        var startInfo = CreateDotNetStartInfo();
+        startInfo.ArgumentList.Add("exec");
+        startInfo.ArgumentList.Add(
+            Path.Combine(Path.GetTempPath(), $"missing-snapshot-helper-{Guid.NewGuid():N}.dll"));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => ProcessTreeSnapshot.ReadParentIdsAsync(startInfo, TestTimeout)).ConfigureAwait(true);
+
+        Assert.Contains("snapshot failed", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RelationshipSnapshotDefaultBackendCapturesTheLiveRoot()
+    {
+        Process? fixture = null;
+        await FailurePreservingTestCleanup.RunAsync(
+            async () =>
+            {
+                fixture = await StartHoldingFixtureAsync().ConfigureAwait(true);
+
+                var snapshot = await ProcessTreeSnapshot.CaptureAsync(fixture.Id, TestTimeout)
+                    .ConfigureAwait(true);
+
+                Assert.Contains(snapshot.Processes, process => process.Pid == fixture.Id);
+            },
+            () => StopFixtureAsync(fixture)).ConfigureAwait(true);
+    }
+
+    [Fact]
+    public async Task BuildSnapshotNeverReturnsDoesNotBlockTermination()
+    {
+        OwnedProcessScope? scope = null;
+        await FailurePreservingTestCleanup.RunAsync(
+            async () =>
+            {
+                scope = await StartHoldingScopeAsync().ConfigureAwait(true);
+                var snapshot = new TaskCompletionSource<FinalProcessSnapshot>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var failure = await Record.ExceptionAsync(
+                    () => BuildProcessRunner.CleanupAfterCancellationAsync(
+                        scope,
+                        TimeSpan.FromSeconds(2),
+                        (_, _) => snapshot.Task))
+                    .ConfigureAwait(true);
+
+                Assert.NotNull(failure);
+                var snapshotFailure = failure;
+                if (failure is AggregateException aggregate)
+                {
+                    Assert.Collection(
+                        aggregate.InnerExceptions,
+                        primary => snapshotFailure = Assert.IsType<TimeoutException>(primary),
+                        cleanup =>
+                        {
+                            var cleanupDiagnostic = Program.FormatExceptionDiagnostic(cleanup);
+                            Assert.Contains(
+                                "cleanup phase=scope-termination",
+                                cleanupDiagnostic,
+                                StringComparison.Ordinal);
+                            Assert.Contains(
+                                $"rootPid={scope.RootPid}",
+                                cleanupDiagnostic,
+                                StringComparison.Ordinal);
+                        });
+                }
+
+                var timeout = Assert.IsType<TimeoutException>(snapshotFailure);
+                Assert.Contains(
+                    "cleanup phase=snapshot",
+                    Program.FormatExceptionDiagnostic(timeout),
+                    StringComparison.Ordinal);
+                Assert.Contains(
+                    $"rootPid={scope.RootPid}",
+                    Program.FormatExceptionDiagnostic(timeout),
+                    StringComparison.Ordinal);
+                Assert.False(snapshot.Task.IsCompleted);
+                Assert.True(scope.Host.HasExited);
+            },
+            () => StopScopeAsync(scope)).ConfigureAwait(true);
+    }
+
+    [Fact]
+    public async Task SnapshotTimeoutRemainsPrimaryWhenFilesystemCleanupAlsoFails()
+    {
+        var exception = await Record.ExceptionAsync(
+            () => FailurePreservingTestCleanup.RunAsync(
+                () => Task.FromException(new TimeoutException("snapshot timeout")),
+                () => Task.FromException(new IOException("directory sharing violation"))))
+            .ConfigureAwait(true);
+
+        var aggregate = Assert.IsType<AggregateException>(exception);
+        Assert.IsType<TimeoutException>(aggregate.InnerExceptions[0]);
+        Assert.IsType<IOException>(aggregate.InnerExceptions[1]);
+    }
+
+    [Fact]
+    public async Task ExitCodeMappingReturns130AfterSuccessfulCancellationCleanup()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        var exitCode = await Program.RunCommandAsync(
+            [],
+            (_, token) => Task.FromCanceled<int>(token),
+            cancellation.Token).ConfigureAwait(true);
+
+        Assert.Equal(130, exitCode);
+    }
+
+    [Fact]
+    public async Task ExitCodeMappingReturns2ForCleanupFailure()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        var exitCode = await Program.RunCommandAsync(
+            [],
+            (_, _) => Task.FromException<int>(new TimeoutException("snapshot timeout")),
+            cancellation.Token)
+            .ConfigureAwait(true);
+
+        Assert.Equal(2, exitCode);
+    }
+
+    [Fact]
+    public async Task ExitCodeMappingReturns2ForLiveProcessIdentityFailure()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        var exitCode = await Program.RunCommandAsync(
+            [],
+            (_, _) => Task.FromException<int>(new Win32Exception("live process identity failed")),
+            cancellation.Token)
+            .ConfigureAwait(true);
+
+        Assert.Equal(2, exitCode);
+    }
+
+    [Fact]
+    public async Task ExitCodeMappingReturns2ForDirectoryRundownTimeout()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        var exitCode = await Program.RunCommandAsync(
+            [],
+            (_, _) => Task.FromException<int>(
+                new DirectoryResourceRundownTimeoutException(
+                    "fixture-directory",
+                    TimeSpan.Zero,
+                    32)),
+            cancellation.Token).ConfigureAwait(true);
+
+        Assert.Equal(2, exitCode);
+    }
+
+    [Fact]
+    public async Task ExitCodeMappingReturns2ForCanceledInternalCleanupDeadline()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        var cleanupDeadline = new OperationCanceledException("scope cleanup deadline");
+        BuildProcessCleanupDiagnostics.Attach(
+            cleanupDeadline,
+            BuildProcessCleanupPhase.ScopeTermination,
+            rootPid: 42,
+            elapsed: TimeSpan.FromSeconds(5));
+
+        var exitCode = await Program.RunCommandAsync(
+            [],
+            (_, _) => Task.FromException<int>(cleanupDeadline),
+            cancellation.Token).ConfigureAwait(true);
+
+        Assert.Equal(2, exitCode);
+    }
+
+    [Fact]
+    public void ExceptionDiagnosticRetainsTheExceptionChainAndRedactsSensitiveValues()
+    {
+        var sensitivePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "private-fixture");
+        var exception = CaptureExceptionWithStack(
+            new IOException($"fixture={sensitivePath} token=secret-value"));
+
+        var diagnostic = Program.FormatExceptionDiagnostic(exception);
+
+        Assert.Contains(typeof(InvalidOperationException).FullName!, diagnostic, StringComparison.Ordinal);
+        Assert.Contains(typeof(IOException).FullName!, diagnostic, StringComparison.Ordinal);
+        Assert.Contains(nameof(CaptureExceptionWithStack), diagnostic, StringComparison.Ordinal);
+        Assert.Contains("<user-profile>", diagnostic, StringComparison.Ordinal);
+        Assert.Contains("token=<redacted>", diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain(sensitivePath, diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret-value", diagnostic, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExceptionDiagnosticRedactsConfiguredRepositoryRootOutsideCurrentDirectory()
+    {
+        var repositoryRoot = Path.Combine(
+            Path.GetPathRoot(Environment.CurrentDirectory)!,
+            "external-checkout",
+            "downkyi");
+        var sensitivePath = Path.Combine(repositoryRoot, "tools", "runner.cs");
+
+        var diagnostic = Program.FormatExceptionDiagnostic(
+            new IOException($"fixture={sensitivePath}"),
+            repositoryRoot);
+
+        Assert.Contains("<repository-root>", diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain(repositoryRoot, diagnostic, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static InvalidOperationException CaptureExceptionWithStack(Exception innerException)
+    {
+        try
+        {
+            throw new InvalidOperationException("outer diagnostic failure", innerException);
+        }
+        catch (InvalidOperationException exception)
+        {
+            return exception;
+        }
+    }
+
+    private static Task<Process> StartHoldingFixtureAsync()
+    {
+        return StartFixtureAsync(CreateFixtureStartInfo("fixture-hold"));
+    }
+
+    private static async Task<OwnedProcessScope> StartHoldingScopeAsync(ProcessStartInfo? startInfo = null)
+    {
+        var scope = await OwnedProcessScope.StartAsync(
+            startInfo ?? CreateFixtureStartInfo("fixture-hold"),
+            TestContext.Current.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            var readyLine = await scope.Host.StandardOutput
+                .ReadLineAsync(TestContext.Current.CancellationToken)
+                .ConfigureAwait(false);
+            Assert.StartsWith("fixture-ready pid=", readyLine, StringComparison.Ordinal);
+            return scope;
+        }
+        catch
+        {
+            await StopScopeAsync(scope).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static async Task<Process> StartFixtureAsync(ProcessStartInfo startInfo)
+    {
+        var process = new Process { StartInfo = startInfo };
+        process.Start();
+        try
+        {
+            var readyLine = await process.StandardOutput
+                .ReadLineAsync(TestContext.Current.CancellationToken)
+                .ConfigureAwait(false);
+            Assert.StartsWith("fixture-ready pid=", readyLine, StringComparison.Ordinal);
+            return process;
+        }
+        catch
+        {
+            await StopFixtureAsync(process).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static ProcessStartInfo CreateFixtureStartInfo(string fixtureCommand)
+    {
+        var startInfo = CreateDotNetStartInfo();
+        startInfo.ArgumentList.Add("exec");
+        startInfo.ArgumentList.Add("--runtimeconfig");
+        startInfo.ArgumentList.Add(
+            Path.Combine(AppContext.BaseDirectory, "DownKyi.Architecture.Tests.runtimeconfig.json"));
+        startInfo.ArgumentList.Add(typeof(FlightRecorderExecution).Assembly.Location);
+        startInfo.ArgumentList.Add(fixtureCommand);
+        return startInfo;
+    }
+
+    private static ProcessStartInfo CreateDotNetStartInfo()
+    {
+        return new ProcessStartInfo("dotnet")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+    }
+
+    private static async Task StopFixtureAsync(Process? process)
+    {
+        if (process is null)
+        {
+            return;
+        }
+
+        using (process)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task StopScopeAsync(OwnedProcessScope? scope)
+    {
+        if (scope is null)
+        {
+            return;
+        }
+
+        using (scope)
+        {
+            await scope.TerminateAsync(new CleanupDeadline(TestTimeout)).ConfigureAwait(false);
+        }
+    }
+}

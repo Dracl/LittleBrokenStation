@@ -1,0 +1,222 @@
+using System;
+using System.Globalization;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using DownKyi.Application.Desktop;
+using DownKyi.Application.Diagnostics;
+using DownKyi.Domain.Downloads;
+using DownKyi.Domain.Results;
+using Microsoft.Extensions.Logging;
+
+namespace DownKyi.Services.Download;
+
+internal sealed class ResolvePlaybackStage : IDownloadPipelineStage
+{
+    private readonly IUserNotificationService _notificationService;
+    private readonly DownloadActivityPresenter _presenter;
+    private readonly DownloadPlaybackResolver _playbackResolver;
+    private readonly ILogger _logger;
+
+    public ResolvePlaybackStage(
+        IUserNotificationService notificationService,
+        DownloadActivityPresenter presenter,
+        DownloadPlaybackResolver playbackResolver,
+        ILogger logger)
+    {
+        _notificationService = notificationService
+            ?? throw new ArgumentNullException(nameof(notificationService));
+        _presenter = presenter ?? throw new ArgumentNullException(nameof(presenter));
+        _playbackResolver = playbackResolver
+            ?? throw new ArgumentNullException(nameof(playbackResolver));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    }
+
+    public string Name => nameof(ResolvePlaybackStage);
+
+    public async Task<OperationResult<DownloadStageResult>> ExecuteAsync(
+        DownloadExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.Input.RequestedContent.MediaKind is null)
+        {
+            return DownloadStageResult.Failure(
+                "download.resolve.recreate-task",
+                "This unfinished download predates the finalized media contract and must be recreated.");
+        }
+
+        var playbackBasePath = context.Input.OutputBasePath
+            .Replace("\\", "/", StringComparison.Ordinal);
+
+        string path;
+        try
+        {
+            path = GetDownloadDirectoryPath(playbackBasePath);
+            Directory.CreateDirectory(path);
+            if (context.StagingDirectory != null)
+            {
+                Directory.CreateDirectory(context.StagingDirectory);
+                await AdoptRecordedTransfersAsync(context, cancellationToken).ConfigureAwait(true);
+                path = context.StagingDirectory;
+            }
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or NotSupportedException)
+        {
+            _logger.LogWarningMessage("Download directory could not be prepared.", exception);
+            _notificationService.Show(DownloadActivityPresenter.CreateDirectoryError(
+                Path.GetDirectoryName(context.Input.OutputBasePath) ?? string.Empty));
+            return DownloadStageResult.Failure(
+                "download.resolve.directory",
+                "Download directory could not be prepared.");
+        }
+
+        context.DownloadDirectory = path;
+        RestoreCompletedDashTransfers(context);
+        _presenter.Reset(context);
+        await _presenter.ShowParsingAsync(context, cancellationToken).ConfigureAwait(true);
+
+        context.PlayUrl = null;
+        if (!context.NeedsPendingMedia)
+        {
+            return DownloadStageResult.Success(Name);
+        }
+
+        var playback = await _playbackResolver.ResolveAsync(
+            context,
+            cancellationToken).ConfigureAwait(true);
+        if (!playback.TryGetValue(out var playUrl))
+        {
+            return OperationResult.Failure<DownloadStageResult>(playback.Error!);
+        }
+
+        context.PlayUrl = playUrl;
+        return DownloadStageResult.Success(Name);
+    }
+
+    internal static void RestoreCompletedDashTransfers(DownloadExecutionContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.Input.RequestedContent.MediaKind != DownloadMediaKind.Dash ||
+            string.IsNullOrWhiteSpace(context.DownloadDirectory))
+        {
+            return;
+        }
+
+        if (context.NeedsPendingAudio && TryFindCompletedTransfer(
+                context,
+                context.Input.Metadata.AudioCodec.Id,
+                out var audioKey,
+                out var audioFile))
+        {
+            context.AudioTransferKey = audioKey;
+            context.AudioFile = audioFile;
+        }
+
+        if (context.NeedsPendingVideo && TryFindCompletedTransfer(
+                context,
+                context.Input.Metadata.Resolution.Id,
+                out var videoKey,
+                out var videoFile))
+        {
+            context.VideoTransferKey = videoKey;
+            context.VideoFile = videoFile;
+        }
+    }
+
+    private static bool TryFindCompletedTransfer(
+        DownloadExecutionContext context,
+        int streamId,
+        out string? transferKey,
+        out string? filePath)
+    {
+        var keyPrefix = string.Create(CultureInfo.InvariantCulture, $"{streamId}_");
+        foreach (var key in context.Input.CompletedTransferKeys)
+        {
+            if (!key.StartsWith(keyPrefix, StringComparison.Ordinal) ||
+                !context.Input.TransferFiles.TryGetValue(key, out var fileName) ||
+                string.IsNullOrWhiteSpace(fileName) ||
+                fileName != Path.GetFileName(fileName))
+            {
+                continue;
+            }
+
+            var candidate = Path.Combine(context.DownloadDirectory!, fileName);
+            if (!DownloadFileIntegrity.Check(candidate).IsUsable)
+            {
+                continue;
+            }
+
+            transferKey = key;
+            filePath = candidate;
+            return true;
+        }
+
+        transferKey = null;
+        filePath = null;
+        return false;
+    }
+
+    internal static string GetDownloadDirectoryPath(string filePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        return Path.GetDirectoryName(filePath)
+               ?? throw new ArgumentException(
+                   "Download file path must include a directory.",
+                   nameof(filePath));
+    }
+
+    internal static async Task AdoptRecordedTransfersAsync(
+        DownloadExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var stagingDirectory = context.StagingDirectory
+            ?? throw new InvalidOperationException("Task staging is unavailable.");
+        var previousDirectory = GetDownloadDirectoryPath(context.Input.OutputBasePath);
+        foreach (var fileName in context.Input.TransferFiles.Values)
+        {
+            if (string.IsNullOrWhiteSpace(fileName) ||
+                fileName != Path.GetFileName(fileName))
+            {
+                continue;
+            }
+
+            await CopyIfMissingAsync(
+                    fileName,
+                    previousDirectory,
+                    stagingDirectory,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private static async Task CopyIfMissingAsync(
+        string fileName,
+        string sourceDirectory,
+        string stagingDirectory,
+        CancellationToken cancellationToken)
+    {
+        var source = Path.Combine(sourceDirectory, fileName);
+        var destination = Path.Combine(stagingDirectory, fileName);
+        if (!File.Exists(source) || File.Exists(destination))
+        {
+            return;
+        }
+
+        var temporary = Path.Combine(stagingDirectory, Guid.NewGuid().ToString("N") + ".adopting");
+        using (var input = new FileStream(source, FileMode.Open, FileAccess.Read,
+                   FileShare.Read, 81920, FileOptions.Asynchronous))
+        using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
+                   FileShare.None, 81920, FileOptions.Asynchronous))
+        {
+            await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+        }
+
+        File.Move(temporary, destination, overwrite: false);
+    }
+
+}

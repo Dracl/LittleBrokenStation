@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LBS.Domain/LBS.Domain.csproj" />
+    <Project Path="src/LBS.Engine/LBS.Engine.csproj" />
+    <Project Path="src/LBS.Infrastructure/LBS.Infrastructure.csproj" />
+    <Project Path="src/LBS.Server/LBS.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LBS.Tests/LBS.Tests.csproj" />
+  </Folder>
+</Solution>

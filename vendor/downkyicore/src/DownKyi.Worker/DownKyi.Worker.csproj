@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    LBS fork: headless download runtime extracted from DownKyi.Desktop.
+    This project is a plain class library: no Avalonia, no Microsoft.Extensions.Hosting.
+    It intentionally has no composition root (no Program/Main) - an external headless host
+    references it and calls HeadlessDownloadRegistration.AddDownloadModule directly.
+  -->
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DownKyi</RootNamespace>
+    <AssemblyName>DownKyi.Worker</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- ObservableObject base class for the migrated download projections. -->
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <!-- IServiceCollection / ILogger used by the migrated registration and services. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\DownKyi.Core\DownKyi.Core.csproj" />
+    <ProjectReference Include="..\DownKyi.Application\DownKyi.Application.csproj" />
+    <ProjectReference Include="..\DownKyi.Domain\DownKyi.Domain.csproj" />
+    <ProjectReference Include="..\DownKyi.Infrastructure\DownKyi.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

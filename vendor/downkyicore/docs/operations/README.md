@@ -1,0 +1,13 @@
+# Operations
+
+- `verification-and-rollback.md`：本機與 CI 驗證、產物、失敗判讀及回滾。
+- `ffmpeg-asset-mirroring.md`：FFmpeg immutable mirror、updater 權限、失敗恢復與 manifest 驗證。
+- `bilibili-api-audit.md`：Bilibili generated endpoint inventory、非推導 contract 例外與 live-audit 安全邊界。
+- `historical-source-archive.md`：1.0.24 以前的原始 Git 提交、封存 tags、快照辨識與查閱指令。
+- `../../script/historical-rebuild/README.md`：25 個封存 tags 的獨立三平台重建、Draft Release 與失敗重跑操作。
+- `../maintenance.md`：依賴、analyzers、external binaries、package 與 release 維護。
+- `../performance-baseline.md`：系統效能基準欄位與比較規則。
+
+操作文件必須提供可執行命令與輸出位置，不只描述理論流程。
+一般版本歷史由根層 `CHANGELOG.md`、Git tag 與 GitHub Release 擁有，不在
+operations 目錄保存重複 release notes。

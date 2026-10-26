@@ -1,0 +1,56 @@
+<UserControl
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="clr-namespace:DownKyi.ViewModels"
+    xmlns:views="clr-namespace:DownKyi.Views"
+    x:Class="DownKyi.Views.ViewVideoDetail"
+    x:DataType="vm:ViewVideoDetailViewModel"
+    Classes="studio-page">
+    <UserControl.Styles>
+        <StyleInclude Source="/Themes/Styles/Studio.axaml" />
+    </UserControl.Styles>
+    <Grid Margin="24,18,24,16" RowDefinitions="Auto,1,*,Auto">
+        <views:VideoDetailToolbarView Margin="0,0,0,16" />
+        <Border Grid.Row="1" Background="{DynamicResource SpaceInk}" />
+        <Grid
+            Name="DetailContentGrid"
+            Grid.Row="2"
+            Margin="0,20,0,0"
+            ColumnDefinitions="*,0"
+            RowDefinitions="190,*"
+            IsVisible="{Binding UiState.IsContentVisible}">
+            <views:VideoDetailSummaryView Name="DetailSummary" />
+            <Grid
+                Name="DetailWorkspace"
+                Grid.Row="1"
+                RowDefinitions="*,Auto"
+                Margin="0,20,0,0">
+                <views:VideoDetailSelectionView Name="DetailSelection" />
+                <views:VideoDetailActionsView Name="DetailActions" Grid.Row="1" Margin="0,12,0,0" />
+            </Grid>
+        </Grid>
+        <StackPanel
+            Grid.Row="2"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Spacing="24"
+            IsVisible="{Binding UiState.IsEmptyVisible}">
+            <Grid Width="100" Height="80">
+                <Rectangle
+                    Width="60"
+                    Height="60"
+                    Fill="{DynamicResource SpaceInk}"
+                    HorizontalAlignment="Left"
+                    VerticalAlignment="Bottom" />
+                <Ellipse
+                    Width="64"
+                    Height="64"
+                    Fill="{DynamicResource SpaceAccent}"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top" />
+            </Grid>
+            <TextBlock FontSize="18" Text="{DynamicResource VideoDetailStatusNoContent}" Foreground="{DynamicResource SpaceMuted}" />
+        </StackPanel>
+        <views:VideoDetailOperationStatusView Grid.Row="3" />
+    </Grid>
+</UserControl>

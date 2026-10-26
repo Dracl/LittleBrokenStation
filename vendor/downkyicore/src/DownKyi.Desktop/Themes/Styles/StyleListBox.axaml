@@ -1,0 +1,230 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:vmp="clr-namespace:DownKyi.Presentation"
+                    xmlns:vmw="clr-namespace:DownKyi.Presentation;assembly=DownKyi.Worker"
+                    xmlns:vms="clr-namespace:DownKyi.ViewModels.Settings">
+    <!-- Add Resources Here -->
+    <ControlTheme x:Key="LeftTabHeaderItemStyle" TargetType="{x:Type ListBoxItem}" x:DataType="vmp:TabHeader">
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Margin" Value="12,2" />
+        <Setter Property="MinHeight" Value="40" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ListBoxItem}">
+                    <Border
+                        x:Name="SelectionBackground"
+                        MinHeight="40"
+                        Background="Transparent"
+                        BorderBrush="Transparent"
+                        BorderThickness="1"
+                        CornerRadius="{DynamicResource DownKyiRadiusMedium}"
+                        ToolTip.Tip="{Binding Title}">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                            <ContentControl
+                                x:Name="ContentControl"
+                                Grid.Column="0"
+                                Width="20"
+                                Height="20"
+                                Margin="12,0,8,0"
+                                IsVisible="{Binding Image,Converter={x:Static ObjectConverters.IsNotNull}}">
+                                <Path
+                                    x:Name="image"
+                                    Width="{Binding Image.Width}"
+                                    Height="{Binding Image.Height}"
+                                    Data="{Binding Image.Data}"
+                                    Fill="{DynamicResource BrushTextSecondary}"
+                                    Stretch="UniformToFill" />
+                            </ContentControl>
+                            <TextBlock
+                                x:Name="text"
+                                Grid.Column="1"
+                                Margin="12,0"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Center"
+                                FontSize="{DynamicResource DownKyiFontSizeBody}"
+                                Foreground="{DynamicResource BrushTextPrimary}"
+                                Text="{Binding Title}"
+                                TextTrimming="CharacterEllipsis" />
+                            <TextBlock
+                                x:Name="sub"
+                                Grid.Column="2"
+                                Margin="8,0,12,0"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center"
+                                FontSize="{DynamicResource DownKyiFontSizeCaption}"
+                                Foreground="{DynamicResource BrushTextSecondary}"
+                                Text="{Binding SubTitle}" />
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style Selector="^:pointerover /template/ Border#SelectionBackground">
+            <Setter Property="Background" Value="{DynamicResource BrushControlFillHover}" />
+        </Style>
+        <Style Selector="^:pointerover /template/ Path#image">
+            <Setter Property="Fill" Value="{DynamicResource BrushTextPrimary}" />
+        </Style>
+        <Style Selector="^:focus-visible /template/ Border#SelectionBackground">
+            <Setter Property="BorderBrush" Value="{DynamicResource BrushControlStrokeFocus}" />
+        </Style>
+        <Style Selector="^:selected /template/ Border#SelectionBackground">
+            <Setter Property="Background" Value="{DynamicResource BrushSelectionFill}" />
+        </Style>
+        <Style Selector="^:selected /template/ TextBlock#text">
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="^:selected /template/ Path#image">
+            <Setter Property="Fill" Value="{DynamicResource BrushTextPrimary}" />
+        </Style>
+    </ControlTheme>
+
+    <ControlTheme x:Key="LeftTabHeaderStyle" TargetType="{x:Type ListBox}">
+        <Setter Property="Background" Value="{DynamicResource BrushSurfaceBase}" />
+        <Setter Property="Padding" Value="0,8" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ListBox}">
+                    <Border
+                        x:Name="NavigationSurface"
+                        Padding="{TemplateBinding Padding}"
+                        Background="{TemplateBinding Background}"
+                        BorderThickness="0">
+                        <ScrollViewer Focusable="False">
+                            <ItemsPresenter ItemsPanel="{TemplateBinding ItemsPanel}" />
+                        </ScrollViewer>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </ControlTheme>
+
+    <!--  TAG样式1  -->
+    <ControlTheme x:Key="TagItemStyle" TargetType="{x:Type ListBoxItem}" x:DataType="vmw:VideoSection">
+        <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ListBoxItem}" x:DataType="vmw:VideoSection">
+                    <Border
+                        Name="Border"
+                        Margin="5,3"
+                        Padding="8,2"
+                        CornerRadius="10"
+                        Cursor="Hand">
+                        <TextBlock
+                            x:Name="Content"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Text="{Binding Title}" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+
+        <Style Selector="^ /template/ Border#Border">
+            <Setter Property="Background" Value="{DynamicResource BrushBackgroundGrey}" />
+        </Style>
+        <Style Selector="^">
+            <Setter Property="Foreground" Value="{DynamicResource BrushText}" />
+        </Style>
+
+        <Style Selector="^:selected /template/ Border#Border">
+            <Setter Property="Background" Value="{DynamicResource BrushPrimary}" />
+        </Style>
+        <Style Selector="^:selected">
+            <Setter Property="Foreground" Value="{DynamicResource BrushText}" />
+        </Style>
+
+        <Style Selector="^:pointerover /template/ Border#Border">
+            <Setter Property="Background" Value="{DynamicResource BrushPrimaryTranslucent}" />
+        </Style>
+        <Style Selector="^:pointerover">
+            <Setter Property="Foreground" Value="{DynamicResource BrushText}" />
+        </Style>
+    </ControlTheme>
+
+    <ControlTheme x:Key="TagStyle" TargetType="{x:Type ListBox}">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ListBox}">
+                    <ScrollViewer
+                        HorizontalScrollBarVisibility="Disabled"
+                        VerticalScrollBarVisibility="Disabled">
+                        <ItemsPresenter
+                            ItemsPanel="{TemplateBinding ItemsPanel}" />
+                    </ScrollViewer>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </ControlTheme>
+
+    <!--  TAG样式2  -->
+    <ControlTheme x:Key="TagItem2Style" TargetType="{x:Type ListBoxItem}">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ListBoxItem}" x:DataType="vms:DisplayFileNamePart">
+                    <Border
+                        Name="Border"
+                        Margin="5,3"
+                        Padding="8,2"
+                        Background="{DynamicResource BrushBackgroundGrey}"
+                        CornerRadius="10"
+                        Cursor="Hand">
+                        <TextBlock
+                            Name="Content"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Foreground="{DynamicResource BrushText}"
+                            Text="{Binding Title}" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style Selector="^:selected /template/ Border">
+            <Setter Property="Background" Value="{DynamicResource BrushBackgroundGrey}" />
+        </Style>
+        <Style Selector="^:pointerover /template/ Border">
+            <Setter Property="Background" Value="{DynamicResource BrushPrimaryTranslucent}" />
+        </Style>
+        <Style Selector="^:selected">
+            <Setter Property="Foreground" Value="{DynamicResource BrushText}" />
+        </Style>
+        <Style Selector="^:pointerover">
+            <Setter Property="Background" Value="{DynamicResource BrushText}" />
+        </Style>
+    </ControlTheme>
+
+    <ControlTheme x:Key="Tag2Style" TargetType="{x:Type ListBox}">
+        <Setter Property="ItemsPanel">
+            <Setter.Value>
+                <ItemsPanelTemplate>
+                    <WrapPanel
+                        Orientation="Horizontal"
+                        ScrollViewer.IsScrollInertiaEnabled="False" />
+                </ItemsPanelTemplate>
+            </Setter.Value>
+        </Setter>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ListBox}">
+                    <Border
+                        Padding="5"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{DynamicResource BrushBorder}"
+                        BorderThickness="1"
+                        CornerRadius="10">
+                        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled">
+                            <ItemsPresenter
+                                ItemsPanel="{TemplateBinding ItemsPanel}"
+                                Margin="{TemplateBinding Padding}" />
+                        </ScrollViewer>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </ControlTheme>
+
+
+</ResourceDictionary>

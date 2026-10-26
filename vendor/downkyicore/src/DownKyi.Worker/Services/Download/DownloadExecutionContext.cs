@@ -1,0 +1,163 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+using DownKyi.Application.Settings;
+using DownKyi.Core.BiliApi.VideoStream;
+using DownKyi.Core.BiliApi.VideoStream.Models;
+using DownKyi.Domain.Downloads;
+
+namespace DownKyi.Services.Download;
+
+internal sealed class DownloadExecutionContext
+{
+    private readonly Action<DownloadTaskId, CancellationToken> _ensureActive;
+
+    public DownloadExecutionContext(
+        DownloadTaskId taskId,
+        DownloadExecutionInput input,
+        Action<DownloadTaskId, CancellationToken> ensureActive)
+    {
+        TaskId = taskId ?? throw new ArgumentNullException(nameof(taskId));
+        Input = input ?? throw new ArgumentNullException(nameof(input));
+        _ensureActive = ensureActive ?? throw new ArgumentNullException(nameof(ensureActive));
+    }
+
+    public DownloadTaskId TaskId { get; }
+
+    public DownloadExecutionInput Input { get; }
+
+    public PlayUrl? PlayUrl { get; set; }
+
+    public string? DownloadDirectory { get; set; }
+
+    public string? StagingDirectory { get; set; }
+
+    public string WorkingBasePath => StagingDirectory == null
+        ? Input.OutputBasePath
+        : Path.Combine(StagingDirectory, Path.GetFileName(Input.OutputBasePath));
+
+    public Dictionary<string, string> PublishedArtifacts { get; } = new(StringComparer.Ordinal);
+
+    public Dictionary<string, string> UnpublishedArtifacts { get; } = new(StringComparer.Ordinal);
+
+    public bool ArtifactsValidated { get; private set; }
+
+    public DownloadActionExecutionSummary ActionResults { get; } = new();
+
+    public bool HasPublished(string key) =>
+        PublishedArtifacts.TryGetValue(key, out var path) && File.Exists(path);
+
+    public void RecordUnpublishedArtifact(string key, string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!HasPublished(key))
+        {
+            UnpublishedArtifacts[key] = path;
+            ArtifactsValidated = false;
+        }
+    }
+
+    public void MarkArtifactsValidated() => ArtifactsValidated = true;
+
+    public bool HasUsablePublishedMedia() =>
+        PublishedArtifacts.TryGetValue("media", out var path) &&
+        DownloadFileIntegrity.Check(path).IsUsable;
+
+    public bool TryReuseStagedMedia()
+    {
+        if (HasPublished("media"))
+        {
+            return true;
+        }
+
+        if (StagingDirectory == null)
+        {
+            return false;
+        }
+
+        foreach (var path in DownloadOutputLayout.GetReusableStagedMediaPaths(
+                     WorkingBasePath,
+                     NeedsVideo,
+                     NeedsAudio))
+        {
+            if (DownloadFileIntegrity.Check(path).IsUsable)
+            {
+                OutputMedia = path;
+                MediaSucceeded = true;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public DownloadMediaKind MediaKind { get; set; }
+
+    public string? AudioFile { get; set; }
+
+    public string? AudioTransferKey { get; set; }
+
+    public string? VideoFile { get; set; }
+
+    public string? VideoTransferKey { get; set; }
+
+    public IReadOnlyList<DurlDownloadResult> DurlDownloads { get; set; } = [];
+
+    public string? OutputMedia { get; set; }
+
+    public bool MediaSucceeded { get; set; } = true;
+
+    public string? DanmakuFile { get; set; }
+
+    public IReadOnlyList<string>? SubtitleFiles { get; set; }
+
+    public IReadOnlyDictionary<long, string>? SubtitleTrackFiles { get; set; }
+
+    public string? DefaultSubtitleFile { get; set; }
+
+    public string? CoverFile { get; set; }
+
+    public string? PageCoverFile { get; set; }
+
+    public bool NeedsAudio => Input.RequestedContent.Audio;
+
+    public bool NeedsVideo => Input.RequestedContent.Video;
+
+    public bool NeedsMedia => NeedsAudio || NeedsVideo;
+
+    public bool NeedsPendingAudio => NeedsAudio && AudioFile == null;
+
+    public bool NeedsPendingVideo => NeedsVideo && VideoFile == null;
+
+    public bool NeedsPendingMedia => NeedsPendingAudio || NeedsPendingVideo;
+
+    public bool NeedsDanmaku => Input.RequestedContent.Danmaku;
+
+    public bool NeedsSubtitle => Input.RequestedContent.Subtitle;
+
+    public bool NeedsCover => Input.RequestedContent.Cover;
+
+    public void EnsureActive(CancellationToken cancellationToken)
+    {
+        _ensureActive(TaskId, cancellationToken);
+    }
+}
+
+internal sealed record DownloadExecutionInput(
+    DownloadTaskMetadata Metadata,
+    DownloadContentSelection RequestedContent,
+    IReadOnlyDictionary<string, string> TransferFiles,
+    IReadOnlyCollection<string> CompletedTransferKeys,
+    string OutputBasePath,
+    PlayStreamType StreamType,
+    DownloadNfoRequest? NfoRequest,
+    VideoApplicationSettings VideoSettings,
+    DanmakuApplicationSettings DanmakuSettings,
+    DownloadFinishedSort FinishedSort);
+
+internal sealed record DurlDownloadResult(
+    PlayUrlDurl Durl,
+    string FilePath,
+    string TransferKey);

@@ -1,0 +1,121 @@
+<UserControl
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vmu="clr-namespace:DownKyi.ViewModels.UserSpace"
+    xmlns:asyncImageLoader="clr-namespace:DownKyi.CustomControl.AsyncImageLoader"
+    x:Class="DownKyi.Views.UserSpace.ViewUserSpaceSeasonsSeries"
+    x:DataType="vmu:ViewUserSpaceSeasonsSeriesViewModel"
+    Classes="studio-page">
+    <UserControl.Styles>
+        <StyleInclude Source="/Themes/Styles/Studio.axaml" />
+    </UserControl.Styles>
+    <Grid RowDefinitions="*">
+        <ListBox
+            x:Name="NameSeasonsSeries"
+            ItemsSource="{Binding SeasonsSeries}"
+            ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+            SelectedIndex="{Binding SelectedItem}"
+            Margin="0"
+            Background="Transparent">
+            <Interaction.Behaviors>
+                <EventTriggerBehavior EventName="SelectionChanged">
+                    <InvokeCommandAction
+                        Command="{Binding SeasonsSeriesCommand}"
+                        CommandParameter="{Binding ElementName=NameSeasonsSeries, Path=SelectedItem}" />
+                </EventTriggerBehavior>
+            </Interaction.Behaviors>
+            <ListBox.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <WrapPanel />
+                </ItemsPanelTemplate>
+            </ListBox.ItemsPanel>
+            <ListBox.Theme>
+                <ControlTheme TargetType="ListBox">
+                    <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ListBox">
+                                <Border
+                                    x:Name="Bd"
+                                    Padding="0"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}">
+                                    <ScrollViewer Focusable="False">
+                                        <ItemsPresenter ItemsPanel="{TemplateBinding ItemsPanel}" />
+                                    </ScrollViewer>
+                                </Border>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </ControlTheme>
+            </ListBox.Theme>
+            <ListBox.ItemContainerTheme>
+                <ControlTheme TargetType="ListBoxItem" x:DataType="vmu:SeasonsSeries">
+                <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="{x:Type ListBoxItem}">
+                                <StackPanel Margin="0,12,24,20" Background="{TemplateBinding Background}" Cursor="Hand" HorizontalAlignment="Left" Orientation="Vertical" Width="208">
+                                    <Border Width="208" Height="130" HorizontalAlignment="Center" CornerRadius="0" Cursor="Hand">
+                                        <Border.Background>
+                                            <!--  长宽比：1.6  -->
+                                            <ImageBrush
+                                                asyncImageLoader:ImageBrushLoader.Source="{Binding Cover}"
+                                                asyncImageLoader:ImageBrushLoader.Width="190"
+                                                asyncImageLoader:ImageBrushLoader.Height="119"
+                                                Stretch="Fill" />
+                                        </Border.Background>
+                                        <Border Height="32" Padding="8,4" VerticalAlignment="Bottom" HorizontalAlignment="Right" Background="{DynamicResource SpaceCarbon}" CornerRadius="0">
+                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                                                <TextBlock FontSize="16" Foreground="{DynamicResource SpaceCream}" Text="{Binding Count}" />
+                                                <ContentControl Width="20" Height="20" Margin="0" VerticalAlignment="Center">
+                                                    <Path Width="20" Height="20" Data="{Binding TypeImage.Data}" Fill="{DynamicResource SpaceCream}" Stretch="Uniform" />
+                                                </ContentControl>
+                                            </StackPanel>
+                                        </Border>
+                                    </Border>
+                                    <TextBlock
+                                        MaxWidth="208" Height="44"
+                                        Margin="0,5,0,0"
+                                        HorizontalAlignment="Left"
+                                        Cursor="Hand"
+                                        Text="{Binding Name}"
+                                        TextTrimming="CharacterEllipsis"
+                                        ToolTip.Tip="{Binding Name}"
+                                        MaxLines="2"
+                                        TextWrapping="Wrap"
+                                        FontSize="16"
+                                        FontWeight="SemiBold">
+                                        <TextBlock.Styles>
+                                            <Style Selector="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource SpaceInk}" />
+                                            </Style>
+                                            <Style Selector="TextBlock:pointerover">
+                                                <Setter Property="Foreground" Value="{DynamicResource SpaceInk}" />
+                                            </Style>
+                                        </TextBlock.Styles>
+                                    </TextBlock>
+                                    <TextBlock
+                                        Name="nameZoneCount"
+                                        Margin="0,5,0,0"
+                                        HorizontalAlignment="Left"
+                                        Foreground="{DynamicResource SpaceMuted}"
+                                        Text="{Binding Ctime}"
+                                        FontFamily="Cascadia Mono,Consolas"
+                                        FontSize="16" />
+                                </StackPanel>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                    <Style Selector="^:pointerover">
+                        <Setter Property="Background" Value="{DynamicResource SpaceHover}" />
+                    </Style>
+                    <Style Selector="^:focus-visible">
+                        <Setter Property="Background" Value="{DynamicResource SpaceSelection}" />
+                    </Style>
+                </ControlTheme>
+            </ListBox.ItemContainerTheme>
+        </ListBox>
+    </Grid>
+</UserControl>

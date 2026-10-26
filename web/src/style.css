@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-pageBg text-inkMain font-sans antialiased;
+  }
+}
+
+@layer components {
+  /* 站长室下载设置的统一输入形态 */
+  .eng-input {
+    @apply w-full rounded border border-adminLine bg-black/30 px-2 py-1.5 font-mono text-xs text-white/80 placeholder:text-white/20 focus:border-adminAccent/60 focus:outline-none;
+  }
+  select.eng-input option {
+    background-color: #171a21;
+    color: rgba(255, 255, 255, 0.85);
+  }
+}

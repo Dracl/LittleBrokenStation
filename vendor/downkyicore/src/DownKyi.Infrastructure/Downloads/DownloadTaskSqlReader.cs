@@ -1,0 +1,24 @@
+namespace DownKyi.Infrastructure.Downloads;
+
+internal static class DownloadTaskSqlReader
+{
+    public const string SelectColumns = """
+        SELECT
+            db.id, db.need_download_content, db.bvid, db.avid, db.cid, db.episode_id,
+            db.cover_url, db.page_cover_url, db.zone_id, db.[order], db.main_title,
+            db.name, db.duration, db.video_codec_name, db.resolution, db.audio_codec,
+            db.file_path, db.file_size, db.published_artifacts, db.staging_token,
+            db.publishing_key, db.publishing_file_name, db.publishing_length, db.publishing_sha256,
+            db.page, db.nfo_request, db.version, db.output_reservation_key,
+            db.created_at_utc, db.updated_at_utc,
+            dl.gid, dl.download_files, dl.downloaded_files, dl.play_stream_type,
+            dl.download_status, dl.download_content, dl.download_status_title, dl.progress,
+            dl.downloading_file_size, dl.max_speed, dl.speed_display, dl.phase,
+            dl.failure_code, dl.failure_message, dl.failure_transient,
+            dl.downloaded_bytes, dl.total_bytes, dl.bytes_per_second,
+            dl.is_legacy_transfer
+        FROM download_base db
+        INNER JOIN downloading dl ON dl.id = db.id
+        """;
+
+}

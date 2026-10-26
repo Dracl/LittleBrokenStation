@@ -1,0 +1,4 @@
+# pnpm v11+ 用 allowBuilds 控制依赖构建脚本（pnpm-workspace.yaml 为唯一可信位置）
+# 逐个审批，不整体放行：esbuild 是 vite 的构建依赖，需要安装其二进制
+allowBuilds:
+  esbuild: true

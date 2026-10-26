@@ -1,0 +1,950 @@
+# 更新日志
+
+## [1.7.0] - 2026-10-24
+
+### Features
+
+- 全面統一 Swiss／Bauhaus 介面：首頁採用海報式排版，個人空間、好友、影片清單、解析結果、下載管理、工具箱、設定、登入與彈出視窗使用一致的視覺；依不同視窗寬高重新配置，保留明暗主題。
+- 下載失敗的任務可展開「查看原因」，直接顯示失敗階段與下一步建議；恢復操作會依任務狀態顯示，重試後收起舊的錯誤資訊。
+
+### Bug Fixes
+
+- 修正公開收藏夾封面未顯示、懸停遮罩遮住封面，以及好友、收藏夾與合集只能點擊文字的問題；連結加入懸停、鍵盤焦點與 Enter 操作，影片列空白仍可用於選取下載。
+- 進入下載管理時同步載入完成紀錄與兩個分頁的數量，避免影片已完成卻看似沒有加入；輸出檔名衝突會明確提示更換資料夾或開啟自動序號。
+- 下載品質確認視窗的長清單可在內容區滾動，操作按鈕維持可見，並改善各類彈窗在小視窗中的配置。
+- 個人空間不再依賴已失效的背景設定端點；背景圖片缺少或載入失敗時使用本機替代圖，仍可正常顯示個人資料與影片。
+- 區分字幕網路讀取與本機寫入失敗，登入及存取權限錯誤提供對應建議，並讓失敗原因說明與可用的重試操作一致。
+
+## [1.6.1] - 2026-10-20
+
+### Bug Fixes
+
+- 下載重試額度改為由每個下載位址各自計算，切換到備用來源後會重新取得受限的重試機會，不再因主要來源用盡全域額度而過早失敗。
+- 媒體伺服器拒絕或忽略 Range 請求時，會移除不完整的分段狀態並回退為循序整檔下載；資源身分、續傳資料與預期長度異常仍會明確失敗。
+- 影片分 P 列表只會在更換資料來源後定位初始選取項一次，之後切換分 P 會保留使用者的滾動位置，不再跳回列表頂端。
+
+### Maintenance And Release
+
+- 將 Markdig 更新至 `1.4.2`，並移除 CodeQL 與依賴檢查中重複的建置與工具安裝步驟，保留既有三平台建置、測試與必要檢查名稱。
+
+## [1.6.0] - 2026-10-19
+
+### Features
+
+- 下载对话框会直接列出可用字幕轨，可多选并指定一个默认字幕；尚未取得轨道时仍可保存语言与标准／AI 字幕偏好，供批次下载与后续解析使用。
+
+### Bug Fixes
+
+- 一般视频、UGC、番剧与课程会在播放解析前显示详情资料已有的时长，并在解析结果没有有效时长时保留该值。
+- 下载对话框的字幕、内容与输出区块重新对齐，长字幕列表可稳定滚动；预设字幕说明也会明确区分原轨档案与供播放器自动识别的同名副本。
+
+### Maintenance And Release
+
+- 移除已无作用的自动解析、解析范围与自动下载全部设定，以及旧播放页面的手动画质、音质与编码选择状态；旧设定档仍可安全读取。
+- 更新 Markdig，并将内建 FFmpeg／ffprobe 固定到新的已验证镜像版本。
+- Windows 日志轮替验证改用与正式诊断汇出相同的 writer-sharing 契约，继续逐档核对大小，同时避免把合法存活的日志 writer 误判为发布失败。
+
+## [1.5.0] - 2026-10-18
+
+### Features
+
+- 番剧、课程与系列列表改为连续追加载入；跨页范围选择会保留，全部下载会先发现完整集合，再统一确认画质替代与重复项目，并继续依既有并发上限排队。
+- 视频详情移除重复的手动解析开关与逐行媒体下拉选项，下载统一进入同一准备流程；旧版解析设定仍可读取，缺少媒体或必须降低画质时仍会明确询问。
+- 重复下载改由单一加入流程依 CID 与所选内容判定：一般操作会略过活动或已完成项目，明确选择重新下载时只忽略完成历史，不会重复加入活动任务。
+
+### Bug Fixes
+
+- 播放来源选择不再消耗解析结果，并会先尊重明确指定的独立音讯，再判断 DASH 或 DURL；网页缺少所需媒体时仍可正确回退 API。
+- 一般视频、课程与番剧会保存正确的封面；番剧批次只保留一份系列封面，暂时性网络错误也不会被误当成资源不存在而静默换图。
+- 下载任务清理完成后会一并移除已为空的 `staging` 与 `.downkyi` 父目录，同时保留其他任务、未知内容与未完成任务的续传资料。
+
+### Maintenance And Release
+
+- 内建下载器收敛为单一 worker 生命周期与 FIFO 待传区间队列，同时保留自适应分段、并行范围下载、限速、重试与来源变更后的安全清理。
+- 发布工作流程移除重复的事件判断与 FFmpeg 更新职责，保留 tag／手动预演的三平台发布门槛、下载后套件验证与 fail-closed 发布依赖。
+- 测试逐步移除只约束实现形状的重复断言，保留可观察行为、关键 XAML 接线与稳定架构边界；Bug 回报则要求附上脱敏诊断包。
+
+## [1.4.1] - 2026-10-17
+
+### Bug Fixes
+
+- 下载任务统一以 CID 判定重复：活动任务会在持久化前原子拒绝重复加入，已完成记录则套用设定的重复策略。
+- 旧版下载资料库改以实际表与栏位结构投影到当前 schema；投影失败时保留备份、可诊断错误与明确的重置选择。
+- 解析完成时的画质、音质与媒体能力现在会作为同一份快照传入下载规划，避免页面状态在建立任务前变化而产生不一致。
+- 媒体下载会严格核对服务器声明的长度；FFmpeg 合并或串接在处理失败、必要串流无输出或临时产物为空时不再提交最终档案。
+- 反馈诊断包会保留经过二次脱敏的错误讯息，以提供下载后端、重试阶段与失败分类，同时继续排除凭证、帐号资料与本机路径。
+- 浅色主题的中性按钮统一使用共用语义样式，下载设定、解析选择与多个内容页面的按钮文字恢复清晰可读。
+
+### Maintenance And Release
+
+- 发布套件身份、下载后验证矩阵与 SHA-256 sidecar 分别收敛至单一 owner；macOS 预签章建置与 DMG 布局也由正式发布与 ad-hoc 验证共用。
+- 下载 pipeline 测试依解析、传输、续传、合并与验证责任分拆，保留既有行为覆盖并补上暂停传输、无可用媒体与已完成 DASH 复用回归。
+
+## [1.4.0] - 2026-10-16
+
+### Features
+
+- 当前产品下载完全改用内建 HTTP Range 引擎，支持自适应分段、并行范围调度、逐段续传检查点、资源连续性验证与全局／单任务限速；aria2 运行时及封装依赖已移除。
+- 批次下载会在加入队列前汇总纯画质替代项目，只询问一次并列出每个视频的实际可用品质；非画质内容冲突仍维持逐项决定。
+- 应用程序先原子显示完整首页，再于第一帧后完成其余桌面组合；关闭时先隐藏视窗，同时保留下载检查点、设置与日志清理契约。
+
+### Bug Fixes
+
+- 首页无法识别输入时会保留原文并显示支持的链接与编号格式，不再无提示地清空搜索框。
+- 旧版资料迁移可正确启用取消操作、处理真实 NRBF `CookieContainer` 的空容量槽，并在失败后恢复可诊断、可操作的终止状态。
+- 下载资料库升级统一为能力导向的 current-shape upgrader，历史 schema 版本不再由当前版本反向推算。
+- 重解析后的解析度、codec 或传输来源变化仍由同一输出 owner 判定重复覆盖，并保留明确的手动音视频 codec 选择。
+
+### Maintenance And Release
+
+- 可维护性审查确认下载队列、生命周期、记录、持久化与组合根各有单一 owner；更新 advisory CA1501／CA1506 基线与已审查分类，继续突出未来新增或恶化的耦合。
+- 固定 FFmpeg、ffprobe、appimagetool 与历史重建资源移至 DownKyiCore 自有的不可变资源 Release，产品 Release 维持一次性草稿组装、完整资产验证与发布后不可变性读回。
+- 移除过时的 v1.1.2 专用恢复发布路径，并强化 frozen release subject 必须是 `main` first-parent 整合提交的验证。
+
+## [1.3.0] - 2026-10-11
+
+### Features
+
+- 播放解析统一为网页优先，只在缺少所需媒体或画质低于设定时由 API 补足；网页与 API 的精确 DASH 轨道可合并使用，并保留每条媒体的来源。
+- 只有需要降低画质或缺少所选媒体时才会要求确认替代方案；批次下载可为各项目使用各自最接近的可用品质，不会自动新增未选内容。
+- 视频详情会立即显示加载、解析、下载、完成、取消与错误状态；自动解析不再被误解为自动下载，确认对话框也会区分主要与次要操作。
+- 反馈入口可导出脱敏诊断套件，为 Issue 提供可共享的应用程序、版本与失败线索，不包含 Cookie、外部资源 URL 或本机路径。
+
+### Bug Fixes
+
+- 下载规划会保留仅附加内容的选择、NFO 与字幕覆盖范围，并统一管理输出占用、同名处理与重试；不同 CID 不再共用错误的基础路径。
+- 应用程序关闭前会先保存已暂停的 aria2 session，重启后可从同一检查点继续；品质与 codec 选择保持同步，非成功 HTTP 状态中的 JSON-RPC 错误内容也不再丢失。
+- SQLite 下载资料库会恢复旧版历史记录，对不支持的 schema 显示脱敏诊断，并在重建保留键时隔离损坏记录，而不是中止其他可恢复项目。
+- 番剧播放在网页资料缺少所选轨道时会回退 API，API 查询失败最多重试一次，并正确区分可播放、不可用与仅音讯结果。
+
+### Reliability And Release
+
+- 发布候选产物会在 Windows、Linux 与 macOS 对下载后的实际安装包重新验证，失败时保留诊断；公开 Release 改为九个安装包加一个完整 verification ZIP。
+- 新增早期版本的可重现建置与草稿 Release 同步流程，并将 .NET SDK 更新至 `10.0.401`。
+
+## [1.2.2] - 2026-10-07
+
+### Bug Fixes
+
+- 番剧解析会保留接口声明的可用画质，兼容多种回退回应形状；重新解析时不会让失效的选项覆盖错误，也会保留已经完成的媒体结果。
+- 批次下载遇到历史项目不可用时会继续处理其余项目，同时保留真正的取消语义。
+- 窄视窗下的导航与排序文字不再被内容边界裁切；Avalonia 资源载入改为明确的资源程序集与 URI 分类。
+
+### Maintenance
+
+- 移除未使用的桌面、核心与领域入口，并将 Avalonia runtime 套件统一升级至 `12.1.3`。
+- 更新 .NET、测试、日志、SQLite、行为扩展与 GitHub Actions 依赖，同时完成 xUnit v3 `4.0.1` 迁移。
+
+### Reliability And Release
+
+- 依赖、SDK、打包与 workflow action 版本改由集中 owner 管理，并加入定期更新、既有 required checks 后自动合并及本地 action 实际往返验证。
+- 更新固定 FFmpeg mirror，改用仓库自有的 AppImage tool mirror，并继续验证不可变来源、checksum 与跨平台套件内容。
+- process readiness 测试会在 owner 提前退出时立即失败并同步 pipe-holder readiness；release notes 会保留 Markdown 格式。
+
+## [1.2.1] - 2026-10-03
+
+### Reliability And Release
+
+- 本版本包含未发布 `v1.2.0` 的全部功能、修复与跨平台套件内容。
+- release-safety fixture 现在会隔离外层 workflow 的 `GITHUB_REF`，并在预发布测试中明确模拟匹配的正式 tag 情境，避免只在 tag-triggered workflow 才出现版本误判。
+- `v1.2.0` tag 保持不可变且未建立 GitHub Release；`v1.2.1` 从最新 `main` 作为替代发行版。
+
+## [1.2.0] - 2026-10-02
+
+### Features
+
+- 内建下载器改为 DownKyi 自有的 HTTP Range 引擎，以有界并发直接写入分段位置、持久保存每段进度，并兼容既有 `.download` 续传资料。
+- 单视频下载设置可选择具体字幕轨；音视频内容不完整时会在建立任务前统一提示使用可用内容或跳过，并支持同类冲突套用到全部项目。
+- 弹幕下载新增 Bilibili XML 与 ASS + XML 输出，并支持本机表情／特殊字符清理、关键字屏蔽及发送者 UID 屏蔽。
+- 支持 Bilibili `list/<MID>?sid=<SERIES_ID>` 系列列表地址、浏览器 Cookie 导入，以及已完成下载历史的按需载入与分页。
+
+### User Interface
+
+- 桌面界面统一为 Fluent 风格的 Light／Dark semantic surfaces，并更新情境式左侧导航、选中／焦点状态、设置页、工具箱、下载列表与视频详情布局。
+- 视频详情重新解析时会保留既有内容与操作脉络；搜索框、下拉选择、批次下载和下载状态提示的键盘焦点及交互反馈更清晰。
+
+### Bug Fixes
+
+- 下载产物改用任务私有 staging 与原子发布，避免背景清理删除非本任务档案或覆盖外部出现的同名目的地；跨安装目录也会在产品启动前执行同一单实例保护。
+- 旧版下载资料迁移、active task／completed history 权责、输出保留键与损坏列分页均改为明确的持久化边界，保留既有任务、进度、已发布档案与隔离资料。
+- 内建下载续传会验证强 ETag、保守的 Last-Modified 时间窗及必要的重叠内容；aria2 完成结果、DURL timeline、最终音视频 stream 与实际 decode 也会在提交完成前验证。
+- “全部暂停／恢复”现在由下载 scheduler 统一关闸、确认 active aria2 GID 的暂停事件，并优先恢复本次暂停的任务；等待中的任务保持等待，WebSocket 通知不可用时回退既有 RPC 状态确认。
+- 修复所选画质缺少偏好 codec 时无法回退到可用串流、番剧试看被误当正式播放流、DASH backup URL 为空、重复 buvid Cookie，以及完成历史与批次操作的竞态问题。
+- 修复 Windows UI apartment、登录档外部更新、好友返回状态、下载批次跨导航、视频解析可见性与多个 Fluent 控制项的焦点／尺寸问题。
+
+### Security And Diagnostics
+
+- 封面请求保持匿名并统一为 HTTPS；下载失败与反馈 Issue 预填会移除外部资源 URL，同时保留可复制的脱敏诊断。
+- 更新检查统一使用 SemVer 2.0.0 precedence；手动检查更新不会显示或执行“跳过此版本”，自动启动提示才可保存该选择。
+
+### Reliability And Release
+
+- release subject、package validator 与 previous-tag resolution 改为从 `version.txt` 和 annotated first-parent SemVer 历史衍生，不再复制版本专属脚本或测试名称。
+- CentralTestRunner、跨平台 process supervision、Windows ETW、macOS bundle／DMG 与 Linux AppImage 启动验证改用明确 readiness／lifecycle state，并保留首次失败与 cleanup 诊断，不以固定等待时间判断完成。
+- 更新固定 FFmpeg mirror，并维持 package manifest、SHA-256、aria2／FFmpeg 内容、版本与跨平台启动闸门。
+
+## [1.1.6] - 2026-09-11
+
+### Bug Fixes
+
+- 修复 macOS `codesign` 修改内置 aria2c 后，运行时 checksum sidecar 仍保留签名前摘要，导致下载服务完整性检查失败并拒绝启动的问题。
+- macOS x64 与 arm64 现在都会在 nested signing 后刷新最终 aria2c 摘要，并对最终 App、挂载的 DMG 及 `ditto` 复制后的 App 重新验证签章、架构、checksum 与 RPC readiness。
+
+### Security
+
+- 保留原始 aria2 artifact 的 supply-chain SHA-256 验证，并将其与签名后最终交付字节的 runtime integrity domain 明确分离；缺失、格式错误、symlink 被替换或内容遭篡改时继续 fail closed。
+- Custom Aria 继续要求 `downkyi-secure-redirect-v2`；标准 aria2 与 Motrix 不再被含糊地表示为兼容端点，并会返回明确的安全能力诊断。
+
+### Release
+
+- 没有 Apple Developer ID 凭证时，macOS 套件继续使用经过完整原生 package、DMG、复制及 aria2 bootstrap 验证的 ad-hoc signing；本版本不宣称经过 Apple notarization 或具备 Gatekeeper trusted distribution。
+
+## [1.1.5] - 2026-09-11
+
+### Bug Fixes
+
+- 下载运行时启动失败现在会进入明确的 Faulted 状态，拒绝后续排队，并将已经由运行时拥有、但尚未执行的任务转为 Failed，避免任务永久停留在 Queued。
+- 启动恢复在既有任务 gate 内重新读取持久状态，保留用户在快照之后执行的暂停或终止操作；启动故障会显示脱敏且可复制的诊断信息。
+
+### Release
+
+- 本版本包含未发布 v1.1.4 的全部修复，包括 macOS ad-hoc 签名不再启用 Hardened Runtime，以及对应的 DMG、严格签章与复制后启动验证。
+- `v1.1.4` tag 保持不可变；`v1.1.5` 从最新 `main` 重新执行完整发布闸门并作为替代发行版。
+
+## [1.1.4] - 2026-09-10
+
+### Bug Fixes
+
+- 修复无 Apple Developer ID 凭证时，macOS ad-hoc 签名仍启用 Hardened Runtime，导致 macOS 26 因 Library Validation 拒绝加载 `.NET` 的 `libhostfxr.dylib`、应用在显示 UI 前以状态 130 退出的问题。
+- 支持没有音频轨的 DASH 视频下载，并补齐音频选择边界。
+- 下载恢复会等待既有 worker 完全停止后再重新排队，并持久保存 NFO 下载选择。
+
+### Architecture And Reliability
+
+- 下载请求内容与执行输入改为不可变的 typed snapshot，避免执行期间读取变化中的 UI 或任务状态。
+- 加强 PowerShell runner exit-code、CI timeout 分类与 settings roundtrip 回归。
+
+### Release
+
+- 无 Apple credentials 的 macOS 套件继续使用 ad-hoc signing，并在 macOS 26 arm64 验证签章不含 Hardened Runtime、严格 bundle 完整性、DMG 挂载及 `ditto` 复制后启动。
+- Developer ID 模式继续保留 Hardened Runtime、entitlements、notarization、stapling 与 Gatekeeper 验证；ad-hoc CI 成功不表示 Apple trusted distribution。
+
+## [1.1.3] - 2026-08-29
+
+### Security
+
+- 动态字幕 JSON 下载不再向 Bilibili 回应指定的 host 发送登录 Cookie 或 buvid，避免凭证泄漏到跨来源地址。
+
+### Bug Fixes
+
+- 修复 QR 登录只保存部分回调参数的问题：现在会收集完整 `Set-Cookie` session、原子写入登录档、重新载入并通过 `/nav` 验证，避免关闭并重启应用后丢失登录状态。
+- 修复 Windows 将 `//host/path` 字幕地址误判为 UNC / `file://` 而导致特定影片字幕无法下载的问题；protocol-relative 地址会补为 HTTPS，并拒绝 `file:`、`ftp:`、`data:` 等非 HTTP scheme。
+- 字幕 URL 的 URI parser 只负责验证，不再 canonicalize CDN path 或 query；`%7E`、`%2F` 等 percent-encoded spelling 会保持 Bilibili 回应的原始形式。
+
+### Reliability
+
+- 下载 shutdown 遇到 owned worker timeout 时会 fail closed，不再记录错误后回报成功；test runner routing 与 SQLite pool ownership 同步加强。
+- 更新六平台发布所使用的固定 FFmpeg mirror，并保留 archive layout、执行、SHA-256 与 encoder 验证。
+
+### Release
+
+- Windows、Linux 与 macOS 套件继续使用单一 `version.txt`、严格 Release build、完整测试、package manifest 与 SHA-256 sidecar gate。
+- macOS 发布只允许完整 Developer ID / notarization / stapling / Gatekeeper 验证，或无凭证时的 ad-hoc signing + strict bundle / DMG / launch 验证；不接受部分凭证或未验证产物。
+
+## [1.1.2] - 2026-08-20
+
+### Bug Fixes
+
+- 修复影片详情页载入完成后「解析影片」与「下载选中」仍可能保持停用的问题，并防止异步 Command 状态更新时重复执行。
+- 修复 macOS 最终 App bundle 的资源封印可能在打包过程中失效的问题；所有内容复制与权限修改完成后才签章，并在建立 DMG 前强制执行 `codesign --verify --deep --strict`。
+
+### Release
+
+- macOS x64 与 arm64 在未配置 Apple Developer 凭证时使用 ad-hoc 签章；bundle 完整性验证失败会阻止 hash 与上传。
+- v1.1.2 的 macOS DMG 不是 Developer ID 签章、Apple notarized、stapled 或 Gatekeeper-trusted 发行版；完整 Apple 凭证可用时，既有 workflow 仍支持这些额外步骤。
+
+## [1.1.1] - 2026-07-29
+
+### Security
+
+- 恢复 aria2 HTTPS 凭证与主机名称验证，移除旧 `UseSsl` 下载降级能力；
+  旧设置字段仅用于一次性相容读取并在下一次保存时移除。
+- 内建 aria2 使用随机 loopback port、高强度 RPC secret 与受限临时设置
+  档，Cookie 和 secret 不再进入程序命令列。
+- Cookie 改为符合 HTTPS Bilibili host 范围的任务级 header，携带凭证
+  时禁止重新导向；远端自订 aria2 RPC 强制 HTTPS 且不跟随重新导向。
+- 新增六 RID 真实 aria2 TLS 合约闸门，以及来源 tag、commit、SHA-256
+  与尚缺可重现建置/SBOM/provenance 的明确审计记录。
+
+### Reliability
+
+- 修复 Windows 测试宿主偶发残留前台执行绪的问题：测试资料清理由同步 `ProcessExit` handler 改为可等待的 assembly fixture，Avalonia 测试改用 assembly-scoped headless session，正式 Host、Dispatcher、SQLite 与应用关闭路径均有确定性 teardown。
+- 修复 protocol-relative 图片来源被误当成 Windows UNC 路径而阻塞 `File.Exists` 的问题。
+
+### Release
+
+- `v1.1.0` 标签保持不可变；其发布草稿在 Windows lifecycle 问题确认后撤回，不作为正式发行版。`v1.1.1` 是包含根因修正及长期质量门槛的替代版本。
+- 新增 tag 与 `version.txt` 的自动一致性检查，防止错误标签发布成另一版本的套件。
+
+## [1.1.0] - 2026-07-29
+
+### Architecture
+
+- 移除 Prism、DryIoc、EventAggregator、RegionManager、ContainerLocator 与字串 ViewName navigation，改用 Microsoft Generic Host、Microsoft DI、CommunityToolkit MVVM 与 typed navigation history。
+- 建立可执行的 Domain、Application、Infrastructure、Desktop 边界；`DownKyi` 只保留最小启动入口，Core 不再拥有 Avalonia/XAML/logging 实作。
+- 让 Domain `DownloadTask` 成为 durable 状态权威，新增、续传及启动恢复直接以 `DownloadTaskId` 进入 bounded channel，不再轮询 UI collection。
+
+### Download And Media
+
+- 下载流程拆成播放地址解析、媒体下载、附属档案、混流、验证与完成阶段，并统一 retry policy、取消和错误分类。
+- 修复删除任务残留大型临时档、重启从零下载、多段 DURL 暂存 key 冲突、错误排序及不可 seek MP4 被误判成功。
+- 多段 DURL 使用 FFmpeg 重建时间戳与索引，并由 ffprobe 验证中段/尾段 seek；GPU encoder 失败时自动回退 CPU。
+- aria2 与内建下载器支持可配置分片与高速模式，诊断同时显示 MB/s 与 Mbps，避免把单位显示误当成带宽限制。
+
+### Bilibili And User Workflows
+
+- 建立 WBI key provider、single-flight 刷新与一次性失效重试，修复启动后立即解析、旧 key 及并发解析失败。
+- 修复普通影片、番剧、课程播放流 envelope、AI 字幕空档、SRT 毫秒时间码与可选 JSON payload 被默认空物件遮蔽。
+- 支持 `bilibili.com/list/数字`、收藏夹/投稿内搜索、复选与清空选择，并在 typed back navigation 中保留页码、查询和列表状态。
+- 修复多层返回建立重复页面、返回箭头无效、关闭后无法退出/重开及启动操作覆盖输入等生命周期问题。
+
+### Diagnostics, Quality And Compatibility
+
+- 日志改为脱敏、bounded async rolling sink、retention 与 diagnostic bundle，不记录完整本机路径、Cookie、敏感 URL 或账号识别资料。
+- 默认启用 .NET `AnalysisMode=All`、warnings as errors、严格跨平台 PR CI、CodeQL、依赖稽核、秘密扫描、Host/XAML smoke 与 deterministic API/下载回归测试。
+- 保留既有 settings JSON、legacy SQLCipher SQLite、未完成任务、GID、partial file map、completed segment keys 与 resume state 相容性。
+- Windows x64/x86、Linux x64/arm64 与 macOS x64/arm64 发布流程验证 .NET、aria2、FFmpeg、ffprobe、Fluent theme、版本和 SHA-256 manifest。
+
+## [1.0.31] - 2026-07-08
+
+### Bug Fixes
+
+- 修复 Windows release pipeline 的 trimming annotations：下载记录 JSON 改用 source-generated `JsonSerializerContext`，NFO 输出改为显式 `XmlWriter`，避免反射序列化在裁剪场景下产生风险。
+- 修复 macOS release pipeline 的 Homebrew annotations：移除 `HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK`，并在 runner 上卸载未信任的 `aws/tap` 后再安装打包工具。
+
+### CI
+
+- 暂停发布不安全的 Windows `-trimmed` 包；当前 Avalonia / Prism / Xaml.Behaviors / Newtonsoft.Json 组合不适合 full trim，继续发布会造成大量 ILLink 警告并存在功能被裁剪的风险。
+- Windows release 现在只发布正常 self-contained zip，保留可用性与 CI 输出干净度。
+
+## [1.0.30] - 2026-07-08
+
+### Bug Fixes
+
+- 修复下载中删除任务后，硬盘上已产生的临时文件、`.aria2` / `.download` 控制文件与相关输出文件不会同步删除的问题。
+- 修复重启应用后下载任务可能因为临时文件名、Aria gid 或进度状态未及时落盘而从 0 重新下载的问题。
+- 修复登录 Cookie 缓存 List 被请求流程追加 `buvid3` / `buvid4` 后持续膨胀，可能导致 431/400 请求错误的问题。
+
+### Features
+
+- 关于页面新增诊断日志入口，可快速打开日志目录并导出脱敏诊断日志。
+- 诊断日志导出会过滤近期错误、崩溃与超时信息，并自动遮蔽 Cookie、token、邮箱、用户路径与 uid 等敏感内容。
+
+### Refactor
+
+- 下载任务删除流程统一为「停止下载器、移除列表/数据库、清理磁盘产物」，降低残留大文件与孤儿 aria 任务风险。
+- 下载服务在分配临时文件名、取得 Aria gid、完成分段与失败状态时即时持久化，提升异常退出后的续传可靠性。
+- 内建下载器启用自动续传 metadata，Aria 单任务明确设置 `continue=true`、固定输出名并禁用自动改名。
+- Cookie header 生成集中去重，`GetLoginInfoCookies()` 改为返回快取副本，避免呼叫端污染登入快取。
+- 日志系统增加脱敏写入与诊断导出路径，减少终端机/日志中暴露用户本机路径与个人资料的机会。
+
+## [1.0.29] - 2026-07-08
+
+### Bug Fixes
+
+- 修复关闭主窗口后 aria2c 子进程可能继续驻留并锁住日志/资料目录的问题。
+- 退出流程增加 bounded shutdown 与 tracked aria2 fallback kill，避免主进程先退出、下载子进程残留。
+
+### Performance
+
+- 下载中、已完成下载、历史、收藏、公开收藏与视频详情列表改用批次集合更新/虚拟化，降低大量资料时的 UI 卡顿。
+- 下载记录加入流程改为批次更新 UI，移除逐笔 `Thread.Sleep` 节流。
+- 主窗口消息提示与登录轮询改为可取消的异步延迟，不再占用背景线程。
+
+### Refactor
+
+- 使用者资料预设迁移到 AppData，并保留 `DOWNKYI_PORTABLE`/portable marker 与 `DOWNKYI_DATA_DIR` 覆写模式。
+- 新增 Cache/Logs/Aria/Storage retention maintenance，长期使用时自动清理过期日志、缓存和临时文件。
+- 收藏、历史、影片详情、下载前置解析、字幕/弹幕/封面下载等网络路径补齐 `CancellationToken`。
+- protobuf 弹幕模型改为从 `dm.proto` 透过 `Grpc.Tools` 于 build 时产生，移除手工维护的巨大 `Dm.cs`，并新增 CI 检查。
+
+## [1.0.28] - 2026-07-08
+
+### Bug Fixes
+
+- 修复点击主窗口右上角关闭后进程仍驻留后台的问题。
+- 修复主窗口关闭后单例锁未释放，导致再次双击应用无法打开主界面的问题。
+
+### Refactor
+
+- 将主窗口关闭路径显式接入应用退出流程，并为下载服务、启动任务和日志 flush 增加退出等待上限。
+- 退出时释放单例 mutex，避免异常关闭路径阻塞后续启动。
+
+## [1.0.27] - 2026-07-07
+
+### Refactor
+
+- 清理 Release build nullable、未使用成员与潜在 null reference 警告，使 Release build 回到 0 warnings。
+- 移除非 UI 必要的 `async void` 用法，改用 `Task`、异步命令与集中记录未观察例外。
+- 收紧下载、视频解析、空间页、收藏、历史与设置相关模型的 nullability 合约，减少隐藏 NRE 风险。
+
+### Performance
+
+- 减少启动与下载管理流程中的同步等待和不可观察异步执行，降低 UI 卡顿与死锁风险。
+- 改善下载服务与 ViewModel 的异步入口，避免背景任务例外在终端机中无上下文爆出。
+
+## [1.0.24] - 2026-04-01
+
+### Bug Fixes
+
+- 优化登录信息读取
+- 优化settingsManager
+- 移除freesql
+- 修复剪贴板读取问题 (#437)
+- 修复设计器无法预览 (#436)
+- 修复重复下载检测逻辑错误 (#424)
+- 修复字幕毫秒计算 (#413)
+- 修复合集解析错误 #396
+
+### Features
+
+- 添加agent.md
+- 新增自动定位并选中视频的功能 (#431)
+
+### Miscellaneous Tasks
+
+- Avalonia更新至11.3.13
+- 修改README.md
+- 升级依赖版本
+- Avalonia更新至11.3.10
+- 修改配置项aria默认端口 (#427)
+- Avalonia更新至11.3.9
+- Avalonia更新至11.3.7
+
+## [1.0.23] - 2025-09-23
+
+### Bug Fixes
+
+- 修复在linux存在的异步Result死锁问题
+- 修复downloaded_files更新问题，避免重复下载 (#387)
+- 修复直接枚举会被修改的集合引发的异常 (#381)
+- 修复cookie urlencode导致的课程无法下载 #361
+- 增加design判断修复design会修改窗口位置
+- 修复深拷贝代码导致的意外无法解析hires和杜比音质 #355
+- 修改默认解析方式为api
+- 优化打开文件和url的操作，使用avalonia提供的方法
+- 优化数据迁移流程，增加连接尝试和错误处理 (#359)
+
+### Miscellaneous Tasks
+
+- Avalonia更新至11.3.6 (#389)
+- 调整api请求超时时间以及重试次数 (#385)
+
+### Refactor
+
+- 实现ImmutableObservableCollection解决枚举时集合修改问题 (#384)
+- 修改异步命令创建参数 (#388)
+- 使用avalonia的keybindings
+
+## [1.0.22] - 2025-08-19
+
+### Bug Fixes
+
+- 还原番剧解析代码 #354
+
+### Miscellaneous Tasks
+
+- 优化ci构建，使trimmed正确移除程序集
+
+### Refactor
+
+- 消除对WebClient程序集的依赖 (#350)
+
+## [1.0.21] - 2025-08-10
+
+### Bug Fixes
+
+- 优化剪切板相关代码
+- 修复番剧无法解析高清晰度问题
+- 使用新版bv av互转算法
+- 禁止SYSLIB5005警告
+- 修复去水印页改变文本状态影响外部滚动容器 (#334)
+- 修复部分接口未登录风控问题
+- 修复下载过程中退出导致的数据错乱 #321
+- 删除已下载视频时同步删除粗base表数据
+- 优化cookie处理
+- 修复返回引用类型导致的设置保存失败
+- 规范路径拼接
+- 修复下载中关闭软件导致的数据异常 Fixes: #321
+- 优化设计器启动 (#320)
+- 修复数据迁移失败 (#313)
+- 将音频编码字段改为可空类型 (#311)
+- 修复flv视频无法解析下载 (#306)
+- 修复选择驱动器根目录闪退 #305
+- 修复内建下载器暂停恢复的功能
+- 修复修改aria2端口后无法正常通信问题
+- 优化视频下载，避免二次解析 (#304)
+- 修复切换选中合集会丢失选中高亮色 (#302)
+- 调试无法启用DevTools
+- 修复无法通过监听剪贴板进入用户空间
+- 修复无后缀字幕文件重名可能导致复制失败的问题
+- 修复代理设置项排列错误
+
+### Documentation
+
+- 加入issue模板 (#347)
+
+### Features
+
+- 增强崩溃日志记录 (#348)
+- 加入生成视频元数据功能 (#322)
+- 去水印工具加入水印定位 (#319)
+- 加入启动自动更新检测 (#317)
+- 支持保留窗口大小和位置 #312 #261
+- 新增导航对鼠标回退键的支持
+
+### Miscellaneous Tasks
+
+- Ci发布增加windows trimmed并优化macos签名
+- 将裁剪发布分离到独立发布配置文件
+
+### Refactor
+
+- 修改弹幕下载不再生成临时文件 (#329)
+- 使用信号量控制下载器同时下载数 (#328)
+- 减少配置文件io次数并去除加密 (#324)
+- 重构数据库并优化下载列表相关逻辑
+- 请求由WebRequest替换为HttpClient (#314)
+- 去除inter字体包 (#308)
+
+### Styling
+
+- 代码清理
+
+## [1.0.20] - 2025-05-08
+
+### Bug Fixes
+
+- 修复部分番剧解析异常
+
+### Miscellaneous Tasks
+
+- Macos打包添加公证
+- 升级avalonia到最新版
+
+## [1.0.19] - 2025-04-30
+
+### Bug Fixes
+
+- 修复日志无限膨胀 #273
+
+### Refactor
+
+- 代理设置重构，默认无代理,可选无代理、系统代理、自定义代理
+
+## [1.0.18] - 2025-04-25
+
+### Bug Fixes
+
+- 修复编译问题和升级avalonia版本
+- 优化datagrid宽度
+- 优化asyncImageLoader内存占用
+- 修复vs打开项目兼容性
+- 修复字幕下载 Fixes: #254
+- 修复收藏夹页面返回概率会出现的崩溃
+- 修复我的订阅页面显示效果
+- 修复个人空间-我的订阅 点击出现的崩溃
+- 修复解析闪退 Fixes: #244
+- 下载闪退 #244
+
+### Features
+
+- 视频解析页DataGrid新增排序功能
+- 调整主窗口默认位置至屏幕中心
+- 加入页面跳转
+- 完善观看历史无限滚动功能
+- 个人空间-历史记录 加入增量加载，支持无限滚动
+
+### Miscellaneous Tasks
+
+- 升级avalonia到最新版并替换Xaml.Behaviors包
+- 升级avalonia到最新版并替换Xaml.Behaviors包
+
+### Refactor
+
+- 更改解析页DataGrid选中行高亮颜色
+- 触发加载数据修改为异步命令
+- 重新实现无限滚动功能
+
+## [1.0.17] - 2025-03-19
+
+### Bug Fixes
+
+- 优化部分代码并修复hires音频问题 Fixes: #235
+- 修复精简aria2后导致的参数问题
+- 修复错别字 Fixes: #180
+
+### Features
+
+- 在视频解析页面中，新增支持视频av或bv号搜索
+- 导航离开或页面刷新重置分割器的影响
+
+### Miscellaneous Tasks
+
+- 升级action版本
+
+### Refactor
+
+- 优化视频解析页页面布局，增强合集数较多时的体验
+- 投稿视频页图片展示代码改进
+- 改进视频投稿页面，先展示完信息后设置图片
+- 移除macos aria2二进制文件，改为构建时下载专用版本并同步修改打包脚本
+
+## [1.0.16] - 2024-11-29
+
+### Bug Fixes
+
+- 加入bvuid3和bvuid4可能解决无法解析的问题
+
+## [1.0.15] - 2024-11-26
+
+### Bug Fixes
+
+- 修复macos闪退问题 #179
+
+## [1.0.14] - 2024-11-25
+
+### Bug Fixes
+
+- 优化部分nullable代码
+- 修复视频标题显示为合集标题
+- 合集选中使用cid区分
+- 修复合集选中
+
+### Features
+
+- 合集选中使用cid区分
+
+### Refactor
+
+- 改进GetVideoSections代码
+
+## [1.0.13] - 2024-10-14
+
+### Bug Fixes
+
+- 修复个人空间加载完成前退出登录导致的崩溃
+- 小修复登录二维码容易生成失败
+- 修复在已下载中，只存在弹幕或字幕文件夹会打不开
+
+### Features
+
+- 加入版本检测
+
+### Refactor
+
+- 补全打开文件夹后缀
+
+## [1.0.12] - 2024-10-05
+
+### Bug Fixes
+
+- 去掉字幕的自动生成后缀 Fixes: #144
+- 修复windows无法打开相关网址的问题 Fixes: #147
+- 修复选择下载路径时引发的另一个问题
+- 修复选择下载位置时，列表未触发正确的更新
+- 升级avalonia至11.1.3以使用DataGrid新的IsSelected binding
+
+### Features
+
+- 加入版本检测
+
+### Refactor
+
+- 版本检测修改
+- 检查更新完善
+
+## [1.0.11] - 2024-08-05
+
+### Bug Fixes
+
+- 修复视频发布时间错误问题Fixes: #103
+- 使用webpage解析失败回退api方式
+- 修复解析选中项失败的问题
+- 加入使用webpage无法解析会回退到api解析解决webpage覆盖面的问题 Fixes: #115
+
+### Features
+
+- 升级Avalonia到11.1版本
+- 替换内建下载器
+- 加入已下载列表按下载时间倒序 Fixes: #114
+
+## [1.0.10] - 2024-05-07
+
+### Bug Fixes
+
+- 修复多分类错误应用解析项问题 Fixes: #79
+- 修复没有可以打开网址的程序导致的打开链接崩溃的问题 Fixes: #84
+- 移除TextTrimming="CharacterEllipsis"导致的带有emoji的textblock崩溃 Fixes: #86
+- 修复样式问题 Fixes: #80
+- 修复下载时开启自动添加后缀文件夹不存在时闪退问题 Fixes: #78 #74
+
+### Miscellaneous Tasks
+
+- Update github workflows
+
+## [1.0.9] - 2024-04-08
+
+### Bug Fixes
+
+- 优化暗黑模式表现并修复dialog暗黑模式异常问题
+- 弹幕下载添加参数修复弹幕不完整 Fixes: #52
+
+### Features
+
+- 添加下载纯音频时使用mp3格式以修复各个播放器对aac的兼容问题 Fixes: #49 #56
+- 基本支持暗黑模式(还有部分图标和dialog没有支持)
+- 支持主题切换并修复部分问题
+- 修复多次选择存在的重复下载问题
+
+## [1.0.8] - 2024-03-05
+
+### Bug Fixes
+
+- 修复自动添加后缀重启无法正确显示设置状态 Fixes: #33
+
+### Features
+
+- 仅允许单实例同时运行
+- 游客添加随机buvid3解决部分接口风控(真实buvid3暂未实现、后续可以考虑)
+- 添加使用WebPage方式解析解决风控问题(仅限普通视频，番剧、课程未实现) #37 #36
+
+## [1.0.7] - 2024-02-05
+
+### Bug Fixes
+
+- 使用avalonia旧版本修复windows7报错 Fixes: #31
+- 修复剪切板中的收藏夹url无法获取到信息
+- 修复收藏夹无法显示视频列表的问题
+- 使用avalonia的nightly版本
+- 文件命名av标签添加av的前缀使意义更加明确
+- 修复特殊文件名导致闪退问题 Fixes: #18
+
+### Features
+
+- 添加一种收藏夹url的支持 Fixes: #30
+- 添加文件已存在自动重命名的开关 Fixes: #27 Fixes: #21
+- 加入linux arm64构建脚本
+
+### Miscellaneous Tasks
+
+- 去掉rpm arm64构建
+- 去掉rpm arm64构建
+
+## [1.0.6] - 2024-01-15
+
+### Bug Fixes
+
+- 修复windows上部分输入框样式不正确
+- 修复异常出现的杜比音频
+- 登录页面优化动画显示
+- 首页未登录添加登录文字
+- 修复输入错误参数导致ffmpeg异常而导致的软件闪退问题 Fixes #14
+- 优化模态框示显示效果
+- 去掉窗口边框以优化显示效果
+
+### Features
+
+- 修改ffmpeg为自编译版本。减少包大小
+
+### Miscellaneous Tasks
+
+- 将linux编译ci基础环境更换为20.04
+
+### Revert
+
+- "fix: 优化模态框示显示效果"
+
+### Styling
+
+- 修改部分代码样式
+
+## [1.0.5] - 2024-01-01
+
+### Bug Fixes
+
+- 修复复制封面链接无效
+- 暂时修复由于AvaloniaUI的bug导致的带有padding的scrollViewer 里面的textBlock裁剪不正确
+
+### Features
+
+- 优化工具箱滚动代码
+- 优化边框ui
+- 加入剪贴板监听支持(实验性)
+- MacOS加入应用签名以修复应用程序已损坏 Fixes #12
+- 加入自定义aria2支持
+
+### Revert
+
+- "feat: 优化边框ui"
+
+## [1.0.4] - 2023-12-27
+
+### Bug Fixes
+
+- 修复全选无效的问题 Fixed: #11
+- 修复debug模式报错
+- 修复只下载音频无法混流 Fixes #10
+- 修复工具箱错误
+
+### Features
+
+- 指定字体优化windows上的显示效果
+- 添加ffmpeg日志记录
+
+### Miscellaneous Tasks
+
+- 更新readme
+- 更新readme
+- 更新readme
+- Ffmpeg固定版本
+- 修改readme
+- 去掉每次提交运行ci
+
+## [1.0.3] - 2023-12-24
+
+### Bug Fixes
+
+- 修复dialog字体问题
+- 优化代码命名
+- 修复关注列表首次加载空白 Fixes #8
+- 修改图片生成质量
+
+### Features
+
+- 添加重复下载提醒的设置
+- 添加弹幕屏蔽类型
+
+## [1.0.2] - 2023-12-21
+
+### Bug Fixes
+
+- 修复基本设置和弹幕设置部分无法保存的问题 Fixes #5
+- 优化dialog样式和修复dialog的相关bug
+- 修复下载设置磁盘剩余空间和取消浏览的bug
+- 修复历史记录显示bug
+- 修复视频设置样式问题
+- 修复无法保存编码、画质、音质 Fixes #3  [ci skip]
+
+## [1.0.1] - 2023-12-20
+
+### Bug Fixes
+
+- 修复投稿页面样式问题
+- 修复关注页面点击up不跳转
+- 修复多分片不显示
+- 命名修复
+- 修复下载管理tips显示错误
+- 修复下载全部无效的bug
+
+### Features
+
+- Linux支持打开文件和文件夹
+- 修改macOS最低支持版本为10.15
+
+### Miscellaneous Tasks
+
+- 发布v1.0.1
+- 添加更新日志
+
+## [1.0.0] - 2023-12-19
+
+### Bug Fixes
+
+- Linux图标问题
+- 修复发布在macOS和linux上的一些问题
+- 修复下载列表不显示和提示框异步问题
+- 修改发布配置
+- 正确处理各个系统的文件路径并兼容8.0中断性变更
+- Macos和linux正确获取相关目录。windows继续使用当前目录
+- 正确获取临时文件路径
+- 修复ui上的问题
+- 修复下载列表删除无效
+- 修复提示框异步问题
+- 修复视频详情页滚动导致选项丢失
+- 修复解析中滚动闪退
+- 修复拼写错误
+
+### Features
+
+- 添加图标
+- 修改icon
+- 修改ci
+- 修改ci
+- 一些属性
+- 修正命名
+- 完善构建
+- 添加windows获取aria2和ffmpeg脚本
+- Macos打包脚本
+- 添加统一的跨平台处理函数
+- Windows加入图标
+- Windows和macOS添加aria2支持
+- 支持aria2
+- 升级AvaloniaUI版本
+- 修改referer和origin为移动端，目前测试是可以减少风控。未经详细测试
+- 保存当前页面服务，减少new的开销和接口调用次数
+- 更新wbi签名
+- 支持文件名设置支持拖动
+- Bump Avalonia version
+- Update README.md
+- 首次完成测试
+
+### Miscellaneous Tasks
+
+- Release v1.0.0
+- 修复macOS构建
+- 修复构建
+- 修复构建
+- 修复构建
+- 修复构建
+- 修复构建
+- 去掉代理
+
+[1.3.0]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.3.0#assets
+[1.2.2]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.2.2#assets
+[1.2.1]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.2.1#assets
+[1.1.6]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.1.6#assets
+[1.1.5]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.1.5#assets
+[1.1.3]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.1.3#assets
+[1.0.31]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.0.31#assets
+[1.0.30]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.0.30#assets
+[1.0.29]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.0.29#assets
+[1.0.28]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.0.28#assets
+[1.0.27]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/v1.0.27#assets
+[1.0.24]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.24#assets
+[1.0.23]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.23#assets
+[1.0.22]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.22#assets
+[1.0.21]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.21#assets
+[1.0.20]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.20#assets
+[1.0.19]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.19#assets
+[1.0.18]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.18#assets
+[1.0.17]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.17#assets
+[1.0.16]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.16#assets
+[1.0.15]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.15#assets
+[1.0.14]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.14#assets
+[1.0.13]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.13#assets
+[1.0.12]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.12#assets
+[1.0.11]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.11#assets
+[1.0.10]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.10#assets
+[1.0.9]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.9#assets
+[1.0.8]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.8#assets
+[1.0.7]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.7#assets
+[1.0.6]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.6#assets
+[1.0.5]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.5#assets
+[1.0.4]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.4#assets
+[1.0.3]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.3#assets
+[1.0.2]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.2#assets
+[1.0.1]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.1#assets
+[1.0.0]: https://github.com/crazysmile-PhD/downkyicore/releases/tag/archive/v1.0.0#assets
+
+<!-- generated by git-cliff -->

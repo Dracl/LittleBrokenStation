@@ -1,0 +1,230 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DownKyi.Application.Downloads;
+using DownKyi.Domain.Downloads;
+using DownKyi.Domain.Results;
+
+namespace DownKyi.Services.Download;
+
+// LBS fork: public store type of the headless runtime.
+public sealed class DownloadTaskStateWriter
+{
+    internal const string LegacyBackendRemovedFailureCode =
+        "download.transfer.legacy-backend-removed";
+
+    private readonly IDownloadTaskStateService _tasks;
+
+    public DownloadTaskStateWriter(IDownloadTaskStateService tasks)
+    {
+        _tasks = tasks ?? throw new ArgumentNullException(nameof(tasks));
+    }
+
+    public Task<DownloadTask> StartAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.StartAsync(taskId, cancellationToken));
+
+    public Task<DownloadTask> PauseAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.PauseAsync(taskId, cancellationToken));
+
+    public Task<DownloadTask> ConfirmPausedAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.ConfirmPausedAsync(taskId, cancellationToken));
+
+    public Task<DownloadTask> ResumeAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.ResumeAsync(taskId, cancellationToken));
+
+    public Task<DownloadTask> RecoverInterruptedAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.RecoverInterruptedAsync(taskId, cancellationToken));
+
+    public Task<DownloadTask> ReconcileInterruptedAsync(
+        DownloadTaskId taskId,
+        long snapshotVersion,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.ReconcileInterruptedAsync(
+            taskId,
+            snapshotVersion,
+            cancellationToken));
+
+    public Task<DownloadTask> FailAsync(
+        DownloadTaskId taskId,
+        DownloadFailure failure,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.FailAsync(taskId, failure, cancellationToken));
+
+    public Task<DownloadTask> FailIfRunnableAsync(
+        DownloadTaskId taskId,
+        DownloadFailure failure,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.FailIfRunnableAsync(taskId, failure, cancellationToken));
+
+    public Task<DownloadTask> ConfirmPausedIfPausingAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.ConfirmPausedIfPausingAsync(taskId, cancellationToken));
+
+    public Task<DownloadTask> FailRuntimeUnavailableAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        FailAsync(
+            taskId,
+            CreateRuntimeUnavailableFailure(),
+            cancellationToken);
+
+    public Task<DownloadTask> FailRuntimeUnavailableIfDispatchableAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.FailIfDispatchableAsync(
+            taskId,
+            CreateRuntimeUnavailableFailure(),
+            cancellationToken));
+
+    public Task<DownloadTask> FailLegacyBackendAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        DiscardUnpublishedArtifactsAndFailAsync(
+            taskId,
+            new DownloadFailure(
+                LegacyBackendRemovedFailureCode,
+                "The unfinished legacy download was removed and marked as failed.",
+                false),
+            cancellationToken);
+
+    public Task<DownloadTask> DiscardUnpublishedArtifactsAndFailAsync(
+        DownloadTaskId taskId,
+        DownloadFailure failure,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.DiscardUnpublishedArtifactsAndFailAsync(
+            taskId,
+            failure,
+            cancellationToken));
+
+    public Task<DownloadTask> CompleteAsync(
+        DownloadTaskId taskId,
+        DownloadCompletion completion,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.CompleteAsync(taskId, completion, cancellationToken));
+
+    public Task<DownloadTask> RecordTransferFileAsync(
+        DownloadTaskId taskId,
+        string key,
+        string filePath,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.RecordTransferFileAsync(taskId, key, filePath, cancellationToken));
+
+    public Task<DownloadTask> ClaimTransferFileAsync(
+        DownloadTaskId taskId,
+        string key,
+        string filePath,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.ClaimTransferFileAsync(taskId, key, filePath, cancellationToken));
+
+    public Task<DownloadTask> ClaimTransferFilesAsync(
+        DownloadTaskId taskId,
+        IReadOnlyCollection<KeyValuePair<string, string>> files,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.ClaimTransferFilesAsync(taskId, files, cancellationToken));
+
+    public Task<DownloadTask> InvalidateCompletedFileAsync(
+        DownloadTaskId taskId,
+        string key,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.InvalidateCompletedFileAsync(taskId, key, cancellationToken));
+
+    public Task<DownloadTask> InvalidateCompletedFilesAsync(
+        DownloadTaskId taskId,
+        IReadOnlyCollection<string> keys,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.InvalidateCompletedFilesAsync(taskId, keys, cancellationToken));
+
+    public Task<DownloadTask> CompleteTransferFileAsync(
+        DownloadTaskId taskId,
+        string key,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.CompleteTransferFileAsync(taskId, key, cancellationToken));
+
+    public Task<DownloadTask> RecordPublishedArtifactAsync(
+        DownloadTaskId taskId,
+        DownloadPublishingArtifact publishing,
+        string path,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.RecordPublishedArtifactAsync(taskId, publishing, path, cancellationToken));
+
+    public Task<DownloadTask> BeginPublishingArtifactAsync(
+        DownloadTaskId taskId,
+        DownloadPublishingArtifact publishing,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.BeginPublishingArtifactAsync(taskId, publishing, cancellationToken));
+
+    public Task<DownloadTask> ClearPublishingArtifactAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.ClearPublishingArtifactAsync(taskId, cancellationToken));
+
+    public Task<DownloadTask> SetBackendIdentityAsync(
+        DownloadTaskId taskId,
+        string? backendIdentity,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.SetBackendIdentityAsync(taskId, backendIdentity, cancellationToken));
+
+    public Task<DownloadTask> UpdateActivityAsync(
+        DownloadTaskId taskId,
+        string? activeContent,
+        string? statusText,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.UpdateActivityAsync(
+            taskId,
+            activeContent,
+            statusText,
+            cancellationToken));
+
+    public Task<DownloadTask> UpdateProgressAsync(
+        DownloadTaskId taskId,
+        DownloadProgress progress,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.UpdateProgressAsync(taskId, progress, cancellationToken));
+
+    public Task<DownloadTask> UpdateOutputFileSizeAsync(
+        DownloadTaskId taskId,
+        string? fileSizeText,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.UpdateOutputFileSizeAsync(taskId, fileSizeText, cancellationToken));
+
+    public Task<DownloadTask> CancelAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.CancelAsync(taskId, cancellationToken));
+
+    public Task<DownloadTask> DeleteAsync(
+        DownloadTaskId taskId,
+        CancellationToken cancellationToken = default) =>
+        RequireAsync(_tasks.DeleteAsync(taskId, cancellationToken));
+
+    private static DownloadFailure CreateRuntimeUnavailableFailure() =>
+        new(
+            "download.runtime.unavailable",
+            "Download runtime is unavailable.",
+            true);
+
+    private static async Task<DownloadTask> RequireAsync(
+        Task<OperationResult<DownloadTask>> operation)
+    {
+        var result = await operation.ConfigureAwait(false);
+        if (result.TryGetValue(out var task))
+        {
+            return task;
+        }
+
+        throw new InvalidOperationException(
+            result.Error?.Message ?? "Download state update failed.");
+    }
+}

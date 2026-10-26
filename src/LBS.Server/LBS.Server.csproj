@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>LBS.Server</RootNamespace>
+    <Version>0.0.1</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LBS.Domain\LBS.Domain.csproj" />
+    <ProjectReference Include="..\LBS.Engine\LBS.Engine.csproj" />
+    <ProjectReference Include="..\LBS.Infrastructure\LBS.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

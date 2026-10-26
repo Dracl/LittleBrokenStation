@@ -1,0 +1,67 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="using:DownKyi.Views"
+        xmlns:vm="using:DownKyi.ViewModels"
+        x:Name="Root"
+        x:Class="DownKyi.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        MinWidth="800"
+        MinHeight="550"
+        Opacity="0"
+        Background="{DynamicResource SpacePaper}"
+        Title="{DynamicResource AppName}"
+        Icon="/Resources/favicon.ico">
+
+    <Interaction.Behaviors>
+        <EventTriggerBehavior EventName="Closing">
+            <InvokeCommandAction Command="{Binding ClosingCommand}" />
+        </EventTriggerBehavior>
+        <EventTriggerBehavior EventName="PointerPressed">
+            <InvokeCommandAction Command="{Binding PointerPressedCommand}"
+                                 PassEventArgsToCommand="True" />
+        </EventTriggerBehavior>
+    </Interaction.Behaviors>
+    <Grid RowDefinitions="*">
+        <views:ViewIndex
+            x:Name="StartupSurface"
+            DataContext="{ReflectionBinding ElementName=Root, Path=StartupIndex}" />
+
+        <ContentControl
+            x:Name="MainContentHost"
+            Content="{Binding MainContent}"
+            IsVisible="False" />
+
+        <Border
+            x:Name="StartupReadinessIndicator"
+            Width="40"
+            Height="4"
+            Margin="0,0,0,20"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Bottom"
+            Background="{DynamicResource SpaceAccent}"
+            IsHitTestVisible="False" />
+
+        <Border
+            Name="NotificationToast"
+            MaxWidth="680"
+            MinHeight="40"
+            Margin="24,0,24,20"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Bottom"
+            Background="{DynamicResource SpaceCarbon}"
+            BorderBrush="{DynamicResource SpaceAccent}"
+            BorderThickness="4,0,0,0"
+            IsVisible="{Binding MessageVisibility, FallbackValue=False}">
+            <TextBlock
+                Margin="16,12"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="{x:Null}"
+                FontSize="14"
+                Foreground="{DynamicResource SpaceCream}"
+                Text="{Binding Message}"
+                TextWrapping="Wrap"
+                TextAlignment="Center" />
+        </Border>
+    </Grid>
+</Window>

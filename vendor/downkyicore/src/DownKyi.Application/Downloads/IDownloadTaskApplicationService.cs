@@ -1,0 +1,37 @@
+using DownKyi.Domain.Downloads;
+
+namespace DownKyi.Application.Downloads;
+
+public interface IDownloadTaskApplicationService :
+    IDownloadTaskCatalog,
+    IDownloadTaskStateService,
+    IDownloadOutputReservationService
+{
+}
+
+public enum DownloadTaskChangeKind
+{
+    Added,
+    Updated,
+    Deleted
+}
+
+public sealed class DownloadTaskChangedEventArgs : EventArgs
+{
+    public DownloadTaskChangedEventArgs(
+        DownloadTaskId taskId,
+        DownloadTask? snapshot,
+        DownloadTaskChangeKind kind)
+    {
+        ArgumentNullException.ThrowIfNull(taskId);
+        TaskId = taskId;
+        Snapshot = snapshot;
+        Kind = kind;
+    }
+
+    public DownloadTaskId TaskId { get; }
+
+    public DownloadTask? Snapshot { get; }
+
+    public DownloadTaskChangeKind Kind { get; }
+}

@@ -1,0 +1,260 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="clr-namespace:DownKyi.ViewModels"
+             xmlns:asyncImageLoader="clr-namespace:DownKyi.CustomControl.AsyncImageLoader"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="700"
+             x:DataType="vm:IIndexSurfaceViewModel" x:Class="DownKyi.Views.ViewIndex"
+             Background="{DynamicResource SpacePaper}">
+    <UserControl.Resources>
+        <ControlTheme x:Key="IndexButton" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource SpaceInk}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <ControlTemplate>
+                    <Border Name="IndexButtonSurface" Padding="{TemplateBinding Padding}"
+                            Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+            <Style Selector="^:pointerover">
+                <Setter Property="Background" Value="{DynamicResource SpaceHover}" />
+            </Style>
+            <Style Selector="^:pressed">
+                <Setter Property="BorderBrush" Value="{DynamicResource SpaceInk}" />
+            </Style>
+            <Style Selector="^:focus-visible">
+                <Setter Property="BorderBrush" Value="{DynamicResource SpaceAccent}" />
+            </Style>
+            <Style Selector="^:disabled">
+                <Setter Property="Opacity" Value="0.5" />
+            </Style>
+        </ControlTheme>
+        <ControlTheme x:Key="IndexParseButton" TargetType="Button" BasedOn="{StaticResource IndexButton}">
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Background" Value="{DynamicResource SpaceInk}" />
+            <Setter Property="Foreground" Value="{DynamicResource SpacePaper}" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Style Selector="^:pointerover">
+                <Setter Property="Background" Value="{DynamicResource SpaceAccent}" />
+                <Setter Property="Foreground" Value="{DynamicResource SpaceCarbon}" />
+            </Style>
+            <Style Selector="^:focus-visible">
+                <Setter Property="Background" Value="{DynamicResource SpaceAccent}" />
+                <Setter Property="Foreground" Value="{DynamicResource SpaceCarbon}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource SpaceInk}" />
+            </Style>
+        </ControlTheme>
+    </UserControl.Resources>
+    <UserControl.Styles>
+        <Style Selector="TextBlock#IndexWordmark">
+            <Setter Property="Text" Value="DownKyi" />
+        </Style>
+        <Style Selector=".portrait TextBlock#IndexWordmark">
+            <Setter Property="Text" Value="Down" />
+        </Style>
+        <Style Selector="TextBlock#IndexWordmarkTail">
+            <Setter Property="IsVisible" Value="False" />
+        </Style>
+        <Style Selector=".portrait TextBlock#IndexWordmarkTail">
+            <Setter Property="IsVisible" Value="True" />
+        </Style>
+        <Style Selector="Canvas#IndexArtCanvas">
+            <Setter Property="Width" Value="240" />
+            <Setter Property="Height" Value="540" />
+        </Style>
+        <Style Selector=".portrait Canvas#IndexArtCanvas">
+            <Setter Property="Width" Value="780" />
+            <Setter Property="Height" Value="180" />
+        </Style>
+        <Style Selector="Ellipse#IndexArtCircle">
+            <Setter Property="Canvas.Left" Value="18" />
+            <Setter Property="Canvas.Top" Value="26" />
+        </Style>
+        <Style Selector=".portrait Ellipse#IndexArtCircle">
+            <Setter Property="Canvas.Left" Value="50" />
+            <Setter Property="Canvas.Top" Value="-130" />
+        </Style>
+        <Style Selector="Rectangle#IndexArtCutout">
+            <Setter Property="Canvas.Left" Value="142" />
+            <Setter Property="Canvas.Top" Value="326" />
+        </Style>
+        <Style Selector=".portrait Rectangle#IndexArtCutout">
+            <Setter Property="Canvas.Left" Value="350" />
+            <Setter Property="Canvas.Top" Value="70" />
+        </Style>
+        <Style Selector="Viewbox#IndexArtViewbox">
+            <Setter Property="Stretch" Value="Uniform" />
+        </Style>
+        <Style Selector=".portrait Viewbox#IndexArtViewbox">
+            <Setter Property="Stretch" Value="UniformToFill" />
+        </Style>
+        <Style Selector="TextBlock">
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI,Microsoft JhengHei UI,Segoe UI,sans-serif" />
+        </Style>
+        <Style Selector="TextBox.index-search-input">
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI,Microsoft JhengHei UI,Segoe UI,sans-serif" />
+            <Setter Property="Foreground" Value="{DynamicResource SpaceInk}" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource SpaceSelection}" />
+            <Setter Property="SelectionForegroundBrush" Value="{DynamicResource SpaceInk}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource SpaceInk}" />
+        </Style>
+        <Style Selector="TextBox.index-search-input /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="{DynamicResource SpacePaper}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource SpaceInk}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="TextBox.index-search-input:pointerover /template/ Border#PART_BorderElement">
+            <Setter Property="Background" Value="{DynamicResource SpaceHover}" />
+        </Style>
+        <Style Selector="TextBox.index-search-input:focus /template/ Border#PART_BorderElement">
+            <Setter Property="BorderBrush" Value="{DynamicResource SpaceAccent}" />
+        </Style>
+        <Style Selector="TextBox.index-search-input /template/ TextBlock#PART_Placeholder">
+            <Setter Property="Foreground" Value="{DynamicResource SpaceMuted}" />
+            <Setter Property="Opacity" Value="1" />
+        </Style>
+    </UserControl.Styles>
+    <Grid x:Name="IndexLayout" ColumnDefinitions="64,2.8*,1*" RowDefinitions="*,0">
+        <!-- The rail and artwork are decorative; controls stay in the central column. -->
+        <Border Grid.Column="0" Grid.RowSpan="2" BorderBrush="{DynamicResource SpaceRule}" BorderThickness="0,0,1,0" IsHitTestVisible="False">
+            <Grid Margin="0,28">
+                <StackPanel HorizontalAlignment="Center" Spacing="16">
+                    <TextBlock Text="01" FontFamily="Cascadia Mono,Consolas,monospace" FontSize="22" Foreground="{DynamicResource SpaceInk}" />
+                    <Border Height="1" Width="22" Background="{DynamicResource SpaceInk}" />
+                </StackPanel>
+                <LayoutTransformControl HorizontalAlignment="Center" VerticalAlignment="Bottom">
+                    <LayoutTransformControl.LayoutTransform><RotateTransform Angle="90" /></LayoutTransformControl.LayoutTransform>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Path Width="22" Height="22" Stretch="Fill" Data="M 0,0 L 10,0 A 11,11 0 0 1 10,22 L 0,22 Z" Fill="{DynamicResource SpaceAccent}" />
+                        <TextBlock Text="DownKyi" FontSize="22" FontWeight="Black" FontFamily="Arial,Helvetica,sans-serif" Foreground="{DynamicResource SpaceInk}" />
+                    </StackPanel>
+                </LayoutTransformControl>
+            </Grid>
+        </Border>
+        <Grid Grid.Column="1" Margin="24,24,24,28" RowDefinitions="56,*,64,32,104">
+            <Button x:Name="IndexAccountButton" Grid.Row="0" HorizontalAlignment="Right" VerticalAlignment="Top"
+                    Theme="{StaticResource IndexButton}" Padding="8,6" TabIndex="5"
+                    Command="{Binding LoginCommand}" IsVisible="{Binding LoginPanelVisibility}">
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <Border Width="32" Height="32" CornerRadius="16" ClipToBounds="True" Background="{DynamicResource SpaceHover}">
+                        <Grid>
+                            <Path Width="22" Height="26" Stretch="Uniform" Fill="{DynamicResource SpaceMuted}"
+                                  Data="M 11,0 A 5,5 0 1 1 11,10 A 5,5 0 1 1 11,0 M 0,26 L 0,24 A 11,11 0 0 1 22,24 L 22,26 Z" />
+                            <Image Width="32" Height="32" Stretch="UniformToFill" asyncImageLoader:ImageLoader.Source="{Binding Header}">
+                                <Image.Clip><EllipseGeometry Center="16,16" RadiusX="16" RadiusY="16" /></Image.Clip>
+                            </Image>
+                        </Grid>
+                    </Border>
+                    <TextBlock VerticalAlignment="Center" FontSize="15" FontWeight="SemiBold" Text="{DynamicResource Login}"
+                               IsVisible="{Binding UserName,Converter={x:Static StringConverters.IsNullOrEmpty}}" />
+                    <TextBlock VerticalAlignment="Center" FontSize="15" FontWeight="SemiBold" Text="{DynamicResource PersonalSpaceHeadline}"
+                               IsVisible="{Binding UserName,Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    <Path Width="12" Height="12" VerticalAlignment="Center" Stretch="Uniform" Data="M 1,11 L 11,1 M 1,1 L 11,1 L 11,11"
+                          Stroke="{DynamicResource SpaceInk}" StrokeThickness="1.5" />
+                </StackPanel>
+            </Button>
+            <Grid x:Name="IndexHero" Grid.Row="1" Margin="0,24" IsHitTestVisible="False">
+                <Viewbox Stretch="Uniform" HorizontalAlignment="Left">
+                    <Grid x:Name="IndexWordmarkLayout" RowDefinitions="Auto,Auto">
+                        <TextBlock x:Name="IndexWordmark" FontSize="128" FontWeight="Black"
+                                   FontFamily="Arial Black,Arial,Helvetica,sans-serif" LetterSpacing="-6" Foreground="{DynamicResource SpaceInk}" />
+                        <TextBlock x:Name="IndexWordmarkTail" Grid.Row="1" Text="Kyi" HorizontalAlignment="Right"
+                                   FontSize="128" FontWeight="Black" FontFamily="Arial Black,Arial,Helvetica,sans-serif"
+                                   LetterSpacing="-6" Foreground="{DynamicResource SpaceInk}" />
+                        <Border Grid.RowSpan="2" Height="3" Margin="0,42,0,0" VerticalAlignment="Center" Background="{DynamicResource SpaceAccent}" />
+                    </Grid>
+                </Viewbox>
+            </Grid>
+            <Grid x:Name="IndexSearch" Grid.Row="2" ColumnDefinitions="*,92">
+                <Border x:Name="IndexSearchBorder" BorderThickness="0" CornerRadius="0">
+                    <TextBox x:Name="NameInputUrl" Classes="index-search-input" TabIndex="0" Height="64" Padding="16,0"
+                             VerticalContentAlignment="Center" CornerRadius="0" FontSize="15"
+                             PlaceholderText="{DynamicResource IndexPosterInputHint}" AutomationProperties.Name="{DynamicResource IndexHintText}"
+                             Text="{Binding InputText,Mode=TwoWay}">
+                        <TextBox.KeyBindings><KeyBinding Command="{Binding InputCommand}" Gesture="Enter" /></TextBox.KeyBindings>
+                    </TextBox>
+                </Border>
+                <Button x:Name="IndexParseButton" Grid.Column="1" Theme="{StaticResource IndexParseButton}" Command="{Binding InputCommand}" TabIndex="1">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBlock Text="{DynamicResource IndexParse}" FontSize="17" FontWeight="SemiBold" />
+                        <TextBlock Text="↗" FontSize="20" />
+                    </StackPanel>
+                </Button>
+            </Grid>
+            <Grid x:Name="IndexNavigation" Grid.Row="4" ColumnDefinitions="*,*,*">
+                <Border Grid.ColumnSpan="3" Height="1" VerticalAlignment="Top" Background="{DynamicResource SpaceRule}" />
+                <Border Grid.Column="1" BorderBrush="{DynamicResource SpaceRule}" BorderThickness="1,0,0,0" Margin="0,16,0,0" />
+                <Border Grid.Column="2" BorderBrush="{DynamicResource SpaceRule}" BorderThickness="1,0,0,0" Margin="0,16,0,0" />
+                <Button x:Name="IndexDownloadsButton" Grid.Column="0" Theme="{StaticResource IndexButton}" Margin="0,12,4,0"
+                        Command="{Binding DownloadManagerCommand}" TabIndex="2">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <TextBlock Text="01" FontFamily="Cascadia Mono,Consolas,monospace" FontSize="12" Foreground="{DynamicResource SpaceMuted}" />
+                        <Grid Grid.Row="2" ColumnDefinitions="24,*,12">
+                            <Path x:Name="IndexDownloadManagerIcon" Width="22" Height="22" Data="{Binding DownloadManager.Data}"
+                                  Fill="{DynamicResource SpaceInk}" Stretch="Uniform" />
+                            <TextBlock Grid.Column="1" Margin="8,0,0,0" FontSize="16" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Text="{DynamicResource DownloadManager}" />
+                            <Path Grid.Column="2" Width="7" Height="12" VerticalAlignment="Center" Stretch="Uniform"
+                                  Data="M 1,1 L 6,6 L 1,11" Stroke="{DynamicResource SpaceInk}" StrokeThickness="1.5" />
+                        </Grid>
+                    </Grid>
+                </Button>
+                <Button x:Name="IndexToolboxButton" Grid.Column="1" Theme="{StaticResource IndexButton}" Margin="4,12,4,0"
+                        Command="{Binding ToolboxCommand}" TabIndex="3">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <TextBlock Text="02" FontFamily="Cascadia Mono,Consolas,monospace" FontSize="12" Foreground="{DynamicResource SpaceMuted}" />
+                        <Grid Grid.Row="2" ColumnDefinitions="24,*,12">
+                            <Path x:Name="IndexToolboxIcon" Width="22" Height="22" Data="{Binding Toolbox.Data}"
+                                  Fill="{DynamicResource SpaceInk}" Stretch="Uniform" />
+                            <TextBlock Grid.Column="1" Margin="8,0,0,0" FontSize="16" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Text="{DynamicResource Toolbox}" />
+                            <Path Grid.Column="2" Width="7" Height="12" VerticalAlignment="Center" Stretch="Uniform"
+                                  Data="M 1,1 L 6,6 L 1,11" Stroke="{DynamicResource SpaceInk}" StrokeThickness="1.5" />
+                        </Grid>
+                    </Grid>
+                </Button>
+                <Button x:Name="IndexSettingsButton" Grid.Column="2" Theme="{StaticResource IndexButton}" Margin="4,12,0,0"
+                        Command="{Binding SettingsCommand}" TabIndex="4">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <TextBlock Text="03" FontFamily="Cascadia Mono,Consolas,monospace" FontSize="12" Foreground="{DynamicResource SpaceMuted}" />
+                        <Grid Grid.Row="2" ColumnDefinitions="24,*,12">
+                            <Path x:Name="IndexSettingsIcon" Width="22" Height="22" Data="{Binding Settings.Data}"
+                                  Fill="Transparent" Stroke="{DynamicResource SpaceInk}" StrokeThickness="1.75" StrokeLineCap="Round" StrokeJoin="Round" Stretch="Uniform" />
+                            <TextBlock Grid.Column="1" Margin="8,0,0,0" FontSize="16" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Text="{DynamicResource Settings}" />
+                            <Path Grid.Column="2" Width="7" Height="12" VerticalAlignment="Center" Stretch="Uniform"
+                                  Data="M 1,1 L 6,6 L 1,11" Stroke="{DynamicResource SpaceInk}" StrokeThickness="1.5" />
+                        </Grid>
+                    </Grid>
+                </Button>
+            </Grid>
+        </Grid>
+        <Border x:Name="IndexArtwork" Grid.Column="2" Background="{DynamicResource SpaceCarbon}" ClipToBounds="True"
+                BorderBrush="{DynamicResource SpaceRule}" BorderThickness="1,0,0,0" IsHitTestVisible="False">
+            <Grid x:Name="IndexArtLayout" RowDefinitions="*,100" ColumnDefinitions="*,0">
+                <Viewbox x:Name="IndexArtViewbox" ClipToBounds="True">
+                    <Canvas x:Name="IndexArtCanvas">
+                        <Ellipse x:Name="IndexArtCircle" Width="420" Height="420" Fill="{DynamicResource SpaceAccent}" />
+                        <Rectangle x:Name="IndexArtCutout" Width="180" Height="214" Fill="{DynamicResource SpacePaper}" />
+                    </Canvas>
+                </Viewbox>
+                <Border x:Name="IndexArtCaption" Grid.Row="1" Margin="24,12,24,28" BorderBrush="{DynamicResource SpaceRule}" BorderThickness="0,1,0,0" Padding="0,16,0,0">
+                    <TextBlock Text="{DynamicResource IndexCategory}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource SpaceCream}" TextWrapping="Wrap" />
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

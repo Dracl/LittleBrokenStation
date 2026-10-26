@@ -1,0 +1,18 @@
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "quality": 80,
+    "dash": {
+      "video": [
+        {
+          "id": 80,
+          "codecid": 7,
+          "base_url": "https://media.invalid/video",
+          "backup_url": []
+        }
+      ],
+      "audio": []
+    }
+  }
+}

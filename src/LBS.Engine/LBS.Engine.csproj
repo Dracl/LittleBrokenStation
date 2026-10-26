@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>LBS.Engine</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
+    <ProjectReference Include="..\..\vendor\downkyicore\src\DownKyi.Worker\DownKyi.Worker.csproj" />
+    <ProjectReference Include="..\LBS.Infrastructure\LBS.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

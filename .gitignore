@@ -1,0 +1,29 @@
+# dotnet
+bin/
+obj/
+artifacts/
+*.user
+*.suo
+.vs/
+
+# node / vite
+node_modules/
+web/dist/
+*.local
+
+# 本地数据目录（开发期 ./data，容器内为 volume /data）
+/data/
+
+# 编辑器与系统
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# EditHere 本地批注缓存
+.edithere/
+
+# 对照基准截图（本地留存，体积大不进库；基线记录见 docs/）
+docs/baseline-shots/
+
+data-e2e/

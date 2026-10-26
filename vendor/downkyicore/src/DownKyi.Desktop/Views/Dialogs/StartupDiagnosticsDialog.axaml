@@ -1,0 +1,111 @@
+<UserControl
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vmd="clr-namespace:DownKyi.ViewModels.Dialogs"
+    x:Class="DownKyi.Views.Dialogs.StartupDiagnosticsDialog"
+    x:DataType="vmd:StartupDiagnosticsDialogViewModel"
+    Classes="studio-page studio-dialog">
+    <UserControl.Styles>
+        <StyleInclude Source="/Themes/Styles/StudioDialog.axaml" />
+    </UserControl.Styles>
+    <Border Background="{DynamicResource SpacePaper}" BorderBrush="{DynamicResource SpaceRule}" BorderThickness="1">
+        <Grid RowDefinitions="40,*,Auto">
+            <Grid Classes="dialog-titlebar" ColumnDefinitions="*,40" WindowDecorationProperties.ElementRole="TitleBar">
+                <TextBlock
+                    Text="DownKyi"
+                    FontSize="12"
+                    Margin="24,0"
+                    VerticalAlignment="Center"
+                    Foreground="{DynamicResource SpaceMuted}" />
+                <Button
+                    Grid.Column="1"
+                    Classes="studio-back dialog-close"
+                    Theme="{StaticResource PersonalNavigationButton}"
+                    Command="{Binding CloseCommand}"
+                    WindowDecorationProperties.ElementRole="User"
+                    ToolTip.Tip="{DynamicResource Close}">
+                    <Path
+                        Width="16"
+                        Height="16"
+                        Data="{Binding CloseIcon.Data}"
+                        Fill="{DynamicResource SpaceInk}"
+                        Stretch="Uniform" />
+                </Button>
+            </Grid>
+            <ScrollViewer
+                Name="IssuesScrollViewer"
+                Grid.Row="1"
+                HorizontalScrollBarVisibility="Disabled"
+                VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="24,16,24,24" Spacing="16">
+                    <TextBlock Text="{Binding Title}" Classes="dialog-heading" />
+                    <TextBlock Text="{Binding IntroMessage}" Foreground="{DynamicResource SpaceMuted}" />
+                    <ItemsControl ItemsSource="{Binding Items}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vmd:StartupDiagnosticItemViewModel">
+                                <Border
+                                    Margin="0,0,0,12"
+                                    Padding="0,16,0,0"
+                                    Background="{DynamicResource SpacePaper}"
+                                    BorderBrush="{DynamicResource SpaceRule}"
+                                    BorderThickness="0,1,0,0"
+                                    CornerRadius="0">
+                                    <StackPanel Spacing="9">
+                                        <TextBlock
+                                            Text="{Binding Title}"
+                                            FontSize="16"
+                                            FontWeight="SemiBold"
+                                            TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding Description}" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding Impact}" Foreground="{DynamicResource SpaceMuted}" TextWrapping="Wrap" />
+                                        <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                            <Button Margin="0,0,10,8" Content="{DynamicResource ViewFullErrorDetails}" Command="{Binding ToggleDetailsCommand}" />
+                                            <Button
+                                                IsVisible="{Binding CanResetDownloadStore}"
+                                                Content="{DynamicResource ResetDownloadStore}"
+                                                Command="{Binding ResetDownloadStoreCommand}"
+                                                Margin="0,0,10,8"
+                                                Classes="studio-primary" />
+                                        </WrapPanel>
+                                        <TextBox
+                                            IsVisible="{Binding IsExpanded}"
+                                            MinHeight="120"
+                                            MaxHeight="260"
+                                            Text="{Binding DiagnosticText, Mode=OneWay}"
+                                            IsReadOnly="True"
+                                            AcceptsReturn="True"
+                                            TextWrapping="Wrap"
+                                            FontFamily="Cascadia Mono,Consolas,Menlo,Monaco,monospace"
+                                            ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                            ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                            Classes="studio-output" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </ScrollViewer>
+            <Border Name="FooterActions" Classes="dialog-footer" Grid.Row="2">
+                <WrapPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button
+                        MinWidth="96"
+                        Margin="0,0,8,8"
+                        Content="{DynamicResource CopyAllDiagnostics}"
+                        Command="{Binding CopyAllDiagnosticsCommand}" />
+                    <Button
+                        MinWidth="96"
+                        Margin="0,0,8,8"
+                        Content="{DynamicResource CreateGitHubIssue}"
+                        Command="{Binding CreateGitHubIssueCommand}" />
+                    <Button
+                        MinWidth="96"
+                        Margin="0,0,8,8"
+                        Content="{DynamicResource Close}"
+                        Command="{Binding CloseCommand}"
+                        Classes="studio-primary" />
+                </WrapPanel>
+            </Border>
+        </Grid>
+    </Border>
+</UserControl>

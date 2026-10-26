@@ -1,0 +1,499 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using Avalonia.Input;
+using Avalonia.Threading;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using DownKyi.Application.Desktop;
+using DownKyi.Application.Diagnostics;
+using DownKyi.Application.Settings;
+using DownKyi.Application.Versioning;
+using DownKyi.Infrastructure.Versioning;
+using DownKyi.Models;
+using DownKyi.Platform;
+using DownKyi.Services;
+using DownKyi.Services.Download;
+using DownKyi.Services.Migration;
+using DownKyi.Services.Startup;
+using DownKyi.ViewModels.Dialogs;
+using Microsoft.Extensions.Logging;
+
+namespace DownKyi.ViewModels;
+
+internal sealed class MainWindowViewModel : ObservableObject, IDisposable
+{
+    private bool _disposed;
+    private bool _activated;
+    private readonly IAppDialogService _dialogService;
+    private readonly IAppNavigationService _navigationService;
+    private readonly IUserNotificationService _notificationService;
+    private readonly ISettingsStore _settingsStore;
+    private readonly IClipboardMonitor _clipboardMonitor;
+    private readonly SearchService _searchService;
+    private readonly VersionCheckerService _versionChecker;
+    private readonly ILegacyUpgradeCoordinator _legacyUpgradeCoordinator;
+    private readonly IDownloadRuntimeAvailability _downloadRuntimeAvailability;
+    private readonly DownloadStoreRecoveryPresenter? _downloadStoreRecoveryPresenter;
+    private readonly ILogger<MainWindowViewModel> _logger;
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private readonly CancellationToken _lifetimeToken;
+
+    private bool _messageVisibility;
+    private string? _oldMessage;
+    private CancellationTokenSource? _messageCancellation;
+    private CancellationTokenSource? _clipboardDebounceCancellation;
+    private Task? _startupDialogsTask;
+
+    private object? _mainContent;
+
+    public object? MainContent
+    {
+        get => _mainContent;
+        private set => SetProperty(ref _mainContent, value);
+    }
+
+    public bool MessageVisibility
+    {
+        get => _messageVisibility;
+        set => SetProperty(ref _messageVisibility, value);
+    }
+
+    private string? _message;
+
+    public string? Message
+    {
+        get => _message;
+        set => SetProperty(ref _message, value);
+    }
+
+    private RelayCommand? _closingCommand;
+
+    public RelayCommand ClosingCommand => _closingCommand ??= new RelayCommand(ExecuteClosingCommand);
+
+    private RelayCommand<PointerPressedEventArgs>? _pointerPressedCommand;
+
+    public RelayCommand<PointerPressedEventArgs> PointerPressedCommand =>
+        _pointerPressedCommand ??= RequiredParameterCommand.Create<PointerPressedEventArgs>(ExecutePointerPressed);
+
+    private void ExecuteClosingCommand()
+    {
+        Dispose();
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    private void Dispose(bool disposing)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (!disposing)
+        {
+            return;
+        }
+
+        _lifetimeCancellation.Cancel();
+
+        _notificationService.NotificationRaised -= NotificationServiceOnNotificationRaised;
+        _clipboardMonitor.Changed -= ClipboardMonitorOnChanged;
+        _navigationService.NavigationChanged -= NavigationServiceOnNavigationChanged;
+
+        _clipboardDebounceCancellation?.Cancel();
+        _clipboardDebounceCancellation?.Dispose();
+        _clipboardDebounceCancellation = null;
+        _messageCancellation?.Cancel();
+        _messageCancellation?.Dispose();
+        _messageCancellation = null;
+        _lifetimeCancellation.Dispose();
+    }
+
+    private void ExecutePointerPressed(PointerPressedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(null);
+        var updateKind = point.Properties.PointerUpdateKind;
+        if (updateKind == PointerUpdateKind.XButton1Pressed)
+        {
+            if (_navigationService.GetActiveView(AppNavigationRegion.Main) is ViewModelBase vm)
+            {
+                vm.ExecuteBackSpace();
+                e.Handled = true;
+            }
+        }
+    }
+
+    public MainWindowViewModel(
+        IAppNavigationService navigationService,
+        IUserNotificationService notificationService,
+        IAppDialogService dialogService,
+        ISettingsStore settingsStore,
+        IClipboardMonitor clipboardMonitor,
+        SearchService searchService,
+        VersionCheckerService versionChecker,
+        ILegacyUpgradeCoordinator legacyUpgradeCoordinator,
+        IDownloadRuntimeAvailability downloadRuntimeAvailability,
+        ILogger<MainWindowViewModel> logger,
+        DownloadStoreRecoveryPresenter? downloadStoreRecoveryPresenter = null)
+    {
+        _navigationService = navigationService ?? throw new ArgumentNullException(nameof(navigationService));
+        _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
+        _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
+        _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
+        _clipboardMonitor = clipboardMonitor ?? throw new ArgumentNullException(nameof(clipboardMonitor));
+        _searchService = searchService ?? throw new ArgumentNullException(nameof(searchService));
+        _versionChecker = versionChecker ?? throw new ArgumentNullException(nameof(versionChecker));
+        _legacyUpgradeCoordinator = legacyUpgradeCoordinator
+            ?? throw new ArgumentNullException(nameof(legacyUpgradeCoordinator));
+        _downloadRuntimeAvailability = downloadRuntimeAvailability
+            ?? throw new ArgumentNullException(nameof(downloadRuntimeAvailability));
+        _downloadStoreRecoveryPresenter = downloadStoreRecoveryPresenter;
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _lifetimeToken = _lifetimeCancellation.Token;
+
+        _notificationService.NotificationRaised += NotificationServiceOnNotificationRaised;
+        _navigationService.NavigationChanged += NavigationServiceOnNavigationChanged;
+        MainContent = _navigationService.GetActiveView(AppNavigationRegion.Main);
+    }
+
+    internal void Activate(
+        AppNavigationRequest? pendingStartupNavigation = null,
+        string? pendingStartupInput = null,
+        bool pendingStartupInputFromClipboard = false)
+    {
+        if (_activated || _lifetimeToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        _activated = true;
+        _clipboardMonitor.Changed += ClipboardMonitorOnChanged;
+        _navigationService.Navigate(pendingStartupNavigation
+            ?? new AppNavigationRequest(AppRoute.Index, Parameter: "start"));
+        if (!string.IsNullOrWhiteSpace(pendingStartupInput)
+            && MainContent is ViewIndexViewModel index)
+        {
+            index.InputText = pendingStartupInput;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pendingStartupInput))
+        {
+            _searchService.BiliInput(
+                pendingStartupInput + (pendingStartupInputFromClipboard
+                    ? AppConstant.ClipboardId
+                    : string.Empty),
+                AppRoute.Index);
+        }
+        Dispatcher.UIThread.Post(StartStartupDialogs, DispatcherPriority.Background);
+    }
+
+    private void NotificationServiceOnNotificationRaised(object? sender, UserNotificationEventArgs e)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            MessageVisibility = true;
+
+            _oldMessage = Message;
+            Message = e.Message;
+            var delay = _oldMessage == Message ? 1500 : 2000;
+
+            _messageCancellation?.Cancel();
+            _messageCancellation?.Dispose();
+            _messageCancellation = new CancellationTokenSource();
+            _ = HideMessageAfterDelayAsync(delay, _messageCancellation.Token);
+        });
+    }
+
+    private static async Task DelayAsync(int milliseconds, CancellationToken cancellationToken)
+    {
+        await Task.Delay(milliseconds, cancellationToken).ConfigureAwait(true);
+    }
+
+    private async Task HideMessageAfterDelayAsync(int milliseconds, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await DelayAsync(milliseconds, cancellationToken).ConfigureAwait(true);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    MessageVisibility = false;
+                }
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+    }
+
+    #region 剪贴板
+
+    private void ClipboardMonitorOnChanged(object? sender, ClipboardTextChangedEventArgs e)
+    {
+        var isListenClipboard = _settingsStore.Current.Basic.IsListenClipboard;
+        if (isListenClipboard != AllowStatus.Yes)
+        {
+            return;
+        }
+
+        _clipboardDebounceCancellation?.Cancel();
+        _clipboardDebounceCancellation?.Dispose();
+        _clipboardDebounceCancellation = new CancellationTokenSource();
+        _ = HandleClipboardChangedAsync(e.Text, _clipboardDebounceCancellation.Token);
+    }
+
+    private async Task HandleClipboardChangedAsync(string text, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(300, cancellationToken).ConfigureAwait(true);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                _searchService.BiliInput(text + AppConstant.ClipboardId, AppRoute.Index);
+            }
+        });
+    }
+
+    private void NavigationServiceOnNavigationChanged(object? sender, AppNavigationChangedEventArgs e)
+    {
+        if (e.Region != AppNavigationRegion.Main)
+        {
+            return;
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            MainContent = e.Content;
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() => MainContent = e.Content);
+    }
+
+    #endregion
+
+    private void StartStartupDialogs()
+    {
+        if (_startupDialogsTask != null)
+        {
+            return;
+        }
+
+        _startupDialogsTask = RunStartupDialogsAsync();
+        ObserveStartupDialogs(_startupDialogsTask);
+    }
+
+    internal async Task RunStartupDialogsAsync()
+    {
+        // Download startup is independent of the migration dialog. Observe it first so the
+        // modal cannot hide an outcome that has already been produced.
+        var downloadDiagnosticTask = CollectDownloadRuntimeDiagnosticAsync();
+        var legacyDiagnostic = await CollectLegacyUpgradeDiagnosticAsync().ConfigureAwait(true);
+        var downloadDiagnostic = await downloadDiagnosticTask.ConfigureAwait(true);
+        if (_lifetimeToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        var diagnostics = new List<StartupDiagnostic>(capacity: 2);
+        if (legacyDiagnostic is not null)
+        {
+            diagnostics.Add(legacyDiagnostic);
+        }
+
+        if (downloadDiagnostic is not null)
+        {
+            diagnostics.Add(downloadDiagnostic);
+        }
+
+        await ShowStartupDiagnosticsAsync(diagnostics).ConfigureAwait(true);
+        if (_lifetimeToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        await CheckForUpdatesAsync().ConfigureAwait(true);
+    }
+
+    private void ObserveStartupDialogs(Task startupDialogsTask)
+    {
+        _ = startupDialogsTask.ContinueWith(
+            completed => _logger.LogErrorMessage(
+                "Startup dialog flow failed.",
+                completed.Exception!.GetBaseException()),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+    }
+
+    private async Task<StartupDiagnostic?> CollectLegacyUpgradeDiagnosticAsync()
+    {
+        if (!_legacyUpgradeCoordinator.IsUpgradeRequired())
+        {
+            return null;
+        }
+
+        try
+        {
+            var result = await _dialogService
+                .ShowAsync(new AppDialogRequest(AppDialog.LegacyUpgrade), _lifetimeToken)
+                .ConfigureAwait(true);
+            if (result.Parameters.TryGetValue(
+                    ViewUpgradingDialogViewModel.FailureResultParameter,
+                    out var value)
+                && value is LegacyUpgradeResult { Failure: { } failure } upgradeFailure)
+            {
+                return StartupDiagnostic.ForLegacyMigration(
+                    failure,
+                    upgradeFailure.ErrorMessage);
+            }
+
+            if (result.Outcome == AppDialogOutcome.Rejected)
+            {
+                var incompleteFailure = new InvalidOperationException(
+                    "The legacy migration failed without returning diagnostic details.");
+                _logger.LogErrorMessage(
+                    "Legacy upgrade returned an incomplete failure result.",
+                    incompleteFailure);
+                return StartupDiagnostic.ForLegacyMigration(incompleteFailure);
+            }
+        }
+        catch (OperationCanceledException) when (_lifetimeToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (InvalidOperationException e)
+        {
+            _logger.LogErrorMessage("Legacy upgrade dialog failed to open.", e);
+            return StartupDiagnostic.ForLegacyMigration(e);
+        }
+
+        return null;
+    }
+
+    private async Task<StartupDiagnostic?> CollectDownloadRuntimeDiagnosticAsync()
+    {
+        try
+        {
+            var outcome = await _downloadRuntimeAvailability
+                .WaitForStartupOutcomeAsync(_lifetimeToken)
+                .ConfigureAwait(true);
+            if (outcome.State == DownloadRuntimeStartupState.Ready)
+            {
+                return null;
+            }
+
+            var failure = outcome.Failure
+                ?? throw new InvalidOperationException(
+                    "The faulted download startup outcome has no failure.");
+            return StartupDiagnostic.ForDownloadBootstrap(failure);
+        }
+        catch (OperationCanceledException) when (_lifetimeToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (InvalidOperationException e)
+        {
+            _logger.LogErrorMessage("Download runtime startup outcome was invalid.", e);
+            return StartupDiagnostic.ForDownloadBootstrap(e);
+        }
+    }
+
+    private async Task ShowStartupDiagnosticsAsync(
+        List<StartupDiagnostic> diagnostics)
+    {
+        if (diagnostics.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var result = await _dialogService.ShowAsync(
+                new AppDialogRequest(
+                    AppDialog.StartupDiagnostics,
+                    new Dictionary<string, object?>
+                    {
+                        [StartupDiagnosticsDialogViewModel.DiagnosticsParameter] = diagnostics
+                    }),
+                _lifetimeToken).ConfigureAwait(true);
+            if (result.Outcome == AppDialogOutcome.Accepted
+                && result.Parameters.TryGetValue(
+                    StartupDiagnosticsDialogViewModel.RecoveryDiagnosticParameter,
+                    out var value)
+                && value is StartupDiagnostic recoveryDiagnostic)
+            {
+                await (_downloadStoreRecoveryPresenter
+                    ?? throw new InvalidOperationException(
+                        "Download store recovery is unavailable."))
+                    .ConfirmResetAndRestartAsync(recoveryDiagnostic.Failure, _lifetimeToken)
+                    .ConfigureAwait(true);
+            }
+        }
+        catch (OperationCanceledException) when (_lifetimeToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (InvalidOperationException e)
+        {
+            _logger.LogErrorMessage("Startup diagnostics dialog failed to open.", e);
+        }
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            var about = _settingsStore.Current.About;
+            var isAutoUpdate = about.AutoUpdateWhenLaunch != AllowStatus.Yes;
+            if (isAutoUpdate) return;
+            var release = await _versionChecker
+                .GetLatestReleaseAsync(
+                    about.IsReceiveBetaVersion == AllowStatus.Yes,
+                    about.SkipVersionOnLaunch,
+                    _lifetimeToken)
+                .ConfigureAwait(true);
+            if (release != null && SemanticVersionPolicy.IsNewer(release.TagName, new AppInfo().VersionName))
+            {
+                await _dialogService.ShowAsync(new AppDialogRequest(
+                    AppDialog.NewVersionAvailable,
+                    new Dictionary<string, object?>
+                    {
+                        ["release"] = release,
+                        ["enableSkipVersion"] = true
+                    }), _lifetimeToken).ConfigureAwait(true);
+            }
+        }
+        catch (OperationCanceledException) when (_lifetimeToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarningMessage("Automatic update check timed out.");
+        }
+        catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or InvalidOperationException
+            or System.Text.Json.JsonException)
+        {
+            _logger.LogErrorMessage("Automatic update check failed.", ex);
+        }
+    }
+}

@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+**/node_modules/
+web/dist/
+data/
+docs/
+.git/
+.gitignore
+.gitattributes
+.editorconfig
+*.md

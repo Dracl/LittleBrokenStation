@@ -1,0 +1,78 @@
+using System;
+using System.ComponentModel;
+using DownKyi.Core.BiliApi.BiliUtils;
+using DownKyi.Domain.Downloads;
+
+namespace DownKyi.Models;
+
+[Description("下载项的基础信息")]
+// LBS fork: public projection model of the headless download runtime (was internal in DownKyi.Desktop).
+public class DownloadBase
+{
+    public DownloadBase()
+    {
+        // 唯一id
+        Id = Guid.NewGuid().ToString("N");
+
+        NeedDownloadContent = DownloadContentSelection.All;
+    }
+
+    // 此条下载项的id
+    public string Id { get; set; } = string.Empty;
+
+    // 需要下载的内容
+    public DownloadContentSelection NeedDownloadContent { get; internal set; }
+
+    // 视频的id
+    public string Bvid { get; set; } = string.Empty;
+
+    public long Avid { get; set; }
+
+    public long Cid { get; set; }
+
+    public long EpisodeId { get; set; }
+
+    // 视频封面的url
+    // LBS fork: CA1056/CA1062-style Uri suggestions are not applicable - these strings are persisted
+    // verbatim into the download database (and may be empty), so they stay plain strings.
+#pragma warning disable CA1056 // 类型成员是 URL，应改用 Uri
+    [Description("视频封面的url")] public string CoverUrl { get; set; } = string.Empty;
+
+    // 视频page的封面的url
+    [Description("视频page的封面的url")] public string PageCoverUrl { get; set; } = string.Empty;
+#pragma warning restore CA1056 // 类型成员是 URL，应改用 Uri
+
+    // 分区id
+    [Description("分区id")] public int ZoneId { get; set; }
+
+    // 视频序号
+    [Description("视频序号")] public int Order { get; set; }
+
+    // 视频主标题
+    [Description("视频主标题")] public string MainTitle { get; set; } = string.Empty;
+
+    // 视频标题
+    [Description("视频标题")] public string Name { get; set; } = string.Empty;
+
+    // 时长
+    [Description("时长")] public string Duration { get; set; } = string.Empty;
+
+    // 视频编码名称，AVC、HEVC
+    [Description("视频编码名称，AVC、HEVC")] public string VideoCodecName { get; set; } = string.Empty;
+
+    // 视频画质
+    [Description("视频画质")] public Quality Resolution { get; set; } = new();
+
+    // 音频编码
+    [Description("音频编码")] public Quality AudioCodec { get; set; } = new();
+
+    // 文件路径，不包含扩展名，所有内容均以此路径下载
+    [Description("文件路径，不包含扩展名，所有内容均以此路径下载")]
+    public string FilePath { get; set; } = string.Empty;
+
+    // 文件大小
+    [Description("文件大小")] public string? FileSize { get; set; }
+
+    // 视频分p(默认为1)
+    [Description("视频分p(默认为1)")] public int Page { get; set; } = 1;
+}

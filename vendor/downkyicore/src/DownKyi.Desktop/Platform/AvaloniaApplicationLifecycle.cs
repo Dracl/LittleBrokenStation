@@ -1,0 +1,257 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using DownKyi.Application.Diagnostics;
+using DownKyi.Application.Lifetime;
+using DownKyi.Application.Settings;
+using DownKyi.Services.Download;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace DownKyi.Platform;
+
+internal sealed class AvaloniaApplicationLifecycle : IApplicationLifecycle
+{
+    internal static readonly TimeSpan DefaultCleanupTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan LogFlushTimeout = TimeSpan.FromSeconds(2);
+    private readonly object _sync = new();
+    private readonly AvaloniaDesktopContext _desktopContext;
+    private readonly IProcessRestartLauncher _restartLauncher;
+    private readonly ISettingsStore _settingsStore;
+    private readonly IApplicationLogService _logService;
+    private readonly ApplicationCancellation _applicationCancellation;
+    private readonly IDownloadEmergencyCleanup _downloadEmergencyCleanup;
+    private readonly ILogger<AvaloniaApplicationLifecycle> _logger;
+    private readonly TimeSpan _cleanupTimeout;
+    private readonly Func<Task> _shutdownDesktopAsync;
+    private IHost? _host;
+    private Task? _hostStartupTask;
+    private Task<bool>? _restartTask;
+    private Task? _shutdownTask;
+
+    public AvaloniaApplicationLifecycle(
+        AvaloniaDesktopContext desktopContext,
+        IProcessRestartLauncher restartLauncher,
+        ISettingsStore settingsStore,
+        IApplicationLogService logService,
+        ApplicationCancellation applicationCancellation,
+        IDownloadEmergencyCleanup downloadEmergencyCleanup,
+        ILogger<AvaloniaApplicationLifecycle> logger)
+        : this(
+            desktopContext,
+            restartLauncher,
+            settingsStore,
+            logService,
+            applicationCancellation,
+            downloadEmergencyCleanup,
+            logger,
+            DefaultCleanupTimeout)
+    {
+    }
+
+    internal AvaloniaApplicationLifecycle(
+        AvaloniaDesktopContext desktopContext,
+        IProcessRestartLauncher restartLauncher,
+        ISettingsStore settingsStore,
+        IApplicationLogService logService,
+        ApplicationCancellation applicationCancellation,
+        IDownloadEmergencyCleanup downloadEmergencyCleanup,
+        ILogger<AvaloniaApplicationLifecycle> logger,
+        TimeSpan cleanupTimeout,
+        Func<Task>? shutdownDesktopAsync = null)
+    {
+        _desktopContext = desktopContext ?? throw new ArgumentNullException(nameof(desktopContext));
+        _restartLauncher = restartLauncher ?? throw new ArgumentNullException(nameof(restartLauncher));
+        _settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
+        _logService = logService ?? throw new ArgumentNullException(nameof(logService));
+        _applicationCancellation = applicationCancellation
+            ?? throw new ArgumentNullException(nameof(applicationCancellation));
+        _downloadEmergencyCleanup = downloadEmergencyCleanup
+            ?? throw new ArgumentNullException(nameof(downloadEmergencyCleanup));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        ArgumentOutOfRangeException.ThrowIfLessThan(cleanupTimeout, TimeSpan.Zero);
+        _cleanupTimeout = cleanupTimeout;
+        _shutdownDesktopAsync = shutdownDesktopAsync ?? _desktopContext.ShutdownAsync;
+    }
+
+    public CancellationToken ShutdownToken => _applicationCancellation.ShutdownToken;
+
+    public void AttachHost(IHost host)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        lock (_sync)
+        {
+            if (_host != null && !ReferenceEquals(_host, host))
+            {
+                throw new InvalidOperationException("A different application Host is already attached.");
+            }
+
+            _host = host;
+        }
+    }
+
+    public Task StartHostAsync()
+    {
+        lock (_sync)
+        {
+            return _hostStartupTask ??= StartHostCoreAsync(GetHost());
+        }
+    }
+
+    public Task RequestShutdownAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            return _shutdownTask ??= ShutdownCoreAsync(GetHost());
+        }
+    }
+
+    public async Task ExitAsync(CancellationToken cancellationToken = default)
+    {
+        await RequestShutdownAsync(cancellationToken).ConfigureAwait(false);
+        await _desktopContext.ShutdownAsync().ConfigureAwait(false);
+    }
+
+    public Task<bool> RestartAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            if (_restartTask != null)
+            {
+                return _restartTask;
+            }
+
+            if (!_restartLauncher.TryStartHelper(Environment.ProcessId))
+            {
+                return Task.FromResult(false);
+            }
+
+            _restartTask = CompleteRestartHandoffAsync();
+            return _restartTask;
+        }
+    }
+
+    private async Task<bool> CompleteRestartHandoffAsync()
+    {
+        try
+        {
+            await RequestShutdownAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException e)
+        {
+            _logger.LogErrorMessage(
+                "Application cleanup timed out after the restart helper started; continuing shutdown.",
+                e);
+        }
+
+        await _shutdownDesktopAsync().ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task StartHostCoreAsync(IHost host)
+    {
+        try
+        {
+            await host.StartAsync(ShutdownToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ShutdownToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException
+            or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            _logger.LogErrorMessage("Application Host startup failed.", e);
+        }
+    }
+
+    private async Task ShutdownCoreAsync(IHost host)
+    {
+        await _applicationCancellation
+            .RequestShutdownAsync()
+            .ConfigureAwait(false);
+
+        var cleanupTasks = new List<Task>
+        {
+            host.StopAsync(CancellationToken.None),
+            _settingsStore.FlushAsync(CancellationToken.None)
+        };
+        Task? startupTask;
+        lock (_sync)
+        {
+            startupTask = _hostStartupTask;
+        }
+
+        if (startupTask != null)
+        {
+            cleanupTasks.Add(startupTask);
+        }
+
+        var cleanup = Task.WhenAll(cleanupTasks);
+        TimeoutException? cleanupTimeoutException = null;
+        if (await Task.WhenAny(cleanup, Task.Delay(_cleanupTimeout)).ConfigureAwait(false) == cleanup)
+        {
+            try
+            {
+                await cleanup.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ShutdownToken.IsCancellationRequested)
+            {
+                _logger.LogDebugMessage("Application cleanup was canceled by shutdown.");
+            }
+            catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException
+                or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException
+                or System.ComponentModel.Win32Exception)
+            {
+                _logger.LogErrorMessage("Application cleanup failed during shutdown.", e);
+            }
+        }
+        else
+        {
+            _logger.LogWarningMessage("Application cleanup timed out; forcing download runtime cleanup.");
+            _downloadEmergencyCleanup.KillTrackedRuntime(
+                "application exit cleanup timed out.");
+            _ = cleanup.ContinueWith(
+                task => _logger.LogErrorMessage(
+                    "Application cleanup failed after the shutdown timeout.",
+                    task.Exception!.GetBaseException()),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+            cleanupTimeoutException = new TimeoutException(
+                $"Application cleanup did not complete within {_cleanupTimeout}.");
+        }
+
+        using var flushCancellation = new CancellationTokenSource(LogFlushTimeout);
+        try
+        {
+            await _logService.FlushAsync(flushCancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (flushCancellation.IsCancellationRequested)
+        {
+            _logger.LogWarningMessage("Application log flush timed out during shutdown.");
+        }
+        catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException
+            or InvalidOperationException)
+        {
+            _logger.LogErrorMessage("Application log flush failed during shutdown.", e);
+        }
+
+        if (cleanupTimeoutException != null)
+        {
+            throw cleanupTimeoutException;
+        }
+    }
+
+    private IHost GetHost()
+    {
+        lock (_sync)
+        {
+            return _host
+                ?? throw new InvalidOperationException("The application Host has not been attached.");
+        }
+    }
+}

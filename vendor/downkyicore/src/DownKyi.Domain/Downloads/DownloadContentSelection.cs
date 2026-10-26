@@ -1,0 +1,228 @@
+using System.Collections.Immutable;
+
+namespace DownKyi.Domain.Downloads;
+
+public enum DownloadMediaKind
+{
+    None,
+    Dash,
+    Durl
+}
+
+[Flags]
+public enum DownloadDanmakuOutputFormat
+{
+    None = 0,
+    Ass = 1,
+    Xml = 2
+}
+
+public enum DownloadSubtitleTrackSelection
+{
+    NotRequested,
+    AllTracks,
+    SelectedTracks,
+    NoTracksSelected
+}
+
+public sealed record DownloadContentSelection(
+    bool Audio,
+    bool Video,
+    bool Danmaku,
+    bool Subtitle,
+    bool Cover)
+{
+    public DownloadMediaKind? MediaKind { get; init; }
+
+    public ImmutableArray<long>? SelectedSubtitleTrackIds { get; init; }
+
+    public long? DefaultSubtitleTrackId { get; init; }
+
+    public SubtitleLanguagePreference PreferredSubtitleLanguage { get; init; }
+
+    public SubtitleTypePreference PreferredSubtitleType { get; init; }
+
+    public DownloadDanmakuOutputFormat? DanmakuOutputFormat { get; init; }
+
+    public bool HasMedia => Audio || Video;
+
+    public bool HasSubtitleAction => SubtitleTrackSelection is
+        DownloadSubtitleTrackSelection.AllTracks or
+        DownloadSubtitleTrackSelection.SelectedTracks;
+
+    public bool HasIndependentContent => Danmaku || HasSubtitleAction || Cover;
+
+    public bool HasAnyRequestedAction => HasMedia || HasIndependentContent;
+
+    public DownloadActionClaims ActionClaims => DownloadActionClaims.From(this);
+
+    public bool HasSameTopLevelSelectionAs(DownloadContentSelection other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        return Audio == other.Audio
+            && Video == other.Video
+            && Danmaku == other.Danmaku
+            && Subtitle == other.Subtitle
+            && Cover == other.Cover;
+    }
+
+    public DownloadSubtitleTrackSelection SubtitleTrackSelection =>
+        (Subtitle, SelectedSubtitleTrackIds) switch
+        {
+            (false, _) => DownloadSubtitleTrackSelection.NotRequested,
+            (true, null) => DownloadSubtitleTrackSelection.AllTracks,
+            (true, { Length: 0 }) => DownloadSubtitleTrackSelection.NoTracksSelected,
+            _ => DownloadSubtitleTrackSelection.SelectedTracks
+        };
+
+    private const string AudioKey = "downloadAudio";
+    private const string VideoKey = "downloadVideo";
+    private const string DanmakuKey = "downloadDanmaku";
+    private const string SubtitleKey = "downloadSubtitle";
+    private const string CoverKey = "downloadCover";
+    private const string AudioAlias = "audio";
+    private const string VideoAlias = "video";
+    private const string DanmakuAlias = "danmaku";
+    private const string SubtitleAlias = "subtitle";
+    private const string CoverAlias = "cover";
+
+    public static DownloadContentSelection All { get; } = new(
+        Audio: true,
+        Video: true,
+        Danmaku: true,
+        Subtitle: true,
+        Cover: true);
+
+    public static DownloadContentSelection None { get; } = new(
+        Audio: false,
+        Video: false,
+        Danmaku: false,
+        Subtitle: false,
+        Cover: false);
+
+    public static DownloadContentSelection FromLegacyMap(
+        IEnumerable<KeyValuePair<string, bool>> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        var map = values.ToImmutableDictionary(StringComparer.Ordinal);
+        return new DownloadContentSelection(
+            Read(map, AudioKey, AudioAlias),
+            Read(map, VideoKey, VideoAlias),
+            Read(map, DanmakuKey, DanmakuAlias),
+            Read(map, SubtitleKey, SubtitleAlias),
+            Read(map, CoverKey, CoverAlias));
+    }
+
+    public ImmutableDictionary<string, bool> ToLegacyMap()
+    {
+        return new Dictionary<string, bool>(StringComparer.Ordinal)
+        {
+            [AudioKey] = Audio,
+            [VideoKey] = Video,
+            [DanmakuKey] = Danmaku,
+            [SubtitleKey] = Subtitle,
+            [CoverKey] = Cover
+        }.ToImmutableDictionary(StringComparer.Ordinal);
+    }
+
+    private static bool Read(
+        ImmutableDictionary<string, bool> values,
+        string key,
+        string legacyAlias)
+    {
+        return values.TryGetValue(key, out var value)
+            ? value
+            : values.GetValueOrDefault(legacyAlias);
+    }
+}
+
+[Flags]
+public enum DownloadActionClaim
+{
+    None = 0,
+    Media = 1,
+    Subtitle = 2,
+    DanmakuAss = 4,
+    DanmakuXml = 8,
+    Cover = 16,
+    Nfo = 32
+}
+
+public readonly record struct DownloadActionClaims(DownloadActionClaim Value)
+{
+    public static DownloadActionClaims Nfo { get; } = new(DownloadActionClaim.Nfo);
+
+    public bool HasAny => Value != DownloadActionClaim.None;
+
+    public bool Contains(DownloadActionClaim claim) => (Value & claim) == claim;
+
+    public bool Overlaps(DownloadActionClaims other) =>
+        (Value & other.Value) != DownloadActionClaim.None;
+
+    public DownloadActionClaims Union(DownloadActionClaims other) =>
+        new(Value | other.Value);
+
+    public static DownloadActionClaims From(DownloadContentSelection content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        var claims = DownloadActionClaim.None;
+        if (content.HasMedia)
+        {
+            claims |= DownloadActionClaim.Media;
+        }
+
+        // Subtitle file names are language-derived, so distinct track ids do not prove
+        // distinct physical outputs.
+        if (content.HasSubtitleAction)
+        {
+            claims |= DownloadActionClaim.Subtitle;
+        }
+
+        if (content.Danmaku)
+        {
+            claims |= FromDanmaku(content.DanmakuOutputFormat ?? AllDanmakuFormats).Value;
+        }
+
+        if (content.Cover)
+        {
+            claims |= DownloadActionClaim.Cover;
+        }
+
+        return new DownloadActionClaims(claims);
+    }
+
+    public static DownloadActionClaims From(
+        DownloadContentSelection content,
+        bool includesNfo)
+    {
+        var claims = From(content);
+        return includesNfo ? claims.Union(Nfo) : claims;
+    }
+
+    public static DownloadActionClaims FromDanmaku(DownloadDanmakuOutputFormat formats)
+    {
+        var claims = DownloadActionClaim.None;
+        if (formats.HasFlag(DownloadDanmakuOutputFormat.Ass))
+        {
+            claims |= DownloadActionClaim.DanmakuAss;
+        }
+
+        if (formats.HasFlag(DownloadDanmakuOutputFormat.Xml))
+        {
+            claims |= DownloadActionClaim.DanmakuXml;
+        }
+
+        return new DownloadActionClaims(claims);
+    }
+
+    private const DownloadDanmakuOutputFormat AllDanmakuFormats =
+        DownloadDanmakuOutputFormat.Ass | DownloadDanmakuOutputFormat.Xml;
+}
+
+public readonly record struct DownloadOutputOwnership(
+    long Cid,
+    DownloadActionClaims Claims)
+{
+    public bool ConflictsWith(DownloadOutputOwnership other) =>
+        Cid != other.Cid || Claims.Overlaps(other.Claims);
+}

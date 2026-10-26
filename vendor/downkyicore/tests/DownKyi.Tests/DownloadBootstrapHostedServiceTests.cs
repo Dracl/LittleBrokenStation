@@ -1,0 +1,1342 @@
+using System.Security.Cryptography;
+using DownKyi.Application.Downloads;
+using DownKyi.Application.Time;
+using DownKyi.Domain.Downloads;
+using DownKyi.Domain.Results;
+using DownKyi.Infrastructure.Downloads;
+using DownKyi.Infrastructure.Time;
+using DownKyi.Models;
+using DownKyi.Platform;
+using DownKyi.Services.Download;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace DownKyi.Tests;
+
+public sealed class DownloadBootstrapHostedServiceTests
+{
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task StartupReconcilesMovedPendingPublicationFromReopenedSqlite(
+        bool replaceDestination,
+        bool failBeforeRestart)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "downkyi-publish-startup",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var databasePath = Path.Combine(directory, "download.db");
+        var outputBase = Path.Combine(directory, "output");
+        var destination = outputBase + ".mp4";
+        var bytes = new byte[] { 7, 8, 9 };
+        var taskId = new DownloadTaskId("startup-publish-recovery");
+        try
+        {
+            using (var firstStore = new SqliteDownloadTaskStore(
+                       new SqliteDownloadTaskStoreOptions(databasePath), new SystemClock()))
+            {
+                await firstStore.InitializeAsync(TestContext.Current.CancellationToken);
+                using var firstTasks = new DownloadTaskApplicationService(firstStore, DownloadHistoryService.CreateForSharedStore(firstStore), new SystemClock());
+                Assert.True((await firstTasks.AddAsync(CreateTask(taskId.Value, outputBase),
+                    TestContext.Current.CancellationToken)).IsSuccess);
+                Assert.True((await firstTasks.StartAsync(taskId,
+                    TestContext.Current.CancellationToken)).IsSuccess);
+                var task = Assert.IsType<DownloadTask>(await firstTasks.FindAsync(
+                    taskId, TestContext.Current.CancellationToken));
+                var firstStaging = new DownloadTaskStaging(NullLogger<DownloadTaskStaging>.Instance);
+                var staged = Path.Combine(firstStaging.GetDirectory(taskId, outputBase,
+                    task.Output.StagingToken), "output.mp4");
+                await File.WriteAllBytesAsync(staged, bytes, TestContext.Current.CancellationToken);
+                var publishing = new DownloadPublishingArtifact("media", "output.mp4", bytes.Length,
+                    Convert.ToHexString(SHA256.HashData(bytes)));
+                Assert.True((await firstTasks.BeginPublishingArtifactAsync(
+                    taskId, publishing, TestContext.Current.CancellationToken)).IsSuccess);
+                File.Move(staged, destination, overwrite: false);
+                if (failBeforeRestart)
+                {
+                    Assert.True((await firstTasks.FailAsync(
+                        taskId,
+                        new DownloadFailure("download.existing", "Existing failure.", true),
+                        TestContext.Current.CancellationToken)).IsSuccess);
+                }
+                firstStaging.CleanupCurrentSession();
+            }
+
+            var foreignBytes = new byte[] { 91, 0, 255, 17 };
+            if (replaceDestination)
+            {
+                File.Delete(destination);
+                await File.WriteAllBytesAsync(destination, foreignBytes,
+                    TestContext.Current.CancellationToken);
+            }
+
+            using var reopenedStore = new SqliteDownloadTaskStore(
+                new SqliteDownloadTaskStoreOptions(databasePath), new SystemClock());
+            await reopenedStore.InitializeAsync(TestContext.Current.CancellationToken);
+            var reopenedHistoryService = DownloadHistoryService.CreateForSharedStore(reopenedStore);
+            using var reopenedTasks = new DownloadTaskApplicationService(
+                reopenedStore,
+                reopenedHistoryService,
+                new SystemClock());
+            using var projections = new DownloadTaskProjectionStore(
+                reopenedTasks,
+                reopenedHistoryService,
+                new SystemClock());
+            var writer = new DownloadTaskStateWriter(reopenedTasks);
+            var staging = new DownloadTaskStaging(NullLogger<DownloadTaskStaging>.Instance);
+            var fileService = new DownloadTaskFileService(
+                NullLogger<DownloadTaskFileService>.Instance, staging, writer);
+            using var runtime = new RecordingDownloadRuntime();
+            using var bootstrap = new DownloadBootstrapHostedService(
+                new DownloadListState(), projections, writer,
+                new RecordingRuntimeFactory(runtime), new DownloadTaskQueueGateway(),
+                new ImmediateUiDispatcher(), NullLogger<DownloadBootstrapHostedService>.Instance,
+                staging, fileService);
+
+            await bootstrap.StartAsync(TestContext.Current.CancellationToken);
+
+            var recovered = Assert.IsType<DownloadTask>(await reopenedTasks.FindAsync(
+                taskId, TestContext.Current.CancellationToken));
+            Assert.Equal(replaceDestination ? foreignBytes : bytes,
+                await File.ReadAllBytesAsync(destination,
+                TestContext.Current.CancellationToken));
+            if (replaceDestination)
+            {
+                Assert.Equal(DownloadPhase.Failed, recovered.Phase);
+                Assert.Equal("download.publish.reconcile", recovered.Failure?.Code);
+                Assert.False(recovered.Failure?.IsTransient);
+                Assert.NotNull(recovered.Output.PublishingArtifact);
+                Assert.Empty(recovered.Output.PublishedArtifacts);
+                Assert.DoesNotContain(taskId, runtime.Enqueued);
+            }
+            else
+            {
+                Assert.Null(recovered.Output.PublishingArtifact);
+                Assert.Equal(destination, recovered.Output.PublishedArtifacts["media"]);
+                Assert.Contains(taskId, runtime.Enqueued);
+            }
+            await bootstrap.StopAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            ClearOwnedSqlitePool(databasePath);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StartupRestoresOnlyUnfinishedDownloads()
+    {
+        using var runtime = new RecordingDownloadRuntime();
+        var dispatcher = new ImmediateUiDispatcher();
+        var listState = new DownloadListState();
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore(
+            history: [CreateHistoryRecord("completed-at-startup")]);
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(taskStore, historyService, clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        var stateWriter = new DownloadTaskStateWriter(tasks);
+        var queueGateway = new DownloadTaskQueueGateway();
+        using var service = new DownloadBootstrapHostedService(
+            listState,
+            storage,
+            stateWriter,
+            new RecordingRuntimeFactory(runtime),
+            queueGateway,
+            dispatcher,
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+        await service.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(runtime.Started);
+        Assert.True(runtime.Ended);
+        Assert.Equal(1, dispatcher.InvocationCount);
+        Assert.Equal(0, taskStore.HistoryPageRequestCount);
+        Assert.Empty(listState.Downloading);
+        Assert.Empty(listState.Downloaded);
+    }
+
+    [Fact]
+    public async Task StopAsyncWaitsForOwnedRuntimeToBecomeQuiescent()
+    {
+        using var runtime = new BlockingDownloadRuntime();
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore();
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(taskStore, historyService, clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        using var service = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            storage,
+            new DownloadTaskStateWriter(tasks),
+            new RecordingRuntimeFactory(runtime),
+            new DownloadTaskQueueGateway(),
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+        var stopTask = service.StopAsync(TestContext.Current.CancellationToken);
+        await runtime.StopEntered.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(stopTask.IsCompleted);
+        Assert.False(runtime.IsQuiescent);
+
+        runtime.AllowStop.TrySetResult();
+        await stopTask.WaitAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(runtime.IsQuiescent);
+    }
+
+    [Fact]
+    public async Task StartupQueuesPersistedAndInterruptedTasksWithoutUiPolling()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "downkyi-bootstrap-queue-tests",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "download.db");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var store = new SqliteDownloadTaskStore(
+                new SqliteDownloadTaskStoreOptions(databasePath),
+                new SystemClock());
+            var clock = new SystemClock();
+            var historyService = DownloadHistoryService.CreateForSharedStore(store);
+            using var tasks = new DownloadTaskApplicationService(store, historyService, clock);
+            using var projections = new DownloadTaskProjectionStore(
+                tasks,
+                historyService,
+                clock);
+            var stateWriter = new DownloadTaskStateWriter(tasks);
+            var queued = CreateTask("queued");
+            var interrupted = CreateTask("interrupted");
+            Assert.True((await tasks.AddAsync(
+                queued,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.AddAsync(
+                interrupted,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.StartAsync(
+                interrupted.Id,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            using var runtime = new RecordingDownloadRuntime();
+            var queueGateway = new DownloadTaskQueueGateway();
+            using var service = new DownloadBootstrapHostedService(
+                new DownloadListState(),
+                projections,
+                stateWriter,
+                new RecordingRuntimeFactory(runtime),
+                queueGateway,
+                new ImmediateUiDispatcher(),
+                NullLogger<DownloadBootstrapHostedService>.Instance);
+
+            await service.StartAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(
+                [interrupted.Id, queued.Id],
+                runtime.Enqueued.OrderBy(taskId => taskId.Value, StringComparer.Ordinal));
+            var recovered = Assert.IsType<DownloadTask>(
+                await tasks.FindAsync(interrupted.Id, TestContext.Current.CancellationToken));
+            Assert.Equal(DownloadPhase.Queued, recovered.Phase);
+            await service.StopAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            ClearOwnedSqlitePool(databasePath);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StartupDeletesOnlyTaskPrivateLegacyStagingBeforeFailing()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "downkyi-legacy-backend-startup",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "download.db");
+        var partialFile = Path.Combine(directory, "legacy.partial");
+        var legacyControlFile = $"{partialFile}.aria2";
+        var builtInControlFile = $"{partialFile}.download";
+        var unrelatedFile = Path.Combine(directory, "unrelated.keep");
+        var pendingDestination = Path.Combine(directory, "pending.mp4");
+        Directory.CreateDirectory(directory);
+        foreach (var path in new[] { partialFile, legacyControlFile, builtInControlFile })
+        {
+            await File.WriteAllBytesAsync(
+                path,
+                [1, 2, 3, 4],
+                TestContext.Current.CancellationToken);
+        }
+        await File.WriteAllBytesAsync(
+            unrelatedFile,
+            [5, 6, 7, 8],
+            TestContext.Current.CancellationToken);
+        try
+        {
+            using var store = new SqliteDownloadTaskStore(
+                new SqliteDownloadTaskStoreOptions(databasePath),
+                new SystemClock());
+            var historyService = DownloadHistoryService.CreateForSharedStore(store);
+            using var tasks = new DownloadTaskApplicationService(
+                store,
+                historyService,
+                new SystemClock());
+            using var projections = new DownloadTaskProjectionStore(
+                tasks,
+                historyService,
+                new SystemClock());
+            var task = CreateTask("legacy-backend", Path.Combine(directory, "output"));
+            task = task.UpdateTransferState(
+                DownloadTransferState.LegacyEmpty,
+                task.UpdatedAtUtc).RequireValue();
+            Assert.True((await tasks.AddAsync(
+                task,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.StartAsync(
+                task.Id,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.RecordTransferFileAsync(
+                task.Id,
+                "video-1",
+                Path.GetFileName(partialFile),
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.CompleteTransferFileAsync(
+                task.Id,
+                "video-1",
+                TestContext.Current.CancellationToken)).IsSuccess);
+            var stateWriter = new DownloadTaskStateWriter(tasks);
+            var previousSessionStaging = new DownloadTaskStaging(
+                NullLogger<DownloadTaskStaging>.Instance);
+            var stagingDirectory = previousSessionStaging.GetDirectory(
+                task.Id,
+                task.Output.BasePath,
+                task.Output.StagingToken);
+            var stagedNfo = Path.Combine(stagingDirectory, "metadata.nfo");
+            await File.WriteAllBytesAsync(
+                stagedNfo,
+                [13, 14, 15, 16],
+                TestContext.Current.CancellationToken);
+            Assert.True((await tasks.RecordTransferFileAsync(
+                task.Id,
+                "nfo",
+                stagedNfo,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            var pendingBytes = new byte[] { 9, 10, 11, 12 };
+            var pendingStagedFile = Path.Combine(
+                stagingDirectory,
+                Path.GetFileName(pendingDestination));
+            await File.WriteAllBytesAsync(
+                pendingStagedFile,
+                pendingBytes,
+                TestContext.Current.CancellationToken);
+            Assert.True((await tasks.BeginPublishingArtifactAsync(
+                task.Id,
+                new DownloadPublishingArtifact(
+                    "media",
+                    Path.GetFileName(pendingDestination),
+                    pendingBytes.Length,
+                    Convert.ToHexString(SHA256.HashData(pendingBytes))),
+                TestContext.Current.CancellationToken)).IsSuccess);
+            File.Move(pendingStagedFile, pendingDestination, overwrite: false);
+            previousSessionStaging.CleanupCurrentSession();
+            Assert.True((await tasks.SetBackendIdentityAsync(
+                task.Id,
+                "legacy-execution-id",
+                TestContext.Current.CancellationToken)).IsSuccess);
+            using var runtime = new RecordingDownloadRuntime();
+            var staging = new DownloadTaskStaging(NullLogger<DownloadTaskStaging>.Instance);
+            var fileService = new DownloadTaskFileService(
+                NullLogger<DownloadTaskFileService>.Instance,
+                staging,
+                stateWriter);
+            using var service = new DownloadBootstrapHostedService(
+                new DownloadListState(),
+                projections,
+                stateWriter,
+                new RecordingRuntimeFactory(runtime),
+                new DownloadTaskQueueGateway(),
+                new ImmediateUiDispatcher(),
+                NullLogger<DownloadBootstrapHostedService>.Instance,
+                staging,
+                fileService);
+
+            await service.StartAsync(TestContext.Current.CancellationToken);
+
+            var failed = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+                task.Id,
+                TestContext.Current.CancellationToken));
+            Assert.Equal(DownloadPhase.Failed, failed.Phase);
+            Assert.Equal("download.transfer.legacy-backend-removed", failed.Failure?.Code);
+            Assert.False(failed.Failure?.IsTransient);
+            Assert.Null(failed.Transfer.BackendIdentity);
+            Assert.True(failed.Transfer.IsLegacyTransfer);
+            Assert.Empty(failed.Transfer.CompletedFileKeys);
+            Assert.Empty(failed.Plan.TransferFiles);
+            Assert.Null(failed.Output.PublishingArtifact);
+            Assert.Empty(runtime.Enqueued);
+            Assert.True(File.Exists(partialFile));
+            Assert.True(File.Exists(legacyControlFile));
+            Assert.True(File.Exists(builtInControlFile));
+            Assert.True(File.Exists(pendingDestination));
+            Assert.False(Directory.Exists(stagingDirectory));
+            Assert.Equal([5, 6, 7, 8], await File.ReadAllBytesAsync(
+                unrelatedFile,
+                TestContext.Current.CancellationToken));
+            await service.StopAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            ClearOwnedSqlitePool(databasePath);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StartupCompletesInterruptedDeletionOfCanceledLegacyTask()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "downkyi-canceled-legacy-cleanup",
+            Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(directory, "download.db");
+        var partialFile = Path.Combine(directory, "legacy.partial");
+        Directory.CreateDirectory(directory);
+        await File.WriteAllBytesAsync(
+            partialFile,
+            [1, 2, 3, 4],
+            TestContext.Current.CancellationToken);
+        try
+        {
+            using var store = new SqliteDownloadTaskStore(
+                new SqliteDownloadTaskStoreOptions(databasePath),
+                new SystemClock());
+            var historyService = DownloadHistoryService.CreateForSharedStore(store);
+            using var tasks = new DownloadTaskApplicationService(
+                store,
+                historyService,
+                new SystemClock());
+            using var projections = new DownloadTaskProjectionStore(
+                tasks,
+                historyService,
+                new SystemClock());
+            var task = CreateTask(
+                "canceled-legacy-backend",
+                Path.Combine(directory, "output"));
+            task = task.UpdateTransferState(
+                DownloadTransferState.LegacyEmpty,
+                task.UpdatedAtUtc).RequireValue();
+            Assert.True((await tasks.AddAsync(
+                task,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.StartAsync(
+                task.Id,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.RecordTransferFileAsync(
+                task.Id,
+                "video-1",
+                Path.GetFileName(partialFile),
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.SetBackendIdentityAsync(
+                task.Id,
+                "legacy-execution-id",
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await tasks.CancelAsync(
+                task.Id,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            var stateWriter = new DownloadTaskStateWriter(tasks);
+            var previousSessionStaging = new DownloadTaskStaging(
+                NullLogger<DownloadTaskStaging>.Instance);
+            var stagingDirectory = previousSessionStaging.GetDirectory(
+                task.Id,
+                task.Output.BasePath,
+                task.Output.StagingToken);
+            await File.WriteAllBytesAsync(
+                Path.Combine(stagingDirectory, "unfinished.m4s"),
+                [5, 6, 7, 8],
+                TestContext.Current.CancellationToken);
+            previousSessionStaging.CleanupCurrentSession();
+            var staging = new DownloadTaskStaging(NullLogger<DownloadTaskStaging>.Instance);
+            var fileService = new DownloadTaskFileService(
+                NullLogger<DownloadTaskFileService>.Instance,
+                staging,
+                stateWriter);
+            using var runtime = new RecordingDownloadRuntime();
+            var downloadLists = new DownloadListState();
+            using var service = new DownloadBootstrapHostedService(
+                downloadLists,
+                projections,
+                stateWriter,
+                new RecordingRuntimeFactory(runtime),
+                new DownloadTaskQueueGateway(),
+                new ImmediateUiDispatcher(),
+                NullLogger<DownloadBootstrapHostedService>.Instance,
+                staging,
+                fileService);
+
+            await service.StartAsync(TestContext.Current.CancellationToken);
+
+            Assert.Null(await tasks.FindAsync(
+                task.Id,
+                TestContext.Current.CancellationToken));
+            Assert.Empty(downloadLists.Downloading);
+            Assert.Empty(runtime.Enqueued);
+            Assert.True(File.Exists(partialFile));
+            Assert.False(Directory.Exists(stagingDirectory));
+            await service.StopAsync(TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            ClearOwnedSqlitePool(databasePath);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task UnavailableLegacyStagingCleanupRemainsFailedAndCannotEnterBuiltinRuntime()
+    {
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore();
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var projections = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        var task = CreateTask("legacy-cleanup-failure");
+        task = task.UpdateTransferState(
+            DownloadTransferState.LegacyEmpty,
+            clock.UtcNow).RequireValue();
+        Assert.True((await tasks.AddAsync(
+            task,
+            TestContext.Current.CancellationToken)).IsSuccess);
+        Assert.True((await tasks.StartAsync(
+            task.Id,
+            TestContext.Current.CancellationToken)).IsSuccess);
+        Assert.True((await tasks.SetBackendIdentityAsync(
+            task.Id,
+            "legacy-execution-id",
+            TestContext.Current.CancellationToken)).IsSuccess);
+        var stateWriter = new DownloadTaskStateWriter(tasks);
+        var staging = new DownloadTaskStaging(NullLogger<DownloadTaskStaging>.Instance);
+        using var runtime = new RecordingDownloadRuntime();
+        using var service = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            projections,
+            stateWriter,
+            new RecordingRuntimeFactory(runtime),
+            new DownloadTaskQueueGateway(),
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance,
+            staging);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+
+        var failed = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            task.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(DownloadPhase.Failed, failed.Phase);
+        Assert.Equal("download.transfer.legacy-cleanup-failed", failed.Failure?.Code);
+        Assert.Equal("legacy-execution-id", failed.Transfer.BackendIdentity);
+        Assert.True(failed.Transfer.IsLegacyTransfer);
+        Assert.Empty(runtime.Enqueued);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => stateWriter.ResumeAsync(
+            task.Id,
+            TestContext.Current.CancellationToken));
+        await service.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task GidlessLegacyTaskBecomesNonResumableHistoryInsteadOfEnteringBuiltinRuntime()
+    {
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore();
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var projections = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        var task = CreateTask("gidless-legacy");
+        task = task.UpdateTransferState(
+            new DownloadTransferState(null, [], isLegacyTransfer: true),
+            clock.UtcNow).RequireValue();
+        Assert.True((await tasks.AddAsync(
+            task,
+            TestContext.Current.CancellationToken)).IsSuccess);
+        var stateWriter = new DownloadTaskStateWriter(tasks);
+        var staging = new DownloadTaskStaging(NullLogger<DownloadTaskStaging>.Instance);
+        var fileService = new DownloadTaskFileService(
+            NullLogger<DownloadTaskFileService>.Instance,
+            staging,
+            stateWriter);
+        using var runtime = new RecordingDownloadRuntime();
+        using var service = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            projections,
+            stateWriter,
+            new RecordingRuntimeFactory(runtime),
+            new DownloadTaskQueueGateway(),
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance,
+            staging,
+            fileService);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+
+        var failed = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            task.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(DownloadPhase.Failed, failed.Phase);
+        Assert.Equal("download.transfer.legacy-backend-removed", failed.Failure?.Code);
+        Assert.Null(failed.Transfer.BackendIdentity);
+        Assert.True(failed.Transfer.IsLegacyTransfer);
+        Assert.Empty(runtime.Enqueued);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => stateWriter.ResumeAsync(
+            task.Id,
+            TestContext.Current.CancellationToken));
+        await service.StopAsync(TestContext.Current.CancellationToken);
+
+        using var restartedRuntime = new RecordingDownloadRuntime();
+        using var restartedService = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            projections,
+            stateWriter,
+            new RecordingRuntimeFactory(restartedRuntime),
+            new DownloadTaskQueueGateway(),
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance,
+            staging,
+            fileService);
+
+        await restartedService.StartAsync(TestContext.Current.CancellationToken);
+
+        var unchanged = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            task.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(failed.Version, unchanged.Version);
+        Assert.Empty(restartedRuntime.Enqueued);
+        await restartedService.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task StartupAdmissionFailureCleansUpPartiallyStartedRuntime()
+    {
+        using var runtime = new RecordingDownloadRuntime(failOnEnqueue: true);
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore([CreateTask("queued")]);
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        using var service = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            storage,
+            new DownloadTaskStateWriter(tasks),
+            new RecordingRuntimeFactory(runtime),
+            new DownloadTaskQueueGateway(),
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(runtime.Started);
+        Assert.True(runtime.Ended);
+        Assert.True(runtime.Disposed);
+    }
+
+    [Fact]
+    public async Task TerminalBootstrapFailureDoesNotAcceptNewPendingTasks()
+    {
+        using var runtime = new RecordingDownloadRuntime(failOnEnqueue: true);
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore([CreateTask("startup-task")]);
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        var listState = new DownloadListState();
+        var queueGateway = new DownloadTaskQueueGateway();
+        using var service = new DownloadBootstrapHostedService(
+            listState,
+            storage,
+            new DownloadTaskStateWriter(tasks),
+            new RecordingRuntimeFactory(runtime),
+            queueGateway,
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+
+        var exception = await Record.ExceptionAsync(() => queueGateway.EnqueueAsync(
+            new DownloadTaskId("admitted-after-terminal-failure"),
+            TestContext.Current.CancellationToken));
+        var startupTask = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            new DownloadTaskId("startup-task"),
+            TestContext.Current.CancellationToken));
+
+        Assert.IsType<DownloadRuntimeUnavailableException>(exception);
+        Assert.Equal(DownloadPhase.Failed, startupTask.Phase);
+        Assert.Equal("download.runtime.unavailable", startupTask.Failure?.Code);
+        Assert.Equal(
+            DownloadStatus.DownloadFailed,
+            Assert.Single(listState.Downloading).Downloading.DownloadStatus);
+    }
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("http")]
+    [InlineData("json")]
+    [InlineData("win32")]
+    [InlineData("task-canceled")]
+    [InlineData("unexpected")]
+    public async Task RuntimeStartupFailureFaultsGateway(string failureKind)
+    {
+        using var runtime = new RecordingDownloadRuntime(
+            startFailure: CreateRuntimeStartupFailure(failureKind));
+        var clock = new FixedClock();
+        var startupTask = CreateTask($"startup-{failureKind}");
+        var taskStore = new EmptyDownloadTaskStore([startupTask]);
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        var queueGateway = new DownloadTaskQueueGateway();
+        using var service = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            storage,
+            new DownloadTaskStateWriter(tasks),
+            new RecordingRuntimeFactory(runtime),
+            queueGateway,
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+
+        await Assert.ThrowsAsync<DownloadRuntimeUnavailableException>(() =>
+            queueGateway.EnqueueAsync(
+                new DownloadTaskId($"after-{failureKind}-failure"),
+                TestContext.Current.CancellationToken));
+        var persisted = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            startupTask.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(DownloadPhase.Failed, persisted.Phase);
+        Assert.Equal("download.runtime.unavailable", persisted.Failure?.Code);
+        Assert.True(runtime.Ended);
+        Assert.True(runtime.Disposed);
+    }
+
+    [Fact]
+    public async Task TerminalBootstrapFailurePreservesNonRunnableStartupTasks()
+    {
+        var transitionTime = DateTimeOffset.UnixEpoch.AddSeconds(1);
+        var paused = CreateTask("paused").Pause(transitionTime).RequireValue();
+        var failed = CreateTask("failed").Fail(
+            new DownloadFailure("download.existing", "Existing failure.", true),
+            transitionTime).RequireValue();
+        using var runtime = new RecordingDownloadRuntime(
+            startFailure: new TimeoutException("Synthetic runtime readiness timeout."));
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore([paused, failed]);
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        using var service = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            storage,
+            new DownloadTaskStateWriter(tasks),
+            new RecordingRuntimeFactory(runtime),
+            new DownloadTaskQueueGateway(),
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+
+        var persistedPaused = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            paused.Id,
+            TestContext.Current.CancellationToken));
+        var persistedFailed = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            failed.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(DownloadPhase.Paused, persistedPaused.Phase);
+        Assert.Equal(DownloadPhase.Failed, persistedFailed.Phase);
+        Assert.Equal("download.existing", persistedFailed.Failure?.Code);
+    }
+
+    private static Exception CreateRuntimeStartupFailure(string failureKind) => failureKind switch
+    {
+        "timeout" => new TimeoutException("Synthetic runtime readiness timeout."),
+        "http" => new HttpRequestException("Synthetic runtime RPC failure."),
+        "json" => new Newtonsoft.Json.JsonSerializationException(
+            "Synthetic runtime RPC response failure."),
+        "win32" => new System.ComponentModel.Win32Exception(
+            "Synthetic operating system process startup failure."),
+        "task-canceled" => new TaskCanceledException(
+            "Synthetic HttpClient timeout."),
+        "unexpected" => new FormatException(
+            "Synthetic failure outside the former exception allowlist."),
+        _ => throw new ArgumentOutOfRangeException(nameof(failureKind), failureKind, null)
+    };
+
+    [Fact]
+    public async Task TerminalBootstrapFailurePreservesTaskPausedAfterStartupSnapshot()
+    {
+        var task = CreateTask("paused-during-startup");
+        using var runtime = new BlockingFailingStartRuntime();
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore([task]);
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        var stateWriter = new DownloadTaskStateWriter(tasks);
+        var listState = new DownloadListState();
+        using var service = new DownloadBootstrapHostedService(
+            listState,
+            storage,
+            stateWriter,
+            new RecordingRuntimeFactory(runtime),
+            new DownloadTaskQueueGateway(),
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        var startup = service.StartAsync(TestContext.Current.CancellationToken);
+        await runtime.StartEntered.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await stateWriter.PauseAsync(task.Id, TestContext.Current.CancellationToken);
+        runtime.FailStartup.TrySetResult();
+        await startup.ConfigureAwait(true);
+
+        var persisted = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            task.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(DownloadPhase.Paused, persisted.Phase);
+        Assert.Equal(
+            DownloadStatus.Pause,
+            Assert.Single(listState.Downloading).Downloading.DownloadStatus);
+    }
+
+    [Fact]
+    public async Task StartupRecoveryPreservesPauseMadeAfterSnapshot()
+    {
+        var task = CreateTask("paused-during-recovery")
+            .Start(DateTimeOffset.UnixEpoch.AddSeconds(1))
+            .RequireValue();
+        using var runtime = new BlockingSuccessfulStartRuntime();
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore([task]);
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        var stateWriter = new DownloadTaskStateWriter(tasks);
+        var queueGateway = new DownloadTaskQueueGateway();
+        using var service = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            storage,
+            stateWriter,
+            new RecordingRuntimeFactory(runtime),
+            queueGateway,
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        var startup = service.StartAsync(TestContext.Current.CancellationToken);
+        await runtime.StartEntered.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await stateWriter.PauseAsync(task.Id, TestContext.Current.CancellationToken);
+        runtime.AllowStart.TrySetResult();
+        await startup.ConfigureAwait(true);
+
+        var persisted = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            task.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(DownloadPhase.Paused, persisted.Phase);
+        Assert.Empty(runtime.Enqueued);
+        Assert.Equal(
+            DownloadRuntimeStartupState.Ready,
+            (await queueGateway.WaitForStartupOutcomeAsync(
+                TestContext.Current.CancellationToken)).State);
+    }
+
+    [Fact]
+    public async Task StartupRecoveryPreservesDeletionMadeAfterSnapshot()
+    {
+        var task = CreateTask("deleted-during-recovery")
+            .Start(DateTimeOffset.UnixEpoch.AddSeconds(1))
+            .RequireValue();
+        using var runtime = new BlockingSuccessfulStartRuntime();
+        var clock = new FixedClock();
+        var taskStore = new EmptyDownloadTaskStore([task]);
+        var historyService = DownloadHistoryService.CreateForSharedStore(taskStore);
+        using var tasks = new DownloadTaskApplicationService(
+            taskStore,
+            historyService,
+            clock);
+        using var storage = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        var stateWriter = new DownloadTaskStateWriter(tasks);
+        var queueGateway = new DownloadTaskQueueGateway();
+        using var service = new DownloadBootstrapHostedService(
+            new DownloadListState(),
+            storage,
+            stateWriter,
+            new RecordingRuntimeFactory(runtime),
+            queueGateway,
+            new ImmediateUiDispatcher(),
+            NullLogger<DownloadBootstrapHostedService>.Instance);
+
+        var startup = service.StartAsync(TestContext.Current.CancellationToken);
+        await runtime.StartEntered.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await stateWriter.DeleteAsync(task.Id, TestContext.Current.CancellationToken);
+        runtime.AllowStart.TrySetResult();
+        await startup.ConfigureAwait(true);
+
+        var persisted = Assert.IsType<DownloadTask>(await tasks.FindAsync(
+            task.Id,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(DownloadPhase.Deleted, persisted.Phase);
+        Assert.Empty(runtime.Enqueued);
+        Assert.Equal(
+            DownloadRuntimeStartupState.Ready,
+            (await queueGateway.WaitForStartupOutcomeAsync(
+                TestContext.Current.CancellationToken)).State);
+    }
+
+    private static DownloadTask CreateTask(
+        string id,
+        string? outputBase = null,
+        DownloadContentSelection? requestedContent = null)
+    {
+        return DownloadTask.Create(
+            new DownloadTaskId(id),
+            new DownloadTaskMetadata(
+                new DownloadMediaIdentity($"BV-{id}", 1, 2, 0, 1, 1),
+                "title",
+                id,
+                "00:01",
+                "avc1",
+                new DownloadQuality(80, "1080P"),
+                new DownloadQuality(30280, "AAC"),
+                string.Empty,
+                string.Empty,
+                0),
+            new DownloadPlan(requestedContent ?? DownloadContentSelection.None, [], 0, nfoRequest: null),
+            new DownloadOutput(outputBase ?? id, null),
+            DateTimeOffset.UnixEpoch);
+    }
+
+    private static DownloadHistoryRecord CreateHistoryRecord(string id)
+    {
+        return new DownloadHistoryRecord(
+            new DownloadTaskId(id),
+            1,
+            0,
+            1,
+            "title",
+            id,
+            "00:01",
+            "avc1",
+            80,
+            "1080P",
+            "AAC",
+            null,
+            [],
+            1,
+            "finished",
+            null);
+    }
+
+    private static void ClearOwnedSqlitePool(string databasePath)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = true,
+            DefaultTimeout = 5
+        }.ToString());
+        SqliteConnection.ClearPool(connection);
+    }
+
+    private sealed class RecordingRuntimeFactory(IDownloadRuntime runtime) : IDownloadRuntimeFactory
+    {
+        public IDownloadRuntime Create()
+        {
+            return runtime;
+        }
+    }
+
+    private sealed class RecordingDownloadRuntime(
+        bool failOnEnqueue = false,
+        Exception? startFailure = null) : IDownloadRuntime
+    {
+        public List<DownloadTaskId> Enqueued { get; } = [];
+
+        public bool Started { get; private set; }
+
+        public bool Ended { get; private set; }
+
+        public bool Disposed { get; private set; }
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (startFailure != null)
+            {
+                throw startFailure;
+            }
+
+            Started = true;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Ended = true;
+            return Task.CompletedTask;
+        }
+
+        public Task EnqueueAsync(
+            DownloadTaskId taskId,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (failOnEnqueue)
+            {
+                throw new InvalidOperationException("Synthetic startup admission failure.");
+            }
+
+            Enqueued.Add(taskId);
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> CancelAsync(DownloadTaskId taskId)
+        {
+            return Task.FromResult(false);
+        }
+
+        public Task PauseAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task ResumeAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public void Dispose()
+        {
+            Disposed = true;
+        }
+    }
+
+    private sealed class BlockingDownloadRuntime : IDownloadRuntime
+    {
+        public TaskCompletionSource StopEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AllowStop { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool IsQuiescent { get; private set; }
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public async Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            StopEntered.TrySetResult();
+            await AllowStop.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            IsQuiescent = true;
+        }
+
+        public Task EnqueueAsync(
+            DownloadTaskId taskId,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> CancelAsync(DownloadTaskId taskId)
+        {
+            return Task.FromResult(false);
+        }
+
+        public Task PauseAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task ResumeAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class BlockingFailingStartRuntime : IDownloadRuntime
+    {
+        public TaskCompletionSource StartEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource FailStartup { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            StartEntered.TrySetResult();
+            await FailStartup.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            throw new TimeoutException("Synthetic delayed runtime startup failure.");
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task EnqueueAsync(
+            DownloadTaskId taskId,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> CancelAsync(DownloadTaskId taskId) => Task.FromResult(false);
+
+        public Task PauseAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task ResumeAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class BlockingSuccessfulStartRuntime : IDownloadRuntime
+    {
+        public TaskCompletionSource StartEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AllowStart { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public List<DownloadTaskId> Enqueued { get; } = [];
+
+        public async Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            StartEntered.TrySetResult();
+            await AllowStart.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task EnqueueAsync(
+            DownloadTaskId taskId,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Enqueued.Add(taskId);
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> CancelAsync(DownloadTaskId taskId) => Task.FromResult(false);
+
+        public Task PauseAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task ResumeAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class ImmediateUiDispatcher : IUiDispatcher
+    {
+        public int InvocationCount { get; private set; }
+
+        public Task InvokeAsync(Action action)
+        {
+            ArgumentNullException.ThrowIfNull(action);
+            InvocationCount++;
+            action();
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FixedClock : IClock
+    {
+        public DateTimeOffset UtcNow { get; } = DateTimeOffset.UnixEpoch;
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            return Task.Delay(delay, cancellationToken);
+        }
+    }
+
+    private sealed class EmptyDownloadTaskStore(
+        IReadOnlyList<DownloadTask>? unfinished = null,
+        IReadOnlyList<DownloadHistoryRecord>? history = null) :
+        IDownloadTaskStore,
+        IDownloadHistoryStore,
+        IDownloadCompletionStore
+    {
+        private readonly Dictionary<DownloadTaskId, DownloadTask> _tasks =
+            (unfinished ?? []).ToDictionary(task => task.Id);
+        private readonly IReadOnlyList<DownloadHistoryRecord> _history = history ?? [];
+
+        public int HistoryPageRequestCount { get; private set; }
+
+        public Task InitializeAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<OperationResult> AddAsync(DownloadTask task, CancellationToken cancellationToken)
+        {
+            _tasks[task.Id] = task;
+            return Task.FromResult(OperationResult.Success());
+        }
+
+        public Task<OperationResult> AddHistoryAsync(
+            DownloadHistoryRecord history,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(OperationResult.Success());
+
+        public Task<OperationResult> UpdateAsync(
+            DownloadTask task,
+            long expectedVersion,
+            CancellationToken cancellationToken)
+        {
+            _tasks[task.Id] = task;
+            return Task.FromResult(OperationResult.Success());
+        }
+
+        public Task<OperationResult> CompleteAsync(
+            DownloadTask task,
+            DownloadHistoryRecord history,
+            long expectedVersion,
+            CancellationToken cancellationToken)
+        {
+            _tasks.Remove(task.Id);
+            return Task.FromResult(OperationResult.Success());
+        }
+
+        public Task<OperationResult> UpdateProgressAsync(
+            DownloadProgressWrite progressWrite,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(OperationResult.Success());
+        }
+
+        public Task<DownloadTask?> FindAsync(DownloadTaskId taskId, CancellationToken cancellationToken)
+        {
+            _tasks.TryGetValue(taskId, out var task);
+            return Task.FromResult(task);
+        }
+
+        public Task<IReadOnlyList<DownloadTask>> GetUnfinishedAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult<IReadOnlyList<DownloadTask>>([.. _tasks.Values]);
+        }
+
+        public Task<bool> IsOutputPathReservedAsync(
+            string basePath,
+            bool ignoreCase,
+            CancellationToken cancellationToken) => Task.FromResult(false);
+
+        public Task<IReadOnlyList<string>> GetActiveOutputReservationKeysAsync(
+            bool ignoreCase,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
+
+        public Task<DownloadHistoryPage> GetHistoryPageAsync(
+            DownloadHistoryCursor? cursor,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            HistoryPageRequestCount++;
+            return Task.FromResult(new DownloadHistoryPage(_history, null));
+        }
+
+        public Task<OperationResult> DeleteAsync(DownloadTaskId taskId, CancellationToken cancellationToken)
+        {
+            _tasks.Remove(taskId);
+            return Task.FromResult(OperationResult.Success());
+        }
+
+        public Task<OperationResult> DeleteHistoryAsync(
+            DownloadTaskId taskId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(OperationResult.Success());
+
+        public Task<OperationResult> ClearHistoryAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult(OperationResult.Success());
+        }
+
+        public Task<IReadOnlyList<QuarantinedDownloadRecord>> GetQuarantinedRecordsAsync(
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<IReadOnlyList<QuarantinedDownloadRecord>>(
+                Array.Empty<QuarantinedDownloadRecord>());
+        }
+    }
+}

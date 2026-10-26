@@ -1,0 +1,31 @@
+using DownKyi.Domain.Downloads;
+
+namespace DownKyi.Application.Downloads;
+
+public sealed partial class DownloadTaskApplicationService
+{
+    public Task<IReadOnlyList<string>> GetActiveOutputReservationKeysAsync(
+        bool ignoreCase,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _store.GetActiveOutputReservationKeysAsync(ignoreCase, cancellationToken);
+    }
+
+    public Task<bool> HasOutputClaimConflictAsync(
+        string basePath,
+        long requestedCid,
+        DownloadActionClaims requestedClaims,
+        bool ignoreCase,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(basePath);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _store.HasOutputClaimConflictAsync(
+            basePath,
+            requestedCid,
+            requestedClaims,
+            ignoreCase,
+            cancellationToken);
+    }
+}

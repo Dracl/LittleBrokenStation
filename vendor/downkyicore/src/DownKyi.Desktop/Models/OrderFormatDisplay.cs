@@ -1,0 +1,9 @@
+using DownKyi.Application.Settings;
+
+namespace DownKyi.Models;
+
+internal class OrderFormatDisplay
+{
+    public string? Name { get; set; }
+    public OrderFormat OrderFormat { get; set; }
+}

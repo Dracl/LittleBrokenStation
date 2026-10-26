@@ -1,0 +1,89 @@
+# Testing
+
+測試分層：
+
+- `DownKyi.Domain.Tests`：state transitions 與 value objects。
+- `DownKyi.Application.Tests`：commands、queries、coordinators 與 ports。
+- `DownKyi.Infrastructure.Tests`：SQLite、migration、write-behind、settings／login persistence、FFmpeg 與 adapters。
+- `DownKyi.Core.Tests`：Bilibili contracts、內容轉換與共用契約。
+- `DownKyi.Desktop.Tests`：real Host、XAML 與 typed navigation smoke tests。
+- `DownKyi.Tests`：executable compatibility 與 end-to-end service tests。
+- `DownKyi.Architecture.Tests`：重要 dependency direction 與 repository wiring。
+- `DownKyi.Windows.Tests`：Windows process、Job Object 與 native handle 行為。
+- `DownKyi.Linux.Tests`：Linux process、signal 與 descendant lifecycle 行為。
+- `DownKyi.MacOS.Tests`：macOS system Bash、signing 與 packaging 行為。
+
+## Formal Test Entry
+
+`tools/DownKyi.CentralTestRunner` 是 repository 正式 test execution entry。
+`script/test-project.ps1` 與 `script/test-solution.ps1` 經由
+`script/test-project-runner.ps1` 呼叫它。Runner 擁有：
+
+- 對 `tests` 下所有 `*.Tests.csproj` 的自動 discovery（排除 `bin`/`obj`）；
+- 每個 discovered project 無條件宣告的 `DownKyiTestPlatforms` platform selection；
+- canonical invocation 與 slice/test identity；
+- `docs/testing/test-runner-policy.json` 中必要的 xUnit in-process routing exceptions；
+- per-project TRX validation 與 target exit result。
+
+`test-runner-policy.json` 不是 test-project registry 或 allowlist。新增 test project 會被自動發現，必須宣告 `DownKyiTestPlatforms`；只有需要偏離預設 Microsoft Testing Platform 路由的專案才加入 policy exception。
+
+`global.json` 選用 Microsoft Testing Platform 的 `dotnet test` 模式；runner
+使用 `--project`、xUnit filter 與 TRX report 參數。既有 in-process exceptions
+仍使用 xUnit native runner，並明確關閉並行。兩條路徑都必須通過同一個非空
+TRX validation，不能以程序 exit code 取代測試結果證據。
+
+正式 PowerShell boundary 每次先 build CentralTestRunner，再執行目前
+repository state 的 runner。不要直接新增平行的 `dotnet test` / `vstest`
+repository entry。
+
+PR product gate 以 `script/test-solution.ps1 -ExcludeCiInfrastructure` 排除
+runner、recorder、process cleanup 與 test-fixture 自測；這些 class slice 的唯一清單
+位於 `script/ci-infrastructure-test-slices.ps1`，並由
+`script/test-ci-infrastructure.ps1` 透過同一個 CentralTestRunner 執行。
+`.github/workflows/ci-infrastructure.yml` 只在上述工具、script、fixture 或測試 owner
+路徑改變時執行三平台 slice。未指定 `-ExcludeCiInfrastructure` 的正式本機
+`test-solution.ps1` 仍執行完整測試集合。
+
+## Lightweight Flight Recorder
+
+CentralTestRunner 從 test process 啟動時記錄 slice identity、root PID 與
+可取得時的 start time，以及 exit、exit code、cancellation、bounded stop、
+cleanup 和 bounded stdout/stderr tail。正常 PASS 會刪除 recorder evidence。
+
+FAIL、cancellation 或 abnormal cleanup 會保存 evidence，並取得一次 failure-time
+best-effort process snapshot。Child rows 只表示當下觀察到的 PID、PPID 與
+start time；沒有觀察到 child 不能解讀成證明 child 不存在。Recorder 是
+diagnostic aid，不判斷 root cause、PrimaryFailure、causal precedence 或完整
+descendant history。
+
+Focused recorder behavior 位於
+`tests/DownKyi.Architecture.Tests/CentralTestRunnerRecorderTests.cs`：一個
+deterministic cancellation fixture 證明失敗 evidence，另一路徑確認 PASS 不保留
+大型 evidence。
+
+短暫 sharing violation、resource busy、rename/move/overwrite 或 database-lock
+失敗使用 [Targeted Resource Forensics](targeted-resource-forensics.md)。先對準
+resource 與真實 operation，再用相同語義的 probe 找 failure window；只有直接
+owner/lifecycle evidence 才能宣稱 root cause proven。不得先 blanket-enable
+tracing、重跑相同失敗或加入 timing workaround。
+
+## Test Isolation
+
+Desktop 的 `AvaloniaFact` 由測試專案內的薄適配層提供：xUnit 負責 discovery、
+metadata、fixture 與結果，Avalonia 官方 `HeadlessUnitTestSession` 負責 UI
+dispatcher 與 per-assembly application isolation。Assembly fixture 在全部測試
+結束後 await session disposal。這個邊界適配 xUnit 4 的 extension API；
+`Avalonia.Headless.XUnit` 尚未支援該 API，詳見
+[AvaloniaUI/Avalonia#22072](https://github.com/AvaloniaUI/Avalonia/issues/22072)。
+上游提供相容版本後可移除此適配層，仍須驗證 constructor、async test 與 dispose
+都在 UI thread，以及原有 UI assertions 與 TRX 非空驗證。
+
+測試不得讀取使用者真實 settings、cookie 或下載 DB。網路
+contract tests 使用 fixture 或 loopback server。OS-specific behavioral tests
+必須位於對應 platform project；Architecture tests 不模擬另一個作業系統。
+
+其他 authority locator：
+
+- module dependency policy：`module-boundary-ratchets.md`
+- dependency、binary 與 release maintenance：`../maintenance.md`
+- formal verification 與 rollback：`../operations/verification-and-rollback.md`

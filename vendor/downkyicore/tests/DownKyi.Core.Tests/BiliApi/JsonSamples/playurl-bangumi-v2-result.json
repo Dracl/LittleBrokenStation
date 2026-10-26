@@ -1,0 +1,18 @@
+{
+  "code": 0,
+  "message": "success",
+  "result": {
+    "video_info": {
+      "quality": 80,
+      "video_codecid": 7,
+      "durl": [
+        {
+          "order": 1,
+          "length": 240000,
+          "size": 4096,
+          "url": "https://media.example.test/segment.flv"
+        }
+      ]
+    }
+  }
+}

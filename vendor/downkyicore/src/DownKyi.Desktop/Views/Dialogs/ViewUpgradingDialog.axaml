@@ -1,0 +1,103 @@
+<UserControl
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vmd="clr-namespace:DownKyi.ViewModels.Dialogs"
+    xmlns:customControl="clr-namespace:DownKyi.CustomControl"
+    x:Class="DownKyi.Views.Dialogs.ViewUpgradingDialog"
+    x:DataType="vmd:ViewUpgradingDialogViewModel"
+    Classes="studio-page studio-dialog">
+    <UserControl.Styles>
+        <StyleInclude Source="/Themes/Styles/StudioDialog.axaml" />
+    </UserControl.Styles>
+    <Border Background="{DynamicResource SpacePaper}" BorderBrush="{DynamicResource SpaceRule}" BorderThickness="1">
+        <Grid RowDefinitions="40,*,Auto">
+            <Grid Classes="dialog-titlebar" ColumnDefinitions="*,40" WindowDecorationProperties.ElementRole="TitleBar">
+                <TextBlock
+                    Text="DownKyi"
+                    FontSize="12"
+                    Margin="24,0"
+                    VerticalAlignment="Center"
+                    Foreground="{DynamicResource SpaceMuted}" />
+                <Button
+                    Grid.Column="1"
+                    Classes="studio-back dialog-close"
+                    Theme="{StaticResource PersonalNavigationButton}"
+                    Command="{Binding RequestCancelMigrationCommand}"
+                    WindowDecorationProperties.ElementRole="User"
+                    ToolTip.Tip="{DynamicResource Close}">
+                    <Path
+                        Width="16"
+                        Height="16"
+                        Data="{Binding CloseIcon.Data}"
+                        Fill="{DynamicResource SpaceInk}"
+                        Stretch="Uniform" />
+                </Button>
+            </Grid>
+            <ScrollViewer
+                Name="DialogBodyScroll"
+                Grid.Row="1"
+                HorizontalScrollBarVisibility="Disabled"
+                VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="24,16,24,24" Spacing="16">
+                    <TextBlock Text="{DynamicResource MigrationHeading}" Classes="dialog-heading" />
+                    <StackPanel Spacing="16" IsVisible="{Binding !CancelConfirmationVisible}">
+                        <customControl:Loading
+                            Foreground="{DynamicResource SpaceAccent}"
+                            Width="40"
+                            Height="40"
+                            HorizontalAlignment="Left"
+                            IsActive="{Binding IsMigrationActive}" />
+                        <TextBlock Text="{Binding Message}" FontSize="16" TextWrapping="Wrap" />
+                        <StackPanel IsVisible="{Binding IsProgressVisible}" Spacing="8">
+                            <TextBlock Text="{Binding Percent, StringFormat={}{0:F0}%}" FontSize="28" FontWeight="Bold" />
+                            <ProgressBar
+                                Name="MigrationProgress"
+                                Value="{Binding Percent}"
+                                Foreground="{DynamicResource SpaceAccent}"
+                                Background="{DynamicResource SpaceRule}"
+                                Height="6" />
+                        </StackPanel>
+                    </StackPanel>
+                    <TextBlock
+                        IsVisible="{Binding CancelConfirmationVisible}"
+                        FontSize="16"
+                        TextWrapping="Wrap"
+                        Text="确定要取消数据迁移吗？已完成写入的数据会保留；剩余迁移可在下次启动时重新尝试。" />
+                </StackPanel>
+            </ScrollViewer>
+            <Border Name="DialogFooter" Classes="dialog-footer" Grid.Row="2">
+                <Grid>
+                    <WrapPanel IsVisible="{Binding !CancelConfirmationVisible}" HorizontalAlignment="Right">
+                        <Button
+                            Name="RequestCancelMigrationButton"
+                            IsVisible="{Binding IsMigrationActive}"
+                            Command="{Binding RequestCancelMigrationCommand}"
+                            Content="取消迁移"
+                            MinWidth="104" />
+                        <Button
+                            Name="RestartMigrationButton"
+                            Classes="studio-primary"
+                            IsVisible="{Binding RestartVisible}"
+                            Command="{Binding RestartCommand}"
+                            Content="立即重启"
+                            MinWidth="104" />
+                    </WrapPanel>
+                    <WrapPanel IsVisible="{Binding CancelConfirmationVisible}" HorizontalAlignment="Right">
+                        <Button
+                            Name="ContinueMigrationButton"
+                            Classes="studio-primary"
+                            Command="{Binding ContinueMigrationCommand}"
+                            Content="继续迁移"
+                            Margin="0,0,12,0"
+                            MinWidth="104" />
+                        <Button
+                            Name="ConfirmCancelMigrationButton"
+                            Command="{Binding ConfirmCancelMigrationCommand}"
+                            Content="取消迁移"
+                            MinWidth="104" />
+                    </WrapPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</UserControl>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- 自绘替身 logo：粉白小电视，M2 起可被设置项载入的本地素材替换 -->
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#fb7299"/>
+  <path d="M20 22 L28 14 M44 22 L36 14" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+  <rect x="14" y="22" width="36" height="26" rx="6" fill="#ffffff"/>
+  <rect x="19" y="27" width="26" height="16" rx="3" fill="#fb7299"/>
+</svg>

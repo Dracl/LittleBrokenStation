@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: daily
+      time: '00:00'
+      timezone: Etc/UTC
+    groups:
+      avalonia-runtime:
+        patterns:
+          - Avalonia
+          - Avalonia.Desktop
+          - Avalonia.Headless
+          - Avalonia.Themes.Fluent
+
+  - package-ecosystem: dotnet-sdk
+    directory: /
+    schedule:
+      interval: daily
+      time: '00:00'
+      timezone: Etc/UTC
+
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: daily
+      time: '00:00'
+      timezone: Etc/UTC

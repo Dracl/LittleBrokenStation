@@ -1,0 +1,119 @@
+using System.Diagnostics;
+using DownKyi.Application.Downloads;
+using DownKyi.Infrastructure.Downloads;
+using DownKyi.Infrastructure.Time;
+using DownKyi.Services.Download;
+using Microsoft.Data.Sqlite;
+
+namespace DownKyi.SystemBenchmarks;
+
+internal static class DownloadRestoreScenario
+{
+    public static async Task<SystemBenchmarkResult> RunAsync(
+        string dataRoot,
+        int taskCount,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(dataRoot);
+        var databasePath = Path.Combine(dataRoot, "restore.db");
+        var clock = new SystemClock();
+        var store = new SqliteDownloadTaskStore(
+            new SqliteDownloadTaskStoreOptions(databasePath),
+            clock);
+        var historyService = DownloadHistoryService.CreateForSharedStore(store);
+        var tasks = new DownloadTaskApplicationService(store, historyService, clock);
+        var projection = new DownloadTaskProjectionStore(
+            tasks,
+            historyService,
+            clock);
+        try
+        {
+            await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            var createdAtUtc = DateTimeOffset.UnixEpoch;
+            for (var index = 0; index < taskCount; index++)
+            {
+                var result = await store
+                    .AddAsync(
+                        DownloadBenchmarkData.CreateDownloadingTask(index, createdAtUtc),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (!result.IsSuccess)
+                {
+                    throw new InvalidOperationException(result.Error?.Message ?? "Unable to seed restore dataset.");
+                }
+            }
+
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+            using var process = Process.GetCurrentProcess();
+            process.Refresh();
+            var baselineWorkingSet = process.WorkingSet64;
+            var peakWorkingSet = baselineWorkingSet;
+            var stopwatch = Stopwatch.StartNew();
+            var restoreTask = projection.GetDownloadingStateAsync(cancellationToken);
+            while (!restoreTask.IsCompleted)
+            {
+                process.Refresh();
+                peakWorkingSet = Math.Max(peakWorkingSet, process.WorkingSet64);
+                await Task.Delay(TimeSpan.FromMilliseconds(1), cancellationToken).ConfigureAwait(false);
+            }
+
+            var state = await restoreTask.ConfigureAwait(false);
+            process.Refresh();
+            peakWorkingSet = Math.Max(peakWorkingSet, process.WorkingSet64);
+            stopwatch.Stop();
+            if (state.Projections.Count != taskCount)
+            {
+                throw new InvalidOperationException("Restore result count does not match the isolated dataset.");
+            }
+
+            return new SystemBenchmarkResult(
+                "unfinished_task_restore",
+                $"unfinished_tasks={taskCount}; sqlite_bytes={GetDatabaseBytes(databasePath)}",
+                "sqlite-projection",
+                Available: true,
+                new Dictionary<string, double>(StringComparer.Ordinal)
+                {
+                    ["elapsed_milliseconds"] = stopwatch.Elapsed.TotalMilliseconds,
+                    ["baseline_working_set_bytes"] = baselineWorkingSet,
+                    ["peak_working_set_bytes"] = peakWorkingSet,
+                    ["peak_working_set_delta_bytes"] = Math.Max(0, peakWorkingSet - baselineWorkingSet),
+                    ["restored_tasks"] = state.Projections.Count
+                },
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["elapsed_milliseconds"] = "ms",
+                    ["baseline_working_set_bytes"] = "bytes",
+                    ["peak_working_set_bytes"] = "bytes",
+                    ["peak_working_set_delta_bytes"] = "bytes",
+                    ["restored_tasks"] = "count"
+                },
+                "Dataset seeding and forced GC are outside the measured interval; the interval includes SQLite materialization and legacy UI projection.");
+        }
+        finally
+        {
+            projection.Dispose();
+            tasks.Dispose();
+            store.Dispose();
+            ClearOwnedSqlitePool(databasePath);
+        }
+    }
+
+    private static void ClearOwnedSqlitePool(string databasePath)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = true,
+            DefaultTimeout = 5
+        }.ToString());
+        SqliteConnection.ClearPool(connection);
+    }
+
+    private static long GetDatabaseBytes(string databasePath)
+    {
+        return new[] { databasePath, $"{databasePath}-wal", $"{databasePath}-shm" }
+            .Where(File.Exists)
+            .Sum(path => new FileInfo(path).Length);
+    }
+}

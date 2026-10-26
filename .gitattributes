@@ -1,0 +1,28 @@
+# 统一 LF，防开发机 CRLF 污染弹幕 ASS/XML 等文本产物
+* text=auto eol=lf
+
+*.cs text eol=lf
+*.csproj text eol=lf
+*.sln text eol=crlf
+*.slnx text eol=crlf
+*.vue text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+
+# 二进制素材（官方素材禁止入库，此处仅限自绘/生成产物）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.webm binary
+*.m4a binary
+*.mp3 binary

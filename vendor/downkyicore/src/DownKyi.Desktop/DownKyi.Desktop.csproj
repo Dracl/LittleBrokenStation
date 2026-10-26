@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
+  </PropertyGroup>
+  <ItemGroup>
+    <AvaloniaResource Include="Resources\**" />
+    <!-- URI-loaded dictionaries have no x:Class and must remain explicit resources. -->
+    <AvaloniaXaml Remove="Languages/**/*.axaml;Themes/**/*.axaml" />
+    <AvaloniaResource Include="Languages/**/*.axaml;Themes/**/*.axaml" />
+    <TrimmerRootDescriptor Include="Linker.xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Controls.DataGrid" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Condition="'$(Configuration)' == 'Debug'" Include="AvaloniaUI.DiagnosticsSupport" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Markdig" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="QRCoder" />
+    <PackageReference Include="System.Formats.Nrbf" />
+    <PackageReference Include="Xaml.Behaviors" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\DownKyi.Core\DownKyi.Core.csproj" />
+    <ProjectReference Include="..\DownKyi.Application\DownKyi.Application.csproj" />
+    <ProjectReference Include="..\DownKyi.Domain\DownKyi.Domain.csproj" />
+    <!-- LBS fork: the download runtime now lives in DownKyi.Worker (see src/DownKyi.Worker). -->
+    <ProjectReference Include="..\DownKyi.Worker\DownKyi.Worker.csproj" />
+    <ProjectReference Include="..\DownKyi.Infrastructure\DownKyi.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

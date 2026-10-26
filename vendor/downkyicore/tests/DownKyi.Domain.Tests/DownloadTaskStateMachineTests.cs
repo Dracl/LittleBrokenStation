@@ -1,0 +1,401 @@
+using System.Collections.Immutable;
+using DownKyi.Domain.Downloads;
+using DownKyi.Domain.Results;
+
+namespace DownKyi.Domain.Tests;
+
+public sealed class DownloadTaskStateMachineTests
+{
+    private static readonly DateTimeOffset Epoch = new(2026, 7, 13, 0, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void LegalLifecycleCreatesNewVersionsWithoutMutatingEarlierSnapshots()
+    {
+        var queued = CreateTask();
+
+        var downloading = queued.Start(Epoch.AddSeconds(1)).RequireValue();
+        var pausing = downloading.Pause(Epoch.AddSeconds(3)).RequireValue();
+        var paused = pausing.ConfirmPaused(Epoch.AddSeconds(4)).RequireValue();
+        var resumed = paused.Resume(Epoch.AddSeconds(5)).RequireValue();
+        var restarted = resumed.Start(Epoch.AddSeconds(6)).RequireValue();
+        var completed = restarted.Complete(
+            new DownloadCompletion(1_789_000_000, "2026-09-08 00:00:00", "25 MB/s"),
+            Epoch.AddSeconds(7)).RequireValue();
+        var deleted = completed.Delete(Epoch.AddSeconds(8)).RequireValue();
+
+        Assert.Equal(DownloadPhase.Queued, queued.Phase);
+        Assert.Equal(DownloadPhase.Downloading, downloading.Phase);
+        Assert.Equal(DownloadPhase.Pausing, pausing.Phase);
+        Assert.Equal(DownloadPhase.Paused, paused.Phase);
+        Assert.Equal(DownloadPhase.Completed, completed.Phase);
+        Assert.Equal(DownloadPhase.Deleted, deleted.Phase);
+        Assert.Equal(7, deleted.Version);
+        Assert.Equal(DownloadProgress.None, completed.Progress);
+        Assert.NotNull(completed.Completion);
+    }
+
+    [Fact]
+    public void FailureRetryCancellationAndDeletionRemainDistinctTransitions()
+    {
+        var downloading = CreateTask().Start(Epoch.AddSeconds(1)).RequireValue();
+        var failure = new DownloadFailure("network.timeout", "Transfer timed out.", true);
+
+        var failed = downloading.Fail(failure, Epoch.AddSeconds(2)).RequireValue();
+        var retried = failed.Retry(Epoch.AddSeconds(3)).RequireValue();
+        var canceled = retried.Cancel(Epoch.AddSeconds(4)).RequireValue();
+        var deleted = canceled.Delete(Epoch.AddSeconds(5)).RequireValue();
+
+        Assert.Same(failure, failed.Failure);
+        Assert.Null(retried.Failure);
+        Assert.Equal(DownloadPhase.Canceled, canceled.Phase);
+        Assert.Equal(DownloadPhase.Deleted, deleted.Phase);
+    }
+
+    [Fact]
+    public void DiscardingUnpublishedArtifactsFailsWithoutRetainingTransferOwnership()
+    {
+        var pending = new DownloadPublishingArtifact(
+            "media",
+            "pending.mp4",
+            4,
+            new string('A', 64));
+        var queued = DownloadTask.Create(
+            new DownloadTaskId("legacy-task"),
+            CreateTask().Metadata,
+            new DownloadPlan(
+                new DownloadContentSelection(false, true, false, false, false),
+                new Dictionary<string, string> { ["video"] = "legacy.m4s" },
+                streamType: 1,
+                nfoRequest: null),
+            new DownloadOutput(
+                "legacy-output",
+                "100 MB",
+                new Dictionary<string, string> { ["cover"] = "published-cover.jpg" },
+                publishingArtifact: pending),
+            Epoch);
+        var downloading = queued.Start(Epoch.AddSeconds(1)).RequireValue()
+            .UpdateTransferState(
+                new DownloadTransferState("legacy-id", ["video"], "video", "Downloading", 4),
+                Epoch.AddSeconds(2)).RequireValue();
+        var failure = new DownloadFailure("legacy.removed", "Legacy transfer removed.", true);
+
+        var failed = downloading.DiscardUnpublishedArtifactsAndFail(
+            failure,
+            Epoch.AddSeconds(3)).RequireValue();
+
+        Assert.Equal(DownloadPhase.Failed, failed.Phase);
+        Assert.Same(failure, failed.Failure);
+        Assert.Equal(DownloadProgress.None, failed.Progress);
+        Assert.Empty(failed.Plan.TransferFiles);
+        Assert.Same(DownloadTransferState.LegacyEmpty, failed.Transfer);
+        Assert.True(failed.Transfer.HasLegacyProvenance);
+        Assert.Null(failed.Output.PublishingArtifact);
+        Assert.Equal("published-cover.jpg", failed.Output.PublishedArtifacts["cover"]);
+    }
+
+    [Fact]
+    public void ResumingAnAlreadyQueuedTaskKeepsItsSnapshot()
+    {
+        var queued = CreateTask();
+
+        var resumed = queued.Resume(Epoch.AddSeconds(1)).RequireValue();
+
+        Assert.Same(queued, resumed);
+    }
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("legacy-backend-id", false)]
+    public void LegacyTasksCannotResumeOrRetry(string? backendIdentity, bool isLegacyTransfer)
+    {
+        var queued = CreateTask().UpdateTransferState(
+            new DownloadTransferState(backendIdentity, [], isLegacyTransfer: isLegacyTransfer),
+            Epoch.AddSeconds(1)).RequireValue();
+        var paused = queued.Pause(Epoch.AddSeconds(2)).RequireValue();
+        var failed = queued.Fail(
+            new DownloadFailure("network.timeout", "Transfer timed out.", true),
+            Epoch.AddSeconds(2)).RequireValue();
+        var results = new[]
+        {
+            queued.Resume(Epoch.AddSeconds(3)),
+            paused.Resume(Epoch.AddSeconds(3)),
+            failed.Resume(Epoch.AddSeconds(3)),
+            failed.Retry(Epoch.AddSeconds(3))
+        };
+
+        foreach (var result in results)
+        {
+            Assert.False(result.IsSuccess);
+            Assert.Equal("download.resume.legacy-transfer", result.Error?.Code);
+            Assert.Equal(OperationErrorKind.Conflict, result.Error?.Kind);
+        }
+
+        Assert.Equal(DownloadPhase.Queued, queued.Phase);
+        Assert.Equal(DownloadPhase.Paused, paused.Phase);
+        Assert.Equal(DownloadPhase.Failed, failed.Phase);
+    }
+
+    [Theory]
+    [InlineData(null, false, false)]
+    [InlineData(null, true, true)]
+    [InlineData("legacy-backend-id", false, true)]
+    public void LegacyProvenanceIncludesTheDurableMarkerOrBackendIdentity(
+        string? backendIdentity,
+        bool isLegacyTransfer,
+        bool expected)
+    {
+        var transfer = new DownloadTransferState(
+            backendIdentity,
+            [],
+            isLegacyTransfer: isLegacyTransfer);
+
+        Assert.Equal(expected, transfer.HasLegacyProvenance);
+    }
+
+    [Fact]
+    public void DiscardingUnpublishedArtifactsCannotReclassifyCanceledTaskAsFailed()
+    {
+        var canceled = CreateTask().Cancel(Epoch.AddSeconds(1)).RequireValue();
+
+        var result = canceled.DiscardUnpublishedArtifactsAndFail(
+            new DownloadFailure("legacy.removed", "Legacy transfer removed.", true),
+            Epoch.AddSeconds(2));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("download.transition.invalid", result.Error?.Code);
+        Assert.Equal(OperationErrorKind.Conflict, result.Error?.Kind);
+        Assert.Equal(DownloadPhase.Canceled, canceled.Phase);
+        Assert.Null(canceled.Failure);
+    }
+
+    [Fact]
+    public void InvalidTransitionReturnsTypedConflictAndKeepsOriginalSnapshot()
+    {
+        var queued = CreateTask();
+
+        var result = queued.Complete(
+            new DownloadCompletion(1, "finished", null),
+            Epoch.AddSeconds(1));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(OperationErrorKind.Conflict, result.Error?.Kind);
+        Assert.Equal("download.transition.invalid", result.Error?.Code);
+        Assert.Equal(DownloadPhase.Queued, queued.Phase);
+        Assert.Equal(0, queued.Version);
+    }
+
+    [Fact]
+    public void PlanAndTransferStatePreserveImmutableContentAndCopyCallerCollections()
+    {
+        var content = new DownloadContentSelection(
+            Audio: false,
+            Video: true,
+            Danmaku: false,
+            Subtitle: true,
+            Cover: false);
+        var files = new Dictionary<string, string> { ["video"] = "video.m4s" };
+        var completed = new List<string> { "cover" };
+        var plan = new DownloadPlan(content, files, streamType: 2, nfoRequest: null);
+        var transfer = new DownloadTransferState("aria-gid", completed);
+
+        files["audio"] = "audio.m4s";
+        completed.Add("subtitle");
+
+        Assert.Equal(content, plan.RequestedContent);
+        Assert.Single(plan.TransferFiles);
+        Assert.Equal("cover", Assert.Single(transfer.CompletedFileKeys));
+    }
+
+    [Theory]
+    [InlineData(true, false, true, false, true)]
+    [InlineData(false, true, false, true, false)]
+    public void ContentSelectionLegacyMapRoundTripsEveryTypedField(
+        bool audio,
+        bool video,
+        bool danmaku,
+        bool subtitle,
+        bool cover)
+    {
+        var expected = new DownloadContentSelection(audio, video, danmaku, subtitle, cover);
+
+        var legacyMap = expected.ToLegacyMap();
+        var restored = DownloadContentSelection.FromLegacyMap(legacyMap);
+
+        Assert.Equal(expected, restored);
+        Assert.Equal(5, legacyMap.Count);
+    }
+
+    [Fact]
+    public void NfoRequestRejectsIncompleteRequiredValues()
+    {
+        Assert.Throws<ArgumentNullException>(() => CreateNfoRequest(title: null));
+        Assert.Throws<ArgumentException>(() =>
+            CreateNfoRequest(genres: default(ImmutableArray<string>)));
+        Assert.Throws<ArgumentException>(() =>
+            CreateNfoRequest(actors: [new DownloadNfoActor(null!, string.Empty)]));
+        Assert.Throws<ArgumentException>(() =>
+            CreateNfoRequest(bilibiliId: new DownloadNfoUniqueId(null!, string.Empty)));
+        Assert.Throws<ArgumentException>(() =>
+            CreateNfoRequest(ratings: [new DownloadNfoRating(null!, 0, 0, false)]));
+    }
+
+    [Fact]
+    public void NfoRequestAcceptsEmptyValuesAndAbsentOptionalId()
+    {
+        var request = CreateNfoRequest();
+
+        Assert.Empty(request.Genres);
+        Assert.Empty(request.Tags);
+        Assert.Empty(request.Actors);
+        Assert.Empty(request.Ratings);
+        Assert.Null(request.BilibiliId);
+    }
+
+    [Fact]
+    public void RestoreRejectsPhasePayloadThatCouldCorruptStateMeaning()
+    {
+        var task = CreateTask();
+
+        Assert.Throws<ArgumentException>(() => DownloadTask.Restore(
+            task.Id,
+            task.Metadata,
+            task.Plan,
+            task.Output,
+            DownloadPhase.Failed,
+            task.Progress,
+            task.Transfer,
+            failure: null,
+            completion: null,
+            version: 1,
+            task.CreatedAtUtc,
+            task.UpdatedAtUtc.AddSeconds(1)));
+    }
+
+    [Fact]
+    public void CompletedHistoryImportPreservesCompletionWithoutInventingRuntimeState()
+    {
+        var queued = CreateTask();
+        var completion = new DownloadCompletion(1234, "finished", "25 MB/s");
+        var migratedAtUtc = Epoch.AddDays(1);
+
+        var history = DownloadTask.ImportCompletedHistory(
+            queued.Id,
+            queued.Metadata,
+            queued.Plan,
+            queued.Output,
+            completion,
+            queued.CreatedAtUtc,
+            migratedAtUtc);
+
+        Assert.Equal(DownloadPhase.Completed, history.Phase);
+        Assert.Same(completion, history.Completion);
+        Assert.Equal(DownloadProgress.None, history.Progress);
+        Assert.Equal(DownloadTransferState.Empty, history.Transfer);
+        Assert.Null(history.Failure);
+        Assert.Equal(0, history.Version);
+        Assert.Equal(queued.CreatedAtUtc, history.CreatedAtUtc);
+        Assert.Equal(migratedAtUtc, history.UpdatedAtUtc);
+    }
+
+    [Fact]
+    public void UpdatesRejectTimestampsOlderThanTheCurrentSnapshot()
+    {
+        var downloading = CreateTask().Start(Epoch.AddSeconds(2)).RequireValue();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => downloading.UpdateTransferState(
+            DownloadTransferState.Empty,
+            Epoch.AddSeconds(1)));
+    }
+
+    [Fact]
+    public void TerminalTaskRejectsFurtherTransferMutation()
+    {
+        var completed = CreateTask()
+            .Start(Epoch.AddSeconds(1)).RequireValue()
+            .Complete(new DownloadCompletion(1, "finished", null), Epoch.AddSeconds(2)).RequireValue();
+
+        var result = completed.UpdateTransferState(
+            new DownloadTransferState("late-gid", []),
+            Epoch.AddSeconds(3));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("download.transfer.terminal", result.Error?.Code);
+    }
+
+    [Fact]
+    public void InterruptedDownloadReturnsToQueueWithoutLosingResumeState()
+    {
+        var transfer = new DownloadTransferState(
+            "aria-gid",
+            ["video-segment-1"],
+            "video",
+            "Downloading",
+            4_000_000);
+        var downloading = CreateTask()
+            .Start(Epoch.AddSeconds(1)).RequireValue()
+            .UpdateTransferState(transfer, Epoch.AddSeconds(2)).RequireValue();
+
+        var recovered = downloading.RecoverInterrupted(Epoch.AddSeconds(3)).RequireValue();
+
+        Assert.Equal(DownloadPhase.Queued, recovered.Phase);
+        Assert.Same(transfer, recovered.Transfer);
+        Assert.Equal("aria-gid", recovered.Transfer.BackendIdentity);
+        Assert.Equal("video-segment-1", Assert.Single(recovered.Transfer.CompletedFileKeys));
+    }
+
+    [Theory]
+    [InlineData(-0.01)]
+    [InlineData(100.01)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    public void ProgressRejectsInvalidPercentages(double percentage)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new DownloadProgress(percentage));
+    }
+
+    private static DownloadTask CreateTask()
+    {
+        var metadata = new DownloadTaskMetadata(
+            new DownloadMediaIdentity("BV1test", 1, 2, 0, 1, 1),
+            "Series",
+            "Episode",
+            "01:00",
+            "AVC",
+            new DownloadQuality(80, "1080P"),
+            new DownloadQuality(30280, "AAC"),
+            "https://example.invalid/cover.jpg",
+            "https://example.invalid/page.jpg",
+            1);
+        var plan = new DownloadPlan(
+            new DownloadContentSelection(false, true, false, false, false),
+            new Dictionary<string, string> { ["video"] = "video.m4s" },
+            streamType: 1,
+            nfoRequest: null);
+
+        return DownloadTask.Create(
+            new DownloadTaskId("task-01"),
+            metadata,
+            plan,
+            new DownloadOutput("episode-01", "100 MB"),
+            Epoch);
+    }
+
+    private static DownloadNfoRequest CreateNfoRequest(
+        string? title = "",
+        ImmutableArray<string>? genres = null,
+        ImmutableArray<DownloadNfoActor>? actors = null,
+        DownloadNfoUniqueId? bilibiliId = null,
+        ImmutableArray<DownloadNfoRating>? ratings = null)
+    {
+        return new DownloadNfoRequest(
+            title!,
+            string.Empty,
+            string.Empty,
+            genres ?? [],
+            [],
+            actors ?? [],
+            bilibiliId,
+            string.Empty,
+            ratings ?? []);
+    }
+}

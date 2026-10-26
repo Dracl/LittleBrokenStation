@@ -1,0 +1,1952 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Input;
+using Avalonia.Media;
+using Avalonia.Styling;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+using Avalonia.Xaml.Interactivity;
+using DownKyi.Application.Desktop;
+using DownKyi.Application.Diagnostics;
+using DownKyi.Application.Lifetime;
+using DownKyi.Application.Settings;
+using DownKyi.Composition;
+using DownKyi.Core.BiliApi.Users.Models;
+using DownKyi.CustomAction;
+using DownKyi.CustomControl.AsyncImageLoader;
+using DownKyi.CustomControl.AsyncImageLoader.Loaders;
+using DownKyi.Desktop.Composition;
+using DownKyi.Infrastructure.Downloads;
+using DownKyi.Infrastructure.Logging;
+using DownKyi.Infrastructure.Settings;
+using DownKyi.Infrastructure.Storage;
+using DownKyi.Platform;
+using DownKyi.Presentation;
+using DownKyi.Services;
+using DownKyi.Services.Download;
+using DownKyi.Services.Media;
+using DownKyi.Services.UserSpace;
+using DownKyi.ViewModels;
+using DownKyi.ViewModels.Settings;
+using DownKyi.Views;
+using DownKyi.Views.Settings;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace DownKyi.Desktop.Tests;
+
+public sealed class UiSmokeTests
+{
+    [AvaloniaFact]
+    public void AvaloniaFactRunsOnOwnedDispatcher()
+    {
+        Assert.True(Avalonia.Threading.Dispatcher.UIThread.CheckAccess());
+    }
+
+    [AvaloniaFact]
+    public async Task PublicationSearchPageAndSnapshotSurviveTypedBackNavigation()
+    {
+        await AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            ViewPublicationViewModel? publication = null;
+            using var navigation = new AvaloniaNavigationService(
+                route => route switch
+                {
+                    AppRoute.Publication => publication!,
+                    AppRoute.VideoDetail => new NavigationProbe(route),
+                    _ => throw new InvalidOperationException($"Unexpected route {route}.")
+                },
+                static action => action());
+            var coordinator = new PublicationPageCoordinatorStub(navigation);
+            publication = new ViewPublicationViewModel(
+                new DesktopInteractionContextStub(navigation),
+                new ContentDownloadCoordinatorStub(),
+                coordinator,
+                NullLogger<ViewPublicationViewModel>.Instance);
+            var payload = PublicationNavigationPayload.All(42);
+
+            navigation.Navigate(new AppNavigationRequest(AppRoute.Publication, AppRoute.Index, payload));
+            publication.InputSearchText = "needle";
+            publication.SearchCommand.Execute(null);
+            publication.Pager.Current = 2;
+            var originalMedia = Assert.Single(publication.Medias);
+
+            navigation.Navigate(new AppNavigationRequest(AppRoute.VideoDetail, AppRoute.Publication, "video"));
+            navigation.GoBack(AppNavigationRegion.Main);
+
+            Assert.Same(publication, navigation.GetActiveView(AppNavigationRegion.Main));
+            Assert.Equal("needle", publication.InputSearchText);
+            Assert.Equal(2, publication.Pager.Current);
+            Assert.Same(originalMedia, Assert.Single(publication.Medias));
+            Assert.Equal("needle", coordinator.LastKeyword);
+            Assert.Equal(2, coordinator.LastPage);
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task PublicationPageUsesOpaqueDynamicVideoCursorsWithoutSearch()
+    {
+        await AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            ViewPublicationViewModel? publication = null;
+            using var navigation = new AvaloniaNavigationService(
+                route => route == AppRoute.Publication
+                    ? publication!
+                    : throw new InvalidOperationException($"Unexpected route {route}."),
+                static action => action());
+            var coordinator = new PublicationPageCoordinatorStub(navigation);
+            publication = new ViewPublicationViewModel(
+                new DesktopInteractionContextStub(navigation),
+                new ContentDownloadCoordinatorStub(),
+                coordinator,
+                NullLogger<ViewPublicationViewModel>.Instance);
+
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.Publication,
+                AppRoute.UserSpace,
+                new DynamicVideoNavigationPayload(42)));
+
+            Assert.Equal("动态中的视频", publication.PageTitle);
+            Assert.False(publication.SearchVisibility);
+            Assert.Equal(new string?[] { null }, coordinator.DynamicOffsets);
+            Assert.Equal("BV1dynamic01", Assert.Single(publication.Medias).Bvid);
+            Assert.Equal(2, publication.Pager.Count);
+
+            publication.Pager.Current = 2;
+
+            Assert.Equal(new string?[] { null, "next.offset" }, coordinator.DynamicOffsets);
+            Assert.Equal("BV1dynamic02", Assert.Single(publication.Medias).Bvid);
+            Assert.Equal(2, publication.Pager.Count);
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task DynamicBannerClearsSelectionBeforeLeavingUserSpace()
+    {
+        await AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            var directory = Path.Combine(
+                Path.GetTempPath(),
+                $"dynamic-banner-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(directory);
+            try
+            {
+                using var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+                ViewUserSpaceViewModel? userSpace = null;
+                var dynamicPage = new NavigationProbe(AppRoute.Publication);
+                using var navigation = new AvaloniaNavigationService(
+                    route => route switch
+                    {
+                        AppRoute.UserSpace => userSpace!,
+                        AppRoute.Publication => dynamicPage,
+                        _ => throw new InvalidOperationException($"Unexpected route {route}.")
+                    },
+                    static action => action());
+                userSpace = new ViewUserSpaceViewModel(
+                    new DesktopInteractionContextStub(navigation),
+                    settings,
+                    new UserSpaceLoadCoordinatorStub(),
+                    NullLogger<ViewUserSpaceViewModel>.Instance);
+
+                navigation.Navigate(new AppNavigationRequest(
+                    AppRoute.UserSpace,
+                    AppRoute.Index,
+                    42L));
+                Dispatcher.UIThread.RunJobs();
+                var dynamicBanner = Assert.Single(userSpace.TabLeftBanners, banner => banner.Id == 1);
+                dynamicBanner.IsSelected = true;
+
+                userSpace.TabLeftBannersCommand.Execute(dynamicBanner);
+
+                Assert.False(dynamicBanner.IsSelected);
+                Assert.Same(dynamicPage, navigation.GetActiveView(AppNavigationRegion.Main));
+                navigation.GoBack(AppNavigationRegion.Main);
+                Assert.Same(userSpace, navigation.GetActiveView(AppNavigationRegion.Main));
+                Assert.False(dynamicBanner.IsSelected);
+                Assert.Equal(1, dynamicPage.NavigatedToCount);
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task TypedSeriesPayloadLoadsTheExistingSeriesPage()
+    {
+        await AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            ViewSeasonsSeriesDetailViewModel? series = null;
+            using var navigation = new AvaloniaNavigationService(
+                route => route == AppRoute.SeasonsSeries
+                    ? series!
+                    : throw new InvalidOperationException($"Unexpected route {route}."),
+                static action => action());
+            var coordinator = new SeriesPageCoordinatorStub();
+            series = new ViewSeasonsSeriesDetailViewModel(
+                new DesktopInteractionContextStub(navigation),
+                coordinator,
+                NullLogger<ViewSeasonsSeriesDetailViewModel>.Instance);
+
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.SeasonsSeries,
+                AppRoute.Index,
+                new SeriesNavigationPayload(42, 99)));
+
+            Assert.Equal(42, coordinator.LastMid);
+            Assert.Equal(99, coordinator.LastId);
+            Assert.Equal(SeasonsSeriesKind.Series, coordinator.LastKind);
+            Assert.Equal(1, coordinator.LastPage);
+            Assert.Equal(30, coordinator.LastPageSize);
+            Assert.Equal("fixture series", series.Title);
+            Assert.Equal("BV1seriesfixture", Assert.Single(series.Medias).Bvid);
+            Assert.True(series.LoadMoreCommand.CanExecute(null));
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task SeriesContinuousLoadingAppendsPagesAndStopsAtTheReportedTotal()
+    {
+        await AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            ViewSeasonsSeriesDetailViewModel? series = null;
+            using var navigation = new AvaloniaNavigationService(
+                route => route == AppRoute.SeasonsSeries
+                    ? series!
+                    : throw new InvalidOperationException($"Unexpected route {route}."),
+                static action => action());
+            var coordinator = new ContinuousSeriesPageCoordinatorStub(totalCount: 5, itemsPerPage: 2);
+            series = new ViewSeasonsSeriesDetailViewModel(
+                new DesktopInteractionContextStub(navigation),
+                coordinator,
+                NullLogger<ViewSeasonsSeriesDetailViewModel>.Instance);
+
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.SeasonsSeries,
+                AppRoute.Index,
+                new SeriesNavigationPayload(42, 99)));
+
+            var firstMedia = series.Medias[0];
+            Assert.Equal([1], coordinator.RequestedPages);
+            Assert.Equal(2, series.Medias.Count);
+
+            series.LoadMoreCommand.Execute(null);
+
+            Assert.Equal([1, 2], coordinator.RequestedPages);
+            Assert.Equal(4, series.Medias.Count);
+            Assert.Same(firstMedia, series.Medias[0]);
+
+            series.LoadMoreCommand.Execute(null);
+
+            Assert.Equal([1, 2, 3], coordinator.RequestedPages);
+            Assert.Equal(5, series.Medias.Count);
+            Assert.False(series.LoadMoreCommand.CanExecute(null));
+
+            series.LoadMoreCommand.Execute(null);
+
+            Assert.Equal([1, 2, 3], coordinator.RequestedPages);
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task DownloadAllDiscoversTheWholeSeriesIntoTheVisibleListBeforeSubmissionCompletes()
+    {
+        await AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            DesktopTestResources.EnsureDownloadProjectionResources();
+            ViewSeasonsSeriesDetailViewModel? series = null;
+            using var navigation = new AvaloniaNavigationService(
+                route => route == AppRoute.SeasonsSeries
+                    ? series!
+                    : throw new InvalidOperationException($"Unexpected route {route}."),
+                static action => action());
+            var coordinator = new StreamingSeriesDownloadCoordinatorStub(
+                totalCount: 5,
+                itemsPerPage: 2);
+            series = new ViewSeasonsSeriesDetailViewModel(
+                new DesktopInteractionContextStub(navigation),
+                coordinator,
+                NullLogger<ViewSeasonsSeriesDetailViewModel>.Instance);
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.SeasonsSeries,
+                AppRoute.Index,
+                new SeriesNavigationPayload(42, 99)));
+
+            var view = new ViewSeasonsSeriesDetail { DataContext = series };
+            var list = Assert.IsType<ListBox>(view.FindControl<ListBox>("NameMedias"));
+            var behaviors = Interaction.GetBehaviors(list);
+            behaviors.Remove(Assert.Single(behaviors.OfType<InfiniteScrollBehavior>()));
+            var window = new Window
+            {
+                Width = 960,
+                Height = 720,
+                Content = view
+            };
+
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+                Assert.Equal(2, series.Medias.Count);
+
+                var released = ObserveGateReleased(series.DownloadCommandGate);
+                series.AddAllToDownloadCommand.Execute(null);
+                await coordinator.DownloadStarted.Task
+                    .WaitAsync(TestContext.Current.CancellationToken)
+                    .ConfigureAwait(true);
+                await Dispatcher.UIThread.InvokeAsync(
+                    static () => { },
+                    DispatcherPriority.Background);
+                window.UpdateLayout();
+
+                Assert.Equal([1, 2, 3], coordinator.RequestedPages);
+                Assert.Equal(5, series.Medias.Count);
+                Assert.Equal(
+                    ["BV1series1", "BV1series2", "BV1series3", "BV1series4", "BV1series5"],
+                    coordinator.SubmittedItems.Select(item => item.Bvid));
+                Assert.False(coordinator.OnlySelected);
+                Assert.True(series.DownloadCommandGate.IsExecuting);
+                Assert.Equal(
+                    "正在准备下载项目 5/5",
+                    series.DownloadPreparationProgressText);
+                var progress = Assert.IsType<TextBlock>(
+                    view.FindControl<TextBlock>("DownloadPreparationProgressText"));
+                Assert.Equal("正在准备下载项目 5/5", progress.Text);
+
+                coordinator.DownloadCompletion.TrySetResult(
+                    new ContentDownloadBatchResult(AddedCount: 5, SkippedCount: 0));
+                await released.WaitAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+                Assert.False(series.DownloadCommandGate.IsExecuting);
+                Assert.Equal(string.Empty, series.DownloadPreparationProgressText);
+            }
+            finally
+            {
+                window.Close();
+                series.Dispose();
+            }
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task DownloadSelectedDoesNotReportCollectionDiscoveryWhileAnotherPageLoads()
+    {
+        await AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            DesktopTestResources.EnsureDownloadProjectionResources();
+            ViewSeasonsSeriesDetailViewModel? series = null;
+            using var navigation = new AvaloniaNavigationService(
+                route => route == AppRoute.SeasonsSeries
+                    ? series!
+                    : throw new InvalidOperationException($"Unexpected route {route}."),
+                static action => action());
+            var coordinator = new StreamingSeriesDownloadCoordinatorStub(
+                totalCount: 4,
+                itemsPerPage: 2,
+                pauseAdditionalPageLoads: true);
+            series = new ViewSeasonsSeriesDetailViewModel(
+                new DesktopInteractionContextStub(navigation),
+                coordinator,
+                NullLogger<ViewSeasonsSeriesDetailViewModel>.Instance);
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.SeasonsSeries,
+                AppRoute.Index,
+                new SeriesNavigationPayload(42, 99)));
+            var view = new ViewSeasonsSeriesDetail { DataContext = series };
+            var window = new Window
+            {
+                Width = 960,
+                Height = 720,
+                Content = view
+            };
+            try
+            {
+                window.Show();
+                series.Medias[0].IsSelected = true;
+
+                var released = ObserveGateReleased(series.DownloadCommandGate);
+                series.AddToDownloadCommand.Execute(null);
+                await coordinator.DownloadStarted.Task
+                    .WaitAsync(TestContext.Current.CancellationToken)
+                    .ConfigureAwait(true);
+
+                series.LoadMoreCommand.Execute(null);
+                await coordinator.AdditionalPageLoadStarted.Task
+                    .WaitAsync(TestContext.Current.CancellationToken)
+                    .ConfigureAwait(true);
+                await Dispatcher.UIThread.InvokeAsync(
+                    static () => { },
+                    DispatcherPriority.Background);
+                window.UpdateLayout();
+
+                Assert.Equal([1, 2], coordinator.RequestedPages);
+                Assert.Equal(string.Empty, series.DownloadPreparationProgressText);
+                Assert.True(series.LoadingMoreVisibility);
+                Assert.True(series.DownloadCommandGate.IsExecuting);
+
+                var loadMoreIndicator = Assert.IsType<DownKyi.CustomControl.Loading>(
+                    view.FindControl<DownKyi.CustomControl.Loading>("LoadMoreIndicator"));
+                var downloadStatus = Assert.IsType<StackPanel>(
+                    view.FindControl<StackPanel>("DownloadPreparationStatusPanel"));
+                Assert.True(loadMoreIndicator.IsVisible);
+                Assert.True(downloadStatus.IsVisible);
+                var loadMoreOrigin = loadMoreIndicator.TranslatePoint(default, view);
+                var downloadStatusOrigin = downloadStatus.TranslatePoint(default, view);
+                Assert.NotNull(loadMoreOrigin);
+                Assert.NotNull(downloadStatusOrigin);
+                Assert.True(
+                    loadMoreOrigin.Value.X + loadMoreIndicator.Bounds.Width
+                    <= downloadStatusOrigin.Value.X);
+
+                coordinator.DownloadCompletion.TrySetResult(
+                    new ContentDownloadBatchResult(AddedCount: 1, SkippedCount: 0));
+                await released.WaitAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+            }
+            finally
+            {
+                coordinator.AdditionalPageLoadCompletion.TrySetResult();
+                coordinator.DownloadCompletion.TrySetResult(
+                    new ContentDownloadBatchResult(AddedCount: 0, SkippedCount: 0));
+                window.Close();
+                series.Dispose();
+            }
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task ShiftClickSelectsAcrossSeriesPagesAppendedToTheContinuousList()
+    {
+        await AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            ViewSeasonsSeriesDetailViewModel? series = null;
+            using var navigation = new AvaloniaNavigationService(
+                route => route == AppRoute.SeasonsSeries
+                    ? series!
+                    : throw new InvalidOperationException($"Unexpected route {route}."),
+                static action => action());
+            var coordinator = new ContinuousSeriesPageCoordinatorStub(totalCount: 4, itemsPerPage: 2);
+            series = new ViewSeasonsSeriesDetailViewModel(
+                new DesktopInteractionContextStub(navigation),
+                coordinator,
+                NullLogger<ViewSeasonsSeriesDetailViewModel>.Instance);
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.SeasonsSeries,
+                AppRoute.Index,
+                new SeriesNavigationPayload(42, 99)));
+
+            var view = new ViewSeasonsSeriesDetail { DataContext = series };
+            var list = Assert.IsType<ListBox>(view.FindControl<ListBox>("NameMedias"));
+            var behaviors = Interaction.GetBehaviors(list);
+            var loadMoreBehavior = Assert.Single(behaviors.OfType<InfiniteScrollBehavior>());
+            Assert.Same(series.LoadMoreCommand, loadMoreBehavior.LoadMoreCommand);
+            behaviors.Remove(loadMoreBehavior);
+            var window = new Window
+            {
+                Width = 960,
+                Height = 720,
+                Content = view
+            };
+
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+
+                var firstContainer = list.GetVisualDescendants().OfType<ListBoxItem>().First();
+                Click(window, firstContainer, RawInputModifiers.None);
+                Assert.Equal(0, list.Selection.AnchorIndex);
+
+                series.LoadMoreCommand.Execute(null);
+                window.UpdateLayout();
+                Assert.Equal(0, list.Selection.AnchorIndex);
+
+                var containers = list.GetVisualDescendants().OfType<ListBoxItem>().ToArray();
+                Assert.Equal(4, containers.Length);
+                Assert.Equal(0, list.Selection.AnchorIndex);
+                Assert.Equal(1, list.SelectedItems?.Count);
+                Click(window, containers[3], RawInputModifiers.Shift);
+
+                Assert.Equal(4, list.SelectedItems?.Count);
+                Assert.All(series.Medias, media => Assert.True(media.IsSelected));
+            }
+            finally
+            {
+                window.Close();
+                series.Dispose();
+            }
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task FavoritesSearchPageAndSnapshotSurviveTypedBackNavigation()
+    {
+        await AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            var directory = Path.Combine(Path.GetTempPath(), $"downkyi-favorites-state-{Guid.NewGuid():N}");
+            var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            try
+            {
+                ViewMyFavoritesViewModel? favorites = null;
+                using var navigation = new AvaloniaNavigationService(
+                    route => route switch
+                    {
+                        AppRoute.MyFavorites => favorites!,
+                        AppRoute.VideoDetail => new NavigationProbe(route),
+                        _ => throw new InvalidOperationException($"Unexpected route {route}.")
+                    },
+                    static action => action());
+                var coordinator = new FavoritesCoordinatorStub(navigation, settings);
+                favorites = new ViewMyFavoritesViewModel(
+                    new DesktopInteractionContextStub(navigation),
+                    new ContentDownloadCoordinatorStub(),
+                    coordinator,
+                    NullLogger<ViewMyFavoritesViewModel>.Instance);
+
+                navigation.Navigate(new AppNavigationRequest(AppRoute.MyFavorites, AppRoute.Index, 42L));
+                favorites.InputSearchText = "needle";
+                favorites.SearchCommand.Execute(null);
+                favorites.Pager.Current = 2;
+                var originalMedia = Assert.Single(favorites.Medias);
+
+                navigation.Navigate(new AppNavigationRequest(AppRoute.VideoDetail, AppRoute.MyFavorites, "video"));
+                navigation.GoBack(AppNavigationRegion.Main);
+
+                Assert.Same(favorites, navigation.GetActiveView(AppNavigationRegion.Main));
+                Assert.Equal("needle", favorites.InputSearchText);
+                Assert.Equal(2, favorites.Pager.Current);
+                Assert.Same(originalMedia, Assert.Single(favorites.Medias));
+                Assert.Equal("needle", coordinator.LastKeyword);
+                Assert.Equal(2, coordinator.LastPage);
+            }
+            finally
+            {
+                await settings.DisposeAsync().ConfigureAwait(true);
+            }
+
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task FavoritesDownloadPreparationRejectsOverlapCancelsAndCanRestart()
+    {
+        await AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            var application = DesktopTestResources.EnsureProductThemeResources();
+            application.Resources["TipDownloadPreparationAlreadyRunning"] =
+                "当前正在准备下载，请先取消准备，再重新选择加入方式。";
+            var directory = Path.Combine(Path.GetTempPath(), $"downkyi-favorites-download-gate-{Guid.NewGuid():N}");
+            var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            try
+            {
+                using var navigation = new AvaloniaNavigationService(
+                    _ => new NavigationProbe(AppRoute.MyFavorites),
+                    static action => action());
+                var downloadCoordinator = new ContentDownloadCoordinatorStub
+                {
+                    WaitForFirstCancellation = true
+                };
+                var interactions = new DesktopInteractionContextStub(navigation);
+                var notifications = Assert.IsType<NotificationServiceStub>(interactions.Notifications);
+                var conflictNotification = new TaskCompletionSource<string>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                notifications.NotificationRaised += (_, args) => conflictNotification.TrySetResult(args.Message);
+                using var favorites = new ViewMyFavoritesViewModel(
+                    interactions,
+                    downloadCoordinator,
+                    new FavoritesCoordinatorStub(navigation, settings),
+                    NullLogger<ViewMyFavoritesViewModel>.Instance);
+                var view = new ViewMyFavorites { DataContext = favorites };
+                var window = new Window { Content = view };
+
+                try
+                {
+                    window.Show();
+                    var status = Assert.IsType<DownKyi.CustomControl.DownloadPreparationStatus>(
+                        view.FindControl<DownKyi.CustomControl.DownloadPreparationStatus>(
+                            "DownloadPreparationStatus"));
+                    Assert.False(status.IsActive);
+
+                    favorites.AddAllToDownloadCommand.Execute(null);
+                    await downloadCoordinator.FirstRequestStarted.Task
+                        .WaitAsync(TestContext.Current.CancellationToken)
+                        .ConfigureAwait(true);
+                    window.UpdateLayout();
+
+                    Assert.True(favorites.DownloadCommandGate.IsExecuting);
+                    Assert.True(status.IsActive);
+
+                    favorites.AddToDownloadCommand.Execute(null);
+                    Assert.Equal(
+                        "当前正在准备下载，请先取消准备，再重新选择加入方式。",
+                        await conflictNotification.Task
+                            .WaitAsync(TestContext.Current.CancellationToken)
+                            .ConfigureAwait(true));
+                    Assert.Equal(1, downloadCoordinator.RequestCount);
+                    Assert.False(downloadCoordinator.FirstRequestCancellationRequested);
+
+                    favorites.OnNavigatedFrom(new AppNavigationContext(
+                        AppNavigationRegion.Main,
+                        AppRoute.MyFavorites,
+                        AppRoute.Index,
+                        Parameter: null,
+                        new AppNavigationParameters()));
+
+                    Assert.False(downloadCoordinator.FirstRequestCancellationRequested);
+                    Assert.True(favorites.DownloadCommandGate.IsExecuting);
+
+                    var firstCanceled = ObserveGateReleased(favorites.DownloadCommandGate);
+                    favorites.CancelDownloadPreparationCommand.Execute(null);
+                    await firstCanceled.WaitAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+                    window.UpdateLayout();
+
+                    Assert.True(downloadCoordinator.FirstRequestCancellationRequested);
+                    Assert.False(favorites.DownloadCommandGate.IsExecuting);
+                    Assert.False(status.IsActive);
+
+                    var restarted = ObserveGateReleased(favorites.DownloadCommandGate);
+                    favorites.AddToDownloadCommand.Execute(null);
+                    await restarted.WaitAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+
+                    Assert.Equal(2, downloadCoordinator.RequestCount);
+                    Assert.False(favorites.DownloadCommandGate.IsExecuting);
+                    Assert.False(status.IsActive);
+                }
+                finally
+                {
+                    window.Close();
+                }
+            }
+            finally
+            {
+                await settings.DisposeAsync().ConfigureAwait(true);
+            }
+
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }).ConfigureAwait(true);
+    }
+
+    private static Task ObserveGateReleased(DownKyi.Commands.DownKyiAsyncCommandGate gate)
+    {
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        gate.IsExecutingChanged += (_, _) =>
+        {
+            if (!gate.IsExecuting)
+            {
+                released.TrySetResult();
+            }
+        };
+        return released.Task;
+    }
+
+    [AvaloniaFact]
+    public Task PublicFavoritesThemeResourcesUpdateImmediatelyAcrossLightDarkLight()
+    {
+        return AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            var application = DesktopTestResources.EnsureProductThemeResources();
+            var originalTheme = application.RequestedThemeVariant;
+            var view = new ViewPublicFavorites();
+            var window = new Window
+            {
+                Content = view,
+                Width = 840,
+                Height = 620
+            };
+
+            try
+            {
+                window.Show();
+                var arrow = view.FindControl<Avalonia.Controls.Shapes.Path>("BackArrowPath");
+                var download = view.FindControl<Avalonia.Controls.Shapes.Path>("DownloadManagePath");
+                Assert.NotNull(arrow);
+                Assert.NotNull(download);
+
+                application.RequestedThemeVariant = ThemeVariant.Light;
+                window.UpdateLayout();
+                Assert.Equal(Color.Parse("#191B1A"), Assert.IsAssignableFrom<ISolidColorBrush>(arrow.Fill).Color);
+                Assert.Equal(
+                    Color.Parse("#191B1A"),
+                    Assert.IsAssignableFrom<ISolidColorBrush>(download.Fill).Color);
+
+                application.RequestedThemeVariant = ThemeVariant.Dark;
+                window.UpdateLayout();
+                Assert.Equal(
+                    Color.Parse("#F2EFE6"),
+                    Assert.IsAssignableFrom<ISolidColorBrush>(arrow.Fill).Color);
+                Assert.Equal(
+                    Color.Parse("#F2EFE6"),
+                    Assert.IsAssignableFrom<ISolidColorBrush>(download.Fill).Color);
+
+                application.RequestedThemeVariant = ThemeVariant.Light;
+                window.UpdateLayout();
+                Assert.Equal(Color.Parse("#191B1A"), Assert.IsAssignableFrom<ISolidColorBrush>(arrow.Fill).Color);
+                Assert.Equal(
+                    Color.Parse("#191B1A"),
+                    Assert.IsAssignableFrom<ISolidColorBrush>(download.Fill).Color);
+            }
+            finally
+            {
+                application.RequestedThemeVariant = originalTheme;
+                window.Close();
+            }
+        });
+    }
+
+    [AvaloniaFact]
+    public Task PublicFavoritesCancelPreparationStaysVisibleAtMinimumWindowSize()
+    {
+        return AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            var application = DesktopTestResources.EnsureProductThemeResources();
+            application.Resources["PreparingDownloads"] = "正在准备下载";
+            application.Resources["CancelDownloadPreparation"] = "取消准备";
+            application.Styles.Add(new Avalonia.Markup.Xaml.Styling.StyleInclude(
+                new Uri("avares://DownKyi.Desktop.Tests/"))
+            {
+                Source = new Uri(
+                    "avares://DownKyi.Desktop/Themes/Styles/download-preparation-status.axaml")
+            });
+            var settingsPath = Path.Combine(
+                Path.GetTempPath(),
+                $"downkyi-public-favorites-layout-{Guid.NewGuid():N}.json");
+            using var settings = new SettingsStore(settingsPath);
+            using var navigation = new AvaloniaNavigationService(
+                _ => new NavigationProbe(AppRoute.PublicFavorites),
+                static action => action());
+            using var favorites = new ViewPublicFavoritesViewModel(
+                new DesktopInteractionContextStub(navigation),
+                new ClipboardServiceStub(),
+                new ContentDownloadCoordinatorStub(),
+                new FavoritesCoordinatorStub(navigation, settings),
+                settings,
+                NullLogger<ViewPublicFavoritesViewModel>.Instance)
+            {
+                Favorites = new FavoritesPageItem
+                {
+                    Title = "fixture favorites",
+                    Description = "fixture description",
+                    UpName = "fixture owner"
+                },
+                ContentVisibility = true
+            };
+            var view = new ViewPublicFavorites { DataContext = favorites };
+            var window = new Window
+            {
+                Content = view,
+                Width = 800,
+                Height = 550
+            };
+
+            Assert.True(favorites.DownloadCommandGate.TryEnter());
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+                var status = Assert.IsType<DownKyi.CustomControl.DownloadPreparationStatus>(
+                    view.FindControl<DownKyi.CustomControl.DownloadPreparationStatus>(
+                        "PublicFavoritesDownloadPreparationStatus"));
+                var cancelButton = Assert.Single(
+                    status.GetVisualDescendants().OfType<Button>(),
+                    button => ReferenceEquals(button.Command, favorites.CancelDownloadPreparationCommand));
+
+                Assert.True(status.IsActive);
+                Assert.True(cancelButton.IsVisible);
+                Assert.True(cancelButton.Bounds.Width > 0);
+                Assert.True(cancelButton.Bounds.Height > 0);
+                var origin = cancelButton.TranslatePoint(default, view);
+                Assert.NotNull(origin);
+                Assert.InRange(origin.Value.X, 0, view.Bounds.Width);
+                Assert.InRange(origin.Value.Y, 0, view.Bounds.Height);
+                Assert.True(origin.Value.X + cancelButton.Bounds.Width <= view.Bounds.Width + 0.5);
+                Assert.True(origin.Value.Y + cancelButton.Bounds.Height <= view.Bounds.Height + 0.5);
+            }
+            finally
+            {
+                favorites.DownloadCommandGate.Exit();
+                window.Close();
+            }
+        });
+    }
+
+    [AvaloniaFact]
+    public Task TypedRouterShrinksThreeLevelHistoryAndRestoresOriginalInstances()
+    {
+        return AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            var created = new List<NavigationProbe>();
+            using var navigation = new AvaloniaNavigationService(
+                route =>
+                {
+                    var probe = new NavigationProbe(route);
+                    created.Add(probe);
+                    return probe;
+                },
+                static action => action());
+
+            navigation.Navigate(new AppNavigationRequest(AppRoute.Index, Parameter: "first"));
+            navigation.Navigate(new AppNavigationRequest(AppRoute.Settings, AppRoute.Index, "second"));
+            navigation.Navigate(new AppNavigationRequest(AppRoute.Toolbox, AppRoute.Settings, "third"));
+
+            Assert.True(navigation.CanGoBack(AppNavigationRegion.Main));
+            Assert.Same(created[2], navigation.GetActiveView(AppNavigationRegion.Main));
+            Assert.Equal(1, created[0].NavigatedFromCount);
+            Assert.Equal("first", created[0].LastContext?.Parameter);
+            Assert.Equal(1, created[1].NavigatedFromCount);
+
+            navigation.GoBack(AppNavigationRegion.Main);
+
+            Assert.Same(created[1], navigation.GetActiveView(AppNavigationRegion.Main));
+            Assert.True(navigation.CanGoBack(AppNavigationRegion.Main));
+            Assert.Equal(2, created[1].NavigatedToCount);
+            Assert.True(created[2].IsDisposed);
+            Assert.False(created[0].IsDisposed);
+
+            navigation.GoBack(AppNavigationRegion.Main);
+
+            Assert.Same(created[0], navigation.GetActiveView(AppNavigationRegion.Main));
+            Assert.False(navigation.CanGoBack(AppNavigationRegion.Main));
+            Assert.Equal(2, created[0].NavigatedToCount);
+            Assert.True(created[1].IsDisposed);
+            Assert.Equal(3, created.Count);
+        });
+    }
+
+    [AvaloniaFact]
+    public Task UserSpaceFavoritesBackPathRestoresOriginalUserSpaceInstance()
+    {
+        return AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            var created = new List<NavigationProbe>();
+            using var navigation = new AvaloniaNavigationService(
+                route =>
+                {
+                    var probe = new NavigationProbe(route);
+                    created.Add(probe);
+                    return probe;
+                },
+                static action => action());
+
+            navigation.Navigate(new AppNavigationRequest(AppRoute.UserSpace, Parameter: 42L));
+            var originalUserSpace = navigation.GetActiveView(AppNavigationRegion.Main);
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.UserSpaceFavorites,
+                AppRoute.UserSpace,
+                Parameter: "folders"));
+            var originalFolders = navigation.GetActiveView(AppNavigationRegion.Main);
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.PublicFavorites,
+                AppRoute.UserSpace,
+                Parameter: 7L));
+
+            navigation.GoBack(AppNavigationRegion.Main);
+            Assert.Same(originalFolders, navigation.GetActiveView(AppNavigationRegion.Main));
+            Assert.True(navigation.CanGoBack(AppNavigationRegion.Main));
+            Assert.True(created[2].IsDisposed);
+
+            navigation.GoBack(AppNavigationRegion.Main);
+            Assert.Same(originalUserSpace, navigation.GetActiveView(AppNavigationRegion.Main));
+            Assert.False(navigation.CanGoBack(AppNavigationRegion.Main));
+            Assert.True(created[1].IsDisposed);
+            Assert.Equal(3, created.Count);
+        });
+    }
+
+    [AvaloniaFact]
+    public Task FriendsBackPathPreservesCurrentSelectionAndChildInstance()
+    {
+        return AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            var created = new List<NavigationProbe>();
+            var desktopInteractions = new DesktopInteractionContextStub();
+            using var navigation = new AvaloniaNavigationService(
+                route =>
+                {
+                    if (route == AppRoute.Friends)
+                    {
+                        return new ViewFriendsViewModel(desktopInteractions);
+                    }
+
+                    var probe = new NavigationProbe(route);
+                    created.Add(probe);
+                    return probe;
+                },
+                static action => action());
+            desktopInteractions.Navigation = navigation;
+
+            var payload = new Dictionary<string, object>
+            {
+                ["mid"] = 42L,
+                ["friendId"] = 0
+            };
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.Friends,
+                AppRoute.MySpace,
+                payload));
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(static () => { });
+
+            var originalFriends = Assert.IsType<ViewFriendsViewModel>(
+                navigation.GetActiveView(AppNavigationRegion.Main));
+            var originalFollowing = Assert.IsType<NavigationProbe>(
+                navigation.GetActiveView(AppNavigationRegion.Friends));
+            Assert.Equal(AppRoute.Following, originalFollowing.Route);
+            Assert.Equal(0, originalFriends.SelectTabId);
+
+            originalFriends.SelectTabId = 1;
+            originalFriends.TabHeadersCommand.Execute(originalFriends.TabHeaders[1]);
+            var originalFollower = Assert.IsType<NavigationProbe>(
+                navigation.GetActiveView(AppNavigationRegion.Friends));
+            Assert.Equal(AppRoute.Follower, originalFollower.Route);
+            Assert.True(originalFollowing.IsDisposed);
+            var followingCreationCount = created.Count(probe => probe.Route == AppRoute.Following);
+
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.UserSpace,
+                AppRoute.Friends,
+                99L));
+            navigation.GoBack(AppNavigationRegion.Main);
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(static () => { });
+
+            Assert.Same(originalFriends, navigation.GetActiveView(AppNavigationRegion.Main));
+            Assert.Equal(1, originalFriends.SelectTabId);
+            Assert.Same(originalFollower, navigation.GetActiveView(AppNavigationRegion.Friends));
+            Assert.False(originalFollower.IsDisposed);
+            Assert.Equal(
+                followingCreationCount,
+                created.Count(probe => probe.Route == AppRoute.Following));
+        });
+    }
+
+    [AvaloniaFact]
+    public Task FriendsBackPathRecreatesCurrentSelectionAfterAnotherEntryReplacesChild()
+    {
+        return AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            var created = new List<NavigationProbe>();
+            var desktopInteractions = new DesktopInteractionContextStub();
+            using var navigation = new AvaloniaNavigationService(
+                route =>
+                {
+                    if (route == AppRoute.Friends)
+                    {
+                        return new ViewFriendsViewModel(desktopInteractions);
+                    }
+
+                    var probe = new NavigationProbe(route);
+                    created.Add(probe);
+                    return probe;
+                },
+                static action => action());
+            desktopInteractions.Navigation = navigation;
+
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.Friends,
+                AppRoute.MySpace,
+                new Dictionary<string, object>
+                {
+                    ["mid"] = 42L,
+                    ["friendId"] = 0
+                }));
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(static () => { });
+
+            var originalFriends = Assert.IsType<ViewFriendsViewModel>(
+                navigation.GetActiveView(AppNavigationRegion.Main));
+            originalFriends.SelectTabId = 1;
+            originalFriends.TabHeadersCommand.Execute(originalFriends.TabHeaders[1]);
+            var originalFollower = Assert.IsType<NavigationProbe>(
+                navigation.GetActiveView(AppNavigationRegion.Friends));
+            Assert.Equal(AppRoute.Follower, originalFollower.Route);
+
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.UserSpace,
+                AppRoute.Friends,
+                99L));
+            navigation.Navigate(new AppNavigationRequest(
+                AppRoute.Friends,
+                AppRoute.UserSpace,
+                new Dictionary<string, object>
+                {
+                    ["mid"] = 99L,
+                    ["friendId"] = 0
+                }));
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(static () => { });
+
+            var replacementFollowing = Assert.IsType<NavigationProbe>(
+                navigation.GetActiveView(AppNavigationRegion.Friends));
+            Assert.Equal(AppRoute.Following, replacementFollowing.Route);
+            Assert.True(originalFollower.IsDisposed);
+
+            navigation.GoBack(AppNavigationRegion.Main);
+            navigation.GoBack(AppNavigationRegion.Main);
+            await Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(static () => { });
+
+            Assert.Same(originalFriends, navigation.GetActiveView(AppNavigationRegion.Main));
+            Assert.Equal(1, originalFriends.SelectTabId);
+            var restoredFollower = Assert.IsType<NavigationProbe>(
+                navigation.GetActiveView(AppNavigationRegion.Friends));
+            Assert.Equal(AppRoute.Follower, restoredFollower.Route);
+            Assert.NotSame(originalFollower, restoredFollower);
+            Assert.False(restoredFollower.IsDisposed);
+            Assert.True(replacementFollowing.IsDisposed);
+            Assert.Equal(2, created.Count(probe => probe.Route == AppRoute.Following));
+            Assert.Equal(2, created.Count(probe => probe.Route == AppRoute.Follower));
+        });
+    }
+
+    [AvaloniaFact]
+    public Task TypedRouterReplacesAndDisposesNestedRegionContent()
+    {
+        return AvaloniaTestDispatcher.RunAsync(() =>
+        {
+            var created = new List<NavigationProbe>();
+            using var navigation = new AvaloniaNavigationService(
+                route =>
+                {
+                    var probe = new NavigationProbe(route);
+                    created.Add(probe);
+                    return probe;
+                },
+                static action => action());
+
+            navigation.NavigateRegion(AppNavigationRegion.Settings, AppRoute.SettingsBasic);
+            navigation.NavigateRegion(AppNavigationRegion.Settings, AppRoute.SettingsNetwork);
+
+            Assert.True(created[0].IsDisposed);
+            Assert.Same(created[1], navigation.GetActiveView(AppNavigationRegion.Settings));
+            Assert.False(navigation.CanGoBack(AppNavigationRegion.Settings));
+
+            navigation.ClearRegion(AppNavigationRegion.Settings);
+
+            Assert.True(created[1].IsDisposed);
+            Assert.Null(navigation.GetActiveView(AppNavigationRegion.Settings));
+        });
+    }
+
+    [AvaloniaFact]
+    public async Task RealHostResolvesShellAndKeyViewsWithoutPrismRuntime()
+    {
+        await AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            DesktopTestResources.EnsureProductThemeResources();
+            AssertPrismRuntimeIsNotLoaded();
+            AssertVideoPageSelectionBehavior();
+
+            var testDirectory = Path.Combine(Path.GetTempPath(), $"downkyi-host-smoke-{Guid.NewGuid():N}");
+            var databasePath = Path.Combine(testDirectory, "downkyi.db");
+            var settingsStore = new SettingsStore(Path.Combine(testDirectory, "settings.json"));
+            var logProvider = new ApplicationLogProvider(
+                new ApplicationLogOptions(Path.Combine(testDirectory, "logs")));
+            var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logProvider));
+            var clipboardMonitor = new ClipboardMonitorStub();
+
+            try
+            {
+                settingsStore.Update(current => current with
+                {
+                    Basic = current.Basic with { IsListenClipboard = AllowStatus.Yes }
+                });
+                using var host = DownKyiHost.Create(services =>
+                {
+                    services.AddDownKyiDesktop(loggerFactory, logProvider);
+                    services.Replace(ServiceDescriptor.Singleton<ISettingsStore>(settingsStore));
+                    services.Replace(ServiceDescriptor.Singleton<IClipboardMonitor>(clipboardMonitor));
+                    services.Replace(ServiceDescriptor.Singleton(
+                        new SqliteDownloadTaskStoreOptions(databasePath)));
+                });
+
+                var window = host.Services.GetRequiredService<MainWindow>();
+                Assert.Null(window.DataContext);
+                var mainViewModel = host.Services.GetRequiredService<MainWindowViewModel>();
+                var imageLoader = host.Services.GetRequiredService<IAsyncImageLoader>();
+
+                Assert.True(window.Width >= window.MinWidth);
+                Assert.True(window.Height >= window.MinHeight);
+                Assert.NotNull(window.Content);
+                Assert.Equal(0, window.Opacity);
+                var startupIndex = Assert.IsType<ViewIndex>(
+                    window.FindControl<ViewIndex>("StartupSurface"));
+                Assert.IsType<StartupIndexViewModel>(startupIndex.DataContext);
+                var startupIndicator = Assert.IsType<Border>(
+                    window.FindControl<Border>("StartupReadinessIndicator"));
+                Assert.True(startupIndicator.IsVisible);
+                Assert.Equal(1, clipboardMonitor.SubscriptionCount);
+                clipboardMonitor.Raise("startup clipboard text");
+                Assert.Equal("startup clipboard text", window.StartupIndex.InputText);
+                window.ActivateContent();
+                Assert.Same(mainViewModel, window.DataContext);
+                Assert.IsType<ViewIndexViewModel>(mainViewModel.MainContent);
+                Assert.Equal(
+                    "startup clipboard text",
+                    Assert.IsType<ViewIndexViewModel>(mainViewModel.MainContent).InputText);
+                Assert.Equal(1, clipboardMonitor.SubscriptionCount);
+                Assert.False(startupIndicator.IsVisible);
+                Assert.IsType<DiskCachedWebImageLoader>(imageLoader);
+                Assert.NotNull(host.Services.GetRequiredService<ViewIndexViewModel>());
+                var videoDetailViewModel = host.Services.GetRequiredService<ViewVideoDetailViewModel>();
+                Assert.NotNull(videoDetailViewModel);
+                Assert.NotNull(host.Services.GetRequiredService<ViewDownloadManagerViewModel>());
+                var networkViewModel = host.Services.GetRequiredService<ViewNetworkViewModel>();
+                Assert.NotNull(networkViewModel);
+                Assert.NotNull(host.Services.GetRequiredService<DownKyi.ViewModels.UserSpace.ViewFavoritesViewModel>());
+
+                var networkView = new ViewNetwork { DataContext = networkViewModel };
+                var networkScroll = Assert.IsType<ScrollViewer>(networkView.Content);
+                var networkSections = Assert.IsType<StackPanel>(networkScroll.Content);
+                Assert.Collection(
+                    networkSections.Children,
+                    child => Assert.IsType<NetworkGeneralSettingsView>(child),
+                    child => Assert.IsType<BuiltinDownloaderSettingsView>(child),
+                    child => Assert.IsType<StackPanel>(child));
+
+                var videoDetailView = new ViewVideoDetail { DataContext = videoDetailViewModel };
+                var videoDetailRoot = Assert.IsType<Grid>(videoDetailView.Content);
+                Assert.Collection(
+                    videoDetailRoot.Children,
+                    child => Assert.IsType<VideoDetailToolbarView>(child),
+                    child => Assert.IsType<Border>(child),
+                    child =>
+                    {
+                        var content = Assert.IsType<Grid>(child);
+                        Assert.Collection(
+                            content.Children,
+                            summary => Assert.IsType<VideoDetailSummaryView>(summary),
+                            selectionArea =>
+                            {
+                                var selectionGrid = Assert.IsType<Grid>(selectionArea);
+                                Assert.Collection(
+                                    selectionGrid.Children,
+                                    selection => Assert.IsType<VideoDetailSelectionView>(selection),
+                                    actions => Assert.IsType<VideoDetailActionsView>(actions));
+                            });
+                    },
+                    child => Assert.IsType<StackPanel>(child),
+                    child => Assert.IsType<VideoDetailOperationStatusView>(child));
+
+                host.Services
+                    .GetRequiredService<IAppNavigationService>()
+                    .Navigate(new AppNavigationRequest(AppRoute.Index, Parameter: "smoke"));
+
+                Assert.NotNull(DesktopApplication.BuildAvaloniaApp());
+                AssertPrismRuntimeIsNotLoaded();
+            }
+            finally
+            {
+                loggerFactory.Dispose();
+                await logProvider.DisposeAsync().ConfigureAwait(true);
+                await settingsStore.DisposeAsync().ConfigureAwait(true);
+                ClearOwnedSqlitePool(databasePath);
+                if (Directory.Exists(testDirectory))
+                {
+                    Directory.Delete(testDirectory, recursive: true);
+                }
+            }
+        }).ConfigureAwait(true);
+    }
+
+    [AvaloniaFact]
+    public async Task MainWindowStillClosesWhenShutdownRequestFaults()
+    {
+        await AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            var testDirectory = Path.Combine(Path.GetTempPath(), $"downkyi-close-smoke-{Guid.NewGuid():N}");
+            var databasePath = Path.Combine(testDirectory, "downkyi.db");
+            var settingsStore = new SettingsStore(Path.Combine(testDirectory, "settings.json"));
+            var logProvider = new ApplicationLogProvider(
+                new ApplicationLogOptions(Path.Combine(testDirectory, "logs")));
+            var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logProvider));
+            var lifecycle = new ThrowingApplicationLifecycle();
+            IHost? host = null;
+
+            try
+            {
+                host = DownKyiHost.Create(services =>
+                {
+                    services.AddDownKyiDesktop(loggerFactory, logProvider);
+                    services.Replace(ServiceDescriptor.Singleton<ISettingsStore>(settingsStore));
+                    services.Replace(ServiceDescriptor.Singleton<IApplicationLifecycle>(lifecycle));
+                    services.Replace(ServiceDescriptor.Singleton(
+                        new SqliteDownloadTaskStoreOptions(databasePath)));
+                });
+                var window = host.Services.GetRequiredService<MainWindow>();
+                var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                window.Closed += (_, _) => closed.TrySetResult();
+
+                window.Show();
+                window.Close();
+
+                await closed.Task
+                    .WaitAsync(TestContext.Current.CancellationToken)
+                    .ConfigureAwait(true);
+                Assert.Equal(1, lifecycle.ShutdownRequestCount);
+                Assert.False(window.IsVisible);
+            }
+            finally
+            {
+                if (host is not null)
+                {
+                    await DisposeHostAsync(host).ConfigureAwait(true);
+                }
+
+                loggerFactory.Dispose();
+                await logProvider.DisposeAsync().ConfigureAwait(true);
+                await settingsStore.DisposeAsync().ConfigureAwait(true);
+                ClearOwnedSqlitePool(databasePath);
+                if (Directory.Exists(testDirectory))
+                {
+                    Directory.Delete(testDirectory, recursive: true);
+                }
+            }
+        }).ConfigureAwait(true);
+    }
+
+    [Fact]
+    public void CreatingHostDoesNotRedirectExistingUserDataPaths()
+    {
+        var pathsBefore = GetUserDataPaths();
+
+        using var host = DownKyiHost.Create();
+
+        Assert.Equal(pathsBefore, GetUserDataPaths());
+    }
+
+    [Fact]
+    public async Task StoppingHostSignalsSharedApplicationCancellation()
+    {
+        using var host = DownKyiHost.Create();
+        var cancellation = host.Services.GetRequiredService<ApplicationCancellation>();
+        await host.StartAsync(TestContext.Current.CancellationToken);
+
+        await host.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(cancellation.ShutdownToken.IsCancellationRequested);
+    }
+
+    [Fact]
+    public void ProductHostStopsIndependentServicesConcurrently()
+    {
+        using var host = DownKyiHost.Create();
+
+        var options = host.Services.GetRequiredService<IOptions<HostOptions>>().Value;
+
+        Assert.True(options.ServicesStopConcurrently);
+    }
+
+    [AvaloniaFact]
+    public async Task ProductionDesktopHostStopsAndDisposesEveryOwnedRuntime()
+    {
+        await AvaloniaTestDispatcher.RunAsync(async () =>
+        {
+            var testDirectory = Path.Combine(
+                Path.GetTempPath(),
+                $"downkyi-host-lifecycle-{Guid.NewGuid():N}");
+            var databasePath = Path.Combine(testDirectory, "downkyi.db");
+            var settingsStore = new SettingsStore(Path.Combine(testDirectory, "settings.json"));
+            var logProvider = new ApplicationLogProvider(
+                new ApplicationLogOptions(Path.Combine(testDirectory, "logs")));
+            var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logProvider));
+            var runtime = new LifecycleProbeDownloadRuntime();
+            IHost? host = null;
+
+            try
+            {
+                host = DownKyiHost.Create(services =>
+                {
+                    services.AddDownKyiDesktop(loggerFactory, logProvider);
+                    services.Replace(ServiceDescriptor.Singleton<ISettingsStore>(settingsStore));
+                    services.Replace(ServiceDescriptor.Singleton(
+                        new SqliteDownloadTaskStoreOptions(databasePath)));
+                    services.Replace(ServiceDescriptor.Singleton<IDownloadRuntimeFactory>(
+                        new LifecycleProbeDownloadRuntimeFactory(runtime)));
+                });
+                var lifecycle = host.Services.GetRequiredService<AvaloniaApplicationLifecycle>();
+                lifecycle.AttachHost(host);
+
+                await lifecycle.StartHostAsync().ConfigureAwait(true);
+                await lifecycle
+                    .RequestShutdownAsync(TestContext.Current.CancellationToken)
+                    .ConfigureAwait(true);
+
+                Assert.Equal(1, runtime.StartCount);
+                Assert.Equal(1, runtime.StopCount);
+                Assert.True(host.Services
+                    .GetRequiredService<ApplicationCancellation>()
+                    .ShutdownToken
+                    .IsCancellationRequested);
+
+                await DisposeHostAsync(host).ConfigureAwait(true);
+                host = null;
+
+                Assert.Equal(1, runtime.DisposeCount);
+            }
+            finally
+            {
+                if (host != null)
+                {
+                    await host
+                        .StopAsync(CancellationToken.None)
+                        .ConfigureAwait(true);
+                    await DisposeHostAsync(host).ConfigureAwait(true);
+                }
+
+                loggerFactory.Dispose();
+                await logProvider.DisposeAsync().ConfigureAwait(true);
+                await settingsStore.DisposeAsync().ConfigureAwait(true);
+                ClearOwnedSqlitePool(databasePath);
+                if (Directory.Exists(testDirectory))
+                {
+                    Directory.Delete(testDirectory, recursive: true);
+                }
+            }
+        }).ConfigureAwait(true);
+    }
+
+    [Fact]
+    public async Task StorageMaintenanceHostedServiceStopsWithApplicationCancellation()
+    {
+        using var cancellation = new ApplicationCancellation();
+        var service = new StorageMaintenanceHostedService(
+            cancellation,
+            NullLogger<StorageMaintenanceHostedService>.Instance);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+        await service.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(cancellation.ShutdownToken.IsCancellationRequested);
+    }
+
+    private static void AssertVideoPageSelectionBehavior()
+    {
+        var firstPage = new VideoPage { Cid = 1, IsSelected = true };
+        var secondPage = new VideoPage { Cid = 2 };
+        var dataGrid = new DataGrid
+        {
+            ItemsSource = new[] { firstPage },
+            SelectionMode = DataGridSelectionMode.Extended
+        };
+        var behaviors = Interaction.GetBehaviors(dataGrid);
+        var behavior = new VideoPageSelectionBehavior();
+        behaviors.Add(behavior);
+
+        try
+        {
+            Assert.Contains(firstPage, dataGrid.SelectedItems.Cast<VideoPage>());
+            Assert.True(behavior.IsSelectAll);
+
+            dataGrid.ItemsSource = new[] { secondPage };
+            secondPage.IsSelected = true;
+
+            Assert.True(firstPage.IsSelected);
+            Assert.Contains(secondPage, dataGrid.SelectedItems.Cast<VideoPage>());
+            Assert.True(behavior.IsSelectAll);
+
+            secondPage.IsSelected = false;
+
+            Assert.Empty(dataGrid.SelectedItems);
+            Assert.False(behavior.IsSelectAll);
+        }
+        finally
+        {
+            behaviors.Remove(behavior);
+        }
+    }
+
+    private static void Click(Window window, Control control, RawInputModifiers modifiers)
+    {
+        var point = control.TranslatePoint(
+            new Point(control.Bounds.Width / 2, control.Bounds.Height / 2),
+            window);
+        Assert.NotNull(point);
+        Assert.InRange(point.Value.X, 0, window.Bounds.Width);
+        Assert.InRange(point.Value.Y, 0, window.Bounds.Height);
+        window.MouseMove(point.Value, modifiers);
+        window.MouseDown(point.Value, MouseButton.Left, modifiers);
+        window.MouseUp(point.Value, MouseButton.Left, modifiers);
+        window.UpdateLayout();
+    }
+
+    private static async ValueTask DisposeHostAsync(IHost host)
+    {
+        if (host is IAsyncDisposable asyncHost)
+        {
+            await asyncHost.DisposeAsync().ConfigureAwait(true);
+            return;
+        }
+
+        host.Dispose();
+    }
+
+    private static void ClearOwnedSqlitePool(string databasePath)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = true,
+            DefaultTimeout = 5
+        }.ToString());
+        SqliteConnection.ClearPool(connection);
+    }
+
+    private static string[] GetUserDataPaths()
+    {
+        return
+        [
+            ApplicationStorage.GetDbPath(),
+            ApplicationStorage.GetSettings(),
+            ApplicationStorage.GetLogin(),
+            ApplicationStorage.GetAriaDir()
+        ];
+    }
+
+    private static void AssertPrismRuntimeIsNotLoaded()
+    {
+        Assert.DoesNotContain(
+            AppDomain.CurrentDomain.GetAssemblies(),
+            assembly => assembly.GetName().Name?.StartsWith("Prism", StringComparison.Ordinal) == true);
+    }
+
+    private sealed class ThrowingApplicationLifecycle : IApplicationLifecycle
+    {
+        public int ShutdownRequestCount { get; private set; }
+
+        public Task RequestShutdownAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ShutdownRequestCount++;
+            return Task.FromException(new InvalidOperationException("Expected shutdown failure."));
+        }
+
+        public Task ExitAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> RestartAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(false);
+        }
+    }
+
+    private sealed class NavigationProbe(AppRoute route) : IAppNavigationAware, IDisposable
+    {
+        public AppRoute Route { get; } = route;
+
+        public int NavigatedToCount { get; private set; }
+
+        public int NavigatedFromCount { get; private set; }
+
+        public bool IsDisposed { get; private set; }
+
+        public AppNavigationContext? LastContext { get; private set; }
+
+        public void OnNavigatedTo(AppNavigationContext context)
+        {
+            LastContext = context;
+            NavigatedToCount++;
+        }
+
+        public void OnNavigatedFrom(AppNavigationContext context)
+        {
+            LastContext = context;
+            NavigatedFromCount++;
+        }
+
+        public void Dispose()
+        {
+            IsDisposed = true;
+        }
+    }
+
+    private sealed class LifecycleProbeDownloadRuntimeFactory(
+        LifecycleProbeDownloadRuntime runtime) : IDownloadRuntimeFactory
+    {
+        public IDownloadRuntime Create()
+        {
+            return runtime;
+        }
+    }
+
+    private sealed class LifecycleProbeDownloadRuntime : IDownloadRuntime
+    {
+        public int StartCount { get; private set; }
+
+        public int StopCount { get; private set; }
+
+        public int DisposeCount { get; private set; }
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            StartCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            StopCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task EnqueueAsync(
+            DownKyi.Domain.Downloads.DownloadTaskId taskId,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> CancelAsync(DownKyi.Domain.Downloads.DownloadTaskId taskId)
+        {
+            return Task.FromResult(false);
+        }
+
+        public Task PauseAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task ResumeAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public void Dispose()
+        {
+            DisposeCount++;
+        }
+    }
+
+    private sealed class PublicationPageCoordinatorStub(IAppNavigationService navigation) : IUserSpacePageCoordinator
+    {
+        private readonly Dictionary<(string Keyword, int Page), PublicationMedia> _medias = [];
+
+        public string? LastKeyword { get; private set; }
+
+        public int LastPage { get; private set; }
+
+        public List<string?> DynamicOffsets { get; } = [];
+
+        public Task<PublicationPageSnapshot> LoadPublicationPageAsync(
+            long mid,
+            int page,
+            int pageSize,
+            long typeId,
+            string? keyword,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastKeyword = keyword;
+            LastPage = page;
+            var key = (keyword ?? string.Empty, page);
+            if (!_medias.TryGetValue(key, out var media))
+            {
+                media = new PublicationMedia(navigation, AppRoute.Publication)
+                {
+                    Bvid = $"BV1fixture{page}",
+                    Title = $"fixture {page}"
+                };
+                _medias.Add(key, media);
+            }
+
+            return Task.FromResult(new PublicationPageSnapshot([media], string.IsNullOrEmpty(keyword) ? 60 : 35));
+        }
+
+        public Task<DynamicVideoPageSnapshot> LoadDynamicVideoPageAsync(
+            long mid,
+            string? offset,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            DynamicOffsets.Add(offset);
+            var firstPage = offset == null;
+            return Task.FromResult(new DynamicVideoPageSnapshot(
+                [new PublicationMedia(navigation, AppRoute.Publication)
+                {
+                    Bvid = firstPage ? "BV1dynamic01" : "BV1dynamic02",
+                    Title = firstPage ? "dynamic 1" : "dynamic 2"
+                }],
+                firstPage ? "next.offset" : null,
+                firstPage));
+        }
+
+        public Task<MySpaceProfileSnapshot?> LoadMyProfileAsync(long mid, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<MySpaceStatsSnapshot> LoadMyStatsAsync(long mid, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<BangumiFollowPageSnapshot> LoadBangumiFollowPageAsync(
+            long mid,
+            DownKyi.Core.BiliApi.Users.Models.BangumiType type,
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class UserSpaceLoadCoordinatorStub : IUserSpaceLoadCoordinator
+    {
+        public Task<UserSpaceSnapshot> LoadAsync(long mid, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new UserSpaceSnapshot(
+                new UserInfoForSpace
+                {
+                    Mid = mid,
+                    Name = "fixture uploader",
+                    Level = 0
+                },
+                string.Empty,
+                null,
+                null,
+                [],
+                null,
+                null));
+        }
+    }
+
+    private sealed class SeriesPageCoordinatorStub : ISeasonsSeriesCoordinator
+    {
+        public long LastMid { get; private set; }
+
+        public long LastId { get; private set; }
+
+        public SeasonsSeriesKind LastKind { get; private set; }
+
+        public int LastPage { get; private set; }
+
+        public int LastPageSize { get; private set; }
+
+        public Task<SeasonsSeriesPageSnapshot> LoadPageAsync(
+            long mid,
+            long id,
+            SeasonsSeriesKind kind,
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastMid = mid;
+            LastId = id;
+            LastKind = kind;
+            LastPage = page;
+            LastPageSize = pageSize;
+            return Task.FromResult(new SeasonsSeriesPageSnapshot(
+                [new DownKyi.Core.BiliApi.Users.Models.SpaceSeasonsSeriesArchives
+                {
+                    Aid = 1,
+                    Bvid = "BV1seriesfixture",
+                    Title = "fixture video"
+                }],
+                "fixture series",
+                61));
+        }
+
+        public Task<ContentDownloadBatchResult?> AddToDownloadAsync(
+            IReadOnlyList<SeasonsSeriesDownloadItem> items,
+            bool onlySelected,
+            CancellationToken cancellationToken,
+            IProgress<ContentDownloadBatchProgress>? progress = null) => throw new NotSupportedException();
+    }
+
+    private sealed class ContinuousSeriesPageCoordinatorStub(
+        int totalCount,
+        int itemsPerPage) : ISeasonsSeriesCoordinator
+    {
+        public List<int> RequestedPages { get; } = [];
+
+        public Task<SeasonsSeriesPageSnapshot> LoadPageAsync(
+            long mid,
+            long id,
+            SeasonsSeriesKind kind,
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RequestedPages.Add(page);
+            var firstIndex = ((page - 1) * itemsPerPage) + 1;
+            var count = Math.Min(itemsPerPage, Math.Max(0, totalCount - firstIndex + 1));
+            var archives = Enumerable.Range(firstIndex, count)
+                .Select(index => new DownKyi.Core.BiliApi.Users.Models.SpaceSeasonsSeriesArchives
+                {
+                    Aid = index,
+                    Bvid = $"BV1series{index}",
+                    Title = $"fixture video {index}"
+                })
+                .ToArray();
+            return Task.FromResult(new SeasonsSeriesPageSnapshot(
+                archives,
+                "fixture series",
+                totalCount));
+        }
+
+        public Task<ContentDownloadBatchResult?> AddToDownloadAsync(
+            IReadOnlyList<SeasonsSeriesDownloadItem> items,
+            bool onlySelected,
+            CancellationToken cancellationToken,
+            IProgress<ContentDownloadBatchProgress>? progress = null) => throw new NotSupportedException();
+    }
+
+    private sealed class StreamingSeriesDownloadCoordinatorStub(
+        int totalCount,
+        int itemsPerPage,
+        bool pauseAdditionalPageLoads = false) : ISeasonsSeriesCoordinator
+    {
+        public List<int> RequestedPages { get; } = [];
+
+        public IReadOnlyList<SeasonsSeriesDownloadItem> SubmittedItems { get; private set; } = [];
+
+        public bool OnlySelected { get; private set; }
+
+        public TaskCompletionSource DownloadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<ContentDownloadBatchResult?> DownloadCompletion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AdditionalPageLoadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource AdditionalPageLoadCompletion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<SeasonsSeriesPageSnapshot> LoadPageAsync(
+            long mid,
+            long id,
+            SeasonsSeriesKind kind,
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RequestedPages.Add(page);
+            if (pauseAdditionalPageLoads && page > 1)
+            {
+                AdditionalPageLoadStarted.TrySetResult();
+                await AdditionalPageLoadCompletion.Task
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(true);
+            }
+
+            var firstIndex = ((page - 1) * itemsPerPage) + 1;
+            var count = Math.Min(itemsPerPage, Math.Max(0, totalCount - firstIndex + 1));
+            var archives = Enumerable.Range(firstIndex, count)
+                .Select(index => new DownKyi.Core.BiliApi.Users.Models.SpaceSeasonsSeriesArchives
+                {
+                    Aid = index,
+                    Bvid = $"BV1series{index}",
+                    Title = $"fixture video {index}"
+                })
+                .ToArray();
+            return new SeasonsSeriesPageSnapshot(
+                archives,
+                "fixture series",
+                totalCount);
+        }
+
+        public async Task<ContentDownloadBatchResult?> AddToDownloadAsync(
+            IReadOnlyList<SeasonsSeriesDownloadItem> items,
+            bool onlySelected,
+            CancellationToken cancellationToken,
+            IProgress<ContentDownloadBatchProgress>? progress = null) =>
+            await SubmitAsync(items, onlySelected, progress, cancellationToken)
+                .ConfigureAwait(true);
+
+        private async Task<ContentDownloadBatchResult?> SubmitAsync(
+            IReadOnlyList<SeasonsSeriesDownloadItem> items,
+            bool onlySelected,
+            IProgress<ContentDownloadBatchProgress>? progress,
+            CancellationToken cancellationToken)
+        {
+            SubmittedItems = items.ToArray();
+            OnlySelected = onlySelected;
+            progress?.Report(new ContentDownloadBatchProgress(
+                ProcessedCount: items.Count,
+                TotalCount: items.Count));
+            DownloadStarted.TrySetResult();
+            return await DownloadCompletion.Task
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(true);
+        }
+    }
+
+    private sealed class FavoritesCoordinatorStub(
+        IAppNavigationService navigation,
+        ISettingsStore settingsStore) : IFavoritesCoordinator
+    {
+        private readonly Dictionary<(string Keyword, int Page), FavoritesMedia> _medias = [];
+
+        public string? LastKeyword { get; private set; }
+
+        public int LastPage { get; private set; }
+
+        public Task<IReadOnlyList<TabHeader>> LoadFoldersAsync(long mid, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<IReadOnlyList<TabHeader>>(
+                [new TabHeader { Id = 7, Title = "fixture folder", SubTitle = "60" }]);
+        }
+
+        public Task<FavoritesMediaPageSnapshot> LoadMediaPageAsync(
+            long favoritesId,
+            int page,
+            int pageSize,
+            string? keyword,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastKeyword = keyword;
+            LastPage = page;
+            var key = (keyword ?? string.Empty, page);
+            if (!_medias.TryGetValue(key, out var media))
+            {
+                media = new FavoritesMedia(navigation, AppRoute.MyFavorites, settingsStore)
+                {
+                    Bvid = $"BV1fixture{page}",
+                    Title = $"fixture {page}"
+                };
+                _medias.Add(key, media);
+            }
+
+            return Task.FromResult(new FavoritesMediaPageSnapshot([media], !string.IsNullOrEmpty(keyword) && page == 1));
+        }
+
+        public Task<PublicFavoritesSnapshot?> LoadPublicFavoritesAsync(
+            long favoritesId,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class ContentDownloadCoordinatorStub : IContentDownloadCoordinator
+    {
+        private int _requestCount;
+        private CancellationToken _firstRequestToken;
+
+        public bool WaitForFirstCancellation { get; init; }
+
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        public bool FirstRequestCancellationRequested => _firstRequestToken.IsCancellationRequested;
+
+        public TaskCompletionSource FirstRequestStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<ContentDownloadBatchResult?> AddAsync(
+            IReadOnlyList<ContentDownloadItem> items,
+            bool onlySelected,
+            CancellationToken cancellationToken,
+            IProgress<ContentDownloadBatchProgress>? progress = null)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var requestCount = Interlocked.Increment(ref _requestCount);
+            if (requestCount == 1)
+            {
+                _firstRequestToken = cancellationToken;
+                FirstRequestStarted.TrySetResult();
+                if (WaitForFirstCancellation)
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(true);
+                }
+            }
+
+            return new ContentDownloadBatchResult(0, 0);
+        }
+    }
+
+    private sealed class DesktopInteractionContextStub : IDesktopInteractionContext
+    {
+        public DesktopInteractionContextStub(IAppNavigationService? navigation = null)
+        {
+            Navigation = navigation!;
+        }
+
+        public IUserNotificationService Notifications { get; } = new NotificationServiceStub();
+
+        public IAppNavigationService Navigation { get; set; }
+
+        public IAppDialogService Dialogs { get; } = new DialogServiceStub();
+    }
+
+    private sealed class ClipboardServiceStub : IClipboardService
+    {
+        public Task SetTextAsync(string text, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ClipboardMonitorStub : IClipboardMonitor
+    {
+        private EventHandler<ClipboardTextChangedEventArgs>? _changed;
+
+        public int SubscriptionCount { get; private set; }
+
+        public event EventHandler<ClipboardTextChangedEventArgs>? Changed
+        {
+            add
+            {
+                _changed += value;
+                SubscriptionCount++;
+            }
+            remove
+            {
+                _changed -= value;
+                SubscriptionCount--;
+            }
+        }
+
+        public void Raise(string text)
+        {
+            _changed?.Invoke(this, new ClipboardTextChangedEventArgs(text));
+        }
+
+        public void Dispose()
+        {
+            _changed = null;
+            SubscriptionCount = 0;
+        }
+    }
+
+    private sealed class NotificationServiceStub : IUserNotificationService
+    {
+        public event EventHandler<UserNotificationEventArgs>? NotificationRaised;
+
+        public void Show(string message)
+        {
+            NotificationRaised?.Invoke(this, new UserNotificationEventArgs(message));
+        }
+    }
+
+    private sealed class DialogServiceStub : IAppDialogService
+    {
+        public Task<AppDialogResult> ShowAsync(
+            AppDialogRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new AppDialogResult(
+                AppDialogOutcome.Canceled,
+                new Dictionary<string, object?>()));
+        }
+    }
+}

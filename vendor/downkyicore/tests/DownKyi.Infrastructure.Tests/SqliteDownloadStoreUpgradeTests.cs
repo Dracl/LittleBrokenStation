@@ -1,0 +1,560 @@
+using System.Collections.Immutable;
+using DownKyi.Application.Downloads;
+using DownKyi.Application.Time;
+using DownKyi.Domain.Downloads;
+using DownKyi.Infrastructure.Downloads;
+using Microsoft.Data.Sqlite;
+
+namespace DownKyi.Infrastructure.Tests;
+
+public sealed class SqliteDownloadStoreUpgradeTests : IDisposable
+{
+    private readonly SqliteDownloadStoreFixture _fixture = new();
+
+    public void Dispose() => _fixture.Dispose();
+
+    [Fact]
+    public async Task InitializeCreatesCurrentSchema()
+    {
+        using var store = _fixture.CreateStore();
+
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(await _fixture.TableExistsAsync("download_history"));
+        Assert.False(await _fixture.TableExistsAsync("downloaded"));
+        Assert.Equal(
+            [
+                "id", "cid", "zone_id", "order", "main_title", "name", "duration",
+                "video_codec_name", "resolution", "audio_codec", "file_size",
+                "published_artifacts", "finished_timestamp", "finished_time", "max_speed_display", "requested_content"
+            ],
+            await _fixture.ReadTableColumnsAsync("download_history"));
+        Assert.False(await _fixture.TableExistsAsync("download_schema_migrations"));
+        Assert.False(await _fixture.TableExistsAsync("download_upgrade_admission_gate"));
+        Assert.Contains(
+            "is_legacy_transfer",
+            await _fixture.ReadTableColumnsAsync("downloading"));
+    }
+
+    [Fact]
+    public async Task CurrentSchemaInitializationRestoresMissingCandidateIndexes()
+    {
+        using (var current = _fixture.CreateStore())
+        {
+            await current.InitializeAsync(TestContext.Current.CancellationToken);
+        }
+
+        using (var connection = await _fixture.OpenConnectionAsync(readOnly: false))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                DROP INDEX IF EXISTS ix_download_base_cid;
+                DROP INDEX IF EXISTS ix_download_history_cid;
+                """;
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+
+        using (var reopened = _fixture.CreateStore())
+        {
+            await reopened.InitializeAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var verification = await _fixture.OpenConnectionAsync(readOnly: true);
+        using var indexes = verification.CreateCommand();
+        indexes.CommandText = """
+            SELECT name FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN ('ix_download_base_cid', 'ix_download_history_cid')
+            ORDER BY name
+            """;
+        using var reader = await indexes.ExecuteReaderAsync(TestContext.Current.CancellationToken);
+        var names = new List<string>();
+        while (await reader.ReadAsync(TestContext.Current.CancellationToken))
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        Assert.Equal(
+            ["ix_download_base_cid", "ix_download_history_cid"],
+            names);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task VersionNineHistoryUpgradesWithoutInventingRequestedContent(
+        bool withLegacyHistory)
+    {
+        _fixture.CopyHistoricalDatabase(9);
+        await _fixture.InsertVersionNineHistoryAsync();
+
+        if (withLegacyHistory)
+        {
+            await _fixture.SimulateLegacyVersionWriteAsync();
+        }
+
+        using var upgraded = _fixture.CreateStore();
+        await upgraded.InitializeAsync(TestContext.Current.CancellationToken);
+        var history = (await upgraded.GetHistoryPageAsync(
+            null,
+            10,
+            TestContext.Current.CancellationToken)).Items;
+
+        Assert.Equal(withLegacyHistory ? 2 : 1, history.Count);
+        Assert.All(history, item => Assert.Null(item.RequestedContent));
+        Assert.Contains(history, item => item.Id.Value == "preexisting-history");
+        if (withLegacyHistory)
+        {
+            Assert.Contains(history, item => item.Id.Value == "legacy-history");
+        }
+        Assert.Contains("requested_content", await _fixture.ReadTableColumnsAsync("download_history"));
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+    }
+
+    [Fact]
+    public async Task VersionTenUpgradesWholePathReservationToActionClaims()
+    {
+        using (var current = _fixture.CreateStore())
+        {
+            await current.InitializeAsync(TestContext.Current.CancellationToken);
+        }
+
+        using (var connection = await _fixture.OpenConnectionAsync(readOnly: false))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                PRAGMA user_version = 10;
+                ALTER TABLE downloading DROP COLUMN is_legacy_transfer;
+                DROP INDEX IF EXISTS ix_download_base_output_reservation;
+                CREATE UNIQUE INDEX ux_download_base_output_reservation
+                    ON download_base(output_reservation_key)
+                    WHERE output_reservation_key IS NOT NULL;
+                """;
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+
+        using (var upgraded = _fixture.CreateStore())
+        {
+            await upgraded.InitializeAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var reopened = await _fixture.OpenConnectionAsync(readOnly: true);
+        using var indexes = reopened.CreateCommand();
+        indexes.CommandText = """
+            SELECT name FROM sqlite_master
+            WHERE type = 'index' AND tbl_name = 'download_base'
+            """;
+        using var reader = await indexes.ExecuteReaderAsync(TestContext.Current.CancellationToken);
+        var names = new List<string>();
+        while (await reader.ReadAsync(TestContext.Current.CancellationToken))
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        Assert.DoesNotContain("ux_download_base_output_reservation", names);
+        Assert.Contains("ix_download_base_output_reservation", names);
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+    }
+
+    [Fact]
+    public async Task VersionElevenMarksExistingGidlessTasksAsLegacyTransfers()
+    {
+        var task = _fixture.CreateQueuedTask(
+            "gidless-legacy",
+            Path.Combine(_fixture.TempDirectory, "gidless-legacy"));
+        using (var current = _fixture.CreateStore())
+        {
+            Assert.True((await current.AddAsync(
+                task,
+                TestContext.Current.CancellationToken)).IsSuccess);
+        }
+
+        using (var connection = await _fixture.OpenConnectionAsync(readOnly: false))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                PRAGMA user_version = 11;
+                ALTER TABLE downloading DROP COLUMN is_legacy_transfer;
+                """;
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var upgraded = _fixture.CreateStore();
+        await upgraded.InitializeAsync(TestContext.Current.CancellationToken);
+        var restored = Assert.Single(await upgraded.GetUnfinishedAsync(
+            TestContext.Current.CancellationToken));
+
+        Assert.Null(restored.Transfer.BackendIdentity);
+        Assert.True(restored.Transfer.IsLegacyTransfer);
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+    }
+
+    [Fact]
+    public async Task InitializeTreatsExistingEmptyDatabaseAsNew()
+    {
+        Directory.CreateDirectory(_fixture.TempDirectory);
+        using (var connection = new SqliteConnection(
+                   new SqliteConnectionStringBuilder
+                   {
+                       DataSource = Path.Combine(_fixture.TempDirectory, "download.db"),
+                       Mode = SqliteOpenMode.ReadWriteCreate,
+                       Pooling = false
+                   }.ToString()))
+        {
+            await connection.OpenAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA application_id = 1";
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken).ConfigureAwait(true);
+        }
+
+        using var store = _fixture.CreateStore();
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(Directory.Exists(Path.Combine(_fixture.TempDirectory, "Backup")));
+    }
+
+    [Fact]
+    public async Task InitializeBacksUpAndMigratesLegacyDatabaseInPlace()
+    {
+        await _fixture.CreateLegacyDatabaseAsync();
+        using var store = _fixture.CreateStore();
+
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+        var restored = Assert.Single(
+            await store.GetUnfinishedAsync(TestContext.Current.CancellationToken));
+
+        Assert.Equal("legacy-resume", restored.Id.Value);
+        Assert.Equal(DownloadPhase.Paused, restored.Phase);
+        Assert.Equal("aria-gid", restored.Transfer.BackendIdentity);
+        Assert.Equal(
+            DownloadContentSelection.None with { Video = true },
+            restored.Plan.RequestedContent);
+        Assert.Equal("video.m4s", restored.Plan.TransferFiles["video"]);
+        Assert.Equal("cover", Assert.Single(restored.Transfer.CompletedFileKeys));
+        Assert.Equal(42.5, restored.Progress.Percentage);
+        Assert.Null(restored.Plan.NfoRequest);
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+    }
+
+    [Fact]
+    public async Task InitializeUpgradesArchiveVersion1024RelationalDatabaseToCurrent()
+    {
+        await _fixture.CreateArchiveV1024DatabaseAsync();
+        using (var store = _fixture.CreateStore())
+        {
+            await store.InitializeAsync(TestContext.Current.CancellationToken);
+
+            var active = Assert.Single(await store.GetUnfinishedAsync(
+                TestContext.Current.CancellationToken));
+            Assert.Equal("v1024-active", active.Id.Value);
+            Assert.Equal(DownloadPhase.Paused, active.Phase);
+            Assert.Equal("v1024-aria-gid", active.Transfer.BackendIdentity);
+            Assert.True(active.Transfer.IsLegacyTransfer);
+            Assert.Equal(DownloadContentSelection.All, active.Plan.RequestedContent);
+            Assert.Equal("video.m4s", active.Plan.TransferFiles["video"]);
+            Assert.Equal("audio.m4s", active.Plan.TransferFiles["audio"]);
+            Assert.Equal("cover", Assert.Single(active.Transfer.CompletedFileKeys));
+            Assert.Equal(42.5, active.Progress.Percentage);
+            Assert.Equal("1080P", active.Metadata.Resolution.Name);
+            Assert.Equal("192K", active.Metadata.AudioCodec.Name);
+
+            var history = Assert.Single((await store.GetHistoryPageAsync(
+                null,
+                10,
+                TestContext.Current.CancellationToken)).Items);
+            Assert.Equal("v1024-history", history.Id.Value);
+            Assert.Equal("History", history.Name);
+            Assert.Equal(1735689600, history.FinishedTimestamp);
+            Assert.Equal("32 Mbps", history.MaximumSpeedText);
+            Assert.Null(history.RequestedContent);
+        }
+
+        Assert.False(await _fixture.TableExistsAsync("downloaded"));
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+
+        using var reopened = _fixture.CreateStore();
+        await reopened.InitializeAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(
+            "v1024-active",
+            Assert.Single(await reopened.GetUnfinishedAsync(
+                TestContext.Current.CancellationToken)).Id.Value);
+        Assert.Equal(
+            "v1024-history",
+            Assert.Single((await reopened.GetHistoryPageAsync(
+                null,
+                10,
+                TestContext.Current.CancellationToken)).Items).Id.Value);
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+    }
+
+    [Fact]
+    public async Task InitializeRecoversCurrentSchemaAfterLegacyVersionRecreatesDownloadedTable()
+    {
+        var currentTask = _fixture.CreatePausedTask("current-active");
+        var currentHistory = DownloadHistoryRecord.FromCompletedTask(
+            _fixture.CreateCompletedTask("current-history", 123));
+        using (var current = _fixture.CreateStore())
+        {
+            Assert.True((await current.AddAsync(
+                currentTask,
+                TestContext.Current.CancellationToken)).IsSuccess);
+            Assert.True((await current.AddHistoryAsync(
+                currentHistory,
+                TestContext.Current.CancellationToken)).IsSuccess);
+        }
+
+        await _fixture.SimulateLegacyVersionWriteAsync();
+
+        using (var recovered = _fixture.CreateStore())
+        {
+            await recovered.InitializeAsync(TestContext.Current.CancellationToken);
+
+            var unfinished = await recovered.GetUnfinishedAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(
+                ["current-active", "legacy-active"],
+                unfinished.Select(task => task.Id.Value).Order(StringComparer.Ordinal));
+            var legacyActive = Assert.Single(unfinished, task => task.Id.Value == "legacy-active");
+            Assert.True(Guid.TryParseExact(legacyActive.Output.StagingToken, "N", out _));
+            Assert.False(Assert.Single(unfinished, task => task.Id.Value == "current-active")
+                .Transfer.IsLegacyTransfer);
+            Assert.True(legacyActive.Transfer.IsLegacyTransfer);
+
+            var history = await recovered.GetHistoryPageAsync(
+                null,
+                10,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(
+                ["current-history", "legacy-history"],
+                history.Items.Select(item => item.Id.Value).Order(StringComparer.Ordinal));
+        }
+
+        Assert.False(await _fixture.TableExistsAsync("downloaded"));
+        Assert.Equal(0, await _fixture.CountDownloadBaseRecordAsync("legacy-history"));
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+
+        using (var reopened = _fixture.CreateStore())
+        {
+            await reopened.InitializeAsync(TestContext.Current.CancellationToken);
+        }
+
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(7)]
+    [InlineData(8)]
+    public async Task InitializeProjectsEveryHistoricalShapeDirectlyToCurrent(int version)
+    {
+        await _fixture.CreateLegacyVersionDatabaseAsync(version);
+        using var store = _fixture.CreateStore();
+
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+
+        var restored = Assert.Single(
+            await store.GetUnfinishedAsync(TestContext.Current.CancellationToken));
+        Assert.Equal($"legacy-v{version}", restored.Id.Value);
+        Assert.Equal(DownloadPhase.Paused, restored.Phase);
+        Assert.Equal("aria-gid", restored.Transfer.BackendIdentity);
+        Assert.Single(Directory.GetFiles(
+            Path.Combine(_fixture.TempDirectory, "Backup"),
+            "download.db.schema-*.bak"));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task LegacyMigrationKeepsCollisionQuarantineWithItsOwner(
+        bool quarantineActive,
+        bool quarantineHistory)
+    {
+        var active = _fixture.CreatePausedTask(
+            "legacy-active-history-collision",
+            Path.Combine(_fixture.TempDirectory, "collision", "video"));
+        await _fixture.CreateVersionThreeDatabaseAsync(active);
+        await _fixture.InsertLegacyDownloadedRowAsync(active.Id.Value);
+        if (quarantineActive)
+        {
+            await _fixture.InsertLegacyQuarantineAsync("downloading", active.Id.Value);
+        }
+
+        if (quarantineHistory)
+        {
+            await _fixture.InsertLegacyQuarantineAsync("downloaded", active.Id.Value);
+        }
+
+        var before = await _fixture.ReadStoredStateAsync(active.Id.Value);
+
+        using (var first = _fixture.CreateStore())
+        {
+            await first.InitializeAsync(TestContext.Current.CancellationToken);
+
+            var unfinished = await first.GetUnfinishedAsync(TestContext.Current.CancellationToken);
+            if (quarantineActive)
+            {
+                Assert.Empty(unfinished);
+            }
+            else
+            {
+                var restored = Assert.Single(unfinished);
+                Assert.Equal(active.Id, restored.Id);
+                Assert.Equal(DownloadPhase.Paused, restored.Phase);
+            }
+
+            Assert.Empty((await first.GetHistoryPageAsync(
+                null,
+                10,
+                TestContext.Current.CancellationToken)).Items);
+            var quarantine = await first.GetQuarantinedRecordsAsync(
+                TestContext.Current.CancellationToken);
+            if (quarantineActive)
+            {
+                var activeQuarantine = Assert.Single(quarantine);
+                Assert.Equal("downloading", activeQuarantine.SourceTable);
+                Assert.Equal(active.Id.Value, activeQuarantine.RecordId);
+                Assert.Equal("legacy-downloading-corrupt-record", activeQuarantine.Reason);
+            }
+            else
+            {
+                Assert.Empty(quarantine);
+            }
+        }
+
+        Assert.Equal(before, await _fixture.ReadStoredStateAsync(active.Id.Value));
+        Assert.Equal(1, await _fixture.CountDownloadBaseRecordAsync(active.Id.Value));
+        Assert.Equal(1, await _fixture.CountDownloadingRecordAsync(active.Id.Value));
+        Assert.False(await _fixture.TableExistsAsync("downloaded"));
+        using var reopened = _fixture.CreateStore();
+        await reopened.InitializeAsync(TestContext.Current.CancellationToken);
+        var reopenedUnfinished = await reopened.GetUnfinishedAsync(
+            TestContext.Current.CancellationToken);
+        if (quarantineActive)
+        {
+            Assert.Empty(reopenedUnfinished);
+        }
+        else
+        {
+            Assert.Equal(active.Id, Assert.Single(reopenedUnfinished).Id);
+        }
+
+        Assert.Empty((await reopened.GetHistoryPageAsync(
+            null,
+            10,
+            TestContext.Current.CancellationToken)).Items);
+    }
+
+    [Fact]
+    public async Task LegacyHistoryQuarantineFollowsExplicitHistoryProjection()
+    {
+        var completed = _fixture.CreateCompletedTask(
+            "legacy-history-quarantine",
+            123,
+            Path.Combine(_fixture.TempDirectory, "history-quarantine", "video"));
+        await _fixture.CreateVersionThreeDatabaseAsync(completed);
+        await _fixture.InsertLegacyQuarantineAsync("downloaded", completed.Id.Value);
+        using var store = _fixture.CreateStore();
+
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+
+        Assert.Empty((await store.GetHistoryPageAsync(
+            null,
+            10,
+            TestContext.Current.CancellationToken)).Items);
+        var quarantine = Assert.Single(
+            await store.GetQuarantinedRecordsAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("download_history", quarantine.SourceTable);
+        Assert.Equal(completed.Id.Value, quarantine.RecordId);
+        Assert.Equal("legacy-downloaded-corrupt-record", quarantine.Reason);
+        Assert.Equal(0, await _fixture.CountDownloadBaseRecordAsync(completed.Id.Value));
+        Assert.False(await _fixture.TableExistsAsync("downloaded"));
+    }
+
+    [Fact]
+    public async Task VersionSevenDatabaseUpgradesWithNoInventedPendingPublication()
+    {
+        var expected = _fixture.CreatePausedTask("v7-publishing-upgrade");
+        _fixture.CopyHistoricalDatabase(7);
+        await _fixture.InsertHistoricalTaskAsync(expected, 7);
+        using (var connection = await _fixture.OpenConnectionAsync(readOnly: true).ConfigureAwait(true))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM pragma_table_info('download_base') WHERE name = 'publishing_key'";
+            Assert.Equal(0L, await command.ExecuteScalarAsync(TestContext.Current.CancellationToken)
+                .ConfigureAwait(true));
+        }
+
+        _fixture.ClearStorePool(); // A process restart does not reuse a pre-migration SQLite connection.
+
+        using var reopened = _fixture.CreateStore();
+        await reopened.InitializeAsync(TestContext.Current.CancellationToken);
+        var restored = Assert.Single(
+            await reopened.GetUnfinishedAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(expected.Output.StagingToken, restored.Output.StagingToken);
+        Assert.Null(restored.Output.PublishingArtifact);
+    }
+
+    [Fact]
+    public async Task ProjectionReplacesANonEmptyInvalidStagingToken()
+    {
+        var expected = _fixture.CreatePausedTask("v7-invalid-staging-token");
+        _fixture.CopyHistoricalDatabase(7);
+        await _fixture.InsertHistoricalTaskAsync(expected, 7);
+        using (var connection = await _fixture.OpenConnectionAsync(readOnly: false))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                UPDATE download_base
+                SET staging_token = 'not-a-guid'
+                WHERE id = @id
+                """;
+            command.Parameters.AddWithValue("@id", expected.Id.Value);
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+
+        using var reopened = _fixture.CreateStore();
+        await reopened.InitializeAsync(TestContext.Current.CancellationToken);
+        var restored = Assert.Single(
+            await reopened.GetUnfinishedAsync(TestContext.Current.CancellationToken));
+
+        Assert.True(Guid.TryParseExact(restored.Output.StagingToken, "N", out _));
+        Assert.NotEqual("not-a-guid", restored.Output.StagingToken);
+    }
+
+    [Fact]
+    public async Task VersionFourRowMigratesWithNoInventedNfoIntent()
+    {
+        await _fixture.CreateVersionFourDatabaseAsync();
+        using var store = _fixture.CreateStore();
+
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+        var restored = Assert.Single(
+            await store.GetUnfinishedAsync(TestContext.Current.CancellationToken));
+
+        Assert.Null(restored.Plan.NfoRequest);
+        Assert.Equal(DownloadContentSelection.None, restored.Plan.RequestedContent);
+        Assert.Null(restored.Plan.RequestedContent.MediaKind);
+    }
+}

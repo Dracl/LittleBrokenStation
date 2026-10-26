@@ -1,0 +1,36 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:DownKyi.ViewModels"
+             x:Class="DownKyi.Views.ViewDownloadManager"
+             x:DataType="vm:ViewDownloadManagerViewModel"
+             Background="{DynamicResource SpacePaper}">
+    <Grid RowDefinitions="Auto,16,*" Margin="24,18,24,20">
+        <Border BorderBrush="{DynamicResource SpaceInk}" BorderThickness="0,0,0,1" Padding="0,0,0,12">
+            <Grid Name="DownloadPageHeader" ColumnDefinitions="Auto,*,Auto" MinHeight="56">
+                <Button Command="{Binding BackSpaceCommand}" Theme="{StaticResource PersonalNavigationButton}">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Path Theme="{StaticResource NavigationIcon.ArrowBack}" Width="24" Height="24"
+                              Fill="{DynamicResource SpaceInk}" VerticalAlignment="Center" />
+                        <TextBlock Text="{DynamicResource DownloadManager}" FontSize="32" FontWeight="Bold"
+                                   Foreground="{DynamicResource SpaceInk}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <ListBox Name="NameLeftTabHeaders" Grid.Column="2" VerticalAlignment="Center"
+                         Theme="{StaticResource PersonalTabs}" ItemContainerTheme="{StaticResource DownloadSectionItem}"
+                         ItemsSource="{Binding TabHeaders}" SelectedIndex="{Binding SelectTabId}">
+                    <Interaction.Behaviors>
+                        <EventTriggerBehavior EventName="SelectionChanged">
+                            <InvokeCommandAction Command="{Binding LeftTabHeadersCommand}"
+                                                 CommandParameter="{Binding ElementName=NameLeftTabHeaders, Path=SelectedItem}" />
+                        </EventTriggerBehavior>
+                    </Interaction.Behaviors>
+                    <ListBox.ItemsPanel>
+                        <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                    </ListBox.ItemsPanel>
+                </ListBox>
+            </Grid>
+        </Border>
+        <ContentControl Name="DownloadRegion" Grid.Row="2" Content="{Binding RegionContent}"
+                        HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
+    </Grid>
+</UserControl>

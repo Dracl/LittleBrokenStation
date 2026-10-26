@@ -1,0 +1,33 @@
+<Project>
+  <PropertyGroup>
+    <DownKyiTargetFramework>net10.0</DownKyiTargetFramework>
+    <TargetFramework Condition="'$(TargetFramework)' == '' and '$(TargetFrameworks)' == ''">$(DownKyiTargetFramework)</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <Version Condition="Exists('$(MSBuildThisFileDirectory)version.txt')">$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)version.txt').Trim())</Version>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisMode>All</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <CodeAnalysisTreatWarningsAsErrors>true</CodeAnalysisTreatWarningsAsErrors>
+    <!-- Consumers use the completed implementation assembly instead of the SDK's transient obj/ref copy. -->
+    <CompileUsingReferenceAssemblies>false</CompileUsingReferenceAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.CLSCompliantAttribute">
+      <_Parameter1>false</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(DownKyiLegacyCaAudit)' == 'true' and '$(DownKyiLegacyCaAuditSarifDirectory)' != ''">
+    <ErrorLog>$(DownKyiLegacyCaAuditSarifDirectory)/$(MSBuildProjectName).sarif</ErrorLog>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(DownKyiLegacyCaAudit)' != 'true'">
+    <GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)script/code-metrics/legacy-ca-blocking.globalconfig" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(DownKyiLegacyCaAudit)' == 'true'">
+    <GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)script/code-metrics/legacy-ca.globalconfig" />
+  </ItemGroup>
+</Project>
