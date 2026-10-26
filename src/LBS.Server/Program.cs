@@ -56,6 +56,8 @@ builder.Services.AddHostedService<LedgerBackupWorker>();
 // 分站海马体：业务侧 Record 一下就走，抄录员后台攒批落 events 表，供站长与未来 AI 分析。
 builder.Services.AddSingleton<EventRecorder>();
 builder.Services.AddHostedService<EventRecorderWorker>();
+// 扫码登录代理：B 站 qrcode 协议的服务端握手（前端只见状态，cookie 只进不出）。
+builder.Services.AddSingleton<LbsQrLogin>();
 
 // 下载引擎（移植自 downkyicore 的 headless 运行时）：启动时拉起下载 runtime 并自检 ffmpeg
 builder.Services.AddLbsDownloadEngine(new EngineOptions(EngineOptions.DefaultUserAgent));
