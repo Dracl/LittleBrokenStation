@@ -711,6 +711,59 @@ async function gateRelease() {
   }
 }
 
+// ─── 台账备份：station.db 快照档案柜（自动周期 + 手动补拍）───
+const backupState = ref(null) // { intervalHours, keep, lastBackupUtc, files:[{name,bytes,modifiedUtc}] }
+const backupBusy = ref(false)
+const backupText = ref('')
+
+async function loadBackups() {
+  try {
+    const res = await fetch('/api/backups')
+    backupState.value = res.ok ? await res.json() : null
+  } catch {
+    // 后端打盹时留上一份
+  }
+}
+
+async function backupNow() {
+  if (backupBusy.value) return
+  backupBusy.value = true
+  try {
+    const res = await fetch('/api/backups/run', { method: 'POST' })
+    const body = await res.json().catch(() => null)
+    backupText.value = body?.message ?? (res.ok ? '已落柜' : '快照没落成')
+    await loadBackups()
+  } catch {
+    backupText.value = '快照没落成，稍后再试'
+  } finally {
+    backupBusy.value = false
+  }
+}
+
+async function backupConfig() {
+  if (backupBusy.value || !backupState.value) return
+  const res = await fetch('/api/backups/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ intervalHours: backupState.value.intervalHours, keep: backupState.value.keep }),
+  })
+  const body = await res.json().catch(() => null)
+  backupText.value = body?.message ?? '备份安排已更新'
+}
+
+async function backupDelete(name) {
+  if (backupBusy.value) return
+  if (!window.confirm(`确定销掉快照「${name}」？`)) return
+  const res = await fetch(`/api/backups/${name}`, { method: 'DELETE' })
+  const body = await res.json().catch(() => null)
+  backupText.value = body?.message ?? '已销'
+  await loadBackups()
+}
+
+function fmtBackupTime(iso) {
+  return iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '—'
+}
+
 function bootAdmin() {
   fetch('/api/health')
     .then((r) => r.json())
@@ -729,6 +782,7 @@ function bootAdmin() {
   loadCollectMode()
   loadEngine()
   loadDlQueue()
+  loadBackups()
   if (!dlTimer) dlTimer = setInterval(loadDlQueue, 5000)
 }
 
@@ -1362,6 +1416,52 @@ onUnmounted(() => {
             </label>
           </div>
         </div>
+      </section>
+
+      <section v-if="backupState" class="lbs-card md:col-span-2">
+        <div class="mb-4 flex items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            台账备份
+            <span class="ml-1 rounded-full border border-adminAccent/30 px-2 py-0.5 text-[10px] normal-case tracking-normal text-adminAccent/70">station.db 在线快照</span>
+          </h3>
+          <div class="flex shrink-0 items-center gap-2">
+            <select v-model.number="backupState.intervalHours" class="eng-input w-auto cursor-pointer !py-1 !text-[11px]" @change="backupConfig">
+              <option :value="6">每 6 小时</option>
+              <option :value="24">每 24 小时</option>
+              <option :value="72">每 3 天</option>
+              <option :value="168">每 7 天</option>
+            </select>
+            <select v-model.number="backupState.keep" class="eng-input w-auto cursor-pointer !py-1 !text-[11px]" @change="backupConfig">
+              <option :value="7">保 7 份</option>
+              <option :value="14">保 14 份</option>
+              <option :value="30">保 30 份</option>
+            </select>
+            <button class="lbs-btn-ghost !px-3 !py-1 !text-[11px]" :disabled="backupBusy" @click="backupNow">立即拍一张</button>
+          </div>
+        </div>
+        <p class="mb-3 text-xs leading-5 text-white/30">
+          周期工自动把台账快照进 data/backups/（SQLite 在线备份，写盘中也能拍）。想备份整座分站就拷数据目录；恢复：停站 → 用快照覆盖 station.db 并删掉 -wal/-shm → 起站。
+          上次落柜：{{ fmtBackupTime(backupState.lastBackupUtc) }}
+        </p>
+        <ul v-if="backupState?.files?.length" class="max-h-[220px] space-y-1.5 overflow-y-auto pr-1">
+          <li v-for="f in backupState.files" :key="f.name" class="flex items-center gap-2 font-mono text-xs text-white/60">
+            <span class="min-w-0 flex-1 truncate">{{ f.name }}</span>
+            <span class="shrink-0 text-white/30">{{ (f.bytes / 1024).toFixed(0) }} KB</span>
+            <span class="shrink-0 text-white/30">{{ fmtBackupTime(f.modifiedUtc) }}</span>
+            <button
+              class="shrink-0 rounded-md p-1 text-white/35 transition hover:bg-rose-500/20 hover:text-rose-300"
+              title="销掉这份快照"
+              :disabled="backupBusy"
+              @click="backupDelete(f.name)"
+            >
+              <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
+              </svg>
+            </button>
+          </li>
+        </ul>
+        <p v-else class="text-xs text-white/25">档案柜还空着，点「立即拍一张」开张。</p>
+        <p v-if="backupText" class="mt-2 text-xs text-adminAccent/80">{{ backupText }}</p>
       </section>
 
       <section class="lbs-card md:col-span-2">

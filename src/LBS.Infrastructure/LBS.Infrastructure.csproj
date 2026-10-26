@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
     <!-- 直接抬到带安全修复的 e_sqlite3（NU1903：2.1.11 有已知高危漏洞） -->
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.*" />
     <ProjectReference Include="..\LBS.Domain\LBS.Domain.csproj" />

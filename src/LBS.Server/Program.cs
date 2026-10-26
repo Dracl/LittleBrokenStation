@@ -50,6 +50,9 @@ builder.Services.AddHostedService<StartupReviverWorker>();
 builder.Services.AddSingleton<DownloadPauseBoard>();
 // 站长室锁闸：管理类端点的口令门，朋友共用分站前上锁；访客路由不受影响。
 builder.Services.AddSingleton<AdminGate>();
+// 台账备份员：station.db 在线快照到 data/backups，周期巡工 + 站长室手动补拍。
+builder.Services.AddSingleton<LedgerBackup>();
+builder.Services.AddHostedService<LedgerBackupWorker>();
 
 // 下载引擎（移植自 downkyicore 的 headless 运行时）：启动时拉起下载 runtime 并自检 ffmpeg
 builder.Services.AddLbsDownloadEngine(new EngineOptions(EngineOptions.DefaultUserAgent));
@@ -930,6 +933,33 @@ app.MapPost("/api/downloads/cancel", (CancelDownloadsRequest request, StationDb 
     });
 });
 
+// ─── 台账备份：station.db 快照的档案柜 ──────────────────────────────
+app.MapGet("/api/backups", (LedgerBackup backup) => Results.Ok(new
+{
+    intervalHours = backup.IntervalHours,
+    keep = backup.Keep,
+    lastBackupUtc = backup.LastBackupUtc(),
+    files = backup.List().Select(f => new { name = f.Name, bytes = f.Bytes, modifiedUtc = f.ModifiedUtc }),
+}));
+
+app.MapPost("/api/backups/run", (LedgerBackup backup) =>
+{
+    var name = backup.Run();
+    return Results.Ok(new { message = $"台账快照已落柜：{name}" });
+});
+
+app.MapPost("/api/backups/config", (BackupConfigRequest request, LedgerBackup backup) =>
+{
+    var okInterval = request.IntervalHours is null || backup.SetInterval(request.IntervalHours.Value);
+    var okKeep = request.Keep is null || backup.SetKeep(request.Keep.Value);
+    return okInterval && okKeep
+        ? Results.Ok(new { message = "备份安排已更新" })
+        : Results.BadRequest(new { message = "备份安排只认这些档（6/24/72/168 小时；保 7/14/30 份）" });
+});
+
+app.MapDelete("/api/backups/{name}", (string name, LedgerBackup backup) =>
+    backup.Delete(name) ? Results.Ok(new { message = "快照已销" }) : Results.BadRequest(new { message = "没有这个快照" }));
+
 // 节流闸状态：站长室展示风控冷却倒计时。
 app.MapGet("/api/station/throttle", (LbsApiThrottle throttle) => Results.Ok(new
 {
@@ -1222,6 +1252,7 @@ internal sealed record UpImportRequest(string Url);
 internal sealed record CancelDownloadsRequest(IReadOnlyList<long>? VideoIds);
 internal sealed record SetDownloadIntervalRequest(int Seconds);
 internal sealed record GateRequest(string? Password);
+internal sealed record BackupConfigRequest(int? IntervalHours, int? Keep);
 internal sealed record LoginCookieRequest(string Cookie);
 internal sealed record CollectModeRequest(string Mode);
 internal sealed record PurgeRequest(bool Confirm);

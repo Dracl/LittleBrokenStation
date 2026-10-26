@@ -25,6 +25,7 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
         "/api/downloads/",
         "/api/login/",
         "/api/subscriptions",
+        "/api/backups",
     ];
 
     /// <summary>零散点名：/api/station/profile 是访客的站名牌，throttle 才是站长情报。</summary>
