@@ -102,6 +102,18 @@ public sealed class StationDb
                     created_at_utc  TEXT NOT NULL,
                     UNIQUE(video_id, page_idx, codec)
                 );
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS danmaku_local (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    video_id       INTEGER NOT NULL,
+                    page_idx       INTEGER NOT NULL,
+                    t_sec          REAL NOT NULL,
+                    text           TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL
+                );
                 """;
             archive.ExecuteNonQuery();
         }
@@ -110,6 +122,10 @@ public sealed class StationDb
         EnsureColumn(connection, "videos", "engine_task_ids", "TEXT");
         EnsureColumn(connection, "videos", "last_error", "TEXT");
         EnsureColumn(connection, "videos", "cover_url", "TEXT");
+        // B 站投稿时间（ISO）：导入源（UP 投稿列表 created / 收藏夹 pubtime）入库时就存，首页卡阵展示用。
+        EnsureColumn(connection, "videos", "published_at_utc", "TEXT");
+        // 视频归属号（0=主 1=副，NULL=未分配）：提交时轮转定档，加档/采集跟随同一个号。
+        EnsureColumn(connection, "videos", "owner", "INTEGER");
         // 主版本编码实测缓存（'avc'/'hevc'/'av1'）：首次看片时 ffprobe 实测回填，之后不再探。
         EnsureColumn(connection, "pages", "codec", "TEXT");
         // UP 主名片快照（头像本地化相对路径 / 简介 / 粉丝数），由 LbsUpInfoFetcher 到站时采。
@@ -123,6 +139,9 @@ public sealed class StationDb
         EnsureColumn(connection, "video_meta", "stat_share", "INTEGER");
         EnsureColumn(connection, "video_meta", "stat_reply", "INTEGER");
         EnsureColumn(connection, "video_meta", "stat_probed", "INTEGER");
+        // 站内弹幕的发送者匿名凭证（仅发送者本人可删，主人例外）。
+        EnsureColumn(connection, "danmaku_local", "sender_dmid", "TEXT");
+        EnsureColumn(connection, "danmaku_local", "sender_owner", "INTEGER DEFAULT 0");
     }
 
     private static void EnsureColumn(SqliteConnection connection, string table, string column, string type)
@@ -150,13 +169,106 @@ public sealed class StationDb
         }
     }
 
+    /// <summary>
+    /// 站长室页头总览：台账聚合 + 视频库磁盘总体积。
+    /// 播放量用 ViewPowerSql 把「4618.3万」这类 B 站文本折算成数；互动五维是 stat_* 真数直接 SUM。
+    /// 体积每次现扫磁盘（只给字节真数，不编），页头一次加载扫一遍可接受。
+    /// </summary>
+    public AdminStats AdminStats()
+    {
+        using var connection = Open(_dbPath);
+
+        var total = 0;
+        var arrived = 0;
+        var downloading = 0;
+        var pending = 0;
+        var failed = 0;
+        var altOwned = 0;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT COUNT(*),
+                       COALESCE(SUM(status = 'Arrived'), 0),
+                       COALESCE(SUM(status = 'Downloading'), 0),
+                       COALESCE(SUM(status = 'Pending'), 0),
+                       COALESCE(SUM(status = 'Failed'), 0),
+                       COALESCE(SUM(owner = 1), 0)
+                FROM videos;
+                """;
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                total = reader.GetInt32(0);
+                arrived = reader.GetInt32(1);
+                downloading = reader.GetInt32(2);
+                pending = reader.GetInt32(3);
+                failed = reader.GetInt32(4);
+                altOwned = reader.GetInt32(5);
+            }
+        }
+
+        long viewTotal = 0;
+        var likeTotal = 0L;
+        var coinTotal = 0L;
+        var favTotal = 0L;
+        var shareTotal = 0L;
+        var replyTotal = 0L;
+        var upCount = 0;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"""
+                SELECT COUNT(DISTINCT up_mid),
+                       COALESCE(SUM(CASE WHEN ({ViewPowerSql}) > 0 THEN ({ViewPowerSql}) ELSE 0 END), 0),
+                       COALESCE(SUM(stat_like), 0),
+                       COALESCE(SUM(stat_coin), 0),
+                       COALESCE(SUM(stat_fav), 0),
+                       COALESCE(SUM(stat_share), 0),
+                       COALESCE(SUM(stat_reply), 0)
+                FROM video_meta m;
+                """;
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                upCount = reader.GetInt32(0);
+                viewTotal = (long)reader.GetDouble(1);
+                likeTotal = reader.GetInt64(2);
+                coinTotal = reader.GetInt64(3);
+                favTotal = reader.GetInt64(4);
+                shareTotal = reader.GetInt64(5);
+                replyTotal = reader.GetInt64(6);
+            }
+        }
+
+        long totalBytes = 0;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(_paths.Videos, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    totalBytes += new FileInfo(file).Length;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // 占用/没权限的文件不拦汇总，少算一个算一个
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 目录不可读则体积不给数（前端显破折号）
+        }
+
+        return new AdminStats(total, arrived, downloading, pending, failed, altOwned, totalBytes, viewTotal, likeTotal, coinTotal, favTotal, shareTotal, replyTotal, upCount);
+    }
+
     public IReadOnlyList<VideoEntry> ListVideos()
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
-                   m.up_name, m.view_count, p.duration_text,
+                   m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku')
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
@@ -203,7 +315,7 @@ public sealed class StationDb
 
         command.CommandText = $"""
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
-                   m.up_name, m.view_count, p.duration_text,
+                   m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku')
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
@@ -248,7 +360,7 @@ public sealed class StationDb
         var danmakuFiles = new List<(long Id, int Files)>();
         while (reader.Read())
         {
-            var dmFiles = reader.GetInt32(12);
+            var dmFiles = reader.GetInt32(14);
             list.Add(new VideoEntry(
                 reader.GetInt64(0),
                 reader.GetString(1),
@@ -262,7 +374,9 @@ public sealed class StationDb
                 reader.IsDBNull(9) ? null : reader.GetString(9),
                 reader.IsDBNull(10) ? null : reader.GetString(10),
                 reader.IsDBNull(11) ? null : reader.GetString(11),
-                dmFiles > 0 ? 0 : null)); // 占位，后面真数 Dialogue 行
+                dmFiles > 0 ? 0 : null, // 占位，后面真数 Dialogue 行
+                reader.IsDBNull(12) ? null : reader.GetString(12),
+                reader.IsDBNull(13) ? null : reader.GetString(13)));
             if (dmFiles > 0)
             {
                 danmakuFiles.Add((list[^1].Id, dmFiles));
@@ -346,18 +460,36 @@ public sealed class StationDb
             if (!existing.Add(video.Bvid))
             {
                 duplicated++;
+                // 重复行补档案：导入源（UP 投稿/收藏夹）自带封面与投稿时间，旧行缺哪件补哪件，
+                // 已有的不覆盖（到站后本地封面/校过的时间更可信）。
+                if (!string.IsNullOrWhiteSpace(video.CoverUrl) || !string.IsNullOrWhiteSpace(video.PublishedAtUtc))
+                {
+                    using var backfill = connection.CreateCommand();
+                    backfill.CommandText = """
+                        UPDATE videos SET
+                            cover_url = CASE WHEN cover_url IS NULL THEN COALESCE($cover, cover_url) ELSE cover_url END,
+                            published_at_utc = COALESCE(published_at_utc, $pub)
+                        WHERE bvid = $bvid;
+                        """;
+                    backfill.Parameters.AddWithValue("$cover", (object?)video.CoverUrl ?? DBNull.Value);
+                    backfill.Parameters.AddWithValue("$pub", (object?)video.PublishedAtUtc ?? DBNull.Value);
+                    backfill.Parameters.AddWithValue("$bvid", video.Bvid);
+                    backfill.ExecuteNonQuery();
+                }
                 continue;
             }
 
             using var insert = connection.CreateCommand();
             insert.CommandText = """
-                INSERT INTO videos (url, bvid, title, status, created_at_utc)
-                VALUES ($url, $bvid, $title, $status, $now);
+                INSERT INTO videos (url, bvid, title, cover_url, published_at_utc, status, created_at_utc)
+                VALUES ($url, $bvid, $title, $cover, $pub, $status, $now);
                 SELECT last_insert_rowid();
                 """;
             insert.Parameters.AddWithValue("$url", video.Url);
             insert.Parameters.AddWithValue("$bvid", video.Bvid);
             insert.Parameters.AddWithValue("$title", (object?)video.Title ?? DBNull.Value);
+            insert.Parameters.AddWithValue("$cover", (object?)video.CoverUrl ?? DBNull.Value);
+            insert.Parameters.AddWithValue("$pub", (object?)video.PublishedAtUtc ?? DBNull.Value);
             insert.Parameters.AddWithValue("$status", VideoStatus.Pending.ToString());
             insert.Parameters.AddWithValue("$now", now);
             insertedIds.Add(Convert.ToInt64(insert.ExecuteScalar()));
@@ -412,6 +544,132 @@ public sealed class StationDb
         }
 
         return new SubmissionCandidate(id, reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
+    /// <summary>视频归属号（0=主 1=副）；NULL=尚未分配（未提交过或老数据）。</summary>
+    public int? GetVideoOwner(long id)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT owner FROM videos WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        return reader.Read() && !reader.IsDBNull(0) ? (int)reader.GetInt64(0) : null;
+    }
+
+    /// <summary>定档/改判视频归属号（副号提交失败回退主号时也会改判）。</summary>
+    public void SetVideoOwner(long id, int owner)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE videos SET owner = $owner WHERE id = $id;";
+        command.Parameters.AddWithValue("$owner", owner);
+        command.Parameters.AddWithValue("$id", id);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>分站自有设置 KV（采集偏好等进站配置），与引擎设置分开。</summary>
+    public string? GetSetting(string key)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM settings WHERE key = $key;";
+        command.Parameters.AddWithValue("$key", key);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? reader.GetString(0) : null;
+    }
+
+    public void SetSetting(string key, string value)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO settings (key, value) VALUES ($key, $value)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """;
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$value", value);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>站内弹幕入库（访客发的，B 站爬来的不走这里）：记下发在哪个分 P 的哪个时点、谁发的、发的时候是不是主人。</summary>
+    public long AddLocalDanmaku(long videoId, int pageIdx, double tSec, string text, string? senderDmid, bool senderOwner)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO danmaku_local (video_id, page_idx, t_sec, text, created_at_utc, sender_dmid, sender_owner)
+            VALUES ($v, $p, $t, $x, $now, $s, $o);
+            SELECT last_insert_rowid();
+            """;
+        command.Parameters.AddWithValue("$v", videoId);
+        command.Parameters.AddWithValue("$p", pageIdx);
+        command.Parameters.AddWithValue("$t", tSec);
+        command.Parameters.AddWithValue("$x", text);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$s", (object?)senderDmid ?? DBNull.Value);
+        command.Parameters.AddWithValue("$o", senderOwner ? 1 : 0);
+        return (long)command.ExecuteScalar()!;
+    }
+
+    /// <summary>某视频全部站内弹幕（跨分 P，前端按 pageIdx 自筛）；发送者凭证由端点算 canDelete 不外泄，主人标记可外泄（就是给弹幕挂头像用的）。</summary>
+    public IReadOnlyList<(long Id, int PageIdx, double TSec, string Text, string? SenderDmid, bool SenderOwner)> ListLocalDanmaku(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, page_idx, t_sec, text, sender_dmid, COALESCE(sender_owner, 0) FROM danmaku_local WHERE video_id = $v ORDER BY id;";
+        command.Parameters.AddWithValue("$v", videoId);
+
+        using var reader = command.ExecuteReader();
+        var list = new List<(long, int, double, string, string?, bool)>();
+        while (reader.Read())
+        {
+            list.Add((reader.GetInt64(0), reader.GetInt32(1), reader.GetDouble(2), reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5) == 1));
+        }
+
+        return list;
+    }
+
+    /// <summary>单条站内弹幕的发送者凭证；行不存在返回 null（用空串区分「发了但无凭证」的老弹幕）。</summary>
+    public string? GetLocalDanmakuSender(long id)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT sender_dmid FROM danmaku_local WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+    }
+
+    /// <summary>删一条站内弹幕；行不存在返回 false。</summary>
+    public bool DeleteLocalDanmaku(long id)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM danmaku_local WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", id);
+        return command.ExecuteNonQuery() > 0;
+    }
+
+    /// <summary>清空分站（危险区一键清空）：台账五表全销，只留 settings KV（登录态在 cookies 盘，不受影响）。</summary>
+    public int PurgeAllLedger()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            DELETE FROM video_codecs;
+            DELETE FROM artifacts;
+            DELETE FROM pages;
+            DELETE FROM video_meta;
+            DELETE FROM danmaku_local;
+            DELETE FROM videos;
+            """;
+        return command.ExecuteNonQuery();
     }
 
     /// <summary>提交成功：记下引擎 task id 列表（JSON）与解析到的标题/封面，转入下载中。</summary>
@@ -470,6 +728,97 @@ public sealed class StationDb
     public void MarkFailed(long id, string error)
     {
         ExecuteUpdate(id, VideoStatus.Failed, null, error);
+    }
+
+    /// <summary>同步员停滞提示专用：只动 last_error 不动状态（下载中才用，到站/失败时另有人清零）。</summary>
+    public void SetLastError(long id, string? error)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE videos SET last_error = $error WHERE id = $id;";
+        command.Parameters.AddWithValue("$error", (object?)error ?? DBNull.Value);
+        command.Parameters.AddWithValue("$id", id);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>续下打不动时的硬重投通道：记录退回待提交并清引擎任务与错误，重投判重从此看不见旧行（行靠 Reviver 先删）。</summary>
+    public void ResetToPending(long id)
+    {
+        ExecuteUpdate(id, VideoStatus.Pending, null, null);
+    }
+
+    /// <summary>下载面板的下载中行：除 id 外带卡片展示字段，TaskIdsJson 供暂停板拿引擎任务。</summary>
+    public sealed record DownloadingRow(long Id, string Bvid, string? Title, string? CoverUrl, string? TaskIdsJson);
+
+    public IReadOnlyList<DownloadingRow> GetDownloadingRows()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, bvid, title, cover_url, engine_task_ids FROM videos WHERE status = $status ORDER BY id;";
+        command.Parameters.AddWithValue("$status", VideoStatus.Downloading.ToString());
+
+        using var reader = command.ExecuteReader();
+        var list = new List<DownloadingRow>();
+        while (reader.Read())
+        {
+            list.Add(new DownloadingRow(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4)));
+        }
+
+        return list;
+    }
+
+    /// <summary>下载面板的排队行（提交前的台账行，还没碰引擎）。</summary>
+    public IReadOnlyList<DownloadQueueItem> GetPendingQueueItems()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, bvid, title, cover_url FROM videos WHERE status = $status ORDER BY id;";
+        command.Parameters.AddWithValue("$status", VideoStatus.Pending.ToString());
+
+        using var reader = command.ExecuteReader();
+        var list = new List<DownloadQueueItem>();
+        while (reader.Read())
+        {
+            list.Add(new DownloadQueueItem(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3)));
+        }
+
+        return list;
+    }
+
+    /// <summary>取消排队行（Canceled）：只动还没交给引擎的 Pending 行，零引擎成本；不给 ids 就取消整个排队区。</summary>
+    public int CancelPendingVideos(IReadOnlyList<long>? ids)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        if (ids is { Count: > 0 })
+        {
+            var names = new List<string>();
+            for (var i = 0; i < ids.Count; i++)
+            {
+                var name = "$pid" + i.ToString();
+                names.Add(name);
+                command.Parameters.AddWithValue(name, ids[i]);
+            }
+
+            command.CommandText = "UPDATE videos SET status = $status WHERE status = $pending AND id IN (" + string.Join(",", names) + ");";
+        }
+        else
+        {
+            command.CommandText = "UPDATE videos SET status = $status WHERE status = $pending;";
+        }
+
+        command.Parameters.AddWithValue("$status", VideoStatus.Canceled.ToString());
+        command.Parameters.AddWithValue("$pending", VideoStatus.Pending.ToString());
+        return command.ExecuteNonQuery();
     }
 
     private void ExecuteUpdate(long id, VideoStatus status, string? taskIdsJson, string? error)
@@ -938,6 +1287,59 @@ public sealed class StationDb
         return list;
     }
 
+    /// <summary>访客下载用：查已到站的额外编码版本相对路径；没有则 null。</summary>
+    public string? GetArrivedCodecRel(long videoId, int pageIdx, string codec)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT rel_path FROM video_codecs
+            WHERE video_id = $id AND page_idx = $page AND codec = $codec AND status = 'Arrived';
+            """;
+        command.Parameters.AddWithValue("$id", videoId);
+        command.Parameters.AddWithValue("$page", pageIdx);
+        command.Parameters.AddWithValue("$codec", codec);
+        return command.ExecuteScalar() as string;
+    }
+
+    /// <summary>访客下载用：主版本（首下那个档）的相对路径；没有则 null。</summary>
+    public string? GetPageMainRel(long videoId, int pageIdx)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT local_video_path FROM pages WHERE video_id = $id AND idx = $page;";
+        command.Parameters.AddWithValue("$id", videoId);
+        command.Parameters.AddWithValue("$page", pageIdx);
+        return command.ExecuteScalar() as string;
+    }
+
+    /// <summary>访客下载的文件名素材：bvid + 标题。</summary>
+    public (string Bvid, string? Title)? GetVideoFileNameInfo(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT bvid, title FROM videos WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", videoId);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
+    /// <summary>主版本的实测编码（'avc'/'hevc'/'av1'，ffprobe 回填写入）；未测过给 null。</summary>
+    public string? GetPageMainCodec(long videoId, int pageIdx)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT codec FROM pages WHERE video_id = $id AND idx = $page;";
+        command.Parameters.AddWithValue("$id", videoId);
+        command.Parameters.AddWithValue("$page", pageIdx);
+        return command.ExecuteScalar() as string;
+    }
+
     /// <summary>删单个编码版本：销账并交回 rel_path，文件删除归调用方；行不存在返回 null。</summary>
     public string? TakeCodecVersionForDelete(long videoId, int pageIdx, string codec)
     {
@@ -1105,7 +1507,7 @@ public sealed class StationDb
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
-                   m.up_name, m.view_count, p.duration_text,
+                   m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku')
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
@@ -1360,7 +1762,8 @@ public sealed class StationDb
                 c.Status,
                 c.Rel is { } rel ? "/media/" + rel : null,
                 SizeOfVideoFile(c.Rel))).ToList(),
-            p.Codec
+            p.Codec,
+            SizeOfVideoFile(p.VideoRel)
         )).ToList();
 
         return new WatchData(
@@ -1381,3 +1784,20 @@ public sealed class StationDb
             statReply);
     }
 }
+
+/// <summary>站长室页头总览快照：库存分布 + 磁盘体积 + 全站互动真数。</summary>
+public sealed record AdminStats(
+    int Total,
+    int Arrived,
+    int Downloading,
+    int Pending,
+    int Failed,
+    int AltOwned,
+    long TotalBytes,
+    long ViewTotal,
+    long LikeTotal,
+    long CoinTotal,
+    long FavTotal,
+    long ShareTotal,
+    long ReplyTotal,
+    int UpCount);

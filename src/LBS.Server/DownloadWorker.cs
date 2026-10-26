@@ -46,6 +46,8 @@ public sealed class DownloadWorker(
     DataPaths paths,
     ISettingsStore settingsStore,
     HeadlessSubmissionService submission,
+    LbsAccountRouter router,
+    DownloadPauseBoard board,
     ILogger<DownloadWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -69,6 +71,9 @@ public sealed class DownloadWorker(
         await foreach (var videoId in queue.ReadAllAsync(stoppingToken))
         {
             await SubmitAsync(videoId, stoppingToken);
+            // 两件任务之间按站长定的间隔歇脚（极速 5~15s，选中间隔 ±10% 抖动），
+            // 提交链每发都要碰 playurl/view 接口，接力赛式连投在风控眼里就是机器。
+            await board.WaitBetweenTasksAsync(stoppingToken);
         }
     }
 
@@ -77,6 +82,7 @@ public sealed class DownloadWorker(
         await foreach (var (videoId, codec) in queue.ReadCodecsAsync(stoppingToken))
         {
             await SubmitCodecAsync(videoId, codec, stoppingToken);
+            await board.WaitBetweenTasksAsync(stoppingToken);
         }
     }
 
@@ -95,6 +101,9 @@ public sealed class DownloadWorker(
     /// </summary>
     private async Task SubmitCodecAsync(long videoId, string codec, CancellationToken stoppingToken)
     {
+        // 加档同样受暂停板管。
+        await board.WaitIfPausedAsync(stoppingToken);
+
         var codecId = CodecIdOf(codec);
         if (codecId is null)
         {
@@ -121,10 +130,25 @@ public sealed class DownloadWorker(
                 FileNameParts = [.. settings.Video.FileNameParts, FileNamePart.Hyphen, FileNamePart.Blank, FileNamePart.VideoCodec],
             };
 
-            var result = await submission.SubmitAsync(
+            // 加档跟随主版本的归属号；副号失败同样有主号重跑兑底。
+            var codecOwner = db.GetVideoOwner(videoId) is { } storedOwner ? (LbsOwner)storedOwner : LbsOwner.Main;
+            var result = await router.RunAsAsync(codecOwner, () => submission.SubmitAsync(
                 $"https://www.bilibili.com/video/{brief.Value.Bvid}",
                 options,
-                stoppingToken);
+                stoppingToken));
+            if (codecOwner == LbsOwner.Alt && IsFailure(result))
+            {
+                logger.LogWarning("副号加档失败 videoId={VideoId} codec={Codec}（{Reasons}），改主号重跑一次", videoId, codec, JoinReasons(result));
+                var retry = await router.RunAsAsync(LbsOwner.Main, () => submission.SubmitAsync(
+                    $"https://www.bilibili.com/video/{brief.Value.Bvid}",
+                    options,
+                    stoppingToken));
+                if (!IsFailure(retry))
+                {
+                    db.SetVideoOwner(videoId, (int)LbsOwner.Main);
+                    result = retry;
+                }
+            }
 
             if (result.Status != HeadlessSubmissionStatus.Enqueued)
             {
@@ -176,6 +200,9 @@ public sealed class DownloadWorker(
 
     private async Task SubmitAsync(long videoId, CancellationToken stoppingToken)
     {
+        // 暂停板落下时先闸住：排队可以等，提交不能偷跑。
+        await board.WaitIfPausedAsync(stoppingToken);
+
         var candidate = db.GetSubmissionCandidate(videoId);
         if (candidate is null)
         {
@@ -185,7 +212,30 @@ public sealed class DownloadWorker(
         logger.LogInformation("提交进站任务 videoId={VideoId} url={Url}", videoId, candidate.Url);
         try
         {
-            var result = await submission.SubmitAsync(candidate.Url, LbsSubmissionProfile.ForStation(paths, settingsStore.Current), stoppingToken);
+            // 按视频分号：首次提交轮转定档（主、副、主、副……），重提交沿档；无副号恒主。
+            // 提交链同步 await 到底，环境号顺着调用链流进上游客户端，playurl/view info 都挂归属号的 cookie。
+            var assigned = db.GetVideoOwner(videoId);
+            var owner = assigned is { } stored ? (LbsOwner)stored : router.AssignNext();
+            if (assigned is null)
+            {
+                db.SetVideoOwner(videoId, (int)owner);
+            }
+
+            logger.LogInformation("提交进站 videoId={VideoId} 归属 {Owner}", videoId, owner);
+            var options = LbsSubmissionProfile.ForStation(paths, settingsStore.Current);
+            var result = await router.RunAsAsync(owner, () => submission.SubmitAsync(candidate.Url, options, stoppingToken));
+
+            // 副号提交失败（风控/画质权限等单号问题）：主号重跑一次，成功则改判归主，下载不断档。
+            if (owner == LbsOwner.Alt && IsFailure(result))
+            {
+                logger.LogWarning("副号提交失败 videoId={VideoId}（{Reasons}），改主号重跑一次", videoId, JoinReasons(result));
+                var retry = await router.RunAsAsync(LbsOwner.Main, () => submission.SubmitAsync(candidate.Url, options, stoppingToken));
+                if (!IsFailure(retry))
+                {
+                    db.SetVideoOwner(videoId, (int)LbsOwner.Main);
+                    result = retry;
+                }
+            }
             switch (result.Status)
             {
                 case HeadlessSubmissionStatus.Enqueued:
@@ -240,6 +290,16 @@ public sealed class DownloadWorker(
 
     private static string JoinReasons(HeadlessSubmissionResult result) =>
         result.SkipReasons.Count > 0 ? string.Join("；", result.SkipReasons) : result.Status.ToString();
+
+    /// <summary>引擎给出的非成功结论里，只有真失败才值得换号重跑；判重/不支持换号也没意义。</summary>
+    private static bool IsFailure(HeadlessSubmissionResult result) => result.Status switch
+    {
+        HeadlessSubmissionStatus.Enqueued
+            or HeadlessSubmissionStatus.SkippedDuplicate
+            or HeadlessSubmissionStatus.NoNewTasks
+            or HeadlessSubmissionStatus.Unsupported => false,
+        _ => true,
+    };
 
     public override Task StopAsync(CancellationToken cancellationToken)
     {

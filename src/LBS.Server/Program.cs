@@ -1,7 +1,12 @@
 using System.Reflection;
 using System.Text.Json;
 using DownKyi.Application.Downloads;
+using DownKyi.Core.BiliApi.Sign;
+using DownKyi.Core.BiliApi.Users;
+using DownKyi.Core.BiliApi.Users.Models;
 using DownKyi.Domain.Downloads;
+using DownKyi.Infrastructure.Bilibili;
+using DownKyi.Services.Download;
 using LBS.Domain;
 using LBS.Engine;
 using LBS.Infrastructure;
@@ -21,11 +26,28 @@ builder.Services.AddSingleton(sp =>
     return db;
 });
 builder.Services.AddSingleton<DownloadQueue>();
+// 全站唯一的 B 站 API 节流闸：随机间隔 + 风控冷却 + 会话预热，挂在 LbsQueryClient 入口一处治全局。
+builder.Services.AddSingleton<LbsApiThrottle>();
 builder.Services.AddSingleton<LbsCommentArchiver>();
 builder.Services.AddSingleton<LbsUpInfoFetcher>();
+builder.Services.AddSingleton<LbsAltLoginManager>();
+builder.Services.AddSingleton<LbsAccountRouter>();
+// 分流 cookie 供给必须赶在 AddLbsDownloadEngine 之前占位，让上游的 TryAddSingleton 自动让位：
+// 从此引擎内所有经 IBilibiliApiClient 的请求（含 playurl/view info）都按视频归属号现取 cookie。
+builder.Services.AddSingleton<DownKyi.Application.Bilibili.IBilibiliCookieProvider, LbsRoutedCookieProvider>();
+builder.Services.AddSingleton<LbsQueryClient>();
 builder.Services.AddSingleton<CommentArchiveService>();
+builder.Services.AddSingleton<LbsOwnerPolicy>();
 builder.Services.AddHostedService<DownloadWorker>();
 builder.Services.AddHostedService<StatusSyncWorker>();
+// 订阅爬工：单例注册以便站长室手动触发拿到同一个实例（串行闸在它手里）。
+builder.Services.AddSingleton<SubscriptionCrawler>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SubscriptionCrawler>());
+// 崩溃遗留的僵尸下载：StatusSyncWorker 负责发现（停滞销案），Reviver 负责救活（手动端点 + 启动自愈共用）。
+builder.Services.AddSingleton<LbsTaskReviver>();
+builder.Services.AddHostedService<StartupReviverWorker>();
+// 下载暂停板：站长室总闸（暂停/继续/取消排队），提交闸与自愈/同步都认这块牌子。
+builder.Services.AddSingleton<DownloadPauseBoard>();
 
 // 下载引擎（移植自 downkyicore 的 headless 运行时）：启动时拉起下载 runtime 并自检 ffmpeg
 builder.Services.AddLbsDownloadEngine(new EngineOptions(EngineOptions.DefaultUserAgent));
@@ -152,15 +174,15 @@ app.UseStaticFiles(new StaticFileOptions
 System.Collections.Concurrent.ConcurrentDictionary<long, byte> upCardInFlight = new();
 System.Collections.Concurrent.ConcurrentDictionary<long, byte> statInFlight = new();
 
-app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, ILoggerFactory loggerFactory) =>
+app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory) =>
 {
     // BV 号是大小写敏感的 base62，先原样精确查，再补一记大写化兜底（照顾手打习惯）。
     var input = bvid.Trim();
     var data = db.GetWatchData(input) ?? db.GetWatchData(input.ToUpperInvariant());
     if (data is not null)
     {
-        BackfillUpCard(db, upInfo, loggerFactory, data);
-        BackfillStat(db, upInfo, loggerFactory, data);
+        BackfillUpCard(db, upInfo, policy, loggerFactory, data);
+        BackfillStat(db, upInfo, policy, loggerFactory, data);
     }
 
     return data is null
@@ -186,7 +208,7 @@ app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db) =>
     }).ToList());
 });
 
-void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, ILoggerFactory loggerFactory, WatchData data)
+void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory, WatchData data)
 {
     if (data.UpMid is not { } mid || data.UpFace is not null)
     {
@@ -203,7 +225,7 @@ void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, ILoggerFactory logger
     {
         try
         {
-            var profile = await upInfo.FetchAsync(mid, CancellationToken.None);
+            var profile = await policy.RunForVideoAsync(data.Id, () => upInfo.FetchAsync(mid, CancellationToken.None));
             db.SetUpInfo(data.Id, profile?.FaceRel ?? string.Empty, profile?.Sign, profile?.Fans);
             if (profile is null)
             {
@@ -222,7 +244,7 @@ void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, ILoggerFactory logger
 }
 
 // 互动数据（点赞/投币/收藏/分享）的后补：未销账且没采过时，开页异步采一次；成败都销账，不反复扰 B 站。
-void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, ILoggerFactory loggerFactory, WatchData data)
+void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory, WatchData data)
 {
     if (data.Bvid is null || !db.ShouldBackfillStat(data.Id))
     {
@@ -239,7 +261,7 @@ void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, ILoggerFactory loggerFa
     {
         try
         {
-            var stat = await upInfo.FetchStatAsync(data.Bvid, CancellationToken.None);
+            var stat = await policy.RunForVideoAsync(data.Id, () => upInfo.FetchStatAsync(data.Bvid, CancellationToken.None));
             if (stat is not null)
             {
                 db.SetVideoStat(data.Id, stat.Like, stat.Coin, stat.Favorite, stat.Share, stat.Reply);
@@ -260,7 +282,7 @@ void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, ILoggerFactory loggerFa
     });
 }
 
-app.MapDelete("/api/videos/{id:long}", async (long id, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, CancellationToken cancellationToken) =>
+app.MapDelete("/api/videos/{id:long}", async (long id, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, CancellationToken cancellationToken) =>
 {
     var row = db.GetVideoForDelete(id);
     if (row is null)
@@ -289,6 +311,16 @@ app.MapDelete("/api/videos/{id:long}", async (long id, StationDb db, DataPaths p
                 continue; // 已完成搬走的不用安顿（文件在删站阶段一并清）
             }
 
+            // 先打断队列里可能活着的执行再销账（对齐引擎自家删除编排），不然它会把字节继续往已删的行里写。
+            try
+            {
+                await taskQueue.CancelAsync(new DownloadTaskId(taskId));
+            }
+            catch (Exception)
+            {
+                // 本就没在跑，取消不掉无妨
+            }
+
             await state.CancelAsync(new DownloadTaskId(taskId), cancellationToken);
             var remove = await state.DeleteAsync(new DownloadTaskId(taskId), cancellationToken);
             if (!remove.IsSuccess)
@@ -302,8 +334,227 @@ app.MapDelete("/api/videos/{id:long}", async (long id, StationDb db, DataPaths p
     return Results.Ok(new { message = $"「{row.Value.Bvid}」已从分站删除，带走 {deletedFiles} 个文件" });
 });
 
+// 续下：救活硬重启遗留的卡死下载（引擎任务挂在途表里纹丝不动）。
+// 软续下（Resume+Enqueue）优先，打不动就删行重投，策略见 LbsTaskReviver。
+app.MapPost("/api/videos/{id:long}/revive", async (long id, LbsTaskReviver reviver, CancellationToken cancellationToken) =>
+{
+    var (ok, message) = await reviver.ReviveAsync(id, cancellationToken);
+    return ok ? Results.Ok(new { message }) : Results.BadRequest(new { message });
+});
+
+// 重新排队：站长取消过的馆藏（Canceled）从卡阵里捞回排队区；其它状态不响应免得误复活。
+app.MapPost("/api/videos/{id:long}/requeue", async (long id, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
+{
+    var brief = db.GetVideoBrief(id);
+    if (brief is null)
+    {
+        return Results.NotFound(new { message = "没有这条馆藏" });
+    }
+
+    if (brief.Value.Status != VideoStatus.Canceled)
+    {
+        return Results.BadRequest(new { message = "只有被取消的馆藏才需要重新排队" });
+    }
+
+    db.ResetToPending(id);
+    await queue.EnqueueAsync(id, cancellationToken);
+    return Results.Ok(new { message = "已重新排队，下一班进站" });
+});
+
 // 编码加档：给已到站馆藏点单另一个编码版本（avc/hevc/av1），后台整视频补货，
 // 每分 P 一行账，完成后同步员扫盘定档；watch 接口的 codecVersions 随叫随查。
+// ─── 站内弹幕 ──────────────────────────────────────────────────────
+// 访客发的弹幕存分站自己的库（B 站爬的不掺进来）：刷新不丢，站内互见。
+// ─── 身份：匿名访客凭证 + 主人模式 ────────────────────────
+// 访客：首访发 lbs_dmid（HttpOnly，180 天），弹幕表存其值为发送者；防误删而非防恶。
+// 主人：data/owner.key 文件存在即启用，认得 key 的即主人；key 只在生成那一刻下发一次，
+// 任何 GET 端点都不送 key，重置必须带旧 key。主人进模式后发 lbs_owner cookie（HttpOnly）。
+static string? ReadOwnerKey(DataPaths paths)
+{
+    var file = Path.Combine(paths.Root, "owner.key");
+    if (!File.Exists(file))
+    {
+        return null;
+    }
+
+    var key = File.ReadAllText(file).Trim();
+    return key.Length > 0 ? key : null;
+}
+
+static string EnsureDmid(HttpContext http)
+{
+    if (http.Request.Cookies.TryGetValue("lbs_dmid", out var dmid) && dmid is { Length: >= 8 and <= 64 })
+    {
+        return dmid;
+    }
+
+    dmid = Guid.NewGuid().ToString("N");
+    http.Response.Cookies.Append("lbs_dmid", dmid, new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        Expires = DateTimeOffset.UtcNow.AddDays(180),
+        Path = "/",
+    });
+    return dmid;
+}
+
+static bool IsOwner(HttpContext http, DataPaths paths)
+{
+    var key = ReadOwnerKey(paths);
+    return key is not null
+        && http.Request.Cookies.TryGetValue("lbs_owner", out var held)
+        && held == key;
+}
+
+app.MapPost("/api/owner/key", (OwnerKeyRequest? request, DataPaths paths) =>
+{
+    var file = Path.Combine(paths.Root, "owner.key");
+    var wasConfigured = File.Exists(file);
+    if (wasConfigured)
+    {
+        // 换钥匙的唯一途径是交出旧钥匙：分站公开可达，没这道门主人形同虚设。
+        var old = ReadOwnerKey(paths);
+        if (old is null || string.IsNullOrWhiteSpace(request?.OldKey) || request.OldKey.Trim() != old)
+        {
+            return Results.Unauthorized();
+        }
+    }
+
+    var fresh = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8));
+    File.WriteAllText(file, fresh);
+    return Results.Ok(new { key = fresh, message = wasConfigured ? "钥匙已换新，旧的作废" : "主人钥匙已生成，只显这一次，存好" });
+});
+
+app.MapPost("/api/owner/enter", (OwnerEnterRequest request, HttpContext http, DataPaths paths) =>
+{
+    var key = ReadOwnerKey(paths);
+    if (key is null)
+    {
+        return Results.BadRequest(new { message = "主人钥匙还没生成，去站长室开一把" });
+    }
+
+    if (request.Key.Trim() != key)
+    {
+        return Results.Unauthorized();
+    }
+
+    http.Response.Cookies.Append("lbs_owner", key, new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        Expires = DateTimeOffset.UtcNow.AddDays(30),
+        Path = "/",
+    });
+    return Results.Ok(new { message = "已进入主人模式" });
+});
+
+app.MapPost("/api/owner/leave", (HttpContext http) =>
+{
+    http.Response.Cookies.Delete("lbs_owner", new CookieOptions { Path = "/" });
+    return Results.Ok(new { message = "已退出主人模式" });
+});
+
+// 只报两个布尔：配了没、当前浏览器是不是主人。key 本身永不出门。
+app.MapGet("/api/owner/state", (HttpContext http, DataPaths paths) =>
+    Results.Ok(new { configured = ReadOwnerKey(paths) is not null, isOwner = IsOwner(http, paths) }));
+
+// 删除权：仅发送者本人（凭 lbs_dmid cookie）或主人（凭 lbs_owner cookie）；
+// canDelete 由服务端算好随列表下发，发送者身份不外泄。无主老弹幕只有主人能删。
+app.MapGet("/api/videos/{id:long}/danmaku", (long id, HttpContext http, StationDb db, DataPaths paths) =>
+{
+    var dmid = EnsureDmid(http);
+    var owner = IsOwner(http, paths);
+    return Results.Ok(db.ListLocalDanmaku(id).Select(d => new
+    {
+        id = d.Id,
+        pageIdx = d.PageIdx,
+        t = d.TSec,
+        text = d.Text,
+        canDelete = owner || (d.SenderDmid is { Length: > 0 } s && s == dmid),
+        // 主人发的弹幕挂站长头像；身份体系之前的无主老行（无凭证）也当主人手笔，那阵子只有主人能发。
+        fromOwner = d.SenderOwner || d.SenderDmid is null,
+    }));
+});
+
+app.MapPost("/api/videos/{id:long}/danmaku", (long id, LocalDanmakuRequest request, HttpContext http, StationDb db, DataPaths paths) =>
+{
+    var text = request.Text.Trim();
+    if (text.Length is 0 or > 100)
+    {
+        return Results.BadRequest(new { message = "弹幕得写点个到 100 字之间" });
+    }
+
+    if (db.GetVideoFileNameInfo(id) is null)
+    {
+        return Results.NotFound(new { message = "馆藏里没这个视频" });
+    }
+
+    var dmId = db.AddLocalDanmaku(id, Math.Max(0, request.PageIdx), Math.Max(0, request.T), text, EnsureDmid(http), IsOwner(http, paths));
+    return Results.Ok(new { id = dmId, message = "弹幕已存站" });
+});
+
+app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, StationDb db, DataPaths paths) =>
+{
+    var sender = db.GetLocalDanmakuSender(dmId);
+    if (sender is null)
+    {
+        return Results.NotFound();
+    }
+
+    var dmid = EnsureDmid(http);
+    if (!IsOwner(http, paths) && !(sender.Length > 0 && sender == dmid))
+    {
+        // 分站没注册认证服务，Results.Forbid() 会 500；显式状态码才稳。
+        return Results.Json(new { message = "这条弹幕不是你的，主人才能删" }, statusCode: 403);
+    }
+
+    return db.DeleteLocalDanmaku(dmId) ? Results.Ok(new { message = "弹幕已删" }) : Results.NotFound();
+});
+
+// 访客下载：把正在看的版本存本地（codec 缺省给主版本）。开 Range 支持断点续传，
+// 文件名带标题/分 P/编码；路径死锁在 videos 库内，隔不过目录。
+app.MapGet("/api/videos/{id:long}/download", (long id, int pageIdx, string? codec, StationDb db, DataPaths paths) =>
+{
+    var trimmed = codec?.Trim().ToLowerInvariant();
+    var rel = string.IsNullOrEmpty(trimmed)
+        ? db.GetPageMainRel(id, pageIdx)
+        : db.GetArrivedCodecRel(id, pageIdx, trimmed);
+    if (rel is null)
+    {
+        return Results.NotFound(new { message = "这个版本分站还没存下，没东西可搬" });
+    }
+
+    var videosRoot = paths.Videos.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    var full = Path.GetFullPath(Path.Combine(videosRoot, rel));
+    if (!full.StartsWith(videosRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(full))
+    {
+        return Results.NotFound(new { message = "台账有账，磁盘没档（可能被手删了）" });
+    }
+
+    var info = db.GetVideoFileNameInfo(id);
+    var rawName = info is null ? "video" : (info.Value.Title is { Length: > 0 } t ? t : info.Value.Bvid);
+    var safe = string.Concat(rawName.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim();
+    if (safe.Length > 80)
+    {
+        safe = safe[..80];
+    }
+
+    var ext = Path.GetExtension(full);
+    var contentType = ext.ToLowerInvariant() switch
+    {
+        ".mp4" => "video/mp4",
+        ".m4a" => "audio/mp4",
+        ".mkv" => "video/x-matroska",
+        ".webm" => "video/webm",
+        _ => "application/octet-stream",
+    };
+
+    var codecTag = trimmed ?? db.GetPageMainCodec(id, pageIdx);
+    var downloadName = $"{safe}_P{pageIdx}{(codecTag is { Length: > 0 } c ? "_" + c.ToUpperInvariant() : string.Empty)}{ext}";
+    return Results.File(full, contentType, downloadName, enableRangeProcessing: true);
+});
+
 app.MapPost("/api/videos/{id:long}/codecs", async (long id, CodecVersionRequest request, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
 {
     var codec = (request.Codec ?? string.Empty).Trim().ToLowerInvariant();
@@ -446,9 +697,17 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
     });
 });
 
-app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest request, LbsFavoritesImport favorites, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
+app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest request, LbsFavoritesImport favorites, LbsOwnerPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
 {
-    var outcome = await favorites.ImportAsync(request.Url, cancellationToken);
+    // 整架导入是批量动作，冷却期直接挡回，不等它耐心到天荒地老。
+    if (throttle.IsCoolingDown)
+    {
+        var left = throttle.CooldownRemaining ?? TimeSpan.Zero;
+        return Results.Json(new { message = $"分站正在风控冷却中，约 {Math.Ceiling(left.TotalMinutes)} 分钟后自动回暖，稍后再投" }, statusCode: StatusCodes.Status423Locked);
+    }
+
+    // 整架导入不挂具体视频，按采集偏好出号。
+    var outcome = await policy.RunForActivityAsync(() => favorites.ImportAsync(request.Url, cancellationToken));
     if (!outcome.Success)
     {
         return Results.BadRequest(new { message = outcome.Error });
@@ -476,9 +735,140 @@ app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest reques
     });
 });
 
-app.MapGet("/api/login/status", async (LbsLoginManager login, CancellationToken cancellationToken) =>
+app.MapPost("/api/up/import", async (UpImportRequest request,
+    LbsQueryClient client, IWbiKeyProvider wbiKeys, TimeProvider timeProvider,
+    LbsOwnerPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
+    CancellationToken cancellationToken) =>
+{
+    if (throttle.IsCoolingDown)
+    {
+        var left = throttle.CooldownRemaining ?? TimeSpan.Zero;
+        return Results.Json(new { message = $"分站正在风控冷却中，约 {Math.Ceiling(left.TotalMinutes)} 分钟后自动回暖，稍后再投" }, statusCode: StatusCodes.Status423Locked);
+    }
+
+    var mid = SubscriptionCrawler.ParseMid(request.Url);
+    if (mid is null)
+    {
+        return Results.BadRequest(new { message = "认不出这个 UP 主，填 space.bilibili.com/… 空间链接或纯数字 MID" });
+    }
+
+    // 全量翻页收编（PUBDATE 序 ps=30）：翻页节奏由 LbsApiThrottle 统一管，这里只管止损——
+    // 单 UP 封顶 500 条，老货想补第二波再投一次即可（台账去重兼容重复投稿）。
+    const int pageSize = 30;
+    const int maxVideos = 500;
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+    var videos = new List<NewVideo>();
+    for (var pn = 1; videos.Count < maxVideos; pn++)
+    {
+        var page = await policy.RunForActivityAsync(() => WbiRequestExecutor.ExecuteAsync(
+            wbiKeys,
+            async (keys, wts) => await client.GetPublicationPageAsync(
+                keys, wts, mid.Value, pn: pn, ps: pageSize, LoginHelper.HasSavedLoginInfo,
+                order: PublicationOrder.PUBDATE, cancellationToken: cancellationToken),
+            timeProvider,
+            cancellationToken));
+
+        var list = page?.List.Vlist ?? Array.Empty<SpacePublicationListVideo>();
+        var fresh = 0;
+        foreach (var item in list)
+        {
+            var bvid = item.Bvid?.Trim();
+            if (string.IsNullOrWhiteSpace(bvid) || !seen.Add(bvid))
+            {
+                continue;
+            }
+
+            videos.Add(new NewVideo($"https://www.bilibili.com/video/{bvid}", bvid,
+                string.IsNullOrWhiteSpace(item.Title) ? null : item.Title.Trim(),
+                string.IsNullOrWhiteSpace(item.Pic) ? null : item.Pic.Trim(),
+                item.Created > 0 ? DateTimeOffset.FromUnixTimeSeconds(item.Created).ToString("O") : null));
+            fresh++;
+        }
+
+        // 止损三连：尾页（不足一页）、空页、整页全是重复（翻页失效兜底）都收手。
+        if (list.Count == 0 || list.Count < pageSize || fresh == 0)
+        {
+            break;
+        }
+    }
+
+    if (videos.Count == 0)
+    {
+        return Results.Ok(new { total = 0, added = 0, duplicated = 0, message = "这位 UP 主名下没翻到视频（或空间设了权限）" });
+    }
+
+    var upBulk = db.AddVideosBulk(videos);
+    foreach (var videoId in upBulk.InsertedIds)
+    {
+        await queue.EnqueueAsync(videoId, cancellationToken);
+    }
+
+    var truncated = videos.Count >= maxVideos ? "，先到 500 条为止（想补老货再投一次）" : string.Empty;
+    return Results.Ok(new
+    {
+        total = videos.Count,
+        added = upBulk.Added,
+        duplicated = upBulk.Duplicated,
+        message = $"UP 主整架签收：翻到 {videos.Count} 件{truncated}，新进站 {upBulk.Added} 条，来过 {upBulk.Duplicated} 条",
+    });
+});
+
+// ─── 下载控制面板：暂停/继续/取消 + 队列快照 ──────────────────────────
+// 暂停是全站闸：提交停投 + 在途引擎任务挂起；取消只动排队区（还没碰引擎的行，零成本）。
+app.MapGet("/api/downloads/queue", (DownloadPauseBoard board, StationDb db) => Results.Ok(new
+{
+    paused = board.IsPaused,
+    intervalSec = board.IntervalSec,
+    downloading = db.GetDownloadingRows()
+        .Select(r => new { id = r.Id, bvid = r.Bvid, title = r.Title, coverUrl = r.CoverUrl }),
+    pending = db.GetPendingQueueItems()
+        .Select(i => new { id = i.Id, bvid = i.Bvid, title = i.Title, coverUrl = i.CoverUrl }),
+}));
+
+// 逐件提交间隔：白名单 0/60/300/600/1800 秒，实际等待带 ±10% 随机抖动，改完下一件就生效。
+app.MapPost("/api/downloads/interval", (SetDownloadIntervalRequest request, DownloadPauseBoard board) =>
+{
+    if (!board.SetInterval(request.Seconds))
+    {
+        return Results.BadRequest(new { message = "间隔只认这些档：极速、1 分钟、5 分钟、10 分钟、30 分钟" });
+    }
+
+    var label = request.Seconds == 0 ? "极速（5~15s）" : $"{request.Seconds / 60} 分钟";
+    return Results.Ok(new { message = $"逐件间隔切到 {label}，已掺 ±10% 随机抖动" });
+});
+
+app.MapPost("/api/downloads/pause", async (DownloadPauseBoard board, CancellationToken cancellationToken) =>
+    Results.Ok(new { message = await board.PauseAllAsync(cancellationToken) }));
+
+app.MapPost("/api/downloads/resume", async (DownloadPauseBoard board, CancellationToken cancellationToken) =>
+    Results.Ok(new { message = await board.ResumeAllAsync(cancellationToken) }));
+
+app.MapPost("/api/downloads/cancel", (CancelDownloadsRequest request, StationDb db) =>
+{
+    var canceled = db.CancelPendingVideos(request.VideoIds is { Count: > 0 } ids ? ids : null);
+    return Results.Ok(new
+    {
+        canceled,
+        message = canceled > 0 ? $"取消了 {canceled} 件排队馆藏" : "排队区没有可取消的馆藏",
+    });
+});
+
+// 节流闸状态：站长室展示风控冷却倒计时。
+app.MapGet("/api/station/throttle", (LbsApiThrottle throttle) => Results.Ok(new
+{
+    coolingDown = throttle.IsCoolingDown,
+    remainingSeconds = throttle.CooldownRemaining is { } left ? Math.Ceiling(left.TotalSeconds) : (double?)null,
+}));
+
+app.MapGet("/api/login/status", async (LbsLoginManager login, StationDb db, CancellationToken cancellationToken) =>
 {
     var state = await login.GetStateAsync(cancellationToken);
+    if (state is { IsLogin: true, Face: { Length: > 0 } })
+    {
+        // 嗂到 KV 兜一份：nav 是实时接口不宜被弹幕层频扰，站长头像给 /api/station/profile 吃这份缓存。
+        db.SetSetting("station-profile", JsonSerializer.Serialize(new { name = state.Name, face = state.Face }));
+    }
+
     return Results.Ok(new
     {
         isLogin = state.IsLogin,
@@ -488,6 +878,13 @@ app.MapGet("/api/login/status", async (LbsLoginManager login, CancellationToken 
         hasSavedCookies = state.HasSavedCookies,
         face = state.Face,
     });
+});
+
+// 站长公开名片：昵称+头像（B 站 CDN 链，本就公网可见），没登录过回 null。
+app.MapGet("/api/station/profile", (StationDb db) =>
+{
+    var json = db.GetSetting("station-profile");    
+    return string.IsNullOrWhiteSpace(json) ? Results.Ok(null) : Results.Ok(JsonSerializer.Deserialize<JsonElement>(json));
 });
 
 app.MapPost("/api/login/cookie", async (LoginCookieRequest request, LbsLoginManager login, CancellationToken cancellationToken) =>
@@ -507,6 +904,216 @@ app.MapPost("/api/login/logout", (LbsLoginManager login) =>
         : Results.BadRequest(new { message = outcome.Error });
 });
 
+// 副登录（查询分流）：cookie 同样只进不出，回显只有昵称/mid/vip。
+app.MapGet("/api/login/alt", (LbsAltLoginManager alt) =>
+{
+    var state = alt.GetState();
+    return Results.Ok(new
+    {
+        isAlt = state is not null,
+        name = state?.Name,
+        mid = state?.Mid,
+        vipStatus = state?.VipStatus,
+        savedAtUtc = state?.SavedAtUtc,
+    });
+});
+
+app.MapPost("/api/login/alt", async (LoginCookieRequest request, LbsAltLoginManager alt, CancellationToken cancellationToken) =>
+{
+    var (ok, error, state) = await alt.SetAsync(request.Cookie, cancellationToken);
+    return ok
+        ? Results.Ok(new { message = $"副号「{state!.Name}」已就位，新视频将两号轮转下载", name = state.Name, mid = state.Mid })
+        : Results.BadRequest(new { message = error });
+});
+
+app.MapDelete("/api/login/alt", (LbsAltLoginManager alt) =>
+{
+    alt.Clear();
+    return Results.Ok(new { message = "副号已移除，查询流量回到主号" });
+});
+
+// 站长室页头总览：台账聚合 + 磁盘体积（一次加载扫一遍，不轮询）。
+app.MapGet("/api/admin/stats", (StationDb db) => Results.Ok(db.AdminStats()));
+
+// ─── 订阅更新 ──────────────────────────────────────────────────────
+// 订阅台账存 settings KV（JSON 数组）：收藏夹链接或博主 MID 登记在此。
+// 爬工 SubscriptionCrawler 每小时巡一轮，新 BV 走投稿路径自动进站（去重靠台账）。
+app.MapGet("/api/subscriptions", (StationDb db) => Results.Ok(ReadSubscriptions(db)));
+
+app.MapPost("/api/subscriptions", (SubscriptionRequest request, StationDb db) =>
+{
+    var kind = request.Kind.Trim().ToLowerInvariant();
+    var target = request.Target.Trim();
+    if (kind is not ("fav" or "up") || target.Length == 0)
+    {
+        return Results.BadRequest(new { message = "kind 只能是 fav/up，内容不能为空" });
+    }
+
+    var list = ReadSubscriptions(db);
+    if (list.Any(s => s.Kind == kind && s.Target == target))
+    {
+        return Results.Conflict(new { message = "这个已经订阅过了" });
+    }
+
+    list.Add(new SubscriptionItem(kind, target, DateTimeOffset.UtcNow.ToString("O")));
+    db.SetSetting("subscriptions", JsonSerializer.Serialize(list));
+    return Results.Ok(list);
+});
+
+app.MapDelete("/api/subscriptions", (string? kind, string? target, StationDb db) =>
+{
+    var list = ReadSubscriptions(db);
+    var removed = list.RemoveAll(s => s.Kind == kind && s.Target == target);
+    db.SetSetting("subscriptions", JsonSerializer.Serialize(list));
+    return Results.Ok(new { removed, list });
+});
+
+// 站长室「立刻爬一轮」：与每小时例行共用同一个爬工实例，串行闸保证不会两趟同跑。
+app.MapPost("/api/subscriptions/crawl", async (SubscriptionCrawler crawler, CancellationToken cancellationToken) =>
+    Results.Ok(await crawler.CrawlOnceAsync(cancellationToken)));
+
+// 最近一轮爬取报告（settings KV），站长室卡片展示用；没爬过回 null。
+app.MapGet("/api/subscriptions/crawl-status", (StationDb db) =>
+{
+    var json = db.GetSetting("subscription-crawl");
+    if (string.IsNullOrWhiteSpace(json))
+    {
+        return Results.Ok(null);
+    }
+
+    try
+    {
+        return Results.Ok(JsonSerializer.Deserialize<SubscriptionCrawlReport>(json));
+    }
+    catch (JsonException)
+    {
+        return Results.Ok(null);
+    }
+});
+
+static List<SubscriptionItem> ReadSubscriptions(StationDb db) =>
+    db.GetSetting("subscriptions") is { } json && !string.IsNullOrWhiteSpace(json)
+        ? JsonSerializer.Deserialize<List<SubscriptionItem>>(json) ?? new()
+        : new();
+
+// ─── 危险区：一键清空分站 ────────────────────────────────────────────────────
+// 删视频库 + 缓存图 + 台账 + 引擎任务表，站子回到空仓；
+// 保留：主/副登录（cookies 盘）、采集偏好与下载设置（settings KV + 引擎 json）。
+app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, CancellationToken cancellationToken) =>
+{
+    if (!request.Confirm)
+    {
+        return Results.BadRequest(new { message = "要带 confirm=true 才执行：这会把视频库、缓存图、台账、引擎任务记录全清掉，不可撤销" });
+    }
+
+    // 1. 先安顿引擎在途/排队的任务，不然清完站它们还会继续往硬盘写字节。
+    var cancelledTasks = 0;
+    foreach (var task in await lookup.GetUnfinishedAsync(cancellationToken))
+    {
+        try
+        {
+            try
+            {
+                await taskQueue.CancelAsync(task.Id);
+            }
+            catch (Exception)
+            {
+                // 没在跑的任务取消不掉无妨
+            }
+
+            await state.CancelAsync(task.Id, cancellationToken);
+            await state.DeleteAsync(task.Id, cancellationToken);
+            cancelledTasks++;
+        }
+        catch (Exception)
+        {
+            // 取消不动不拦清站：账已销，孤儿任务重启时自清。
+        }
+    }
+
+    // 2. 引擎自己的任务台账也清掉，免得清完重新投稿被「已存在」误拦。
+    var engineRows = LbsEnginePurge.PurgeEngineStorage(paths.Downkyi);
+
+    // 3. 分站台账五表全销（settings KV 保留）。
+    var ledgerRows = db.PurgeAllLedger();
+
+    // 4. 资源文件清盘：视频库 + 缓存小图区 + e2e 临时件。cookies 与引擎设置不碰。
+    var (files, bytes, busy) = PurgeDirectoryTree(paths.Videos);
+    foreach (var dir in new[] { paths.Avatars, paths.Emotes, paths.CmtImg, paths.Cache })
+    {
+        var (f, b, z) = PurgeDirectoryTree(dir);
+        files += f;
+        bytes += b;
+        busy += z;
+    }
+
+    var message = $"站已清空：取消 {cancelledTasks} 个引擎任务，销 {ledgerRows} 行台账、{engineRows} 行引擎历史，清掉 {files} 个文件（{(double)bytes / 1048576:F1} MB）";
+    if (busy > 0)
+    {
+        message += $"；{busy} 个文件被占用没舍得删，回头再按一次";
+    }
+
+    return Results.Ok(new { message });
+
+    static (int Files, long Bytes, int Busy) PurgeDirectoryTree(string root)
+    {
+        var (files, bytes, busy) = (0, 0L, 0);
+        if (!Directory.Exists(root))
+        {
+            return (0, 0L, 0);
+        }
+
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            try
+            {
+                var size = new FileInfo(file).Length;
+                File.Delete(file);
+                files++;
+                bytes += size;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                busy++;
+            }
+        }
+
+        // 空壳目录扫干净（里头还有文件的层会自然留下）。
+        foreach (var dir in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories).OrderByDescending(static d => d.Length))
+        {
+            try
+            {
+                if (!Directory.EnumerateFileSystemEntries(dir).Any())
+                {
+                    Directory.Delete(dir);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // 占用中的空目录留给下次
+            }
+        }
+
+        return (files, bytes, busy);
+    }
+});
+
+// 采集偏好：mixed 跟随视频归属号；main/alt 强制单号（副号未配自动回落主号）。存分站库，重启不丢。
+app.MapGet("/api/settings/collect", (StationDb db) =>
+    Results.Ok(new { mode = db.GetSetting("collect.mode") ?? "mixed" }));
+
+app.MapPost("/api/settings/collect", (CollectModeRequest request, StationDb db, LbsAccountRouter router) =>
+{
+    if (!Enum.TryParse<LbsCollectMode>(request.Mode, ignoreCase: true, out var mode))
+    {
+        return Results.BadRequest(new { message = "采集模式只认 mixed / main / alt" });
+    }
+
+    db.SetSetting("collect.mode", mode.ToString().ToLowerInvariant());
+    router.CollectMode = mode;
+    return Results.Ok(new { message = "采集偏好已更新", mode = mode.ToString().ToLowerInvariant() });
+});
+
 app.MapGet("/api/settings", (DataPaths paths) => Results.Ok(new
 {
     dataDir = paths.Root,
@@ -519,6 +1126,14 @@ if (File.Exists(Path.Combine(webRoot, "index.html")))
 }
 
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("LBS");
+
+// 采集偏好回填：上次站长室选的模式跟着进程复活。
+var stationRouter = app.Services.GetRequiredService<LbsAccountRouter>();
+if (Enum.TryParse<LbsCollectMode>(app.Services.GetRequiredService<StationDb>().GetSetting("collect.mode") ?? "Mixed", ignoreCase: true, out var collectMode))
+{
+    stationRouter.CollectMode = collectMode;
+}
+
 logger.LogInformation("小破分站开站：{Urls}，数据目录 {DataDir}，前端 {WebRoot}", urls, dataPaths.Root, webRoot);
 app.Run();
 
@@ -526,6 +1141,16 @@ internal sealed record HealthInfo(bool Ok, string Name, string Version, string D
 internal sealed record AddVideoRequest(string Url);
 internal sealed record FavoritesImportRequest(string Content);
 internal sealed record FavoritesUrlImportRequest(string Url);
+internal sealed record UpImportRequest(string Url);
+internal sealed record CancelDownloadsRequest(IReadOnlyList<long>? VideoIds);
+internal sealed record SetDownloadIntervalRequest(int Seconds);
 internal sealed record LoginCookieRequest(string Cookie);
+internal sealed record CollectModeRequest(string Mode);
+internal sealed record PurgeRequest(bool Confirm);
+internal sealed record SubscriptionItem(string Kind, string Target, string AddedAtUtc);
+internal sealed record SubscriptionRequest(string Kind, string Target);
+internal sealed record LocalDanmakuRequest(int PageIdx, double T, string Text);
+internal sealed record OwnerKeyRequest(string? OldKey, string? NewKey);
+internal sealed record OwnerEnterRequest(string Key);
 internal sealed record SubsRequest(long Rpid, int Page);
 internal sealed record CodecVersionRequest(string? Codec);

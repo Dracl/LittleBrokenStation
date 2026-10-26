@@ -15,6 +15,7 @@ public sealed class CommentArchiveService(
     StationDb db,
     DataPaths paths,
     LbsCommentArchiver archiver,
+    LbsOwnerPolicy policy,
     ILogger<CommentArchiveService> logger)
 {
     public async Task<CommentArchiveOutcome> TryArchiveAsync(long videoId, bool force, CancellationToken cancellationToken)
@@ -43,7 +44,7 @@ public sealed class CommentArchiveService(
                 return new CommentArchiveOutcome(false, "还没有分 P 记录，评论快照无处安放", 0);
             }
 
-            var snapshot = await archiver.FetchAsync(brief.Value.Bvid, brief.Value.Aid, cancellationToken);
+            var snapshot = await policy.RunForVideoAsync(videoId, () => archiver.FetchAsync(brief.Value.Bvid, brief.Value.Aid, cancellationToken));
             if (snapshot is null)
             {
                 return new CommentArchiveOutcome(false, "评论采集未成功，分站日志里有详情", 0);
@@ -98,7 +99,7 @@ public sealed class CommentArchiveService(
             }
 
             var aid = brief.Value.Aid ?? snapshot.Aid;
-            var subs = await archiver.FetchSubsAsync(aid, rpid, Math.Max(1, page), cancellationToken);
+            var subs = await policy.RunForVideoAsync(videoId, () => archiver.FetchSubsAsync(aid, rpid, Math.Max(1, page), cancellationToken));
             if (subs.Count == 0 && page <= 1)
             {
                 return (false, empty, [], false);

@@ -19,9 +19,19 @@ public sealed class StatusSyncWorker(
     DataPaths paths,
     CommentArchiveService commentArchive,
     LbsUpInfoFetcher upInfo,
+    LbsOwnerPolicy policy,
+    DownloadPauseBoard board,
     ILogger<StatusSyncWorker> logger) : BackgroundService
 {
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(5);
+
+    // 停滞探测：连续巡视字节数与相位都不挪腾超阈值的在途任务，疑为崩溃遗留，销 last_error 提示站长可续下。
+    private static readonly TimeSpan StallThreshold = TimeSpan.FromMinutes(5);
+    internal const string StallHint = "引擎任务停滞（疑崩溃遗留），点首页这张卡的闪电续下";
+
+    private readonly Dictionary<long, StallWatch> _stalled = new();
+
+    private sealed record StallWatch(long Bytes, DownloadPhase Phase, DateTimeOffset StuckSince, bool Flagged);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -54,16 +64,19 @@ public sealed class StatusSyncWorker(
     private async Task SyncMainVideosAsync(CancellationToken cancellationToken)
     {        foreach (var (videoId, taskIdsJson) in db.GetDownloadingVideos())
         {
+            _seenThisPass.Add(videoId);
             var taskIds = ParseTaskIds(taskIdsJson);
             if (taskIds.Count == 0)
             {
                 // 没有引擎任务却挂着下载中，属于脏数据，直接判到站比卡死诚实
                 db.MarkArrived(videoId);
+                _stalled.Remove(videoId);
                 continue;
             }
 
             VideoStatus? target = null;
             string? failure = null;
+            DownloadTask? inFlight = null;
             foreach (var taskId in taskIds)
             {
                 var task = await lookup.FindAsync(new DownloadTaskId(taskId), cancellationToken);
@@ -81,6 +94,7 @@ public sealed class StatusSyncWorker(
                     break;
                 }
 
+                inFlight = task;
                 target = null; // 还有在途任务，维持 Downloading
                 break;
             }
@@ -89,11 +103,13 @@ public sealed class StatusSyncWorker(
             if (target == VideoStatus.Failed)
             {
                 db.MarkFailed(videoId, failure!);
+                _stalled.Remove(videoId);
                 logger.LogWarning("馆藏 {VideoId} 引擎侧失败：{Failure}", videoId, failure);
             }
             else if (AllGone(taskIds, lookup, cancellationToken).GetAwaiter().GetResult())
             {
                 db.MarkArrived(videoId);
+                _stalled.Remove(videoId);
                 var (archived, missingVideo) = db.FinalizeArtifacts(videoId, paths.Videos);
                 logger.LogInformation(
                     "馆藏 {VideoId} 已到站（引擎任务 {Count} 个全部完成），归档产物 {Archived} 个{Missing}",
@@ -123,7 +139,52 @@ public sealed class StatusSyncWorker(
                     },
                     CancellationToken.None);
             }
+            else if (inFlight is not null)
+            {
+                TrackStall(videoId, inFlight);
+            }
         }
+
+        // 本轮没见到的馆藏（已删除/改状态）从停滞表里销名，免得字典长毛。
+        foreach (var staleId in _stalled.Keys.Where(id => !_seenThisPass.Contains(id)).ToList())
+        {
+            _stalled.Remove(staleId);
+        }
+        _seenThisPass.Clear();
+    }
+
+    private readonly HashSet<long> _seenThisPass = new();
+
+    private void TrackStall(long videoId, DownloadTask task)
+    {
+        if (board.IsPaused)
+        {
+            // 暂停板落着的时候不动才是正常形态，不记停滞、顺手销旧账。
+            _stalled.Remove(videoId);
+            return;
+        }
+
+        var bytes = task.Progress.DownloadedBytes ?? 0;
+        var now = DateTimeOffset.UtcNow;
+        if (_stalled.TryGetValue(videoId, out var seen) && seen.Bytes == bytes && seen.Phase == task.Phase)
+        {
+            if (!seen.Flagged && now - seen.StuckSince >= StallThreshold)
+            {
+                db.SetLastError(videoId, StallHint);
+                _stalled[videoId] = seen with { Flagged = true };
+                logger.LogWarning("馆藏 {VideoId} 下载 {Minutes} 分钟没有进展（相位 {Phase}，{Bytes} 字节），疑为崩溃遗留，可在首页续下",
+                    videoId, StallThreshold.TotalMinutes, task.Phase, bytes);
+            }
+
+            return;
+        }
+
+        if (seen is { Flagged: true })
+        {
+            db.SetLastError(videoId, null); // 又动弹了，撤停滞提示
+        }
+
+        _stalled[videoId] = new StallWatch(bytes, task.Phase, now, false);
     }
 
     /// <summary>
@@ -205,7 +266,7 @@ public sealed class StatusSyncWorker(
         return true;
     }
 
-    private static IReadOnlyList<string> ParseTaskIds(string? json)
+    internal static IReadOnlyList<string> ParseTaskIds(string? json)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
@@ -234,6 +295,8 @@ public sealed class StatusSyncWorker(
             return;
         }
 
+        // 同趟的名片+互动数据共用一个归属号的上下文（mixed 下跟视频定档的号）。
+        using var _owner = policy.BeginForVideo(videoId);
         var profile = await upInfo.FetchAsync(mid.Value, CancellationToken.None);
         if (profile is null)
         {
