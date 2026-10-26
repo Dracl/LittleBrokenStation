@@ -1,0 +1,452 @@
+using System.Security.Cryptography;
+using LBS.Domain;
+using Microsoft.Data.Sqlite;
+
+namespace LBS.Infrastructure;
+
+/// <summary>
+/// 成员体系读写：席位（邀请制）、账号池（cookie 只进不出，列表形不带 cookie 字段）、
+/// 会话（令牌哈希落盘，分站重启不踢朋友）。
+/// </summary>
+public sealed partial class StationDb
+{
+    /// <summary>邀请码字符集：剔掉易混的 I O L 0 1，抄给朋友不用逐字母拼读。</summary>
+    private const string InviteAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    private const int InviteLength = 10;
+
+    private static string NewInviteCode()
+    {
+        Span<byte> bytes = stackalloc byte[InviteLength];
+        RandomNumberGenerator.Fill(bytes);
+        var chars = new char[InviteLength];
+        for (var i = 0; i < InviteLength; i++)
+        {
+            chars[i] = InviteAlphabet[bytes[i] % InviteAlphabet.Length];
+        }
+
+        return new string(chars);
+    }
+
+    private static readonly string[] MemberColumns =
+    [
+        "id", "mid", "nickname", "face_url", "note", "status",
+        "created_at_utc", "bound_at_utc", "last_login_at_utc",
+    ];
+
+    private static StationMember ReadMember(SqliteDataReader reader) => new(
+        reader.GetInt64(0),
+        reader.IsDBNull(1) ? null : reader.GetInt64(1),
+        reader.IsDBNull(2) ? null : reader.GetString(2),
+        reader.IsDBNull(3) ? null : reader.GetString(3),
+        reader.IsDBNull(4) ? null : reader.GetString(4),
+        reader.GetString(5),
+        reader.GetString(6),
+        reader.IsDBNull(7) ? null : reader.GetString(7),
+        reader.IsDBNull(8) ? null : reader.GetString(8));
+
+    /// <summary>站长建空位发邀请码：mid 留白，等朋友扫码绑定后转 active。</summary>
+    public (long Id, string Code) CreateMemberInvite(string? note)
+    {
+        // 邀请码撞车（10 位 31 字符空间，概率可忽略）就重试几把，不跟 UNIQUE 较劲。
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var code = NewInviteCode();
+            try
+            {
+                using var connection = Open(_dbPath);
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO members (mid, invite_code, note, status, created_at_utc)
+                    VALUES (NULL, $code, $note, 'invited', $now);
+                    SELECT last_insert_rowid();
+                    """;
+                command.Parameters.AddWithValue("$code", code);
+                command.Parameters.AddWithValue("$note", (object?)note ?? DBNull.Value);
+                command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+                return ((long)command.ExecuteScalar()!, code);
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                // 撞码，换一枚再来。
+            }
+        }
+
+        throw new InvalidOperationException("邀请码连撞五次，见鬼了");
+    }
+
+    public IReadOnlyList<StationMember> ListMembers()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT {string.Join(", ", MemberColumns)} FROM members ORDER BY id;";
+        var list = new List<StationMember>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(ReadMember(reader));
+        }
+
+        return list;
+    }
+
+    public StationMember? GetMemberByMid(long mid) => QueryMember("mid", mid);
+
+    public StationMember? GetMemberById(long id) => QueryMember("id", id);
+
+    private StationMember? QueryMember(string column, long value)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT {string.Join(", ", MemberColumns)} FROM members WHERE {column} = $v;";
+        command.Parameters.AddWithValue("$v", value);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadMember(reader) : null;
+    }
+
+    /// <summary>按邀请码找未绑定的席位（已用掉/封禁的都不算数）。</summary>
+    public StationMember? FindInvitedByCode(string code)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT {string.Join(", ", MemberColumns)} FROM members
+            WHERE invite_code = $code AND status = 'invited';
+            """;
+        command.Parameters.AddWithValue("$code", code.Trim().ToUpperInvariant());
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadMember(reader) : null;
+    }
+
+    /// <summary>邀请码兑现：空位认主（mid 落账、码作废、转 active）。mid 已被占则失败交调用方处置。</summary>
+    public StationMember? BindMember(long memberId, long mid, string? nickname, string? faceUrl)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        try
+        {
+            using var connection = Open(_dbPath);
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    UPDATE members
+                    SET mid = $mid, nickname = $name, face_url = $face, status = 'active',
+                        invite_code = NULL, bound_at_utc = $now, last_login_at_utc = $now
+                    WHERE id = $id AND status = 'invited';
+                    """;
+                command.Parameters.AddWithValue("$mid", mid);
+                command.Parameters.AddWithValue("$name", (object?)nickname ?? DBNull.Value);
+                command.Parameters.AddWithValue("$face", (object?)faceUrl ?? DBNull.Value);
+                command.Parameters.AddWithValue("$now", now);
+                command.Parameters.AddWithValue("$id", memberId);
+                if (command.ExecuteNonQuery() == 0)
+                {
+                    return null;
+                }
+            }
+
+            return GetMemberById(memberId);
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+        {
+            // mid 唯一键撞车：这个 B 站号已有席位，交上层走重登分支。
+            return null;
+        }
+    }
+
+    /// <summary>老席位重登：刷新登录时刻，昵称头像顺手换新。</summary>
+    public void TouchMemberLogin(long mid, string? nickname, string? faceUrl)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE members
+            SET last_login_at_utc = $now,
+                nickname = COALESCE($name, nickname),
+                face_url = COALESCE($face, face_url)
+            WHERE mid = $mid;
+            """;
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$name", (object?)nickname ?? DBNull.Value);
+        command.Parameters.AddWithValue("$face", (object?)faceUrl ?? DBNull.Value);
+        command.Parameters.AddWithValue("$mid", mid);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>启停席位；封禁顺手吊销其全部会话（即刻请出分站）。</summary>
+    public void SetMemberStatus(long memberId, string status)
+    {
+        using var connection = Open(_dbPath);
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE members SET status = $s WHERE id = $id;";
+            command.Parameters.AddWithValue("$s", status);
+            command.Parameters.AddWithValue("$id", memberId);
+            command.ExecuteNonQuery();
+        }
+
+        if (status == MemberStatus.Banned)
+        {
+            RevokeMemberSessions(memberId);
+        }
+    }
+
+    /// <summary>撤席位：连账号池与会话一起清；历史事件与投稿归属（actor/submitter mid）留着给 AI。</summary>
+    public void DeleteMember(long memberId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            DELETE FROM member_sessions WHERE member_id = $id;
+            DELETE FROM member_accounts WHERE member_id = $id;
+            DELETE FROM members WHERE id = $id;
+            """;
+        command.Parameters.AddWithValue("$id", memberId);
+        command.ExecuteNonQuery();
+    }
+
+    // ── 账号池 ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 收下一个 B 站号（扫码/粘贴的 cookie 都从这进）：同 (成员,账号) 再登录就换 cookie 续命。
+    /// 池里第一个号自动立为主力；cookie 从此只进不出，列表形 MemberAccount 不带它。
+    /// </summary>
+    public void UpsertMemberAccount(long memberId, long accountMid, string? accountName, string? faceUrl, string cookie)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        using var connection = Open(_dbPath);
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                INSERT INTO member_accounts
+                    (member_id, account_mid, account_name, face_url, cookie, is_primary, created_at_utc, last_seen_utc)
+                VALUES ($m, $am, $name, $face, $cookie, 0, $now, $now)
+                ON CONFLICT(member_id, account_mid) DO UPDATE SET
+                    cookie = excluded.cookie,
+                    account_name = COALESCE(excluded.account_name, account_name),
+                    face_url = COALESCE(excluded.face_url, face_url),
+                    last_seen_utc = excluded.last_seen_utc,
+                    expired = 0;
+                """;
+            command.Parameters.AddWithValue("$m", memberId);
+            command.Parameters.AddWithValue("$am", accountMid);
+            command.Parameters.AddWithValue("$name", (object?)accountName ?? DBNull.Value);
+            command.Parameters.AddWithValue("$face", (object?)faceUrl ?? DBNull.Value);
+            command.Parameters.AddWithValue("$cookie", cookie);
+            command.Parameters.AddWithValue("$now", now);
+            command.ExecuteNonQuery();
+        }
+
+        // 池里彻底没主力才立一个（按添加先后，第一个扫码的活号当主力）；已有主力时按兵不动。
+        using (var promote = connection.CreateCommand())
+        {
+            promote.CommandText = """
+                UPDATE member_accounts SET is_primary = 1
+                WHERE member_id = $m AND is_primary = 0 AND expired = 0
+                  AND id = (SELECT MIN(id) FROM member_accounts WHERE member_id = $m AND expired = 0)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM member_accounts WHERE member_id = $m AND is_primary = 1 AND expired = 0);
+                UPDATE member_accounts SET is_primary = 0
+                WHERE member_id = $m AND expired = 1 AND is_primary = 1;
+                """;
+            promote.Parameters.AddWithValue("$m", memberId);
+            promote.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>账号列表（不含 cookie，可安全过 HTTP）。</summary>
+    public IReadOnlyList<MemberAccount> ListMemberAccounts(long? memberId = null)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, member_id, account_mid, account_name, face_url, is_primary, expired, created_at_utc, last_seen_utc
+            FROM member_accounts
+            """ + (memberId == null ? "" : " WHERE member_id = $m") + " ORDER BY member_id, is_primary DESC, id;";
+        if (memberId != null)
+        {
+            command.Parameters.AddWithValue("$m", memberId.Value);
+        }
+
+        var list = new List<MemberAccount>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new MemberAccount(
+                reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                !reader.IsDBNull(5) && reader.GetInt64(5) == 1,
+                !reader.IsDBNull(6) && reader.GetInt64(6) == 1,
+                reader.GetString(7),
+                reader.IsDBNull(8) ? null : reader.GetString(8)));
+        }
+
+        return list;
+    }
+
+    /// <summary>下载/查询链取 cookie：主力优先，主力失效退其他活号；一个都不活返回 null 交调用方回落。</summary>
+    public MemberAccountCredential? PickMemberAccountForDownload(long memberId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, member_id, account_mid, cookie FROM member_accounts
+            WHERE member_id = $m AND expired = 0
+            ORDER BY is_primary DESC, id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$m", memberId);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new MemberAccountCredential(
+            reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetString(3));
+    }
+
+    /// <summary>标/解账号失效（nav 探测 -101 或下载败北时打旗；重新扫码自动摘旗）。</summary>
+    public void MarkMemberAccountExpired(long memberId, long accountMid, bool expired)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE member_accounts SET expired = $e WHERE member_id = $m AND account_mid = $am;";
+        command.Parameters.AddWithValue("$e", expired ? 1 : 0);
+        command.Parameters.AddWithValue("$m", memberId);
+        command.Parameters.AddWithValue("$am", accountMid);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>指定主力（站长室/成员页手动换位）：同池其余降为备用。</summary>
+    public void SetMemberAccountPrimary(long accountId)
+    {
+        using var connection = Open(_dbPath);
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE member_accounts SET is_primary = 0 WHERE member_id = (SELECT member_id FROM member_accounts WHERE id = $id);";
+            command.Parameters.AddWithValue("$id", accountId);
+            command.ExecuteNonQuery();
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE member_accounts SET is_primary = 1 WHERE id = $id AND expired = 0;";
+            command.Parameters.AddWithValue("$id", accountId);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    public void DeleteMemberAccount(long accountId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM member_accounts WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", accountId);
+        command.ExecuteNonQuery();
+    }
+
+    // ── 会话 ────────────────────────────────────────────────────────────────
+
+    /// <summary>发会话（存令牌哈希，明文只在 cookie 里走）；发之前顺手清过期票。</summary>
+    public void IssueMemberSession(long memberId, string tokenHash, DateTimeOffset expiresUtc)
+    {
+        using var connection = Open(_dbPath);
+        using (var sweep = connection.CreateCommand())
+        {
+            sweep.CommandText = "DELETE FROM member_sessions WHERE expires_at_utc <= $now;";
+            sweep.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            sweep.ExecuteNonQuery();
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                INSERT INTO member_sessions (token_hash, member_id, created_at_utc, expires_at_utc)
+                VALUES ($t, $m, $now, $exp);
+                """;
+            command.Parameters.AddWithValue("$t", tokenHash);
+            command.Parameters.AddWithValue("$m", memberId);
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$exp", expiresUtc.ToString("O"));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>验票：有效回 member_id，过期票当场撕掉。</summary>
+    public long? ResolveMemberSession(string tokenHash)
+    {
+        using var connection = Open(_dbPath);
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT member_id FROM member_sessions WHERE token_hash = $t AND expires_at_utc > $now;";
+            command.Parameters.AddWithValue("$t", tokenHash);
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return reader.GetInt64(0);
+            }
+        }
+
+        using (var sweep = connection.CreateCommand())
+        {
+            sweep.CommandText = "DELETE FROM member_sessions WHERE token_hash = $t;";
+            sweep.Parameters.AddWithValue("$t", tokenHash);
+            sweep.ExecuteNonQuery();
+        }
+
+        return null;
+    }
+
+    public void RevokeMemberSessions(long memberId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM member_sessions WHERE member_id = $m;";
+        command.Parameters.AddWithValue("$m", memberId);
+        command.ExecuteNonQuery();
+    }
+
+    // ── 入站统计（站长室成员卡 / 未来 AI） ──────────────────────────────────
+
+    /// <summary>某成员的入站概览：投稿数与占用字节（NULL=站长或史前的投稿不在列）。</summary>
+    public IReadOnlyList<MemberIngestStats> ListMemberIngestStats()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT submitter_mid, COUNT(*), COALESCE(SUM(COALESCE(file_bytes, 0)), 0)
+            FROM videos WHERE submitter_mid IS NOT NULL
+            GROUP BY submitter_mid ORDER BY submitter_mid;
+            """;
+        var list = new List<MemberIngestStats>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new MemberIngestStats(reader.GetInt64(0), (int)reader.GetInt64(1), reader.GetInt64(2)));
+        }
+
+        return list;
+    }
+
+    /// <summary>投稿定人（提交入库那一刻由 worker 落笔）。</summary>
+    public void SetVideoSubmitter(long videoId, long? submitterMid)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE videos SET submitter_mid = $s WHERE id = $id;";
+        command.Parameters.AddWithValue("$s", (object?)submitterMid ?? DBNull.Value);
+        command.Parameters.AddWithValue("$id", videoId);
+        command.ExecuteNonQuery();
+    }
+
+    public long? GetVideoSubmitter(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT submitter_mid FROM videos WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", videoId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() && !reader.IsDBNull(0) ? reader.GetInt64(0) : null;
+    }
+}

@@ -53,6 +53,9 @@ builder.Services.AddSingleton<AdminGate>();
 // 台账备份员：station.db 在线快照到 data/backups，周期巡工 + 站长室手动补拍。
 builder.Services.AddSingleton<LedgerBackup>();
 builder.Services.AddHostedService<LedgerBackupWorker>();
+// 分站海马体：业务侧 Record 一下就走，抄录员后台攒批落 events 表，供站长与未来 AI 分析。
+builder.Services.AddSingleton<EventRecorder>();
+builder.Services.AddHostedService<EventRecorderWorker>();
 
 // 下载引擎（移植自 downkyicore 的 headless 运行时）：启动时拉起下载 runtime 并自检 ffmpeg
 builder.Services.AddLbsDownloadEngine(new EngineOptions(EngineOptions.DefaultUserAgent));

@@ -15,8 +15,9 @@ public sealed record AddVideoOutcome(AddVideoResult Result, long VideoId);
 /// <summary>
 /// 分站元数据库（SQLite，WAL）。M0 只有 videos 表；
 /// 收藏夹、分 P、弹幕、字幕表随 M1/M3 功能到达时逐个建，不提前占坑。
+/// 成员/会话/事件台账的读写在 partial 文件 StationDb.Members.cs / StationDb.Events.cs。
 /// </summary>
-public sealed class StationDb
+public sealed partial class StationDb
 {
     private readonly string _dbPath;
     private readonly DataPaths _paths;
@@ -126,6 +127,8 @@ public sealed class StationDb
         EnsureColumn(connection, "videos", "published_at_utc", "TEXT");
         // 视频归属号（0=主 1=副，NULL=未分配）：提交时轮转定档，加档/采集跟随同一个号。
         EnsureColumn(connection, "videos", "owner", "INTEGER");
+        // 投稿人（B 站 UID，与 events.actor_mid 同口径，NULL=站长或史前）：下载提交时据此走投稿人的账号池。
+        EnsureColumn(connection, "videos", "submitter_mid", "INTEGER");
         // 主版本编码实测缓存（'avc'/'hevc'/'av1'）：首次看片时 ffprobe 实测回填，之后不再探。
         EnsureColumn(connection, "pages", "codec", "TEXT");
         // UP 主名片快照（头像本地化相对路径 / 简介 / 粉丝数），由 LbsUpInfoFetcher 到站时采。
@@ -142,6 +145,66 @@ public sealed class StationDb
         // 站内弹幕的发送者匿名凭证（仅发送者本人可删，主人例外）。
         EnsureColumn(connection, "danmaku_local", "sender_dmid", "TEXT");
         EnsureColumn(connection, "danmaku_local", "sender_owner", "INTEGER DEFAULT 0");
+
+        // M5 成员体系：席位（邀请制）、账号池（cookie 只进不出）、会话（落盘，重启不踢朋友）。
+        using (var members = connection.CreateCommand())
+        {
+            members.CommandText = """
+                CREATE TABLE IF NOT EXISTS members (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mid               INTEGER UNIQUE,
+                    invite_code       TEXT UNIQUE,
+                    nickname          TEXT,
+                    face_url          TEXT,
+                    note              TEXT,
+                    status            TEXT NOT NULL,
+                    created_at_utc    TEXT NOT NULL,
+                    bound_at_utc      TEXT,
+                    last_login_at_utc TEXT
+                );
+                CREATE TABLE IF NOT EXISTS member_accounts (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    member_id      INTEGER NOT NULL,
+                    account_mid    INTEGER NOT NULL,
+                    account_name   TEXT,
+                    face_url       TEXT,
+                    cookie         TEXT NOT NULL,
+                    is_primary     INTEGER NOT NULL DEFAULT 0,
+                    expired        INTEGER NOT NULL DEFAULT 0,
+                    created_at_utc TEXT NOT NULL,
+                    last_seen_utc  TEXT,
+                    UNIQUE(member_id, account_mid)
+                );
+                CREATE TABLE IF NOT EXISTS member_sessions (
+                    token_hash     TEXT PRIMARY KEY,
+                    member_id      INTEGER NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    expires_at_utc TEXT NOT NULL
+                );
+                """;
+            members.ExecuteNonQuery();
+        }
+
+        // M5 事件台账：分站的海马体，AI 分析的原料。只增不删，双索引保查询。
+        using (var events = connection.CreateCommand())
+        {
+            events.CommandText = """
+                CREATE TABLE IF NOT EXISTS events (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts_utc       TEXT NOT NULL,
+                    actor_type   TEXT NOT NULL,
+                    actor_mid    INTEGER,
+                    event        TEXT NOT NULL,
+                    subject_type TEXT,
+                    subject_id   TEXT,
+                    payload      TEXT,
+                    ip           TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_mid, ts_utc);
+                CREATE INDEX IF NOT EXISTS idx_events_event ON events(event, ts_utc);
+                """;
+            events.ExecuteNonQuery();
+        }
     }
 
     private static void EnsureColumn(SqliteConnection connection, string table, string column, string type)
