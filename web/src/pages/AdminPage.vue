@@ -806,8 +806,10 @@ async function bootAdmin() {
       return
     }
     stats.value = probe.ok ? await probe.json() : null
+    adminAuth.value = 'ok' // 牌对上了就要把门落下——早期只写了两张拒客分支，放行时反被卡在 loading
   } catch {
     /* 后端打盹：照常进页面，各卡自己空着 */
+    adminAuth.value = 'ok'
   }
   fetch('/api/health')
     .then((r) => r.json())
