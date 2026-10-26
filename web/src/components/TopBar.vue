@@ -8,9 +8,12 @@ import { member, loginDialogOpen, loginDialogMode, load as loadMember, logout as
 const route = useRoute()
 const router = useRouter()
 const searchText = ref(typeof route.query.q === 'string' ? route.query.q : '')
+const menuOpen = ref(false)
 
 // 结果页改词/回首页清词时，搜索框跟着页面走
 watch(() => route.query.q, (v) => { searchText.value = typeof v === 'string' ? v : '' })
+// 换页时收起头像菜单，不给导航完还悬着一张卡
+watch(() => route.fullPath, () => { menuOpen.value = false })
 
 function doSearch() {
   const term = searchText.value.trim()
@@ -29,7 +32,23 @@ function onSubmitClick() {
   else openLogin('admit')
 }
 
+// 头像就是总门：访客点开扫码窗，成员点开 B 站式下拉
+function onAvatarClick() {
+  if (!member.value) {
+    openLogin('admit')
+    return
+  }
+
+  menuOpen.value = !menuOpen.value
+}
+
+function go(path) {
+  menuOpen.value = false
+  router.push(path)
+}
+
 async function doLogout() {
+  menuOpen.value = false
   await logoutMember()
 }
 
@@ -81,41 +100,34 @@ onMounted(() => {
           投稿
         </button>
 
-        <!-- 访客：一个扫码门 -->
-        <button
-          v-if="!member"
-          class="flex h-7 items-center gap-1.5 rounded-full border border-stationPink px-3.5 text-xs text-stationPink transition hover:bg-stationPink hover:text-white"
-          title="扫码进站"
-          @click="openLogin('admit')"
-        >
-          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
-            <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
-            <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
-            <path d="M13.5 13.5h3v3h-3zM18.5 18.5h2v2h-2z" fill="currentColor" stroke="none" />
-          </svg>
-          扫码进站
-        </button>
-
-        <!-- 成员：头像+昵称，点击进控制室（站长直进站长室）；hover 下拉里退出登录 -->
-        <div v-else class="group relative">
-          <RouterLink
-            :to="member.role === 'owner' ? '/admin' : '/me'"
-            class="flex h-8 items-center gap-2 rounded-full pl-0.5 pr-2 transition hover:bg-stationPink/5"
-            :title="member.role === 'owner' ? `站长「${member.nickname}」` : `「${member.nickname}」· 用户控制室`"
+        <!-- 总门小头像：不分访客/成员都是这个圆——访客点开扫码窗，成员点开下拉菜单 -->
+        <div class="relative">
+          <button
+            class="block h-8 w-8 shrink-0 overflow-visible rounded-full transition"
+            :title="member ? (member.role === 'owner' ? `站长「${member.nickname}」` : `「${member.nickname}」`) : '扫码进站'"
+            @click="onAvatarClick"
           >
-            <span class="relative block h-7 w-7 shrink-0 overflow-visible">
+            <span class="relative block h-full w-full">
               <img
-                v-if="member.faceUrl"
+                v-if="member?.faceUrl"
                 :src="member.faceUrl"
                 :alt="member.nickname"
                 referrerpolicy="no-referrer"
-                class="h-full w-full rounded-full object-cover ring-1 ring-transparent transition group-hover:ring-stationPink/60"
+                class="h-full w-full rounded-full object-cover"
+                :class="menuOpen ? 'ring-2 ring-stationPink/60' : 'ring-1 ring-transparent hover:ring-stationPink/40'"
               />
-              <span v-else class="block h-full w-full rounded-full bg-lineSoft transition group-hover:bg-stationPink/20"></span>
+              <span
+                v-else
+                class="flex h-full w-full items-center justify-center rounded-full bg-lineSoft text-inkFaint transition hover:bg-stationPink/20"
+              >
+                <svg viewBox="0 0 24 24" class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <circle cx="12" cy="8.5" r="3.5" />
+                  <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
+                </svg>
+              </span>
               <!-- 站长金冠角标 -->
               <svg
-                v-if="member.role === 'owner'"
+                v-if="member?.role === 'owner'"
                 viewBox="0 0 24 24"
                 class="absolute -right-1 -top-1 h-3.5 w-3.5 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]"
                 aria-label="站长"
@@ -129,20 +141,76 @@ onMounted(() => {
                 />
               </svg>
             </span>
-            <span class="max-w-[110px] truncate text-xs text-inkMain">{{ member.nickname }}</span>
-          </RouterLink>
+          </button>
 
-          <div class="invisible absolute right-0 top-full z-40 pt-1.5 opacity-0 transition group-hover:visible group-hover:opacity-100">
-            <div class="w-44 rounded-xl border border-lineSoft bg-cardBg p-1.5 shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)]">
-              <p class="truncate px-2.5 py-1.5 text-xs text-inkFaint">{{ member.nickname }} · UID {{ member.mid }}</p>
-              <button
-                class="w-full rounded-lg px-2.5 py-1.5 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
-                @click="doLogout"
-              >
-                退出登录
-              </button>
+          <!-- B 站式个人卡：名片头 + 菜单行，退出登录垫底整条灰底 -->
+          <template v-if="member && menuOpen">
+            <div class="fixed inset-0 z-30" @click="menuOpen = false"></div>
+            <div class="absolute right-0 top-full z-40 mt-1.5 w-52 overflow-hidden rounded-xl border border-lineSoft bg-cardBg shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)]">
+              <div class="flex items-center gap-2.5 px-3.5 pb-2 pt-3">
+                <span class="relative block h-10 w-10 shrink-0">
+                  <img
+                    v-if="member.faceUrl"
+                    :src="member.faceUrl"
+                    :alt="member.nickname"
+                    referrerpolicy="no-referrer"
+                    class="h-full w-full rounded-full object-cover"
+                  />
+                  <span v-else class="block h-full w-full rounded-full bg-lineSoft"></span>
+                  <svg
+                    v-if="member.role === 'owner'"
+                    viewBox="0 0 24 24"
+                    class="absolute -right-1 -top-1 h-4 w-4 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]"
+                    aria-label="站长"
+                  >
+                    <path
+                      d="M3 17.5h18L22.5 8l-5.7 4L12 3.5 7.2 12 1.5 8 3 17.5Z"
+                      fill="#f5c542"
+                      stroke="#ffffff"
+                      stroke-width="1.4"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </span>
+                <span class="min-w-0">
+                  <span class="block truncate text-[13px] font-medium text-inkMain">{{ member.nickname }}</span>
+                  <span class="block text-[11px] text-inkFaint">{{ member.role === 'owner' ? '站长' : '分站成员' }} · UID {{ member.mid }}</span>
+                </span>
+              </div>
+
+              <div class="border-t border-lineSoft/70 p-1.5">
+                <button
+                  class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+                  @click="go('/me')"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <circle cx="12" cy="8.5" r="3.5" />
+                    <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
+                  </svg>
+                  用户控制室
+                </button>
+                <button
+                  v-if="member.role === 'owner'"
+                  class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+                  @click="go('/admin')"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M3 17.5h18L22.5 8l-5.7 4L12 3.5 7.2 12 1.5 8 3 17.5Z" stroke-linejoin="round" />
+                  </svg>
+                  站长室
+                </button>
+              </div>
+
+              <div class="border-t border-lineSoft/70 p-1.5">
+                <button
+                  class="w-full rounded-lg bg-[#f1f2f3] px-2.5 py-2 text-center text-xs text-inkSub transition hover:bg-lineSoft hover:text-inkMain"
+                  @click="doLogout"
+                >
+                  退出登录
+                </button>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
       </div>
     </div>
