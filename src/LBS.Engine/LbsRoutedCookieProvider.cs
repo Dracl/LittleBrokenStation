@@ -13,6 +13,12 @@ public sealed class LbsRoutedCookieProvider(LbsAccountRouter router, LbsAltLogin
 {
     public string GetCookieHeader()
     {
+        // 投稿人自己的号优先（成员账号池）；没有才回站级主备槽。
+        if (router.MemberCookieOverride is { Length: > 0 } memberCookie)
+        {
+            return memberCookie;
+        }
+
         if (router.Effective(router.Current) == LbsOwner.Alt && alt.TryGetCookieHeader() is { } altCookie)
         {
             return altCookie;

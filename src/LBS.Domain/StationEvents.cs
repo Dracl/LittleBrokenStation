@@ -62,6 +62,8 @@ public static class EventNames
     public const string MemberBan = "member.ban";
     public const string MemberUnban = "member.unban";
     public const string MemberDelete = "member.delete";
+    public const string MemberSetPrimary = "member.set_primary";
+    public const string MemberDropAccount = "member.drop_account";
 
     public const string LoginStart = "login.qr.start";
     public const string LoginScanned = "login.qr.scanned";

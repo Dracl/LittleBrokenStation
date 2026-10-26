@@ -24,6 +24,7 @@ public enum LbsCollectMode
 public sealed class LbsAccountRouter(LbsAltLoginManager alt)
 {
     private static readonly AsyncLocal<LbsOwner?> Ambient = new();
+    private static readonly AsyncLocal<string?> MemberOverride = new();
     private int _turn;
 
     /// <summary>采集偏好。启动时从库回填，设置 API 现改现生效。</summary>
@@ -69,6 +70,25 @@ public sealed class LbsAccountRouter(LbsAltLoginManager alt)
     {
         using var _ = BeginScope(owner);
         return action();
+    }
+
+    /// <summary>成员临时号 cookie（投稿人的号）；没在成员上下文里时为 null。</summary>
+    public string? MemberCookieOverride => MemberOverride.Value;
+
+    /// <summary>把调用链的 cookie 换为投稿人自己的号（成员账号池）；主/副归属台账不变，
+    /// 出池回落时照样走站级主备。cookie 只进这条链，不落任何回显。</summary>
+    public Task<T> RunAsMemberAsync<T>(string cookie, Func<Task<T>> action)
+    {
+        var previous = MemberOverride.Value;
+        MemberOverride.Value = cookie;
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            MemberOverride.Value = previous;
+        }
     }
 
     private sealed class Scope(LbsOwner? previous) : IDisposable

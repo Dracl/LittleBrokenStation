@@ -18,17 +18,22 @@ public static class MemberEndpoints
     private const int MaxOpenQrPerIp = 3;
     private const int MaxOpenQrTotal = 64;
 
-    private sealed record QrSession(string SourceIp, string? Invite, DateTimeOffset CreatedUtc)
+    private sealed record QrSession(string SourceIp, string? Invite, DateTimeOffset CreatedUtc, string Mode)
     {
         public DateTimeOffset LastPollUtc { get; set; }
         public QrPhase Phase { get; set; } = QrPhase.Waiting;
     }
 
-    private sealed record QrNewRequest(string? Invite);
+    private sealed record QrNewRequest(string? Invite, string? Mode);
+
+    private sealed record AccountIdRequest(long Id);
 
     public static void MapMemberEndpoints(this WebApplication app)
     {
         var sessions = new ConcurrentDictionary<string, QrSession>();
+
+        // 公开探针：登录页用它挂“首位扫码者继位站长”的告示，不需要任何身份。
+        app.MapGet("/api/member/status", (StationDb db) => Results.Ok(new { hasOwner = db.HasOwner() }));
 
         app.MapPost("/api/member/qr/new", async (QrNewRequest? request, LbsQrLogin qr, StationDb db,
             EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
@@ -42,13 +47,21 @@ public static class MemberEndpoints
                 return Results.Json(new { message = "排队扫码的人太多，稍候再试" }, statusCode: StatusCodes.Status429TooManyRequests);
             }
 
+            // bind 模式：已登录成员往自己账号池里再接一个 B 站号，不建新席不发新会话。
+            var mode = string.Equals(request?.Mode, "bind", StringComparison.OrdinalIgnoreCase) ? "bind" : "admit";
+            if (mode == "bind" && MemberGate.Current(http) is null)
+            {
+                return Results.Json(new { message = "先以会员身份进站，才能往自己池里加号" },
+                    statusCode: StatusCodes.Status401Unauthorized);
+            }
+
             var challenge = await qr.NewChallengeAsync(cancellationToken);
             if (challenge is null)
             {
                 return Results.Json(new { message = "B 站没给二维码，稍后再试" }, statusCode: StatusCodes.Status502BadGateway);
             }
 
-            sessions[challenge.QrcodeKey] = new QrSession(ip, NormalizeInvite(request?.Invite), DateTimeOffset.UtcNow);
+            sessions[challenge.QrcodeKey] = new QrSession(ip, NormalizeInvite(request?.Invite), DateTimeOffset.UtcNow, mode);
             events.Record(EventActors.Guest, null, EventNames.LoginStart, "qr", challenge.QrcodeKey, ip: ip);
             return Results.Ok(new { url = challenge.Url, key = challenge.QrcodeKey });
         });
@@ -63,6 +76,13 @@ public static class MemberEndpoints
 
             var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
             if (!string.Equals(session.SourceIp, ip, StringComparison.Ordinal))
+            {
+                return Results.Unauthorized();
+            }
+
+            // bind 模式的码只能发起人自己消——拿别人刚扫完的码偷号不行。
+            long? binderMid = session.Mode == "bind" ? MemberGate.Current(http)?.Mid : null;
+            if (session.Mode == "bind" && binderMid is null)
             {
                 return Results.Unauthorized();
             }
@@ -111,6 +131,20 @@ public static class MemberEndpoints
                             "{\"reason\":\"B 站不认这份登录回执\"}", ip);
                         return Results.Json(new { message = "B 站没认下这次登录，重新扫一次试试" },
                             statusCode: StatusCodes.Status401Unauthorized);
+                    }
+
+                    if (session.Mode == "bind")
+                    {
+                        var binder = db.GetMemberByMid(binderMid!.Value)!;
+                        db.UpsertMemberAccount(binder.Id, identity.Mid, identity.Name, identity.Face, cookie);
+                        sessions.TryRemove(key, out _);
+                        events.Record(EventActors.Member, binderMid, EventNames.LoginSuccess, "member",
+                            identity.Mid.ToString(), "{\"mode\":\"bind\"}", ip);
+                        return Results.Ok(new
+                        {
+                            phase = "success",
+                            account = new { accountMid = identity.Mid, nickname = identity.Name, faceUrl = identity.Face },
+                        });
                     }
 
                     var outcome = AdmitMember(db, gate, identity, session.Invite, cookie);
@@ -192,6 +226,46 @@ public static class MemberEndpoints
                 submitted = stats?.VideoCount ?? 0,
                 bytes = stats?.TotalBytes ?? 0,
             });
+        });
+
+        app.MapPost("/api/member/accounts/primary", (AccountIdRequest request, StationDb db, EventRecorder events,
+            HttpContext http) =>
+        {
+            var member = MemberGate.Current(http);
+            if (member is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            if (!db.ListMemberAccounts(member.Id).Any(a => a.Id == request.Id))
+            {
+                return Results.Json(new { message = "这个号不在你的池里" }, statusCode: StatusCodes.Status404NotFound);
+            }
+
+            db.SetMemberAccountPrimary(request.Id);
+            events.Record(EventActors.Member, member.Mid, EventNames.MemberSetPrimary, "account", request.Id.ToString(),
+                ip: http.Connection.RemoteIpAddress?.ToString());
+            return Results.Ok(new { message = "主号已切换，下载默认用它" });
+        });
+
+        app.MapPost("/api/member/accounts/delete", (AccountIdRequest request, StationDb db, EventRecorder events,
+            HttpContext http) =>
+        {
+            var member = MemberGate.Current(http);
+            if (member is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            if (!db.ListMemberAccounts(member.Id).Any(a => a.Id == request.Id))
+            {
+                return Results.Json(new { message = "这个号不在你的池里" }, statusCode: StatusCodes.Status404NotFound);
+            }
+
+            db.DeleteMemberAccount(request.Id);
+            events.Record(EventActors.Member, member.Mid, EventNames.MemberDropAccount, "account", request.Id.ToString(),
+                ip: http.Connection.RemoteIpAddress?.ToString());
+            return Results.Ok(new { message = "号已从池中逐出" });
         });
 
         void SweepStale()

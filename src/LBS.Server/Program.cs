@@ -120,7 +120,7 @@ app.MapGet("/api/videos", (StationDb db) => db.ListVideos());
 
 // 站内搜索：只命中已到站视频，空格分词 AND；空查询给空结果让前端少一条错误分支。
 // 长度截断防滥用，排序白名单（plays / 缺省新到站）在 StationDb 里控制。
-app.MapGet("/api/search", (string? q, string? sort, StationDb db) =>
+app.MapGet("/api/search", (string? q, string? sort, StationDb db, EventRecorder events, HttpContext http) =>
 {
     if (string.IsNullOrWhiteSpace(q))
     {
@@ -133,7 +133,13 @@ app.MapGet("/api/search", (string? q, string? sort, StationDb db) =>
         trimmed = trimmed[..64];
     }
 
-    return Results.Ok(db.SearchVideos(trimmed, sort));
+    var hits = db.SearchVideos(trimmed, sort);
+    // 搜了什么、有没有搜到，服务端盖手记（不拿前端上报，不给伪造留门）。
+    var member = MemberGate.Current(http);
+    events.RecordWithPayload(member is null ? EventActors.Guest : EventActors.Member, member?.Mid,
+        EventNames.SearchQuery, "query", trimmed, new { hits = hits.Count, sort },
+        http.Connection.RemoteIpAddress?.ToString());
+    return Results.Ok(hits);
 });
 
 // 本地媒体区：data/videos 映射到 /media，StaticFileMiddleware 自带 Range 支持，mp4 拖进度条没问题。
@@ -302,6 +308,9 @@ app.MapMemberEndpoints();
 
 // 站长室的成员管理：席位清单、发邀请码、封禁/解封、撤席位（owner 会话门已在前置 middleware 把关）。
 app.MapAdminMemberEndpoints();
+
+// 前端行为上报：播放心跳、停留、页面浏览——白名单内客户端才能写，身份由服务端盖章。
+app.MapEventIngestEndpoints();
 
 // 旧档案的后补：有 mid 但名片从未采过（up_face 为 NULL）时，开页顺手异步采一次，下次刷新就有。
 // 失败也销账（置空串）；并发重复触发用 in-flight 集合挡掉。
@@ -767,7 +776,8 @@ app.MapPost("/api/videos/{id:long}/comments/subs", async (long id, CommentArchiv
         : Results.BadRequest(new { message });
 });
 
-app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
+app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, DownloadQueue queue, EventRecorder events,
+    HttpContext http, CancellationToken cancellationToken) =>
 {
     if (string.IsNullOrWhiteSpace(request.Url)
         || !Uri.TryCreate(request.Url, UriKind.Absolute, out var uri)
@@ -787,11 +797,23 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
         return Results.Conflict(new { message = "这个视频已经到过了" });
     }
 
+    // 投稿定人：谁投的归谁，下载提交时走他自己的账号池。
+    var submitter = MemberGate.Current(http);
+    if (submitter?.Mid is long submitterMid)
+    {
+        db.SetVideoSubmitter(outcome.VideoId, submitterMid);
+    }
+
+    events.RecordWithPayload(submitter is null ? EventActors.Guest : EventActors.Member, submitter?.Mid,
+        EventNames.VideoSubmit, "video", bvid, new { url = request.Url, via = "link" },
+        http.Connection.RemoteIpAddress?.ToString());
+
     await queue.EnqueueAsync(outcome.VideoId, cancellationToken);
     return Results.Ok(new { videoId = outcome.VideoId, message = $"已加入进站队列，{bvid} 正在赶来" });
 });
 
-app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
+app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, StationDb db, DownloadQueue queue,
+    EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
 {
     if (string.IsNullOrWhiteSpace(request.Content) || !NetscapeBookmarkParser.LooksLikeNetscapeBookmarkFile(request.Content))
     {
@@ -816,10 +838,25 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
         }
     }
 
+    var bookmarkSubmitter = MemberGate.Current(http)?.Mid;
     var outcome = db.AddVideosBulk(videos);
     foreach (var videoId in outcome.InsertedIds)
     {
+        if (bookmarkSubmitter is long mid)
+        {
+            db.SetVideoSubmitter(videoId, mid);
+        }
+
         await queue.EnqueueAsync(videoId, cancellationToken);
+    }
+
+    if (outcome.Added > 0)
+    {
+        var actor = MemberGate.Current(http);
+        events.RecordWithPayload(actor is null ? EventActors.Guest : EventActors.Member, actor?.Mid,
+            EventNames.VideoSubmit, "batch", "bookmarks",
+            new { via = "bookmarks", added = outcome.Added, duplicated = outcome.Duplicated, ignored },
+            http.Connection.RemoteIpAddress?.ToString());
     }
 
     return Results.Ok(new
@@ -831,7 +868,8 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
     });
 });
 
-app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest request, LbsFavoritesImport favorites, LbsOwnerPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
+app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest request, LbsFavoritesImport favorites, LbsOwnerPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
+    EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
 {
     // 整架导入是批量动作，冷却期直接挡回，不等它耐心到天荒地老。
     if (throttle.IsCoolingDown)
@@ -847,10 +885,25 @@ app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest reques
         return Results.BadRequest(new { message = outcome.Error });
     }
 
+    var favSubmitter = MemberGate.Current(http)?.Mid;
     var bulk = db.AddVideosBulk(outcome.Videos);
     foreach (var videoId in bulk.InsertedIds)
     {
+        if (favSubmitter is long mid)
+        {
+            db.SetVideoSubmitter(videoId, mid);
+        }
+
         await queue.EnqueueAsync(videoId, cancellationToken);
+    }
+
+    if (bulk.Added > 0)
+    {
+        var actor = MemberGate.Current(http);
+        events.RecordWithPayload(actor is null ? EventActors.Guest : EventActors.Member, actor?.Mid,
+            EventNames.VideoSubmit, "batch", "fav_url",
+            new { via = "fav_url", added = bulk.Added, duplicated = bulk.Duplicated, ignored = outcome.Ignored },
+            http.Connection.RemoteIpAddress?.ToString());
     }
 
     var message = $"整架签收：收到 {outcome.Videos.Count + outcome.Ignored} 个条目，新进站 {bulk.Added} 条，来过 {bulk.Duplicated} 条";
@@ -872,6 +925,7 @@ app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest reques
 app.MapPost("/api/up/import", async (UpImportRequest request,
     LbsQueryClient client, IWbiKeyProvider wbiKeys, TimeProvider timeProvider,
     LbsOwnerPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
+    EventRecorder events, HttpContext http,
     CancellationToken cancellationToken) =>
 {
     if (throttle.IsCoolingDown)
@@ -931,10 +985,25 @@ app.MapPost("/api/up/import", async (UpImportRequest request,
         return Results.Ok(new { total = 0, added = 0, duplicated = 0, message = "这位 UP 主名下没翻到视频（或空间设了权限）" });
     }
 
+    var upSubmitter = MemberGate.Current(http)?.Mid;
     var upBulk = db.AddVideosBulk(videos);
     foreach (var videoId in upBulk.InsertedIds)
     {
+        if (upSubmitter is long uploaderMid)
+        {
+            db.SetVideoSubmitter(videoId, uploaderMid);
+        }
+
         await queue.EnqueueAsync(videoId, cancellationToken);
+    }
+
+    if (upBulk.Added > 0)
+    {
+        var actor = MemberGate.Current(http);
+        events.RecordWithPayload(actor is null ? EventActors.Guest : EventActors.Member, actor?.Mid,
+            EventNames.VideoSubmit, "batch", "up",
+            new { via = "up", added = upBulk.Added, duplicated = upBulk.Duplicated },
+            http.Connection.RemoteIpAddress?.ToString());
     }
 
     var truncated = videos.Count >= maxVideos ? "，先到 500 条为止（想补老货再投一次）" : string.Empty;

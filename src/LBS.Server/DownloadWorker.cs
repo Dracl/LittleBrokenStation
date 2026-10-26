@@ -223,7 +223,21 @@ public sealed class DownloadWorker(
 
             logger.LogInformation("提交进站 videoId={VideoId} 归属 {Owner}", videoId, owner);
             var options = LbsSubmissionProfile.ForStation(paths, settingsStore.Current);
-            var result = await router.RunAsAsync(owner, () => submission.SubmitAsync(candidate.Url, options, stoppingToken));
+
+            // 投稿人自己的号优先：成员池有活号就用他的 cookie 跑提交链（playurl/视频信息全挂他的登录态），
+            // 出池（没号/全失效）回落站级主备槽；归属台账仍按主/副轮转，不动存量机制。
+            var memberCred = db.GetVideoSubmitter(videoId) is long submitterMid
+                ? db.PickMemberAccountForDownload(submitterMid)
+                : null;
+            var result = memberCred is null
+                ? await router.RunAsAsync(owner, () => submission.SubmitAsync(candidate.Url, options, stoppingToken))
+                : await router.RunAsMemberAsync(memberCred.Cookie,
+                    () => router.RunAsAsync(owner, () => submission.SubmitAsync(candidate.Url, options, stoppingToken)));
+            if (memberCred is not null)
+            {
+                // cookie 只进不出：日志只报号码，不报内容。
+                logger.LogInformation("提交进站 videoId={VideoId} 走投稿人自有号 mid={Mid}", videoId, memberCred.AccountMid);
+            }
 
             // 副号提交失败（风控/画质权限等单号问题）：主号重跑一次，成功则改判归主，下载不断档。
             if (owner == LbsOwner.Alt && IsFailure(result))
