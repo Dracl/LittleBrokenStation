@@ -89,9 +89,14 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
             source.BackupDatabase(destination);
         }
 
-        Prune();
-        db.SetSetting("last-backup-utc", DateTimeOffset.UtcNow.ToString("O"));
+        // 连接池会替刚拍完的快照扣着文件句柄，不清掉的话紧接着的 Prune 想删也删不动
+        SqliteConnection.ClearAllPools();
+
+        // 尺寸先记账：后头的修剪万一把它当陈旧件盯上，日志也不会读到没的文件
         var bytes = new FileInfo(target).Length;
+
+        Prune(protect: name);
+        db.SetSetting("last-backup-utc", DateTimeOffset.UtcNow.ToString("O"));
         logger.LogInformation("台账快照落柜 {Name}（{Kb} KB）", name, bytes / 1024);
         return name;
     }
@@ -104,7 +109,8 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
             return [];
         }
 
-        return Directory.EnumerateFiles(dir, "station-*.db")
+        return Directory.EnumerateFiles(dir)
+            .Where(f => SafeName.IsMatch(Path.GetFileName(f)))
             .Select(f => new BackupFile(Path.GetFileName(f), new FileInfo(f).Length, new DateTimeOffset(File.GetLastWriteTimeUtc(f), TimeSpan.Zero)))
             .OrderByDescending(b => b.Name)
             .ToList();
@@ -128,7 +134,7 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
         return true;
     }
 
-    private void Prune()
+    private void Prune(string? protect = null)
     {
         var dir = Path.Combine(paths.Root, "backups");
         if (!Directory.Exists(dir))
@@ -136,19 +142,34 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
             return;
         }
 
-        var stale = Directory.EnumerateFiles(dir, "station-*.db")
-            .OrderByDescending(f => Path.GetFileName(f), StringComparer.Ordinal)
+        // 按落笔时间新→旧排，名字只作同刻平手时的垫底：
+        // 同秒连拍的 -1/-2 后缀按字典序会把最早那张当成最旧，误删的惊怒测试才冒出来
+        var stale = Directory.EnumerateFiles(dir)
+            .Where(f => SafeName.IsMatch(Path.GetFileName(f)))
+            .Where(f => !string.Equals(Path.GetFileName(f), protect, StringComparison.Ordinal))
+            .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
+            .ThenByDescending(f => Path.GetFileName(f), StringComparer.Ordinal)
             .Skip(Keep);
 
         foreach (var file in stale)
         {
-            try
+            // Windows 上刚写完的文件可能被杀软/索引服务短暂扣着，重试几拍再放手
+            for (var attempt = 1; ; attempt++)
             {
-                File.Delete(file);
-            }
-            catch (IOException)
-            {
-                // 快照正被占用（罕见），下一轮再剪
+                try
+                {
+                    File.Delete(file);
+                    break;
+                }
+                catch (IOException) when (attempt < 4)
+                {
+                    Thread.Sleep(50);
+                }
+                catch (IOException)
+                {
+                    // 快照正被占用，整点巡班再剪
+                    break;
+                }
             }
         }
     }

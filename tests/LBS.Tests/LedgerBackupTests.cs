@@ -63,7 +63,12 @@ public sealed class LedgerBackupTests : IDisposable
             Thread.Sleep(30);
         }
 
-        Assert.Equal(7, _backup.List().Count);
+        var shelf = _backup.List();
+        // 修剪是最终一致：刚拍完的快照可能被系统短暂扣着，补一轮 SetKeep 触发的修剪就该扫干净
+        // （生产里由整点巡班兼任这个兜底）
+        Assert.True(_backup.SetKeep(7));
+        shelf = _backup.List();
+        Assert.True(shelf.Count == 7, $"柜里 {shelf.Count} 张：{string.Join(" | ", shelf.Select(f => f.Name))}");
         // 白名单外的份数拒收，免得站长一挥手把档案柜清空
         Assert.False(_backup.SetKeep(2));
     }
@@ -74,6 +79,21 @@ public sealed class LedgerBackupTests : IDisposable
         Assert.False(_backup.Delete("../../station.db"));
         Assert.False(_backup.Delete("station-20261026-999999.db.bak"));
         Assert.False(_backup.Delete("not-a-snapshot.db"));
+    }
+
+    [Fact]
+    public void SidecarFiles_AreNotArchived()
+    {
+        // Windows 短名会让 *.db 通配误扫到 WAL 边车文件，档案柜只认 SafeName 正形
+        var dir = Path.Combine(_tempDir, "backups");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "station-20261026-120000.db-wal"), "wal");
+        File.WriteAllText(Path.Combine(dir, "station-20261026-120000.db-shm"), "shm");
+
+        _backup.Run();
+
+        Assert.All(_backup.List(), f => Assert.EndsWith(".db", f.Name));
+        Assert.Single(_backup.List());
     }
 
     [Fact]
