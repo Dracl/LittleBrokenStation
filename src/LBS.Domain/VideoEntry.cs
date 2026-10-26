@@ -17,10 +17,16 @@ public enum VideoStatus
 
     /// <summary>引擎判定无需重复下载（已在下载列表/历史里）或内容不可下，不重试。</summary>
     Skipped = 4,
+
+    /// <summary>站长在下载面板取消了排队行（还没碰引擎，零成本取消）；卡阵里可重新排队。</summary>
+    Canceled = 5,
 }
 
 /// <summary>入库一条新视频的最小描述。</summary>
-public sealed record NewVideo(string Url, string Bvid, string? Title);
+public sealed record NewVideo(string Url, string Bvid, string? Title, string? CoverUrl = null, string? PublishedAtUtc = null);
+
+/// <summary>下载队列卡片的一行（排队/下载中同形）。</summary>
+public sealed record DownloadQueueItem(long Id, string Bvid, string? Title, string? CoverUrl);
 
 /// <summary>待提交给下载引擎的站内记录（只取提交所需字段）。</summary>
 public sealed record SubmissionCandidate(long Id, string Url, string? Title);
@@ -42,4 +48,8 @@ public sealed record VideoEntry(
     string? UpName = null,
     string? ViewCountText = null,
     string? DurationText = null,
-    int? DanmakuCount = null);
+    int? DanmakuCount = null,
+    // 真正的 B 站投稿时间（导入源自带 pubdate/created），首页卡阵展示它而非入站时间；
+    // 没抽到时的兜底是 video_meta.publish_text（到站归档的发布文本）。
+    string? PublishedAtUtc = null,
+    string? PublishText = null);

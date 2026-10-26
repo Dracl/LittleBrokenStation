@@ -16,7 +16,7 @@ public sealed record VideoStat(long? Like, long? Coin, long? Favorite, long? Sha
 /// 头像本地化到 data/avatars/up-{mid}.jpg 由 /avatars 端点伺服。失败不逞强：返回 null，前端按"—"降级。
 /// </summary>
 public sealed class LbsUpInfoFetcher(
-    IBilibiliApiClient client,
+    LbsQueryClient client,
     DataPaths paths,
     ILogger<LbsUpInfoFetcher> logger)
 {

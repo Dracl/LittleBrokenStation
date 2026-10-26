@@ -28,8 +28,23 @@ public sealed class EngineBootstrap(
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        logger.LogInformation("下载引擎离站，停止下载 runtime");
-        await inner.StopAsync(cancellationToken);
+        // 停机耗时入账：引擎优雅停机若超时未收摊会静默跳过相位回写（DownloadShutdownCoordinator），
+        // 没有这条日志，下次出现僵尸任务时无从判断残留相位是哪来的。
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            logger.LogInformation("下载引擎离站，停止下载 runtime");
+            await inner.StopAsync(cancellationToken);
+        }
+        finally
+        {
+            stopwatch.Stop();
+            logger.LogInformation("下载 runtime 已停止（耗时 {Ms} 毫秒）", stopwatch.ElapsedMilliseconds);
+            if (stopwatch.Elapsed > TimeSpan.FromSeconds(20))
+            {
+                logger.LogWarning("停机耗时过久，引擎可能没来得及回写任务相位，下次开站请留意自愈员的自愈记录");
+            }
+        }
     }
 
     private void SeedStationDefaultsOnce()

@@ -17,7 +17,7 @@ public sealed record FavoritesImportOutcome(bool Success, string? Error, IReadOn
 /// 产出可直接入站的 NewVideo 列表（去重与入队归 StationDb/DownloadQueue 管，这里不碰库）。
 /// 非视频条目（番剧链接等）计入 Ignored，不硬塞。
 /// </summary>
-public sealed class LbsFavoritesImport(IBilibiliApiClient client, ILogger<LbsFavoritesImport> logger)
+public sealed class LbsFavoritesImport(LbsQueryClient client, ILogger<LbsFavoritesImport> logger)
 {
     public async Task<FavoritesImportOutcome> ImportAsync(string urlOrId, CancellationToken cancellationToken)
     {
@@ -54,7 +54,12 @@ public sealed class LbsFavoritesImport(IBilibiliApiClient client, ILogger<LbsFav
                     && BilibiliLink.IsBilibiliHost(uri.Host)
                     && BilibiliLink.TryExtractBvid(media.Link, out var bvid))
                 {
-                    videos.Add(new NewVideo(media.Link, bvid, string.IsNullOrWhiteSpace(media.Title) ? null : media.Title));
+                    // 投稿时间取 pubtime，老接口没给就退 ctime（都远好于入站时间）。
+                    var pubUnix = media.Pubtime > 0 ? media.Pubtime : media.Ctime;
+                    videos.Add(new NewVideo(media.Link, bvid,
+                        string.IsNullOrWhiteSpace(media.Title) ? null : media.Title,
+                        string.IsNullOrWhiteSpace(media.Cover) ? null : media.Cover,
+                        pubUnix > 0 ? DateTimeOffset.FromUnixTimeSeconds(pubUnix).ToString("O") : null));
                 }
                 else
                 {

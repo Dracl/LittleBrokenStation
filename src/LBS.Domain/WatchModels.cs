@@ -36,7 +36,8 @@ public sealed record PageWithFiles(
     string? DanmakuUrl,
     IReadOnlyList<string> SubtitleUrls,
     IReadOnlyList<CodecVersion> CodecVersions = null!,
-    string? Codec = null);
+    string? Codec = null,
+    long? MainBytes = null);
 
 /// <summary>GET /api/watch/{bvid} 的完整载荷。</summary>
 public sealed record WatchData(

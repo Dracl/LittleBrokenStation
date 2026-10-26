@@ -54,7 +54,7 @@ public sealed record CommentSnapshot(
 /// 抓取失败一律返回 null / 空集，绝不向上抛——评论是锦上添花，不许挡下载。
 /// </summary>
 public sealed class LbsCommentArchiver(
-    IBilibiliApiClient client,
+    LbsQueryClient client,
     IWbiKeyProvider wbiKeys,
     TimeProvider timeProvider,
     DataPaths paths,
