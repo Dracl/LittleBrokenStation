@@ -422,24 +422,52 @@ public sealed partial class StationDb
 
     // ── 入站统计（站长室成员卡 / 未来 AI） ──────────────────────────────────
 
-    /// <summary>某成员的入站概览：投稿数与占用字节（NULL=站长或史前的投稿不在列）。</summary>
+    /// <summary>
+    /// 某成员的入站概览：投稿数（videos 台账）与占用字节（artifacts 产物的磁盘真数，与 AdminStats 同口径）。
+    /// 产物登记了但文件已蒸发的那份不计，宁缺毋假。
+    /// </summary>
     public IReadOnlyList<MemberIngestStats> ListMemberIngestStats()
     {
+        var counts = new Dictionary<long, int>();
+        var bytes = new Dictionary<long, long>();
         using var connection = Open(_dbPath);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT submitter_mid, COUNT(*), COALESCE(SUM(COALESCE(file_bytes, 0)), 0)
-            FROM videos WHERE submitter_mid IS NOT NULL
-            GROUP BY submitter_mid ORDER BY submitter_mid;
-            """;
-        var list = new List<MemberIngestStats>();
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+
+        using (var command = connection.CreateCommand())
         {
-            list.Add(new MemberIngestStats(reader.GetInt64(0), (int)reader.GetInt64(1), reader.GetInt64(2)));
+            command.CommandText = "SELECT submitter_mid, COUNT(*) FROM videos WHERE submitter_mid IS NOT NULL GROUP BY submitter_mid;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                counts[reader.GetInt64(0)] = (int)reader.GetInt64(1);
+            }
         }
 
-        return list;
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT v.submitter_mid, a.rel_path
+                FROM artifacts a JOIN videos v ON v.id = a.video_id
+                WHERE v.submitter_mid IS NOT NULL;
+                """;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var mid = reader.GetInt64(0);
+                try
+                {
+                    bytes[mid] = bytes.GetValueOrDefault(mid) + new FileInfo(Path.Combine(_paths.Videos, reader.GetString(1))).Length;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // 产物文件不可读/已不在：这份体积不计入。
+                }
+            }
+        }
+
+        return counts
+            .Select(kv => new MemberIngestStats(kv.Key, kv.Value, bytes.GetValueOrDefault(kv.Key)))
+            .OrderBy(s => s.SubmitterMid)
+            .ToList();
     }
 
     /// <summary>投稿定人（提交入库那一刻由 worker 落笔）。</summary>
