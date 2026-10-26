@@ -15,9 +15,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- MemberGate/MemberEndpoints 的准入逻辑住在 Server 里，测试直捣正门 -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\..\src\LBS.Domain\LBS.Domain.csproj" />
     <ProjectReference Include="..\..\src\LBS.Engine\LBS.Engine.csproj" />
     <ProjectReference Include="..\..\src\LBS.Infrastructure\LBS.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\LBS.Server\LBS.Server.csproj" />
   </ItemGroup>
 
   <ItemGroup>

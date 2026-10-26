@@ -58,6 +58,8 @@ builder.Services.AddSingleton<EventRecorder>();
 builder.Services.AddHostedService<EventRecorderWorker>();
 // 扫码登录代理：B 站 qrcode 协议的服务端握手（前端只见状态，cookie 只进不出）。
 builder.Services.AddSingleton<LbsQrLogin>();
+// 成员门闸：放映厅与橱窗的分界线（与站长锁同一套哲学，门在数据上）。
+builder.Services.AddSingleton<MemberGate>();
 
 // 下载引擎（移植自 downkyicore 的 headless 运行时）：启动时拉起下载 runtime 并自检 ffmpeg
 builder.Services.AddLbsDownloadEngine(new EngineOptions(EngineOptions.DefaultUserAgent));
@@ -193,6 +195,33 @@ app.Use(async (context, next) =>
     await next();
 });
 
+// 成员门闸：访客只逛橱窗（首页卡阵/搜索/封面），放映厅、弹幕、投稿一律要会员会话；
+// 顺带把当前会员盖章进 HttpContext，端点随手取投稿归属。被拦的访客也想看什么，记一笔供 AI 分析。
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path.Value ?? "";
+    if (path.StartsWith("/api/", StringComparison.Ordinal))
+    {
+        var gate = context.RequestServices.GetRequiredService<MemberGate>();
+        var member = gate.Resolve(context.Request);
+        if (member is not null)
+        {
+            gate.Stamp(context, member);
+        }
+        else if (MemberGate.RequiresMember(context.Request))
+        {
+            context.RequestServices.GetRequiredService<EventRecorder>()
+                .Record(EventActors.Guest, null, EventNames.WatchBlocked, "path", path,
+                    ip: context.Connection.RemoteIpAddress?.ToString());
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new { error = "member-required", message = "扫码登录后才能看视频、弹幕与评论区" });
+            return;
+        }
+    }
+
+    await next();
+});
+
 // 锁闸的门面：status 告诉前端要不要摆密码门；unlock 发 7 天会话 cookie；
 // lock/release 只能在已解锁态操作（否则上了锁就自己把自己锁死了）。
 app.MapGet("/api/gate/status", (AdminGate gate, HttpContext http) => Results.Ok(new
@@ -253,6 +282,9 @@ app.MapPost("/api/gate/release", (AdminGate gate, HttpContext http) =>
     gate.Release();
     return Results.Ok(new { message = "锁已解除，分站回到敞开态" });
 });
+
+// 会员登录面：扫码握手（领码/代轮询/成功发会话）+ 登出 + 我是谁；邀请制在核销那一步把关。
+app.MapMemberEndpoints();
 
 // 旧档案的后补：有 mid 但名片从未采过（up_face 为 NULL）时，开页顺手异步采一次，下次刷新就有。
 // 失败也销账（置空串）；并发重复触发用 in-flight 集合挡掉。

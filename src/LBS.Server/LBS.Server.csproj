@@ -6,6 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="LBS.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\LBS.Domain\LBS.Domain.csproj" />
     <ProjectReference Include="..\LBS.Engine\LBS.Engine.csproj" />
     <ProjectReference Include="..\LBS.Infrastructure\LBS.Infrastructure.csproj" />
