@@ -53,6 +53,16 @@ public static class AdminMemberEndpoints
             }));
         });
 
+        // 事件台账查阅（也是未来 AI 分析的取数口）：身份/事件名前缀/条数都可筛。
+        app.MapGet("/api/admin/events", (int? limit, string? actor, string? prefix, StationDb db) =>
+            Results.Ok(new
+            {
+                total = db.CountEvents(),
+                events = db.QueryEvents(Math.Clamp(limit ?? 200, 1, 2000),
+                    string.IsNullOrWhiteSpace(actor) ? null : actor.Trim(), null,
+                    string.IsNullOrWhiteSpace(prefix) ? null : prefix.Trim()),
+            }));
+
         app.MapPost("/api/admin/members/invite", (InviteRequest request, StationDb db, EventRecorder events,
             HttpContext http) =>
         {
