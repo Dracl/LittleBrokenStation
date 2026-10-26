@@ -45,6 +45,11 @@ async function loadWatch(silent = false) {
       data.value = await res.json()
       loadRelated(data.value.id)
       loadLocalDanmaku()
+      if (!openReported) {
+        // 进入并加载成功：报一枪 watch.open（同一 BV 一次，换 P 不重报）
+        openReported = true
+        reportEvent('watch.open')
+      }
       if (!silent) {
         const firstPlayable = data.value.pages.find((p) => p.videoUrl) ?? data.value.pages[0]
         activeIndex.value = firstPlayable ? firstPlayable.index : 0
@@ -206,14 +211,54 @@ function startCodecPoll(codec) {
   }, 5000)
 }
 
+// ─── 播放行为上报：只走白名单事件，失败一律静默（看片体验优先）───
+let openReported = false
+let heartTimer = null
+
+function reportEvent(name, payload = null) {
+  const bvid = route.params.bvid
+  if (!bvid) return
+  fetch('/api/events/ingest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ events: [{ name, subjectType: 'video', subjectId: String(bvid), payload }] }),
+  }).catch(() => {})
+}
+
+// play/pause 不冒泡，挂在 document 上用捕获监听兜住播放器内部的 <video>
+function onMediaPlay() {
+  reportEvent('watch.play')
+}
+
+function onMediaPause() {
+  reportEvent('watch.pause')
+}
+
 onBeforeUnmount(() => {
   if (codecPoll) clearInterval(codecPoll)
+  document.removeEventListener('play', onMediaPlay, true)
+  document.removeEventListener('pause', onMediaPause, true)
+  if (heartTimer) {
+    clearInterval(heartTimer)
+    heartTimer = null
+  }
+  reportEvent('watch.leave')
 })
 
 onMounted(() => {
   loadWatch()
+  document.addEventListener('play', onMediaPlay, true)
+  document.addEventListener('pause', onMediaPause, true)
+  // 播放中每 30 秒一条心跳，带当前秒数；没在播就不报，不充数
+  heartTimer = setInterval(() => {
+    const v = document.querySelector('video')
+    if (v && !v.paused && !v.ended) reportEvent('watch.heartbeat', { t: Math.floor(v.currentTime) })
+  }, 30000)
 })
-watch(() => route.params.bvid, () => loadWatch())
+watch(() => route.params.bvid, () => {
+  openReported = false
+  loadWatch()
+})
 
 // 播放器壳宽（VideoPlayer 量好的）：两栏内容用它封顶，保证不超出视频卡片
 const playerShellW = ref(0)

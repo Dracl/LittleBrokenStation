@@ -1,6 +1,9 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { coverThumb } from '../utils/cover'
+import LoginDialog from '../components/LoginDialog.vue'
+import { member, loginDialogOpen, loginDialogMode } from '../memberStore'
+import { friendlyTime } from '../utils/time'
 
 const health = ref(null)
 const settings = ref(null)
@@ -392,15 +395,6 @@ async function removeSubscription(item) {
   }
 }
 
-async function loadStats() {
-  try {
-    const res = await fetch('/api/admin/stats')
-    stats.value = res.ok ? await res.json() : null
-  } catch {
-    stats.value = null
-  }
-}
-
 function fmtCount(n) {
   if (n === null || n === undefined) return '—'
   if (n >= 100000000) return (n / 100000000).toFixed(1).replace(/\.0$/, '') + '亿'
@@ -558,9 +552,12 @@ async function loadDlQueue() {
   try {
     const res = await fetch('/api/downloads/queue')
     if (res.status === 401) {
-      // 会话过期（分站重启过等）：把门重新掩上，请站长再递一次口令。
-      showGate.value = true
-      gate.value = { locked: true, unlocked: false }
+      // 会话掉了（分站重启、站长登出等）：退回身份门，请站长重新扫码。
+      adminAuth.value = 'needOwner'
+      if (dlTimer) {
+        clearInterval(dlTimer)
+        dlTimer = null
+      }
       return
     }
     dlQueue.value = res.ok ? await res.json() : null
@@ -632,82 +629,113 @@ async function dlCancelOne(id) {
   }
 }
 
-// ─── 站长闸：朋友共用分站前上一道口令门（服务端同步把守，这里只摆门和钥匙孔）───
-const gate = ref(null) // { locked, unlocked }
-const showGate = ref(false)
-const gateDraft = ref('')
-const gateBusy = ref(false)
-const gateText = ref('')
+// ─── 身份门：会员会话说了算（401=访客请扫码，403=普通成员送客去用户控制室）───
+const adminAuth = ref('loading') // loading | ok | needOwner | member
 
-async function loadGate() {
-  try {
-    const res = await fetch('/api/gate/status')
-    gate.value = res.ok ? await res.json() : null
-  } catch {
-    gate.value = null
-  }
-  showGate.value = !!gate.value?.locked && !gate.value?.unlocked
+function openLogin(mode) {
+  loginDialogMode.value = mode
+  loginDialogOpen.value = true
 }
 
-async function gateUnlock() {
-  if (gateBusy.value || !gateDraft.value.trim()) return
-  gateBusy.value = true
-  gateText.value = ''
+// ─── 分站成员：席位台账 + 邀请码发放（仅站长会话可用，后端 message 原样展示）───
+const members = ref(null) // /api/admin/members 回包
+const membersBusy = ref(false)
+const memberText = ref('')
+const memberNote = ref('')
+const inviteCode = ref('')
+const expandedMember = ref(null) // 展开看账号明细的成员 id
+
+async function loadMembers() {
   try {
-    const res = await fetch('/api/gate/unlock', {
+    const res = await fetch('/api/admin/members')
+    members.value = res.ok ? await res.json() : []
+  } catch {
+    members.value = []
+  }
+}
+
+async function sendInvite() {
+  if (membersBusy.value) return
+  membersBusy.value = true
+  memberText.value = ''
+  try {
+    const res = await fetch('/api/admin/members/invite', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: gateDraft.value }),
+      body: JSON.stringify({ note: memberNote.value.trim() }),
     })
+    const data = await res.json().catch(() => null)
     if (res.ok) {
-      showGate.value = false
-      gateDraft.value = ''
-      bootAdmin()
+      inviteCode.value = data?.code ?? ''
+      memberNote.value = ''
+      await loadMembers()
     } else {
-      gateText.value = '口令不对，再想想'
+      memberText.value = data?.message ?? '发码没成'
     }
   } catch {
-    gateText.value = '分站后端没有应答'
+    memberText.value = '分站后端没有应答'
   } finally {
-    gateBusy.value = false
+    membersBusy.value = false
   }
 }
 
-async function gateLock() {
-  if (gateBusy.value || gateDraft.value.trim().length < 4) {
-    gateText.value = '口令至少 4 位'
-    return
-  }
-  gateBusy.value = true
+async function copyInvite() {
+  if (!inviteCode.value) return
   try {
-    const res = await fetch('/api/gate/lock', {
+    await navigator.clipboard.writeText(inviteCode.value)
+    memberText.value = '邀请码已复制，发给朋友即可'
+  } catch {
+    // 非安全上下文等拿不到剪贴板：降级手拷
+    window.prompt('自动复制没成，手动拷走：', inviteCode.value)
+  }
+}
+
+async function memberAction(action, item) {
+  if (membersBusy.value) return
+  const verbs = { ban: '封禁', unban: '解封', delete: '撤席位' }
+  const hint =
+    action === 'delete'
+      ? `确定撤掉「${item.nickname}」的席位？历史事件保留，想回来得重新领邀请码。`
+      : `确定${verbs[action]}「${item.nickname}」？`
+  if (!window.confirm(hint)) return
+  membersBusy.value = true
+  memberText.value = ''
+  try {
+    const res = await fetch(`/api/admin/members/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: gateDraft.value.trim() }),
+      body: JSON.stringify({ id: item.id }),
     })
-    const body = await res.json().catch(() => null)
-    gateText.value = body?.message ?? (res.ok ? '已上锁' : '上锁没成')
-    if (res.ok) {
-      gateDraft.value = ''
-      showGate.value = true // 刚上锁就把门掩上，自证口令真能用
-      gate.value = { locked: true, unlocked: false }
-    }
+    const data = await res.json().catch(() => null)
+    // 400（对站长自己动手）404 等：后端 message 原样递到脸上
+    memberText.value = data?.message ?? (res.ok ? '好了' : '操作没成')
+    if (res.ok) await loadMembers()
+  } catch {
+    memberText.value = '分站后端没有应答'
   } finally {
-    gateBusy.value = false
+    membersBusy.value = false
   }
 }
 
-async function gateRelease() {
-  if (gateBusy.value) return
-  if (!window.confirm('确定除锁？分站回到敞开态，任何人都能进站长室。')) return
-  gateBusy.value = true
+async function memberAccountDelete(acc, item) {
+  if (membersBusy.value) return
+  const who = acc.accountName || `UID ${acc.accountMid}`
+  if (!window.confirm(`确定从「${item.nickname}」的席位上解绑「${who}」？`)) return
+  membersBusy.value = true
+  memberText.value = ''
   try {
-    const res = await fetch('/api/gate/release', { method: 'POST' })
-    const body = await res.json().catch(() => null)
-    gateText.value = body?.message ?? '已除锁'
-    await loadGate()
+    const res = await fetch('/api/admin/members/account/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: acc.id }),
+    })
+    const data = await res.json().catch(() => null)
+    memberText.value = data?.message ?? (res.ok ? '已解绑' : '解绑没成')
+    if (res.ok) await loadMembers()
+  } catch {
+    memberText.value = '分站后端没有应答'
   } finally {
-    gateBusy.value = false
+    membersBusy.value = false
   }
 }
 
@@ -764,7 +792,23 @@ function fmtBackupTime(iso) {
   return iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '—'
 }
 
-function bootAdmin() {
+async function bootAdmin() {
+  // 先拿站长专属端点探身份：401=访客（请扫码），403=普通成员（送客去用户控制室）。
+  adminAuth.value = 'loading'
+  try {
+    const probe = await fetch('/api/admin/stats')
+    if (probe.status === 401) {
+      adminAuth.value = 'needOwner'
+      return
+    }
+    if (probe.status === 403) {
+      adminAuth.value = 'member'
+      return
+    }
+    stats.value = probe.ok ? await probe.json() : null
+  } catch {
+    /* 后端打盹：照常进页面，各卡自己空着 */
+  }
   fetch('/api/health')
     .then((r) => r.json())
     .then((h) => (health.value = h))
@@ -773,7 +817,6 @@ function bootAdmin() {
     .then((r) => r.json())
     .then((s) => (settings.value = s))
     .catch(() => {})
-  loadStats()
   loadSubscriptions()
   loadCrawlStatus()
   loadOwnerState()
@@ -783,13 +826,17 @@ function bootAdmin() {
   loadEngine()
   loadDlQueue()
   loadBackups()
+  loadMembers()
   if (!dlTimer) dlTimer = setInterval(loadDlQueue, 5000)
 }
 
-onMounted(async () => {
-  await loadGate()
-  if (showGate.value) return // 门关着，不必去敲每个接口
+onMounted(() => {
   bootAdmin()
+})
+
+// 站长在 LoginDialog 里扫码进来、或从顶栏登出后，重跑开机核身。
+watch(member, () => {
+  if (adminAuth.value !== 'loading') bootAdmin()
 })
 
 onUnmounted(() => {
@@ -799,32 +846,34 @@ onUnmounted(() => {
 
 <template>
   <div class="min-h-screen bg-adminBg text-white">
-    <!-- 锁闸：口令门（服务端同步把守，这只是钥匙孔）-->
-    <div v-if="showGate" class="flex min-h-screen items-center justify-center px-6">
-      <div class="lbs-card w-full max-w-[380px] p-8">
-        <div class="mb-5 flex items-center gap-2">
-          <span class="lbs-dot lbs-dot-off"></span>
-          <span class="text-sm tracking-widest text-white/90">站长室已上锁</span>
-        </div>
-        <p class="mb-5 text-xs leading-5 text-white/35">
-          分站本体照常开放，看片发弹幕不受影响；解锁后才能进控制室。
-        </p>
-        <input
-          v-model="gateDraft"
-          type="password"
-          placeholder="站长口令"
-          class="lbs-input"
-          :disabled="gateBusy"
-          @keyup.enter="gateUnlock"
-        />
-        <button class="lbs-btn mt-4 w-full" :disabled="gateBusy || !gateDraft.trim()" @click="gateUnlock">
-          {{ gateBusy ? '验钥中…' : '开门' }}
-        </button>
-        <p v-if="gateText" class="mt-3 text-center font-mono text-xs text-rose-300/80">{{ gateText }}</p>
+    <!-- 身份门：会员会话说了算，访客挡在门外，普通成员送客去用户控制室 -->
+    <div v-if="adminAuth !== 'ok'" class="flex min-h-screen items-center justify-center px-6">
+      <div class="lbs-card w-full max-w-[400px] p-8 text-center">
+        <template v-if="adminAuth === 'needOwner'">
+          <div class="mb-5 flex items-center justify-center gap-2">
+            <span class="lbs-dot lbs-dot-off"></span>
+            <span class="text-sm tracking-widest text-white/90">需要站长身份</span>
+          </div>
+          <p class="mb-5 text-xs leading-5 text-white/35">
+            请用站长 B 站账号扫码进站，再回这扇门。分站本体照常开放，看片发弹幕不受影响。
+          </p>
+          <button class="lbs-btn w-full" @click="openLogin('admit')">扫码进站</button>
+        </template>
+        <template v-else-if="adminAuth === 'member'">
+          <div class="mb-5 flex items-center justify-center gap-2">
+            <span class="lbs-dot lbs-dot-off"></span>
+            <span class="text-sm tracking-widest text-white/90">这里是站长室</span>
+          </div>
+          <p class="mb-5 text-xs leading-5 text-white/35">
+            你已是分站成员，这里是站长室——普通成员请进用户控制室。
+          </p>
+          <RouterLink to="/me" class="lbs-btn inline-block w-full">进用户控制室</RouterLink>
+        </template>
+        <p v-else class="py-4 text-xs text-white/30">正在核对手牌……</p>
       </div>
     </div>
 
-    <header v-if="!showGate" class="border-b border-adminLine bg-gradient-to-b from-white/[0.02] to-transparent">
+    <header v-if="adminAuth === 'ok'" class="border-b border-adminLine bg-gradient-to-b from-white/[0.02] to-transparent">
       <div class="mx-auto flex h-14 max-w-[1100px] items-center justify-between px-6">
         <div class="flex items-center gap-3">
           <span class="lbs-dot lbs-dot-on"></span>
@@ -840,7 +889,7 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <main v-if="!showGate" class="lbs-rise mx-auto grid max-w-[1100px] grid-cols-1 gap-4 px-6 py-8 md:grid-cols-2">
+    <main v-if="adminAuth === 'ok'" class="lbs-rise mx-auto grid max-w-[1100px] grid-cols-1 gap-4 px-6 py-8 md:grid-cols-2">
       <section class="lbs-card md:col-span-2">
         <div class="mb-5 flex items-center justify-between">
           <h3 class="lbs-title !mb-0">分站统计</h3>
@@ -863,6 +912,108 @@ onUnmounted(() => {
           <div class="lbs-stat-lg"><b>{{ stats ? stats.upCount : '—' }}</b><span>UP 主</span></div>
           <div class="lbs-stat-lg"><b>{{ stats ? stats.altOwned : '—' }}</b><span>副号定档</span></div>
         </div>
+      </section>
+
+      <section class="lbs-card md:col-span-2">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            分站成员
+            <span class="ml-1 rounded-full border border-adminAccent/30 px-2 py-0.5 text-[10px] normal-case tracking-normal text-adminAccent/70">
+              {{ members ? `${members.length} 席` : '—' }}
+            </span>
+          </h3>
+          <div class="flex shrink-0 items-center gap-2">
+            <input
+              v-model="memberNote"
+              type="text"
+              placeholder="备注（写给谁，可选）"
+              class="lbs-input w-[200px]"
+              :disabled="membersBusy"
+              @keyup.enter="sendInvite"
+            />
+            <button class="lbs-btn" :disabled="membersBusy" @click="sendInvite">发邀请码</button>
+          </div>
+        </div>
+
+        <div v-if="inviteCode" class="mb-4 flex items-center justify-between gap-3 rounded-lg border border-adminAccent/40 bg-adminAccent/10 px-3 py-2.5">
+          <div class="min-w-0">
+            <p class="text-[11px] text-adminAccent/80">新邀请码 · 一次一用，发给朋友扫</p>
+            <p class="mt-1 select-all break-all font-mono text-xl tracking-[0.25em] text-white/90">{{ inviteCode }}</p>
+          </div>
+          <button class="lbs-btn shrink-0" @click="copyInvite">复制</button>
+        </div>
+
+        <p v-if="memberText" class="mb-3 text-xs text-adminAccent/80">{{ memberText }}</p>
+
+        <div v-if="!members?.length" class="py-6 text-center text-xs text-white/25">还没有成员：发个邀请码，把第一位朋友请进门。</div>
+        <ul v-else class="space-y-1.5">
+          <li v-for="m in members" :key="m.id" class="rounded-lg border border-white/5 bg-black/20">
+            <div class="flex flex-wrap items-center gap-3 px-3 py-2">
+              <img v-if="m.faceUrl" :src="m.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-8 w-8 shrink-0 rounded-full object-cover" alt="" />
+              <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs text-white/40">{{ (m.nickname || '?').slice(0, 1) }}</span>
+              <div class="min-w-0 flex-1">
+                <p class="flex items-center gap-1.5 text-xs text-white/85">
+                  <span class="truncate">{{ m.nickname }}</span>
+                  <span v-if="m.role === 'owner'" class="shrink-0 rounded-full border border-amber-400/50 bg-amber-400/10 px-1.5 py-px text-[10px] text-amber-300">♛ 站长</span>
+                  <span
+                    class="shrink-0 rounded-full border px-1.5 py-px text-[10px]"
+                    :class="m.status === 'active' ? 'border-emerald-400/40 text-emerald-300' : m.status === 'invited' ? 'border-amber-400/40 text-amber-300' : 'border-rose-400/40 text-rose-300'"
+                  >
+                    {{ m.status === 'active' ? '启用' : m.status === 'invited' ? '待邀' : '封禁' }}
+                  </span>
+                </p>
+                <p class="mt-0.5 font-mono text-[10px] text-white/30">
+                  UID {{ m.mid }} · 入站 {{ fmtBackupTime(m.createdAtUtc) }} · 上次登录 {{ friendlyTime(m.lastLoginAtUtc) }}
+                </p>
+              </div>
+              <span class="shrink-0 font-mono text-[11px] text-white/45">投稿 {{ m.submitted ?? 0 }}</span>
+              <span class="shrink-0 font-mono text-[11px] text-white/45">{{ fmtBytes(m.bytes) }}</span>
+              <button
+                class="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/45 transition hover:border-adminAccent/50 hover:text-adminAccent"
+                @click="expandedMember = expandedMember === m.id ? null : m.id"
+              >
+                账号 {{ m.accounts?.length ?? 0 }} {{ expandedMember === m.id ? '▴' : '▾' }}
+              </button>
+              <button
+                class="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/45 transition hover:border-amber-400/50 hover:text-amber-300 disabled:opacity-40"
+                :disabled="membersBusy"
+                @click="memberAction(m.status === 'banned' ? 'unban' : 'ban', m)"
+              >
+                {{ m.status === 'banned' ? '解封' : '封禁' }}
+              </button>
+              <button
+                class="shrink-0 rounded-md border border-rose-500/30 px-2 py-0.5 text-[11px] text-rose-300/80 transition hover:bg-rose-500/10 disabled:opacity-40"
+                :disabled="membersBusy"
+                @click="memberAction('delete', m)"
+              >
+                撤席位
+              </button>
+            </div>
+            <ul v-if="expandedMember === m.id" class="space-y-1 border-t border-white/5 px-3 py-2">
+              <li v-for="acc in m.accounts ?? []" :key="acc.id" class="flex items-center gap-2.5">
+                <img v-if="acc.faceUrl" :src="acc.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-6 w-6 shrink-0 rounded-full object-cover" alt="" />
+                <span v-else class="h-6 w-6 shrink-0 rounded-full bg-white/10"></span>
+                <span class="min-w-0 flex-1 truncate text-[11px] text-white/70">
+                  {{ acc.accountName || `UID ${acc.accountMid}` }}
+                  <span v-if="acc.isPrimary" class="ml-1 text-adminAccent/80">主号</span>
+                  <span v-if="acc.expired" class="ml-1 text-rose-300/70">已失效</span>
+                </span>
+                <span class="shrink-0 font-mono text-[10px] text-white/25">{{ acc.lastSeenUtc ? friendlyTime(acc.lastSeenUtc) : '未露面' }}</span>
+                <button
+                  class="shrink-0 rounded-md p-1 text-white/35 transition hover:bg-rose-500/20 hover:text-rose-300"
+                  title="解绑这个账号"
+                  :disabled="membersBusy"
+                  @click="memberAccountDelete(acc, m)"
+                >
+                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
+                  </svg>
+                </button>
+              </li>
+              <li v-if="!m.accounts?.length" class="py-1 text-[11px] text-white/25">这席还没绑任何 B 站账号。</li>
+            </ul>
+          </li>
+        </ul>
       </section>
 
       <section class="lbs-card md:col-span-2">
@@ -1464,38 +1615,6 @@ onUnmounted(() => {
         <p v-if="backupText" class="mt-2 text-xs text-adminAccent/80">{{ backupText }}</p>
       </section>
 
-      <section class="lbs-card md:col-span-2">
-        <div class="mb-4 flex items-center justify-between gap-2">
-          <h3 class="lbs-title !mb-0">
-            站长室锁
-            <span
-              class="ml-1 rounded-full border px-2 py-0.5 text-[10px] normal-case tracking-normal"
-              :class="gate?.locked ? 'border-amber-400/40 text-amber-300' : 'border-emerald-400/40 text-emerald-300'"
-            >
-              {{ gate?.locked ? '已上锁' : '敞开中' }}
-            </span>
-          </h3>
-        </div>
-        <p class="mb-3 text-xs leading-5 text-white/30">
-          朋友共用分站前把锁上上：只管站长室的接口，看片发弹幕投稿不受影响；解锁后 7 天免重输，分站重启需重新递口令。
-          忘了口令就拿数据目录的钥匙：删掉 station.db 里 settings 表的 admin-key 行即回敞开态。
-        </p>
-        <div class="flex flex-wrap items-center gap-2">
-          <input
-            v-model="gateDraft"
-            type="password"
-            :placeholder="gate?.locked ? '新口令（至少 4 位）' : '设个口令（至少 4 位）'"
-            class="lbs-input max-w-[280px]"
-            :disabled="gateBusy"
-          />
-          <button class="lbs-btn" :disabled="gateBusy || gateDraft.trim().length < 4" @click="gateLock">
-            {{ gate?.locked ? '换口令并上锁' : '上锁' }}
-          </button>
-          <button v-if="gate?.locked" class="lbs-btn-ghost" :disabled="gateBusy" @click="gateRelease">除锁</button>
-        </div>
-        <p v-if="gateText" class="mt-3 text-xs text-adminAccent/80">{{ gateText }}</p>
-      </section>
-
       <section class="lbs-card-danger md:col-span-2">
         <h3 class="lbs-title-danger">危险区 · 一键清空分站</h3>
         <p class="mb-3 text-xs leading-5 text-white/30">
@@ -1514,5 +1633,8 @@ onUnmounted(() => {
         <span v-if="purgeArmed && !purgeBusy" class="ml-2 text-xs text-rose-300/50">5 秒内不确认则自动作废</span>
       </section>
     </main>
+
+    <!-- admit 实例：身份门后的「用站长账号扫码进站」窗 -->
+    <LoginDialog />
   </div>
 </template>

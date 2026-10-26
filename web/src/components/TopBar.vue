@@ -1,9 +1,10 @@
 <script setup>
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import LoginDialog from './LoginDialog.vue'
 import { submitDialogOpen } from '../submitStore'
+import { member, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember } from '../memberStore'
 
-const stationOwner = ref(null) // 登录态：{ isLogin, name, face }
 const route = useRoute()
 const router = useRouter()
 const searchText = ref(typeof route.query.q === 'string' ? route.query.q : '')
@@ -17,13 +18,23 @@ function doSearch() {
   router.push({ path: '/search', query: { q: term } })
 }
 
-onMounted(async () => {
-  try {
-    const res = await fetch('/api/login/status')
-    if (res.ok) stationOwner.value = await res.json()
-  } catch {
-    /* 后端没在，灰头像照常可点 */
-  }
+function openLogin(mode) {
+  loginDialogMode.value = mode
+  loginDialogOpen.value = true
+}
+
+// 投稿是成员待遇：访客先过扫码门，member 照常开投稿窗
+function onSubmitClick() {
+  if (member.value) submitDialogOpen.value = true
+  else openLogin('admit')
+}
+
+async function doLogout() {
+  await logoutMember()
+}
+
+onMounted(() => {
+  loadMember()
 })
 // 顶栏壳：版式按 B 站网页版对齐的大致轮廓，M2 对基准截图逐像素打磨
 </script>
@@ -65,25 +76,77 @@ onMounted(async () => {
       <div class="flex shrink-0 items-center gap-3">
         <button
           class="flex h-7 items-center rounded-full border border-stationPink px-3.5 text-xs text-stationPink transition hover:bg-stationPink hover:text-white"
-          @click="submitDialogOpen = true"
+          @click="onSubmitClick"
         >
           投稿
         </button>
-        <RouterLink
-          to="/admin"
-          class="group block h-8 w-8 shrink-0 overflow-hidden rounded-full ring-1 ring-transparent transition hover:ring-stationPink/60"
-          :title="stationOwner?.isLogin ? `站长「${stationOwner.name}」· 进站长室` : '进站长室'"
+
+        <!-- 访客：一个扫码门 -->
+        <button
+          v-if="!member"
+          class="flex h-7 items-center gap-1.5 rounded-full border border-stationPink px-3.5 text-xs text-stationPink transition hover:bg-stationPink hover:text-white"
+          title="扫码进站"
+          @click="openLogin('admit')"
         >
-          <img
-            v-if="stationOwner?.isLogin && stationOwner.face"
-            :src="stationOwner.face"
-            :alt="stationOwner.name"
-            referrerpolicy="no-referrer"
-            class="h-full w-full object-cover"
-          />
-          <span v-else class="block h-full w-full bg-lineSoft transition group-hover:bg-stationPink/20"></span>
-        </RouterLink>
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
+            <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
+            <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
+            <path d="M13.5 13.5h3v3h-3zM18.5 18.5h2v2h-2z" fill="currentColor" stroke="none" />
+          </svg>
+          扫码进站
+        </button>
+
+        <!-- 成员：头像+昵称，点击进控制室（站长直进站长室）；hover 下拉里退出登录 -->
+        <div v-else class="group relative">
+          <RouterLink
+            :to="member.role === 'owner' ? '/admin' : '/me'"
+            class="flex h-8 items-center gap-2 rounded-full pl-0.5 pr-2 transition hover:bg-stationPink/5"
+            :title="member.role === 'owner' ? `站长「${member.nickname}」` : `「${member.nickname}」· 用户控制室`"
+          >
+            <span class="relative block h-7 w-7 shrink-0 overflow-visible">
+              <img
+                v-if="member.faceUrl"
+                :src="member.faceUrl"
+                :alt="member.nickname"
+                referrerpolicy="no-referrer"
+                class="h-full w-full rounded-full object-cover ring-1 ring-transparent transition group-hover:ring-stationPink/60"
+              />
+              <span v-else class="block h-full w-full rounded-full bg-lineSoft transition group-hover:bg-stationPink/20"></span>
+              <!-- 站长金冠角标 -->
+              <svg
+                v-if="member.role === 'owner'"
+                viewBox="0 0 24 24"
+                class="absolute -right-1 -top-1 h-3.5 w-3.5 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]"
+                aria-label="站长"
+              >
+                <path
+                  d="M3 17.5h18L22.5 8l-5.7 4L12 3.5 7.2 12 1.5 8 3 17.5Z"
+                  fill="#f5c542"
+                  stroke="#ffffff"
+                  stroke-width="1.4"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+            <span class="max-w-[110px] truncate text-xs text-inkMain">{{ member.nickname }}</span>
+          </RouterLink>
+
+          <div class="invisible absolute right-0 top-full z-40 pt-1.5 opacity-0 transition group-hover:visible group-hover:opacity-100">
+            <div class="w-44 rounded-xl border border-lineSoft bg-cardBg p-1.5 shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)]">
+              <p class="truncate px-2.5 py-1.5 text-xs text-inkFaint">{{ member.nickname }} · UID {{ member.mid }}</p>
+              <button
+                class="w-full rounded-lg px-2.5 py-1.5 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+                @click="doLogout"
+              >
+                退出登录
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </header>
+  <!-- admit 实例：全站顶栏页共用的扫码进站窗（bind 实例由用户控制室自己挂） -->
+  <LoginDialog />
 </template>
