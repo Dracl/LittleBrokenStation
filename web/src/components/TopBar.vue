@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginDialog from './LoginDialog.vue'
+import CrownBadge from './CrownBadge.vue'
 import { submitDialogOpen } from '../submitStore'
 import { member, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember } from '../memberStore'
 
@@ -125,21 +126,12 @@ onMounted(() => {
                   <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
                 </svg>
               </span>
-              <!-- 站长金冠角标 -->
-              <svg
-                v-if="member?.role === 'owner'"
-                viewBox="0 0 24 24"
-                class="absolute -right-1 -top-1 h-3.5 w-3.5 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]"
-                aria-label="站长"
-              >
-                <path
-                  d="M3 17.5h18L22.5 8l-5.7 4L12 3.5 7.2 12 1.5 8 3 17.5Z"
-                  fill="#f5c542"
-                  stroke="#ffffff"
-                  stroke-width="1.4"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <!-- 冠冕角标：站长金冠、成员银冠，同形不同色 -->
+              <CrownBadge
+                v-if="member"
+                :tier="member.role"
+                class="absolute -right-1 -top-1 h-3.5 w-3.5"
+              />
             </span>
           </button>
 
@@ -157,20 +149,11 @@ onMounted(() => {
                     class="h-full w-full rounded-full object-cover"
                   />
                   <span v-else class="block h-full w-full rounded-full bg-lineSoft"></span>
-                  <svg
-                    v-if="member.role === 'owner'"
-                    viewBox="0 0 24 24"
-                    class="absolute -right-1 -top-1 h-4 w-4 drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]"
-                    aria-label="站长"
-                  >
-                    <path
-                      d="M3 17.5h18L22.5 8l-5.7 4L12 3.5 7.2 12 1.5 8 3 17.5Z"
-                      fill="#f5c542"
-                      stroke="#ffffff"
-                      stroke-width="1.4"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
+                  <CrownBadge
+                    v-if="member"
+                    :tier="member.role"
+                    class="absolute -right-1 -top-1 h-4 w-4"
+                  />
                 </span>
                 <span class="min-w-0">
                   <span class="block truncate text-[13px] font-medium text-inkMain">{{ member.nickname }}</span>

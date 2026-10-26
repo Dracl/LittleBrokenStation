@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { coverThumb } from '../utils/cover'
 import LoginDialog from '../components/LoginDialog.vue'
+import CrownBadge from '../components/CrownBadge.vue'
 import { member, loginDialogOpen, loginDialogMode } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 
@@ -957,6 +958,10 @@ onUnmounted(() => {
                 <p class="flex items-center gap-1.5 text-xs text-white/85">
                   <span class="truncate">{{ m.nickname }}</span>
                   <span v-if="m.role === 'owner'" class="shrink-0 rounded-full border border-amber-400/50 bg-amber-400/10 px-1.5 py-px text-[10px] text-amber-300">♛ 站长</span>
+                  <span v-else class="flex shrink-0 items-center gap-1 rounded-full border border-slate-400/40 bg-slate-400/10 px-1.5 py-px text-[10px] text-slate-300">
+                    <CrownBadge tier="member" class="h-2.5 w-2.5" />
+                    成员
+                  </span>
                   <span
                     class="shrink-0 rounded-full border px-1.5 py-px text-[10px]"
                     :class="m.status === 'active' ? 'border-emerald-400/40 text-emerald-300' : m.status === 'invited' ? 'border-amber-400/40 text-amber-300' : 'border-rose-400/40 text-rose-300'"

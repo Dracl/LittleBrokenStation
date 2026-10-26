@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import TopBar from '../components/TopBar.vue'
 import LoginDialog from '../components/LoginDialog.vue'
+import CrownBadge from '../components/CrownBadge.vue'
 import { member, loaded, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 
@@ -114,20 +115,11 @@ async function doLogout() {
               <span v-else class="flex h-full w-full items-center justify-center rounded-full bg-lineSoft text-xl text-inkFaint">
                 {{ (member.nickname || '?').slice(0, 1) }}
               </span>
-              <svg
-                v-if="member.role === 'owner'"
-                viewBox="0 0 24 24"
-                class="absolute -right-1.5 -top-1.5 h-5 w-5 drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)]"
-                aria-label="站长"
-              >
-                <path
-                  d="M3 17.5h18L22.5 8l-5.7 4L12 3.5 7.2 12 1.5 8 3 17.5Z"
-                  fill="#f5c542"
-                  stroke="#ffffff"
-                  stroke-width="1.4"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <CrownBadge
+                v-if="member"
+                :tier="member.role"
+                class="absolute -right-1.5 -top-1.5 h-5 w-5"
+              />
             </span>
 
             <div class="min-w-0 flex-1">
@@ -139,7 +131,10 @@ async function doLogout() {
                 >
                   ♛ 站长
                 </span>
-                <span v-else class="rounded-full border border-stationPink/40 bg-stationPink/5 px-2 py-0.5 text-[11px] text-stationPink">成员</span>
+                <span v-else class="flex items-center gap-1 rounded-full border border-slate-300/70 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-500">
+                  <CrownBadge tier="member" class="h-3 w-3" />
+                  成员
+                </span>
               </div>
               <p class="mt-1.5 font-mono text-xs text-inkFaint">
                 UID {{ member.mid }} · 上次登录 {{ friendlyTime(member.lastLoginAtUtc) }}
