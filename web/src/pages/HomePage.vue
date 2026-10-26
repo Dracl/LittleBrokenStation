@@ -1,35 +1,161 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import TopBar from '../components/TopBar.vue'
-import VideoCard from '../components/VideoCard.vue'
+import AdminVideoCell from '../components/AdminVideoCell.vue'
+import { coverThumb } from '../utils/cover'
 import { submitDialogOpen } from '../submitStore'
 
-const health = ref(null)
-const healthFailed = ref(false)
-const videos = ref([])
+// 两百多件馆藏每 5 秒整数组替换，深响应式代理是白付的税；shallowRef 只在整组换新的时候通知视图。
+const videos = shallowRef([])
 
 let pollTimer = null
+let pollTick = 0
 
-async function refreshHealth() {
-  try {
-    const res = await fetch('/api/health')
-    health.value = await res.json()
-    healthFailed.value = false
-  } catch {
-    healthFailed.value = true
-  }
+// ─── 首页排序：新货组置顶 + 各组内种子洗牌（同一次进站一个种子，轮询期间不乱跳）───
+const homeSeed = ref((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0)
+const NEW_ARRIVAL_MS = 72 * 3600 * 1000 // 入站（建行）3 天内算新货
+
+function shuffleScore(id, seed) {
+  // xorshift 整数哈希：便宜且分布均匀，不需要密码学强度
+  let h = (Math.imul(id, 0x9e3779b1) ^ seed) >>> 0
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b)
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35)
+  return (h ^ (h >>> 16)) >>> 0
 }
+
+function homeTier(v, now) {
+  if (v.status === 2) {
+    const t = v.createdAtUtc ? Date.parse(v.createdAtUtc) : 0
+    return now - t <= NEW_ARRIVAL_MS ? 0 : 1
+  }
+  if (v.status === 1) return 2
+  return 3
+}
+
+const orderedVideos = computed(() => {
+  const now = Date.now()
+  const seed = homeSeed.value
+  return [...videos.value].sort((a, b) => {
+    const ta = homeTier(a, now)
+    const tb = homeTier(b, now)
+    if (ta !== tb) return ta - tb
+    // 同组内全交给种子洗牌：分组只定谁在前（新货→老馆藏→进站中），组内换一批就重排；
+    // 事务态（排队/取消等）不参与洗牌，稳定收尾方便站长盯队列。
+    if (ta === 3) return b.id - a.id
+    return shuffleScore(a.id, seed) - shuffleScore(b.id, seed)
+  })
+})
+
+function reshuffle() {
+  homeSeed.value = (homeSeed.value * 1103515245 + 12345) >>> 0 ^ Math.floor(Math.random() * 0x7fffffff)
+  featured.value = [] // 大幕跟卡阵一起换一批
+  featIdx.value = 0
+  buildFeatured()
+}
+
+// ─── 首格轮播：从已到站且有封面的馆藏里随机抽最多 5 件，横版大图轮换 ───
+const FEATURED_COUNT = 5
+const featured = ref([])
+const featIdx = ref(0)
+const featPaused = ref(false)
+let featTimer = null
+
+// 卡阵分两段：大幕区拿前 6 件（与大幕同网格紧凑），均匀区接其余（行距拉开呼吸）；
+// 大幕缺席（馆藏不足两件）时全部交给均匀区，行为回到单网格。
+const nearHero = computed(() => (featured.value.length >= 2 ? orderedVideos.value.slice(0, 6) : []))
+const restVideos = computed(() => (featured.value.length >= 2 ? orderedVideos.value.slice(6) : orderedVideos.value))
+
+// 懒加载帘子：一次只挂 40 张卡，摄簣（哨兵）接近视口底部再放下一批；
+// 两百多张远程封面全量上 DOM，向下滚动就是拿主线程祭天。
+const PAGE_SIZE = 40
+const visibleCount = ref(PAGE_SIZE)
+const restShown = computed(() => restVideos.value.slice(0, visibleCount.value))
+const sentinelEl = ref(null)
+let sentinelObserver = null
+
+function loadMore() {
+  if (visibleCount.value < restVideos.value.length) visibleCount.value += PAGE_SIZE
+}
+
+// 大幕用的是封面原图的 1280 缩略，模糊底和过渡带同源，不再拉上 MB 原图。
+const featCover = computed(() => coverThumb(featured.value[featIdx.value]?.coverUrl, 1280))
+
+// 大幕加载态：帧/一批馆藏在手，新图未到位前转小环，不让黑帧裸切。
+const heroReady = ref(false)
+watch(
+  () => featured.value[featIdx.value]?.bvid,
+  () => {
+    heroReady.value = false
+  },
+)
+
+function buildFeatured() {
+  // 抽定即固定：轮询刷新和新到站不打乱正在转的轮播，重排只随重新开站来一次。
+  if (featured.value.length) return
+  const arrived = videos.value.filter((v) => v.status === 2 && v.coverUrl)
+  if (arrived.length < 2) return // 不足两件不配轮播，均匀卡阵自己伺候
+  featured.value = [...arrived].sort(() => Math.random() - 0.5).slice(0, FEATURED_COUNT)
+}
+
+let lastPayload = ''
 
 async function refreshVideos() {
   try {
     const res = await fetch('/api/videos')
-    if (res.ok) videos.value = await res.json()
+    if (res.ok) {
+      const text = await res.text()
+      // 台账没变一个字就不整组替换：两百多张卡跟着全量重渲染，正是滚动时一卡一卡的根子。
+      if (text === lastPayload) return
+      lastPayload = text
+      videos.value = JSON.parse(text)
+      buildFeatured()
+    }
   } catch {
     /* 下一轮再试 */
   }
 }
 
 const commentBusy = ref(new Set())
+
+// 续下：救活卡死的下载（引擎任务崩溃遗留），后端自行判断软续/重投。
+const reviveBusy = ref(new Set())
+
+async function reviveVideo(video) {
+  if (reviveBusy.value.has(video.id)) return
+  const busy = new Set(reviveBusy.value)
+  busy.add(video.id)
+  reviveBusy.value = busy
+  try {
+    const res = await fetch(`/api/videos/${video.id}/revive`, { method: 'POST' })
+    const body = await res.json().catch(() => null)
+    showNotice(res.ok ? 'ok' : 'err', body?.message ?? (res.ok ? '已续下' : '续下失败'))
+  } catch {
+    showNotice('err', '分站后端没有应答')
+  } finally {
+    const done = new Set(reviveBusy.value)
+    done.delete(video.id)
+    reviveBusy.value = done
+  }
+}
+
+async function requeueVideo(video) {
+  if (reviveBusy.value.has(video.id)) return
+  const busy = new Set(reviveBusy.value)
+  busy.add(video.id)
+  reviveBusy.value = busy
+  try {
+    const res = await fetch(`/api/videos/${video.id}/requeue`, { method: 'POST' })
+    const body = await res.json().catch(() => null)
+    showNotice(res.ok ? 'ok' : 'err', body?.message ?? (res.ok ? '已重新排队' : '排队没成'))
+    if (res.ok) refreshVideos()
+  } catch {
+    showNotice('err', '分站后端没有应答')
+  } finally {
+    const done = new Set(reviveBusy.value)
+    done.delete(video.id)
+    reviveBusy.value = done
+  }
+}
 
 async function fetchComments(video) {
   if (commentBusy.value.has(video.id)) return
@@ -59,6 +185,9 @@ async function removeVideo(video) {
     const body = await res.json().catch(() => null)
     if (res.ok) {
       showNotice('ok', body?.message ?? '已删除')
+      // 删掉的馆藏在轮播里也销名，轮完的队尾缩到不足两件就不摆横幅了。
+      featured.value = featured.value.filter((v) => v.id !== video.id)
+      if (featIdx.value >= featured.value.length) featIdx.value = 0
       refreshVideos()
     } else {
       showNotice('err', body?.message ?? '删不动，稍后再试')
@@ -77,35 +206,60 @@ function showNotice(kind, text) {
   noticeTimer = setTimeout(() => (notice.value = null), 6000)
 }
 
-const STATUS_META = {
-  0: { text: '排队待进站', dot: 'bg-inkFaint', tone: 'text-inkSub' },
-  1: { text: '进站中', dot: 'bg-stationPink animate-pulse', tone: 'text-stationPink' },
-  2: { text: '已到站', dot: 'bg-emerald-400', tone: 'text-emerald-300' },
-  3: { text: '进站失败', dot: 'bg-rose-400', tone: 'text-rose-300' },
-  4: { text: '无需进站', dot: 'bg-amber-300', tone: 'text-amber-200' },
-}
-
-function statusMeta(status) {
-  return STATUS_META[status] ?? STATUS_META[0]
-}
-
-function shortTime(iso) {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
 onMounted(() => {
-  refreshHealth()
   refreshVideos()
   pollTimer = setInterval(() => {
+    // 有排队/进站中的才快轮（下载进度需要）；全站安静时降到 15 秒一发，
+    // 既能接住新投稿，又免得两百多张卡每 5 秒白白重绘一轮。
+    const active = videos.value.some((v) => v.status === 0 || v.status === 1)
+    if (!active && pollTick++ % 3 !== 0) return
     refreshVideos()
-    refreshHealth()
   }, 5000)
+  featTimer = setInterval(() => {
+    if (!featPaused.value && featured.value.length > 1) {
+      featIdx.value = (featIdx.value + 1) % featured.value.length
+    }
+  }, 5000)
+
+  // 摄簣 IntersectionObserver：提前 600px 接客，滚到底前下一批已经挂上；
+  // 每次放帘后重挂一次，保证摄簣仍在提前区时能连拉几帘而不卡住。
+  sentinelObserver = new IntersectionObserver(
+    (entries) => {
+      if (!entries.some((e) => e.isIntersecting)) return
+      loadMore()
+      const el = sentinelEl.value
+      if (el && sentinelObserver) {
+        sentinelObserver.unobserve(el)
+        sentinelObserver.observe(el)
+      }
+    },
+    { rootMargin: '600px 0px' },
+  )
+  if (sentinelEl.value) sentinelObserver.observe(sentinelEl.value)
 })
+
+function featPrev() {
+  const n = featured.value.length
+  if (n > 1) featIdx.value = (featIdx.value - 1 + n) % n
+}
+
+function featNext() {
+  const n = featured.value.length
+  if (n > 1) featIdx.value = (featIdx.value + 1) % n
+}
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  if (featTimer) clearInterval(featTimer)
+  if (sentinelObserver) {
+    sentinelObserver.disconnect()
+    sentinelObserver = null
+  }
+})
+
+// 帘子可能因删馆/换一批而重新挂载，新摄簣出现就补登记。
+watch(sentinelEl, (el) => {
+  if (el && sentinelObserver) sentinelObserver.observe(el)
 })
 </script>
 
@@ -114,30 +268,9 @@ onUnmounted(() => {
     <TopBar />
 
     <main class="mx-auto max-w-[1400px] px-6 py-6">
-      <!-- 开站状态条 -->
-      <div class="mb-6 flex items-center gap-3 rounded-lg bg-cardBg px-4 py-3 text-sm">
-        <template v-if="health">
-          <span class="relative flex h-2.5 w-2.5">
-            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-stationPink opacity-60"></span>
-            <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-stationPink"></span>
-          </span>
-          <span class="text-inkMain">{{ health.name }}已就位</span>
-          <span class="text-inkFaint">版本 {{ health.version }}</span>
-        </template>
-        <template v-else-if="healthFailed">
-          <span class="h-2.5 w-2.5 rounded-full bg-inkFaint"></span>
-          <span class="text-inkSub">分站后端还没应答</span>
-        </template>
-        <template v-else>
-          <span class="h-2.5 w-2.5 rounded-full bg-inkFaint"></span>
-          <span class="text-inkSub">正在联系分站后端……</span>
-        </template>
-        <span v-if="videos.length" class="ml-auto text-inkFaint">馆藏 {{ videos.length }} 件</span>
-      </div>
-
       <!-- 馆藏墙 -->
       <div class="mb-3 flex items-center justify-between">
-        <h2 class="text-base font-semibold text-inkMain">馆藏</h2>
+        <h2 class="text-base font-semibold text-inkMain">馆藏<span v-if="videos.length" class="ml-2 text-xs font-normal text-inkFaint">{{ videos.length }} 件</span></h2>
         <p
           v-if="notice"
           class="text-xs"
@@ -155,63 +288,208 @@ onUnmounted(() => {
           点这里投稿第一条
         </button>
       </div>
-      <div v-else class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
-        <div
-          v-for="(video, idx) in videos"
-          :key="video.id"
-          class="group relative"
-          :class="idx === 0 ? 'col-span-2 row-span-2' : ''"
-        >
-          <RouterLink :to="`/watch/${video.bvid}`" class="block h-full">
-            <!-- 头条大卡：封面铺满、标题压在底部渐变上（B 站首页首格同款） -->
-            <div v-if="idx === 0" class="relative h-full min-h-[260px] w-full overflow-hidden rounded-xl bg-[#f1f2f3]">
-              <img
-                v-if="video.coverUrl"
-                :src="video.coverUrl"
-                :alt="video.title || video.bvid"
-                referrerpolicy="no-referrer"
-                class="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
-              />
-              <div v-else class="absolute inset-0 flex items-center justify-center">
-                <span class="text-xs tracking-widest text-inkFaint">{{ video.bvid }}</span>
+      <div v-else class="space-y-[38px]">
+        <!-- 大幕区：大幕与右侧六张紧凑同行（gap-4），保持一个整体的呼吸 -->
+        <div v-if="featured.length >= 2" class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+          <!-- 首格大幕（B 站官方同款骨架）：占两格宽两格高，三层渐焦——顶对齐原图 → 中模糊过渡带 → 重模糊底；
+               随机抽馆藏轮换，悬停暂停，圆点直切，右下箭头换帧，点大幕跳观看页 -->
+          <div
+            class="group relative col-span-2 row-span-2 min-h-[300px] cursor-pointer overflow-hidden rounded-xl bg-black"
+            @mouseenter="featPaused = true"
+            @mouseleave="featPaused = false"
+          >
+            <RouterLink :to="`/watch/${featured[featIdx]?.bvid}`" class="absolute inset-0 block">
+              <div :key="featured[featIdx]?.bvid ?? featIdx" class="hero-layers absolute inset-0">
+                <div class="hero-blur" :style="{ backgroundImage: `url('${featCover}')` }"></div>
+                <div class="hero-soft">
+                  <img :src="featCover" :alt="featured[featIdx]?.title || featured[featIdx]?.bvid" referrerpolicy="no-referrer" />
+                </div>
+                <div class="hero-top">
+                  <img
+                    :src="featCover"
+                    :alt="featured[featIdx]?.title || featured[featIdx]?.bvid"
+                    referrerpolicy="no-referrer"
+                    @load="heroReady = true"
+                    @error="heroReady = true"
+                  />
+                </div>
+                <div class="hero-dim"></div>
               </div>
-              <span
-                class="absolute left-2 top-2 z-10 rounded-md bg-black/60 px-2 py-0.5 text-[11px] backdrop-blur"
-                :class="statusMeta(video.status).tone"
-              >
-                {{ statusMeta(video.status).text }}
-              </span>
-              <div class="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/75 to-transparent"></div>
-              <p class="absolute bottom-3 left-3 right-16 line-clamp-2 text-[15px] font-medium leading-[22px] text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">
-                {{ video.title || video.bvid }}
-              </p>
+              <!-- 新帧未到位：黑底上转小环，不裸切黑帧 -->
+              <div v-if="!heroReady" class="absolute inset-0 z-[5] flex items-center justify-center">
+                <span class="hero-spin"></span>
+              </div>
+              <div class="absolute bottom-3.5 left-4 right-[120px] z-10">
+                <p class="truncate text-[15px] font-semibold leading-[21px] text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.45)]">
+                  {{ featured[featIdx]?.title || featured[featIdx]?.bvid }}
+                </p>
+                <div class="mt-2 flex items-center gap-[7px]">
+                  <button
+                    v-for="(v, i) in featured"
+                    :key="`dot-${v.id}`"
+                    class="h-[9px] w-[9px] rounded-full transition"
+                    :class="i === featIdx ? 'bg-white' : 'bg-white/40 hover:bg-white/70'"
+                    :aria-label="`切到 ${v.title || v.bvid}`"
+                    @click.prevent.stop="featIdx = i"
+                  ></button>
+                </div>
+              </div>
+            </RouterLink>
+            <div class="absolute bottom-3 right-3 z-10 flex gap-2">
+              <button class="hero-nav" aria-label="上一帧" @click.prevent.stop="featPrev">‹</button>
+              <button class="hero-nav" aria-label="下一帧" @click.prevent.stop="featNext">›</button>
             </div>
+          </div>
+          <AdminVideoCell
+            v-for="video in nearHero"
+            :key="`near-${video.id}`"
+            :video="video"
+            :comment-busy="commentBusy.has(video.id)"
+            :revive-busy="reviveBusy.has(video.id)"
+            @fetch-comments="fetchComments"
+            @revive="reviveVideo"
+            @requeue="requeueVideo"
+            @remove="removeVideo"
+          />
+        </div>
 
-            <!-- 普通推荐卡：与搜索结果页共用 VideoCard，站长视角多开状态点与失败原因 -->
-            <VideoCard v-else :video="video" admin />
-          </RouterLink>
-          <button
-            v-if="video.status === 2"
-            class="absolute right-9 top-2 hidden rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:bg-stationBlue hover:text-white group-hover:block disabled:opacity-40"
-            :disabled="commentBusy.has(video.id)"
-            title="重新采集评论区快照"
-            @click.prevent.stop="fetchComments(video)"
-          >
-            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
-          <button
-            class="absolute right-2 top-2 hidden rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:bg-rose-500 hover:text-white group-hover:block"
-            title="删掉这个馆藏（含本地文件）"
-            @click.prevent.stop="removeVideo(video)"
-          >
-            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1L6 7" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
+        <!-- 均匀卡阵：行距拉开呼吸（38px），列距不变；帘子分批渲染，摄簣接近就放下一批 -->
+        <div class="grid grid-cols-2 gap-x-4 gap-y-[38px] md:grid-cols-3 xl:grid-cols-5">
+          <AdminVideoCell
+            v-for="video in restShown"
+            :key="video.id"
+            :video="video"
+            :comment-busy="commentBusy.has(video.id)"
+            :revive-busy="reviveBusy.has(video.id)"
+            @fetch-comments="fetchComments"
+            @revive="reviveVideo"
+            @requeue="requeueVideo"
+            @remove="removeVideo"
+          />
+        </div>
+        <div
+          v-if="restShown.length < restVideos.length"
+          ref="sentinelEl"
+          class="flex items-center justify-center py-8 text-xs text-inkFaint"
+        >
+          <span class="grid-spin mr-2"></span>放下帘子，迎接更多馆藏…
         </div>
       </div>
     </main>
+
+    <!-- 换一批：重抽种子重洗卡阵与大幕，轮询期间顺序锁定 -->
+    <button
+      class="fixed bottom-6 right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:rotate-6 hover:border-stationPink/60 hover:text-stationPink"
+      title="换一批：重新洗牌首页卡阵"
+      aria-label="换一批"
+      @click="reshuffle"
+    >
+      <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
   </div>
 </template>
+
+<style scoped>
+/* 首格大幕三层渐焦：清晰原图（mask 下缘渐隐）→ 同图中模糊过渡带 → 全幅重模糊底，镜头拉开式的连续失焦 */
+.hero-layers {
+  animation: hero-in 0.45s ease;
+}
+@keyframes hero-in {
+  from { opacity: 0.25; }
+  to { opacity: 1; }
+}
+.hero-blur {
+  position: absolute;
+  inset: -14%;
+  background-size: cover;
+  background-position: center 30%;
+  filter: blur(30px) saturate(1.15);
+  transform: scale(1.15);
+}
+.hero-soft {
+  position: absolute;
+  top: 52%;
+  left: -6%;
+  right: -6%;
+  height: 34%;
+  overflow: hidden;
+  filter: blur(11px) saturate(1.12);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 34%, #000 66%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 34%, #000 66%, transparent);
+}
+.hero-soft img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 30%;
+  display: block;
+}
+.hero-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 71%;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 62%, rgba(0, 0, 0, 0.72) 84%, transparent 99%);
+  mask-image: linear-gradient(to bottom, #000 62%, rgba(0, 0, 0, 0.72) 84%, transparent 99%);
+}
+.hero-top img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 22%;
+  display: block;
+}
+.hero-dim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 38%;
+  background: linear-gradient(transparent, rgba(10, 8, 6, 0.42));
+  pointer-events: none;
+}
+.hero-nav {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: background 0.15s;
+}
+.hero-nav:hover {
+  background: rgba(255, 255, 255, 0.38);
+}
+/* 加载转环：大幕新帧未到位转白环，帘子放批时转墨环 */
+.hero-spin {
+  display: inline-block;
+  height: 34px;
+  width: 34px;
+  border-radius: 9999px;
+  border: 3px solid rgba(255, 255, 255, 0.22);
+  border-top-color: rgba(255, 255, 255, 0.92);
+  animation: lbs-spin 0.8s linear infinite;
+}
+.grid-spin {
+  display: inline-block;
+  height: 14px;
+  width: 14px;
+  border-radius: 9999px;
+  border: 2px solid rgba(0, 0, 0, 0.12);
+  border-top-color: rgba(0, 0, 0, 0.45);
+  animation: lbs-spin 0.8s linear infinite;
+}
+@keyframes lbs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

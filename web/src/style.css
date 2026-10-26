@@ -11,10 +11,175 @@
 @layer components {
   /* 站长室下载设置的统一输入形态 */
   .eng-input {
-    @apply w-full rounded border border-adminLine bg-black/30 px-2 py-1.5 font-mono text-xs text-white/80 placeholder:text-white/20 focus:border-adminAccent/60 focus:outline-none;
+    @apply w-full rounded-lg border border-adminLine bg-black/40 px-2 py-1.5 font-mono text-xs text-white/80 placeholder:text-white/20 transition focus:border-adminAccent/60 focus:outline-none focus:ring-2 focus:ring-adminAccent/15;
   }
   select.eng-input option {
     background-color: #171a21;
     color: rgba(255, 255, 255, 0.85);
+  }
+
+  /* ── 站长室装修件：暗色控制室质感，不换色板只提层次 ── */
+  .lbs-card {
+    @apply rounded-2xl border border-white/[0.07] bg-adminPanel p-5;
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 55%);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .lbs-card:hover {
+    border-color: rgba(34, 211, 238, 0.16);
+    box-shadow: 0 16px 44px -22px rgba(0, 0, 0, 0.9);
+  }
+  .lbs-card-danger {
+    @apply rounded-2xl border p-5;
+    border-color: rgba(244, 63, 94, 0.26);
+    background-color: #171a21;
+    background-image: linear-gradient(135deg, rgba(244, 63, 94, 0.07), rgba(244, 63, 94, 0.015) 60%);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .lbs-card-danger:hover {
+    border-color: rgba(244, 63, 94, 0.42);
+    box-shadow: 0 16px 44px -22px rgba(244, 63, 94, 0.28);
+  }
+
+  /* 卡题前缀小竖条：青色系一眼定位，危险区换红 */
+  .lbs-title {
+    @apply mb-4 flex items-center gap-2 text-xs uppercase tracking-widest text-white/45;
+  }
+  .lbs-title::before {
+    content: '';
+    @apply h-3 w-[3px] shrink-0 rounded-full;
+    background: linear-gradient(180deg, #22d3ee, rgba(34, 211, 238, 0.25));
+  }
+  .lbs-title-danger {
+    @apply mb-4 flex items-center gap-2 text-xs uppercase tracking-widest text-rose-300/75;
+  }
+  .lbs-title-danger::before {
+    content: '';
+    @apply h-3 w-[3px] shrink-0 rounded-full;
+    background: linear-gradient(180deg, #fb7185, rgba(251, 113, 133, 0.25));
+  }
+
+  /* 按钮：主动作青色微光，次动作描边，危险动作红色 */
+  .lbs-btn {
+    @apply rounded-lg border border-adminAccent/40 bg-adminAccent/[0.07] px-3.5 py-1.5 text-sm text-adminAccent transition-all;
+  }
+  .lbs-btn:hover:not(:disabled) {
+    background-color: rgba(34, 211, 238, 0.14);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 20px -10px rgba(34, 211, 238, 0.45);
+  }
+  .lbs-btn:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+  .lbs-btn-ghost {
+    @apply rounded-lg border border-white/15 px-3.5 py-1.5 text-sm text-white/50 transition-all;
+  }
+  .lbs-btn-ghost:hover:not(:disabled) {
+    @apply border-white/30 text-white/80;
+    transform: translateY(-1px);
+  }
+  .lbs-btn-ghost:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+  .lbs-btn-danger {
+    @apply rounded-lg border border-rose-500/30 px-3.5 py-1.5 text-sm text-rose-300/85 transition-all;
+  }
+  .lbs-btn-danger:hover:not(:disabled) {
+    @apply bg-rose-500/10;
+    transform: translateY(-1px);
+  }
+  .lbs-btn-danger-armed {
+    @apply rounded-lg border border-rose-400/70 bg-rose-500/15 px-3.5 py-1.5 text-sm text-rose-200 transition-all;
+    animation: lbs-danger-breathe 1.2s ease-in-out infinite;
+  }
+  .lbs-btn-danger-armed:hover:not(:disabled) {
+    @apply bg-rose-500/25;
+  }
+  .lbs-btn-danger:disabled,
+  .lbs-btn-danger-armed:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+
+  /* 大输入件：textarea / 单行输入通用，聚焦青色光环 */
+  .lbs-input {
+    @apply w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-white/80 placeholder:text-white/20 transition;
+  }
+  .lbs-input:focus {
+    @apply border-adminAccent/60 outline-none;
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.12);
+  }
+  .lbs-input:disabled {
+    @apply opacity-40;
+  }
+
+  /* 登录状态灯：在线呼吸光晕，离线死灰 */
+  .lbs-dot {
+    @apply inline-block h-2 w-2 shrink-0 rounded-full;
+  }
+  .lbs-dot-on {
+    background: #22d3ee;
+    animation: lbs-pulse 2.4s ease-out infinite;
+  }
+  .lbs-dot-off {
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  /* 页头/大卡统计 chip：数字亮、标签淡 */
+  .lbs-stat {
+    @apply flex items-baseline gap-1.5 font-mono text-xs;
+  }
+  .lbs-stat b {
+    @apply text-[15px] font-medium text-white/90;
+  }
+  .lbs-stat span {
+    @apply text-white/30;
+  }
+
+  /* 大统计卡用：数字在上标签在下，占位饱满 */
+  .lbs-stat-lg {
+    @apply flex flex-col gap-1.5;
+  }
+  .lbs-stat-lg b {
+    @apply font-mono text-[26px] font-medium leading-none text-white/90;
+  }
+  .lbs-stat-lg span {
+    @apply text-xs text-white/30;
+  }
+
+  /* 整页入场：一次性上浮淡入 */
+  .lbs-rise {
+    animation: lbs-rise 0.4s ease-out both;
+  }
+}
+
+@keyframes lbs-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(34, 211, 238, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 211, 238, 0);
+  }
+}
+
+@keyframes lbs-danger-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 14px 2px rgba(244, 63, 94, 0.28);
+  }
+}
+
+@keyframes lbs-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
