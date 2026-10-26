@@ -48,6 +48,8 @@ builder.Services.AddSingleton<LbsTaskReviver>();
 builder.Services.AddHostedService<StartupReviverWorker>();
 // 下载暂停板：站长室总闸（暂停/继续/取消排队），提交闸与自愈/同步都认这块牌子。
 builder.Services.AddSingleton<DownloadPauseBoard>();
+// 站长室锁闸：管理类端点的口令门，朋友共用分站前上锁；访客路由不受影响。
+builder.Services.AddSingleton<AdminGate>();
 
 // 下载引擎（移植自 downkyicore 的 headless 运行时）：启动时拉起下载 runtime 并自检 ffmpeg
 builder.Services.AddLbsDownloadEngine(new EngineOptions(EngineOptions.DefaultUserAgent));
@@ -167,6 +169,81 @@ app.UseStaticFiles(new StaticFileOptions
     ContentTypeProvider = mediaTypes,
     ServeUnknownFileTypes = true,
     DefaultContentType = "application/octet-stream",
+});
+
+// 站长室锁闸：管理类端点未解锁一律 401，SPA 本体照常发（门在数据上，不在页面壳上）。
+app.Use(async (context, next) =>
+{
+    var gate = context.RequestServices.GetRequiredService<AdminGate>();
+    if (gate.IsLocked && gate.IsAdminRequest(context.Request) && !gate.HasValidSession(context.Request))
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsJsonAsync(new { message = "站长室已上锁，请先输入口令" });
+        return;
+    }
+
+    await next();
+});
+
+// 锁闸的门面：status 告诉前端要不要摆密码门；unlock 发 7 天会话 cookie；
+// lock/release 只能在已解锁态操作（否则上了锁就自己把自己锁死了）。
+app.MapGet("/api/gate/status", (AdminGate gate, HttpContext http) => Results.Ok(new
+{
+    locked = gate.IsLocked,
+    unlocked = !gate.IsLocked || gate.HasValidSession(http.Request),
+}));
+
+app.MapPost("/api/gate/unlock", (GateRequest request, AdminGate gate, HttpContext http) =>
+{
+    var token = gate.TryUnlock(request.Password, http.Connection.RemoteIpAddress?.ToString() ?? "unknown");
+    if (token is null)
+    {
+        return Results.Unauthorized();
+    }
+
+    http.Response.Cookies.Append(AdminGate.Cookie, token, new CookieOptions
+    {
+        HttpOnly = true,
+        SameSite = SameSiteMode.Lax,
+        Path = "/",
+        MaxAge = TimeSpan.FromDays(7),
+    });
+    return Results.Ok(new { message = "口令正确，站长室开门" });
+});
+
+app.MapPost("/api/gate/lock", (GateRequest request, AdminGate gate, HttpContext http) =>
+{
+    // 已上锁时换口令也得先递口令：否则任何人一发请求就能换掉站长钥匙。
+    if (gate.IsLocked && !gate.HasValidSession(http.Request))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Trim().Length < 4)
+    {
+        return Results.BadRequest(new { message = "口令至少 4 位" });
+    }
+
+    gate.SetPassword(request.Password.Trim());
+    gate.RevokeSessions();
+    return Results.Ok(new { message = "站长室已上锁，下次进站需输口令" });
+});
+
+app.MapPost("/api/gate/release", (AdminGate gate, HttpContext http) =>
+{
+    if (!gate.IsLocked)
+    {
+        return Results.BadRequest(new { message = "本来就没锁" });
+    }
+
+    // 除锁必须持有效会话：不然路过的访客一发请求就把锁卸了。
+    if (!gate.HasValidSession(http.Request))
+    {
+        return Results.Unauthorized();
+    }
+
+    gate.Release();
+    return Results.Ok(new { message = "锁已解除，分站回到敞开态" });
 });
 
 // 旧档案的后补：有 mid 但名片从未采过（up_face 为 NULL）时，开页顺手异步采一次，下次刷新就有。
@@ -1144,6 +1221,7 @@ internal sealed record FavoritesUrlImportRequest(string Url);
 internal sealed record UpImportRequest(string Url);
 internal sealed record CancelDownloadsRequest(IReadOnlyList<long>? VideoIds);
 internal sealed record SetDownloadIntervalRequest(int Seconds);
+internal sealed record GateRequest(string? Password);
 internal sealed record LoginCookieRequest(string Cookie);
 internal sealed record CollectModeRequest(string Mode);
 internal sealed record PurgeRequest(bool Confirm);

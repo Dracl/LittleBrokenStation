@@ -557,6 +557,12 @@ let dlTimer = null
 async function loadDlQueue() {
   try {
     const res = await fetch('/api/downloads/queue')
+    if (res.status === 401) {
+      // 会话过期（分站重启过等）：把门重新掩上，请站长再递一次口令。
+      showGate.value = true
+      gate.value = { locked: true, unlocked: false }
+      return
+    }
     dlQueue.value = res.ok ? await res.json() : null
     if (dlQueue.value) dlInterval.value = String(dlQueue.value.intervalSec ?? 0)
   } catch {
@@ -626,14 +632,94 @@ async function dlCancelOne(id) {
   }
 }
 
-onMounted(async () => {
+// ─── 站长闸：朋友共用分站前上一道口令门（服务端同步把守，这里只摆门和钥匙孔）───
+const gate = ref(null) // { locked, unlocked }
+const showGate = ref(false)
+const gateDraft = ref('')
+const gateBusy = ref(false)
+const gateText = ref('')
+
+async function loadGate() {
   try {
-    const [h, s] = await Promise.all([fetch('/api/health').then((r) => r.json()), fetch('/api/settings').then((r) => r.json())])
-    health.value = h
-    settings.value = s
+    const res = await fetch('/api/gate/status')
+    gate.value = res.ok ? await res.json() : null
   } catch {
-    // 后端未到站时留空显示
+    gate.value = null
   }
+  showGate.value = !!gate.value?.locked && !gate.value?.unlocked
+}
+
+async function gateUnlock() {
+  if (gateBusy.value || !gateDraft.value.trim()) return
+  gateBusy.value = true
+  gateText.value = ''
+  try {
+    const res = await fetch('/api/gate/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: gateDraft.value }),
+    })
+    if (res.ok) {
+      showGate.value = false
+      gateDraft.value = ''
+      bootAdmin()
+    } else {
+      gateText.value = '口令不对，再想想'
+    }
+  } catch {
+    gateText.value = '分站后端没有应答'
+  } finally {
+    gateBusy.value = false
+  }
+}
+
+async function gateLock() {
+  if (gateBusy.value || gateDraft.value.trim().length < 4) {
+    gateText.value = '口令至少 4 位'
+    return
+  }
+  gateBusy.value = true
+  try {
+    const res = await fetch('/api/gate/lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: gateDraft.value.trim() }),
+    })
+    const body = await res.json().catch(() => null)
+    gateText.value = body?.message ?? (res.ok ? '已上锁' : '上锁没成')
+    if (res.ok) {
+      gateDraft.value = ''
+      showGate.value = true // 刚上锁就把门掩上，自证口令真能用
+      gate.value = { locked: true, unlocked: false }
+    }
+  } finally {
+    gateBusy.value = false
+  }
+}
+
+async function gateRelease() {
+  if (gateBusy.value) return
+  if (!window.confirm('确定除锁？分站回到敞开态，任何人都能进站长室。')) return
+  gateBusy.value = true
+  try {
+    const res = await fetch('/api/gate/release', { method: 'POST' })
+    const body = await res.json().catch(() => null)
+    gateText.value = body?.message ?? '已除锁'
+    await loadGate()
+  } finally {
+    gateBusy.value = false
+  }
+}
+
+function bootAdmin() {
+  fetch('/api/health')
+    .then((r) => r.json())
+    .then((h) => (health.value = h))
+    .catch(() => {})
+  fetch('/api/settings')
+    .then((r) => r.json())
+    .then((s) => (settings.value = s))
+    .catch(() => {})
   loadStats()
   loadSubscriptions()
   loadCrawlStatus()
@@ -643,7 +729,13 @@ onMounted(async () => {
   loadCollectMode()
   loadEngine()
   loadDlQueue()
-  dlTimer = setInterval(loadDlQueue, 5000)
+  if (!dlTimer) dlTimer = setInterval(loadDlQueue, 5000)
+}
+
+onMounted(async () => {
+  await loadGate()
+  if (showGate.value) return // 门关着，不必去敲每个接口
+  bootAdmin()
 })
 
 onUnmounted(() => {
@@ -653,7 +745,32 @@ onUnmounted(() => {
 
 <template>
   <div class="min-h-screen bg-adminBg text-white">
-    <header class="border-b border-adminLine bg-gradient-to-b from-white/[0.02] to-transparent">
+    <!-- 锁闸：口令门（服务端同步把守，这只是钥匙孔）-->
+    <div v-if="showGate" class="flex min-h-screen items-center justify-center px-6">
+      <div class="lbs-card w-full max-w-[380px] p-8">
+        <div class="mb-5 flex items-center gap-2">
+          <span class="lbs-dot lbs-dot-off"></span>
+          <span class="text-sm tracking-widest text-white/90">站长室已上锁</span>
+        </div>
+        <p class="mb-5 text-xs leading-5 text-white/35">
+          分站本体照常开放，看片发弹幕不受影响；解锁后才能进控制室。
+        </p>
+        <input
+          v-model="gateDraft"
+          type="password"
+          placeholder="站长口令"
+          class="lbs-input"
+          :disabled="gateBusy"
+          @keyup.enter="gateUnlock"
+        />
+        <button class="lbs-btn mt-4 w-full" :disabled="gateBusy || !gateDraft.trim()" @click="gateUnlock">
+          {{ gateBusy ? '验钥中…' : '开门' }}
+        </button>
+        <p v-if="gateText" class="mt-3 text-center font-mono text-xs text-rose-300/80">{{ gateText }}</p>
+      </div>
+    </div>
+
+    <header v-if="!showGate" class="border-b border-adminLine bg-gradient-to-b from-white/[0.02] to-transparent">
       <div class="mx-auto flex h-14 max-w-[1100px] items-center justify-between px-6">
         <div class="flex items-center gap-3">
           <span class="lbs-dot lbs-dot-on"></span>
@@ -669,7 +786,7 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <main class="lbs-rise mx-auto grid max-w-[1100px] grid-cols-1 gap-4 px-6 py-8 md:grid-cols-2">
+    <main v-if="!showGate" class="lbs-rise mx-auto grid max-w-[1100px] grid-cols-1 gap-4 px-6 py-8 md:grid-cols-2">
       <section class="lbs-card md:col-span-2">
         <div class="mb-5 flex items-center justify-between">
           <h3 class="lbs-title !mb-0">分站统计</h3>
@@ -1245,6 +1362,38 @@ onUnmounted(() => {
             </label>
           </div>
         </div>
+      </section>
+
+      <section class="lbs-card md:col-span-2">
+        <div class="mb-4 flex items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            站长室锁
+            <span
+              class="ml-1 rounded-full border px-2 py-0.5 text-[10px] normal-case tracking-normal"
+              :class="gate?.locked ? 'border-amber-400/40 text-amber-300' : 'border-emerald-400/40 text-emerald-300'"
+            >
+              {{ gate?.locked ? '已上锁' : '敞开中' }}
+            </span>
+          </h3>
+        </div>
+        <p class="mb-3 text-xs leading-5 text-white/30">
+          朋友共用分站前把锁上上：只管站长室的接口，看片发弹幕投稿不受影响；解锁后 7 天免重输，分站重启需重新递口令。
+          忘了口令就拿数据目录的钥匙：删掉 station.db 里 settings 表的 admin-key 行即回敞开态。
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <input
+            v-model="gateDraft"
+            type="password"
+            :placeholder="gate?.locked ? '新口令（至少 4 位）' : '设个口令（至少 4 位）'"
+            class="lbs-input max-w-[280px]"
+            :disabled="gateBusy"
+          />
+          <button class="lbs-btn" :disabled="gateBusy || gateDraft.trim().length < 4" @click="gateLock">
+            {{ gate?.locked ? '换口令并上锁' : '上锁' }}
+          </button>
+          <button v-if="gate?.locked" class="lbs-btn-ghost" :disabled="gateBusy" @click="gateRelease">除锁</button>
+        </div>
+        <p v-if="gateText" class="mt-3 text-xs text-adminAccent/80">{{ gateText }}</p>
       </section>
 
       <section class="lbs-card-danger md:col-span-2">
