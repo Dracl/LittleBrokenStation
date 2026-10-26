@@ -158,6 +158,7 @@ public sealed partial class StationDb
                     face_url          TEXT,
                     note              TEXT,
                     status            TEXT NOT NULL,
+                    role              TEXT NOT NULL DEFAULT 'member',
                     created_at_utc    TEXT NOT NULL,
                     bound_at_utc      TEXT,
                     last_login_at_utc TEXT
@@ -184,6 +185,9 @@ public sealed partial class StationDb
                 """;
             members.ExecuteNonQuery();
         }
+
+        // 成员角色（owner/member）：头名即站长。建表语句自带头，早期无 role 列的开发库在这里补上。
+        EnsureColumn(connection, "members", "role", "TEXT NOT NULL DEFAULT 'member'");
 
         // M5 事件台账：分站的海马体，AI 分析的原料。只增不删，双索引保查询。
         using (var events = connection.CreateCommand())

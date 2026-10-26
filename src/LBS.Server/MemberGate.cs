@@ -95,6 +95,9 @@ public sealed class MemberGate(StationDb db)
     public static StationMember? Current(HttpContext context)
         => context.Items.TryGetValue(MemberItem, out var m) ? m as StationMember : null;
 
+    /// <summary>这位是站长吗（头名即站长，钥匙就是他的会话）。</summary>
+    public static bool IsOwner(StationMember? member) => member?.Role == MemberRoles.Owner;
+
     private static string Hash(string token)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
 }

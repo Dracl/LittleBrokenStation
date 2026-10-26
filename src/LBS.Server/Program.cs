@@ -181,22 +181,8 @@ app.UseStaticFiles(new StaticFileOptions
     DefaultContentType = "application/octet-stream",
 });
 
-// 站长室锁闸：管理类端点未解锁一律 401，SPA 本体照常发（门在数据上，不在页面壳上）。
-app.Use(async (context, next) =>
-{
-    var gate = context.RequestServices.GetRequiredService<AdminGate>();
-    if (gate.IsLocked && gate.IsAdminRequest(context.Request) && !gate.HasValidSession(context.Request))
-    {
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        await context.Response.WriteAsJsonAsync(new { message = "站长室已上锁，请先输入口令" });
-        return;
-    }
-
-    await next();
-});
-
-// 成员门闸：访客只逛橱窗（首页卡阵/搜索/封面），放映厅、弹幕、投稿一律要会员会话；
-// 顺带把当前会员盖章进 HttpContext，端点随手取投稿归属。被拦的访客也想看什么，记一笔供 AI 分析。
+// 成员门闸（先盖章后验门）：访客只逛橱窗（首页卡阵/搜索/封面），放映厅、弹幕、投稿一律要会员会话；
+// 被拦访客的欲看而不得记 watch.blocked 供 AI 分析。
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path.Value ?? "";
@@ -215,6 +201,34 @@ app.Use(async (context, next) =>
                     ip: context.Connection.RemoteIpAddress?.ToString());
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(new { error = "member-required", message = "扫码登录后才能看视频、弹幕与评论区" });
+            return;
+        }
+    }
+
+    await next();
+});
+
+// 站长室门牌：身份即钥匙——只有站长（owner）的会员会话放行，口令锁依约退役（AdminGate 留档待公网复位）。
+// 普通成员误打也拦下并指路用户控制室；探头探脑的撞门声记 admin.blocked。
+app.Use(async (context, next) =>
+{
+    var adminGate = context.RequestServices.GetRequiredService<AdminGate>();
+    if (adminGate.IsAdminRequest(context.Request))
+    {
+        var member = MemberGate.Current(context);
+        if (!MemberGate.IsOwner(member))
+        {
+            context.RequestServices.GetRequiredService<EventRecorder>()
+                .Record(member is null ? EventActors.Guest : EventActors.Member, member?.Mid, EventNames.AdminBlocked, "path",
+                    context.Request.Path.Value ?? "",
+                    ip: context.Connection.RemoteIpAddress?.ToString());
+            var forbidden = member is not null;
+            context.Response.StatusCode = forbidden ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                error = forbidden ? "owner-required" : "owner-login-required",
+                message = forbidden ? "这里是站长室，普通成员请进用户控制室" : "站长室仅限站长，请先扫码登录",
+            });
             return;
         }
     }
@@ -285,6 +299,9 @@ app.MapPost("/api/gate/release", (AdminGate gate, HttpContext http) =>
 
 // 会员登录面：扫码握手（领码/代轮询/成功发会话）+ 登出 + 我是谁；邀请制在核销那一步把关。
 app.MapMemberEndpoints();
+
+// 站长室的成员管理：席位清单、发邀请码、封禁/解封、撤席位（owner 会话门已在前置 middleware 把关）。
+app.MapAdminMemberEndpoints();
 
 // 旧档案的后补：有 mid 但名片从未采过（up_face 为 NULL）时，开页顺手异步采一次，下次刷新就有。
 // 失败也销账（置空串）；并发重复触发用 in-flight 集合挡掉。

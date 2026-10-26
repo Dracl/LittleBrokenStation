@@ -135,7 +135,13 @@ public static class MemberEndpoints
                     return Results.Ok(new
                     {
                         phase = "success",
-                        member = new { mid = identity.Mid, nickname = identity.Name, faceUrl = identity.Face },
+                        member = new
+                        {
+                            mid = identity.Mid,
+                            nickname = identity.Name,
+                            faceUrl = identity.Face,
+                            role = AdmitRole(db, identity.Mid),
+                        },
                     });
                 }
 
@@ -174,6 +180,7 @@ public static class MemberEndpoints
                 nickname = member.Nickname,
                 faceUrl = member.FaceUrl,
                 note = member.Note,
+                role = member.Role,
                 lastLoginAtUtc = member.LastLoginAtUtc,
                 accounts = accounts.Select(a => new
                 {
@@ -236,6 +243,9 @@ public static class MemberEndpoints
         db.UpsertMemberAccount(bound.Id, identity.Mid, identity.Name, identity.Face, cookie);
         return (gate.IssueSession(bound.Id).Token, null, 200);
     }
+
+    private static string AdmitRole(StationDb db, long mid)
+        => db.GetMemberByMid(mid)?.Role ?? MemberRoles.Member;
 
     private static string? NormalizeInvite(string? invite)
         => string.IsNullOrWhiteSpace(invite) ? null : invite.Trim().ToUpperInvariant();

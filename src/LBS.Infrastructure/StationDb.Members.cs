@@ -29,7 +29,7 @@ public sealed partial class StationDb
 
     private static readonly string[] MemberColumns =
     [
-        "id", "mid", "nickname", "face_url", "note", "status",
+        "id", "mid", "nickname", "face_url", "note", "status", "role",
         "created_at_utc", "bound_at_utc", "last_login_at_utc",
     ];
 
@@ -40,9 +40,10 @@ public sealed partial class StationDb
         reader.IsDBNull(3) ? null : reader.GetString(3),
         reader.IsDBNull(4) ? null : reader.GetString(4),
         reader.GetString(5),
-        reader.GetString(6),
-        reader.IsDBNull(7) ? null : reader.GetString(7),
-        reader.IsDBNull(8) ? null : reader.GetString(8));
+        reader.IsDBNull(6) ? MemberRoles.Member : reader.GetString(6),
+        reader.GetString(7),
+        reader.IsDBNull(8) ? null : reader.GetString(8),
+        reader.IsDBNull(9) ? null : reader.GetString(9));
 
     /// <summary>站长建空位发邀请码：mid 留白，等朋友扫码绑定后转 active。</summary>
     public (long Id, string Code) CreateMemberInvite(string? note)
@@ -126,10 +127,13 @@ public sealed partial class StationDb
             using var connection = Open(_dbPath);
             using (var command = connection.CreateCommand())
             {
+                // 头名即站长：同一语句内自问“站上有主吗”，无主则认主者继位，不给竞速留缝。
                 command.CommandText = """
                     UPDATE members
                     SET mid = $mid, nickname = $name, face_url = $face, status = 'active',
-                        invite_code = NULL, bound_at_utc = $now, last_login_at_utc = $now
+                        invite_code = NULL, bound_at_utc = $now, last_login_at_utc = $now,
+                        role = CASE WHEN NOT EXISTS (SELECT 1 FROM members WHERE role = 'owner')
+                                    THEN 'owner' ELSE 'member' END
                     WHERE id = $id AND status = 'invited';
                     """;
                 command.Parameters.AddWithValue("$mid", mid);
@@ -150,6 +154,15 @@ public sealed partial class StationDb
             // mid 唯一键撞车：这个 B 站号已有席位，交上层走重登分支。
             return null;
         }
+    }
+
+    /// <summary>站上有主了吗？（登录页用来挂“首位扫码者继位站长”的告示）。</summary>
+    public bool HasOwner()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM members WHERE role = 'owner' LIMIT 1;";
+        return command.ExecuteScalar() is not null;
     }
 
     /// <summary>老席位重登：刷新登录时刻，昵称头像顺手换新。</summary>

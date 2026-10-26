@@ -100,6 +100,20 @@ public class MemberAdmissionTests : IDisposable
     }
 
     [Fact]
+    public void FirstAdmittedMember_IsCrownedOwner_AndOthersArePlain()
+    {
+        // 头名即站长：第一位认主者自动加冕，后来的循规蹈矩当用户
+        var (_, code) = _db.CreateMemberInvite(null);
+        MemberEndpoints.AdmitMember(_db, _gate, Identity(2001L, "建基者"), code, "SESSDATA=a");
+        Assert.True(_db.HasOwner());
+        Assert.Equal(MemberRoles.Owner, _db.GetMemberByMid(2001L)!.Role);
+
+        var (_, code2) = _db.CreateMemberInvite(null);
+        MemberEndpoints.AdmitMember(_db, _gate, Identity(2002L, "后来人"), code2, "SESSDATA=b");
+        Assert.Equal(MemberRoles.Member, _db.GetMemberByMid(2002L)!.Role);
+    }
+
+    [Fact]
     public void DeadInviteCode_IsRejected()
     {
         _db.CreateMemberInvite("用完的码");

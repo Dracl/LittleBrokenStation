@@ -11,6 +11,7 @@ public sealed record StationMember(
     string? FaceUrl,
     string? Note,
     string Status,
+    string Role,
     string CreatedAtUtc,
     string? BoundAtUtc,
     string? LastLoginAtUtc);
@@ -39,4 +40,11 @@ public static class MemberStatus
     public const string Invited = "invited";
     public const string Active = "active";
     public const string Banned = "banned";
+}
+
+/// <summary>成员角色：头名即站长（建表后第一个扫码认主的），其余皆用户。</summary>
+public static class MemberRoles
+{
+    public const string Owner = "owner";
+    public const string Member = "member";
 }
