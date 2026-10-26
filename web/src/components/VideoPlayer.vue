@@ -10,9 +10,11 @@ const props = defineProps({
   bvid: { type: String, default: '' },
   aid: { type: Number, default: 0 },
   hasNextPage: { type: Boolean, default: false },
+  autoRelated: { type: Boolean, default: false }, // 自动连播：本页最后一 P 播完跳接下来播放首条
   danmakuCount: { type: Number, default: null }, // 全站已归档弹幕总数（watch 顶层字段）
+  localItems: { type: Array, default: () => [] }, // 站内弹幕 [{id, pageIdx, t, text}]（已按当前 P 筛好）
 })
-const emit = defineEmits(['next', 'request-codec', 'shell-width'])
+const emit = defineEmits(['next', 'request-codec', 'shell-width', 'next-video', 'codec-change', 'send-danmaku', 'delete-danmaku'])
 
 const root = ref(null)
 const video = ref(null)
@@ -99,10 +101,10 @@ function manualUnstick() {
     vv.load()
   }, 3000)
 }
-// 音量记忆消毒：存过脏值（NaN/越界）就回 0.7，记住 0 则视为静音态，两者永远一致。
+// 音量记忆消毒：存过脏值（NaN/越界）就回默认 100%，记住 0 则视为静音态，两者永远一致。
 const storedVolRaw = localStorage.getItem('lbs.player.volume')
 const storedVol = Number(storedVolRaw)
-const volume = ref(storedVolRaw !== null && Number.isFinite(storedVol) ? Math.min(1, Math.max(0, storedVol)) : 0.7)
+const volume = ref(storedVolRaw !== null && Number.isFinite(storedVol) ? Math.min(1, Math.max(0, storedVol)) : 1)
 const muted = ref(volume.value === 0)
 const currentTime = ref(0)
 const duration = ref(0)
@@ -158,11 +160,22 @@ function versionInfo(codec) {
   const row = versions.value.find((c) => c.codec === codec) ?? null
   const isMain = props.page?.codec === codec
   if (isMain || row?.status === 'Arrived') {
-    return { state: 'stock', fromMain: isMain, bytes: row?.status === 'Arrived' ? row.bytes : null }
+    // 主版本的大小由后端扫盘带出（mainBytes）；加档行Arrived 后自带 bytes。拿不到就显空，不编数。
+    const bytes = row?.status === 'Arrived' ? row.bytes : isMain ? props.page?.mainBytes ?? null : null
+    return { state: 'stock', fromMain: isMain, bytes: bytes ?? null }
   }
   if (row?.status === 'Downloading') return { state: 'downloading' }
   if (row?.status === 'Failed') return { state: 'failed' }
   return { state: 'missing' }
+}
+
+// 在库行右侧标签：文件大小（采得到才显）+ 正在播的那条标「播放中」；未下载的不占位。
+function stockBadge(codec) {
+  const info = versionInfo(codec)
+  const bits = []
+  if (info.bytes != null) bits.push(fmtVersionSize(info.bytes))
+  if (playingCodec() === codec) bits.push('播放中')
+  return bits.join(' · ')
 }
 
 const presentRows = computed(() => CODEC_ROWS.filter(([c]) => versionInfo(c).state !== 'missing'))
@@ -171,6 +184,9 @@ const missingRows = computed(() => CODEC_ROWS.filter(([c]) => versionInfo(c).sta
 function playingCodec() {
   return activeCodec.value ?? props.page?.codec ?? null
 }
+
+// 把「正在放的编码」报给观看页：标题下的下载按钮跟着换目标版本
+watch([activeCodec, () => props.page?.codec], () => emit('codec-change', playingCodec()), { immediate: true })
 
 function clickVersion(codec) {
   const info = versionInfo(codec)
@@ -227,19 +243,19 @@ function fmtVersionSize(n) {
 // ─── 站内弹幕（只在本页飘，不上传 B 站）───
 const danmakuLayer = ref(null)
 const danmakuDraft = ref('')
-const localDanmaku = ref([])
-let localDmSeq = 0
 
 function sendDanmaku() {
   const text = danmakuDraft.value.trim()
   if (!text) return
-  localDanmaku.value.push({ id: ++localDmSeq, text })
+  // 交给观看页入库；后端回 id 后 localItems 刷新，弹幕从发送时点起飞
+  emit('send-danmaku', { text, pageIdx: props.page?.index ?? 0, t: video.value?.currentTime ?? 0 })
   danmakuDraft.value = ''
 }
 
 function onEnded() {
   playing.value = false
   if (play.autoNext && props.hasNextPage) emit('next')
+  else if (props.autoRelated) emit('next-video')
 }
 
 // 关灯：用 clipPath 在整屏黑幕上挖掉播放器区域，只关页面不关画面。
@@ -1004,10 +1020,10 @@ const STROKE_ITEMS = [
     </div>
 
     <DanmakuLayer
-      v-if="page?.danmakuUrl || localDanmaku.length > 0"
+      v-if="page?.danmakuUrl || localItems.length > 0"
       ref="danmakuLayer"
       :src="page?.danmakuUrl ?? null"
-      :local-items="localDanmaku"
+      :local-items="localItems"
       :video="video"
       :enabled="danmaku.on"
       :font-size="layerFontSize"
@@ -1020,6 +1036,7 @@ const STROKE_ITEMS = [
       :bold="danmaku.bold"
       :stroke="danmaku.stroke"
       :keywords="keywordList"
+      @delete-local="$emit('delete-danmaku', $event)"
     />
 
     <!-- 关灯模式：只黑掉画面以外的页面，视频和弹幕照常亮；点黑幕亮回（B 站同款）。必须传送到 body：root 带 isolate，黑幕留在子树里 z 再高也盖不住页面 -->
@@ -1106,7 +1123,7 @@ const STROKE_ITEMS = [
 
         <!-- 音量 -->
         <div class="group/vol flex h-8 items-center gap-1 rounded px-1 hover:bg-white/10">
-          <button class="flex h-6 w-6 items-center justify-center" :title="muted ? '取消静音（M）' : '静音（M）'" @click="muted ? (applyVolume(volume || 0.7)) : applyVolume(0)">
+          <button class="flex h-6 w-6 items-center justify-center" :title="muted ? '取消静音（M）' : '静音（M）'" @click="muted ? (applyVolume(volume || 1)) : applyVolume(0)">
             <svg viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor">
               <path d="M3 10v4h4l5 4V6L7 10H3z" />
               <path v-if="!muted && volume > 0" d="M16 8.5a4.5 4.5 0 010 7M18.5 6a8 8 0 010 12" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
@@ -1277,9 +1294,7 @@ const STROKE_ITEMS = [
         >
           <span>{{ c[1] }} 版</span>
           <span class="text-[10px] tabular-nums">
-            <template v-if="versionInfo(c[0]).state === 'stock'">
-              {{ playingCodec() === c[0] ? '播放中' : versionInfo(c[0]).bytes != null ? fmtVersionSize(versionInfo(c[0]).bytes) : '在库' }}
-            </template>
+            <template v-if="versionInfo(c[0]).state === 'stock'">{{ stockBadge(c[0]) }}</template>
             <template v-else-if="versionInfo(c[0]).state === 'downloading'">进站中…</template>
             <template v-else-if="versionInfo(c[0]).state === 'failed'">失败 · 重点重试</template>
           </span>
@@ -1312,7 +1327,7 @@ const STROKE_ITEMS = [
     <!-- 弹幕设定面板：B 站原型，只留刚需 -->
     <div
       v-if="gearPanel"
-      class="absolute bottom-14 right-3 z-20 w-[300px] rounded-xl bg-[#222]/95 p-3.5 text-xs text-white/90 shadow-xl backdrop-blur"
+      class="absolute bottom-14 left-3 z-20 w-[300px] rounded-xl bg-[#222]/95 p-3.5 text-xs text-white/90 shadow-xl backdrop-blur"
       @click.stop
       @mousemove="wakeControls"
     >
@@ -1467,7 +1482,7 @@ const STROKE_ITEMS = [
           </svg>
           {{ danmakuCount != null ? `${danmakuCount} 条弹幕` : '弹幕未归档' }}
         </span>
-        <span v-if="localDanmaku.length > 0" class="hidden text-inkFaint/70 sm:inline">站内弹幕 +{{ localDanmaku.length }}</span>
+        <span v-if="localItems.length > 0" class="hidden text-inkFaint/70 sm:inline">站内弹幕 +{{ localItems.length }}</span>
         <!-- 弹幕开关与设定：从控制栏搬来计数右边（B 站把弹幕设定也放弹幕栏一带） -->
         <button class="flex h-7 w-7 items-center justify-center rounded hover:bg-black/5" title="弹幕（D）" @click="danmaku.on = !danmaku.on">
           <svg viewBox="0 0 26 26" class="h-[20px] w-[20px]" :class="danmaku.on ? 'text-inkSub' : 'text-inkFaint/50'">

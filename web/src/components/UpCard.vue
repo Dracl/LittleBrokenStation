@@ -54,19 +54,6 @@ function fmtFans(n) {
             {{ upName ?? '未知 UP 主' }}
           </a>
           <p v-else class="min-w-0 truncate text-base font-semibold text-inkMain">{{ upName ?? '未知 UP 主' }}</p>
-          <a
-            v-if="upMid"
-            :href="`https://message.bilibili.com/#/whisper/mid${upMid}`"
-            target="_blank"
-            rel="noreferrer"
-            class="flex shrink-0 items-center gap-1 text-xs text-inkSub transition hover:text-stationPink"
-          >
-            <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
-              <rect x="1.5" y="3" width="13" height="10" rx="1.5" />
-              <path d="m2 4.5 6 4 6-4" />
-            </svg>
-            发消息
-          </a>
         </div>
         <p class="mt-0.5 line-clamp-2 text-xs leading-5 text-inkFaint">{{ upSign || '这个 UP 主还没有签名' }}</p>
         <a
@@ -74,7 +61,7 @@ function fmtFans(n) {
           :href="`https://space.bilibili.com/${upMid}`"
           target="_blank"
           rel="noreferrer"
-          class="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-md bg-[#f1f2f3] py-1.5 text-xs text-[#18191c] transition hover:bg-[#e3e5e7]"
+          class="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-md bg-stationPink py-1.5 text-xs font-medium text-white transition hover:opacity-85"
         >
           <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M8 3v10M3 8h10" stroke-linecap="round" />

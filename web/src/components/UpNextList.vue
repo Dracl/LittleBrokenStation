@@ -5,7 +5,9 @@ import { colonTime } from '../utils/time'
 // 接下来播放：分站自己的推荐流（同 UP 主优先 + 新入站补齐），卡形仿 B 站「封面左 + 信息右」。
 const props = defineProps({
   items: { type: Array, default: () => [] },
+  autoplay: { type: Boolean, default: false },
 })
+const emit = defineEmits(['update:autoplay'])
 
 const router = useRouter()
 
@@ -22,7 +24,27 @@ function go(bvid) {
 
 <template>
   <div v-if="items.length" class="rounded-xl bg-cardBg p-3">
-    <p class="mb-2 px-1 text-sm font-medium text-inkMain">接下来播放</p>
+    <div class="mb-2 flex items-center justify-between px-1">
+      <p class="text-sm font-medium text-inkMain">接下来播放</p>
+      <button
+        class="flex items-center gap-1.5 text-xs text-inkFaint transition hover:text-inkMain"
+        role="switch"
+        :aria-checked="autoplay"
+        :title="autoplay ? '播完自动接接下来播放第一条' : '已关：播完停在本页'"
+        @click="emit('update:autoplay', !autoplay)"
+      >
+        自动连播
+        <span
+          class="relative inline-block h-[18px] w-[34px] rounded-full transition"
+          :class="autoplay ? 'bg-stationPink' : 'bg-[#dcdee0]'"
+        >
+          <span
+            class="absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow transition-all"
+            :style="{ left: autoplay ? '18px' : '2px' }"
+          ></span>
+        </span>
+      </button>
+    </div>
     <ul class="space-y-1">
       <li v-for="v in items" :key="v.id">
         <button class="flex w-full gap-2.5 rounded-lg p-1.5 text-left transition hover:bg-white/5" @click="go(v.bvid)">

@@ -1,7 +1,7 @@
 <script setup>
 import { mentionHtml } from '../utils/mention'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import CommentSection from '../components/CommentSection.vue'
@@ -12,6 +12,7 @@ import DanmakuList from '../components/DanmakuList.vue'
 import UpNextList from '../components/UpNextList.vue'
 
 const route = useRoute()
+const router = useRouter()
 const data = ref(null)
 const loadFailed = ref(false)
 const loading = ref(true)
@@ -43,6 +44,7 @@ async function loadWatch(silent = false) {
     if (res.ok) {
       data.value = await res.json()
       loadRelated(data.value.id)
+      loadLocalDanmaku()
       if (!silent) {
         const firstPlayable = data.value.pages.find((p) => p.videoUrl) ?? data.value.pages[0]
         activeIndex.value = firstPlayable ? firstPlayable.index : 0
@@ -66,8 +68,58 @@ function selectPage(index) {
   // 换源后等 autoplay 无望，交给用户按播放；这里只把弹幕时间归零自然发生
 }
 
+// ─── 访客下载：播放器报什么编码就下什么编码，主版本缺省 ───
+const playerCodec = ref(null)
+
+const downloadInfo = computed(() => {
+  const p = currentPage.value
+  if (!p) return null
+  const codec = playerCodec.value ?? p.codec ?? null
+  if (codec && codec !== p.codec) {
+    const row = (p.codecVersions ?? []).find((c) => c.codec === codec && c.status === 'Arrived')
+    return row ? { codec, bytes: row.bytes ?? null } : null
+  }
+  return { codec, bytes: p.mainBytes ?? null }
+})
+
+function fmtDlBytes(b) {
+  if (!b) return ''
+  const units = ['B', 'KB', 'MB', 'GB']
+  let v = b
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)}${units[i]}`
+}
+
+function downloadCurrent() {
+  const p = currentPage.value
+  if (!p || !downloadInfo.value) return
+  const params = new URLSearchParams({ pageIdx: String(p.index) })
+  if (downloadInfo.value.codec && downloadInfo.value.codec !== p.codec) {
+    params.set('codec', downloadInfo.value.codec)
+  }
+  const a = document.createElement('a')
+  a.href = `/api/videos/${data.value.id}/download?${params}`
+  a.download = ''
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
 // ─── 接下来播放：同 UP 优先的站内推荐，随 BV 切换刷新 ───
 const related = ref([])
+
+// 自动连播：本页（含全部 P）播完自动接接下来播放第一条；开关记忆在本地
+const autoRelated = ref(localStorage.getItem('lbs.autoRelated') !== '0')
+watch(autoRelated, (v) => localStorage.setItem('lbs.autoRelated', v ? '1' : '0'))
+
+function playNextVideo() {
+  const next = related.value.find((v) => v.bvid && v.bvid !== route.params.bvid)
+  if (next) router.push(`/watch/${next.bvid}`)
+}
 
 async function loadRelated(id) {
   try {
@@ -75,6 +127,50 @@ async function loadRelated(id) {
     related.value = res.ok ? await res.json() : []
   } catch {
     related.value = []
+  }
+}
+
+// ─── 站内弹幕：存分站库，刷新不丢；自己发的点一下可删 ───
+const localDanmaku = ref([])
+
+async function loadLocalDanmaku() {
+  if (!data.value) return
+  try {
+    const res = await fetch(`/api/videos/${data.value.id}/danmaku`)
+    localDanmaku.value = res.ok ? await res.json() : []
+  } catch {
+    localDanmaku.value = []
+  }
+}
+
+const localForPage = computed(() => {
+  const idx = currentPage.value?.index ?? 0
+  return localDanmaku.value.filter((d) => d.pageIdx === idx)
+})
+
+async function onSendDanmaku({ text, pageIdx, t }) {
+  if (!data.value) return
+  try {
+    const res = await fetch(`/api/videos/${data.value.id}/danmaku`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageIdx, t, text }),
+    })
+    const body = await res.json().catch(() => null)
+    if (res.ok && body?.id) {
+      localDanmaku.value.push({ id: body.id, pageIdx, t, text })
+    }
+  } catch {
+    /* 后端没应答就静默：本地体验优先，不弹窗打扰看片 */
+  }
+}
+
+async function onDeleteDanmaku(id) {
+  localDanmaku.value = localDanmaku.value.filter((d) => d.id !== id)
+  try {
+    await fetch(`/api/videos/danmaku/${id}`, { method: 'DELETE' })
+  } catch {
+    /* 删不动拉倒，重进页面会自愈 */
   }
 }
 
@@ -142,9 +238,15 @@ const playerShellW = ref(0)
             :aid="data.aid"
             :danmaku-count="data.danmakuCount"
             :has-next-page="hasNextPage"
+            :auto-related="autoRelated"
+            :local-items="localForPage"
             @next="playNextPage"
+            @next-video="playNextVideo"
             @request-codec="requestCodec"
             @shell-width="playerShellW = $event"
+            @codec-change="playerCodec = $event"
+            @send-danmaku="onSendDanmaku"
+            @delete-danmaku="onDeleteDanmaku"
           />
 
           <div class="mt-[30px] flex justify-center">
@@ -154,26 +256,50 @@ const playerShellW = ref(0)
             >
             <!-- 左栏：标题→数据行→互动栏→简介→评论 -->
             <div class="min-w-0 flex-1">
-              <!-- 标题与档案 -->
-              <h1 class="text-xl font-semibold leading-8 text-inkMain">{{ data.title ?? data.bvid }}</h1>
-              <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-inkFaint">
+              <!-- 标题与档案：B 站同款，标题重、数据行带小图标疏朗排开 -->
+              <h1 class="text-[22px] font-semibold leading-8 text-inkMain">{{ data.title ?? data.bvid }}</h1>
+              <div class="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-inkFaint">
+                <span v-if="data.viewCountText" class="flex items-center gap-1.5">
+                  <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.3">
+                    <rect x="1.2" y="2.6" width="13.6" height="10.8" rx="2" />
+                    <path d="M6.6 6 10 8 6.6 10z" fill="currentColor" stroke="none" />
+                  </svg>
+                  {{ data.viewCountText }}
+                </span>
+                <span class="flex items-center gap-1.5">
+                  <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+                    <rect x="1.2" y="2.6" width="13.6" height="10.8" rx="2" />
+                    <path d="M3.8 5.8h5.4M3.8 8.3h4" />
+                  </svg>
+                  {{ data.danmakuCount ?? 0 }}
+                </span>
+                <span v-if="data.publishText">{{ data.publishText }}</span>
                 <span>{{ data.bvid }}</span>
                 <span v-if="data.upName">UP 主：{{ data.upName }}</span>
-                <span v-if="data.zone">{{ data.zone }}</span>
-                <span v-if="data.publishText">{{ data.publishText }}</span>
-                <span v-if="data.viewCountText">B 站当年播放 {{ data.viewCountText }}</span>
                 <span>入站：{{ new Date(data.createdAtUtc).toLocaleString('zh-CN') }}</span>
               </div>
 
-              <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」 -->
-              <VideoActions
-                class="mt-3 border-t border-black/5 pt-3"
-                :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }"
-              />
+              <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」；右侧访客下载 -->
+              <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 py-2">
+                <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" />
+                <button
+                  class="flex shrink-0 items-center gap-1.5 rounded-full border border-stationPink px-4 py-1.5 text-sm text-stationPink transition hover:bg-stationPink hover:text-white disabled:cursor-not-allowed disabled:border-black/10 disabled:text-inkFaint disabled:hover:bg-transparent"
+                  :disabled="!currentPage?.videoUrl || !downloadInfo"
+                  :title="downloadInfo ? `把正在看的版本（${(downloadInfo.codec ?? '主版本').toUpperCase()}）存到本地` : '这一 P 还没下载，没东西可拿'"
+                  @click="downloadCurrent"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 4v11m0 0 4-4m-4 4-4-4M4 19h16" />
+                  </svg>
+                  <span>
+                    下载{{ downloadInfo?.codec ? ' · ' + downloadInfo.codec.toUpperCase() : '' }}{{ downloadInfo?.bytes ? ' · ' + fmtDlBytes(downloadInfo.bytes) : '' }}
+                  </span>
+                </button>
+              </div>
 
               <p
                 v-if="data.description"
-                class="mt-3 whitespace-pre-line rounded-lg bg-cardBg px-4 py-3 text-sm leading-6 text-inkSub"
+                class="mt-5 whitespace-pre-line text-sm leading-7 text-inkSub"
               >
                 <span v-html="mentionHtml(data.description)"></span>
               </p>
@@ -198,7 +324,7 @@ const playerShellW = ref(0)
                 :active-index="activeIndex"
                 @select="selectPage"
               />
-              <UpNextList v-if="related.length" :items="related" />
+              <UpNextList v-if="related.length" :items="related" :autoplay="autoRelated" @update:autoplay="autoRelated = $event" />
             </aside>
             </div>
           </div>
