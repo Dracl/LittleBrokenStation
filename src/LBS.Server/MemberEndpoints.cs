@@ -218,6 +218,7 @@ public static class MemberEndpoints
                 lastLoginAtUtc = member.LastLoginAtUtc,
                 accounts = accounts.Select(a => new
                 {
+                    id = a.Id,
                     accountMid = a.AccountMid,
                     accountName = a.AccountName,
                     isPrimary = a.IsPrimary,
@@ -293,14 +294,24 @@ public static class MemberEndpoints
             return (gate.IssueSession(existing.Id).Token, null, 200);
         }
 
-        // 生面孔：没有站长发的邀请码，站上不进人
-        var invited = invite is null ? null : db.FindInvitedByCode(invite);
-        if (invited is null)
+        // 生面孔：有主之站没邀请码不进人；无主之站首扫免码——邀请码只有站长能发，
+        // 无主还索要邀请码就是鸡生蛋死锁，首位扫码者直接继位。
+        long seatId;
+        if (invite is not null && db.FindInvitedByCode(invite) is { } invited)
+        {
+            seatId = invited.Id;
+        }
+        else if (!db.HasOwner())
+        {
+            // 无主站点给首位建空位（临时码只用来落地席位，绑定时即刻作废）。
+            (seatId, _) = db.CreateMemberInvite(null);
+        }
+        else
         {
             return (null, "分站是邀请制：首次进站需要站长发的邀请码", StatusCodes.Status403Forbidden);
         }
 
-        var bound = db.BindMember(invited.Id, identity.Mid, identity.Name, identity.Face);
+        var bound = db.BindMember(seatId, identity.Mid, identity.Name, identity.Face);
         if (bound is null)
         {
             // 抢码竞速：这号刚被别的席位认走，直接按重登放行

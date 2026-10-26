@@ -40,8 +40,19 @@ public class MemberAdmissionTests : IDisposable
     private static BilibiliIdentity Identity(long mid, string name = "小张") => new(mid, name, "https://face/y.jpg");
 
     [Fact]
+    public void FirstStrangerWithoutInvite_EntersCrownedOwner()
+    {
+        // 无主之站首扫免码：邀请码只有站长能发，无主还索要就是死锁。
+        var outcome = MemberEndpoints.AdmitMember(_db, _gate, Identity(1001L, "首位来客"), invite: null, "SESSDATA=a");
+
+        Assert.NotNull(outcome.Token);
+        Assert.Equal(MemberRoles.Owner, _db.GetMemberByMid(1001L)!.Role);
+    }
+
+    [Fact]
     public void StrangerWithoutInvite_IsRejected()
     {
+        CrownFirstOwner(9001L);
         var outcome = MemberEndpoints.AdmitMember(_db, _gate, Identity(1001L), invite: null, "SESSDATA=a");
 
         Assert.Null(outcome.Token);
@@ -116,10 +127,14 @@ public class MemberAdmissionTests : IDisposable
     [Fact]
     public void DeadInviteCode_IsRejected()
     {
+        CrownFirstOwner(9002L);
         _db.CreateMemberInvite("用完的码");
         var outcome = MemberEndpoints.AdmitMember(_db, _gate, Identity(1005L), "NOSUCHCODE", "SESSDATA=e");
 
         Assert.Null(outcome.Token);
         Assert.Equal(403, outcome.Status);
     }
+
+    private void CrownFirstOwner(long mid)
+        => MemberEndpoints.AdmitMember(_db, _gate, Identity(mid, "站长"), invite: null, "SESSDATA=crown");
 }
