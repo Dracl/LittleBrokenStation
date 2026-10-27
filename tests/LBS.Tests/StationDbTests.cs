@@ -1,5 +1,6 @@
 using LBS.Domain;
 using LBS.Infrastructure;
+using Microsoft.Data.Sqlite;
 
 namespace LBS.Tests;
 
@@ -29,11 +30,16 @@ public sealed class StationDbTests : IDisposable
     [Fact]
     public void WAL模式已启用()
     {
-        // WAL 生效时 SQLite 会生成 -wal/-shm 侧文件（写入之后）
+        // 侧文件（-wal/-shm）只是代理证据：最后一个连接干净关闭时会被 checkpoint 删掉，
+        // 早年靠连接池养着才一直灵；数据交换引入 ClearAllPools 后这份运气不可靠了——
+        // 直接问 PRAGMA journal_mode，这才是要测的事（WAL 是文件头属性，持久）。
         _db.AddVideo("https://www.bilibili.com/video/BV1GJ411x7h7", "BV1GJ411x7h7");
         _db.AddVideosBulk(new[] { new NewVideo("u", "BV1xx411c7mD", "t") });
-        var checkpointed = File.Exists(Path.Combine(_tempDir, "station.db-shm"));
-        Assert.True(checkpointed || File.Exists(Path.Combine(_tempDir, "station.db-wal")));
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(_tempDir, "station.db")}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode;";
+        Assert.Equal("wal", command.ExecuteScalar()?.ToString());
     }
 
     [Fact]
