@@ -33,5 +33,9 @@ export function friendlyTime(iso) {
   const yest = new Date()
   yest.setDate(today.getDate() - 1)
   if (key(d) === key(yest)) return `昨天 ${pad(d.getHours())}:${pad(d.getMinutes())}`
-  return d.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  // 跨年日期裸显月/日会被当成今年——穿越错觉根源：隔年的补上年
+  const sameYear = d.getFullYear() === today.getFullYear()
+  return d.toLocaleString('zh-CN', sameYear
+    ? { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }
+    : { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
 }

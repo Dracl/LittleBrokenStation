@@ -31,13 +31,13 @@ public sealed partial class StationDb
         string? Text,
         string? PicsJson,
         string? Bvid,
-        string PublishedAtUtc,
+        string? PublishedAtUtc,
         string CachedAtUtc,
         bool InStation);
 
     /// <summary>落一条动态：dynamic_id 撞车即 IGNORE（返回 false = 历史已有）。新落行顺手把 target 的空白名片补齐。</summary>
     public bool UpsertDynamic(string dynamicId, long targetMid, long? authorMid, string? authorName,
-        string type, string? text, string? picsJson, string? bvid, string publishedAtUtc)
+        string type, string? text, string? picsJson, string? bvid, string? publishedAtUtc)
     {
         using var connection = Open(_dbPath);
         using var insert = connection.CreateCommand();
@@ -54,7 +54,7 @@ public sealed partial class StationDb
         insert.Parameters.AddWithValue("$text", (object?)text ?? DBNull.Value);
         insert.Parameters.AddWithValue("$pics", (object?)picsJson ?? DBNull.Value);
         insert.Parameters.AddWithValue("$bvid", (object?)bvid ?? DBNull.Value);
-        insert.Parameters.AddWithValue("$published", publishedAtUtc);
+        insert.Parameters.AddWithValue("$published", (object?)publishedAtUtc ?? DBNull.Value);
         insert.Parameters.AddWithValue("$cached", DateTimeOffset.UtcNow.ToString("O"));
         var fresh = insert.ExecuteNonQuery() > 0;
 
@@ -106,7 +106,7 @@ public sealed partial class StationDb
                 reader.IsDBNull(6) ? null : reader.GetString(6),
                 reader.IsDBNull(7) ? null : reader.GetString(7),
                 reader.IsDBNull(8) ? null : reader.GetString(8),
-                reader.GetString(9),
+                reader.IsDBNull(9) ? null : reader.GetString(9),
                 reader.GetString(10),
                 !reader.IsDBNull(11)));
         }

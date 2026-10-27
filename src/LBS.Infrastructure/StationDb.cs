@@ -251,7 +251,7 @@ public sealed partial class StationDb
                     text             TEXT,
                     pics_json        TEXT,
                     bvid             TEXT,
-                    published_at_utc TEXT NOT NULL,
+                    published_at_utc TEXT,
                     cached_at_utc    TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_dynamics_target ON dynamics (target_mid, published_at_utc);

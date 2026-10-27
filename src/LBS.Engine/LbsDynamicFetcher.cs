@@ -15,7 +15,7 @@ public sealed record ParsedDynamic(
     string? Text,
     IReadOnlyList<string> Pics,
     string? Bvid,
-    string PublishedAtUtc);
+    string? PublishedAtUtc);
 
 public enum FeedParseStatus
 {
@@ -246,9 +246,10 @@ public sealed class LbsDynamicFetcher(
         var authorMid = Num(srcAuthor ?? topAuthor, "mid") ?? Num(topAuthor, "mid");
         var authorName = Str(Path(srcAuthor ?? topAuthor, "name")) ?? Str(Path(topAuthor, "name"));
         var pubTs = Num(srcAuthor, "pub_ts") ?? Num(topAuthor, "pub_ts");
-        var published = pubTs is > 0
+        // 发榜时间拿不到就 null：页面宁可显「—」，也好过给老动态盖个「抓取此刻」的戳穿越给人看。
+        string? published = pubTs is > 0
             ? DateTimeOffset.FromUnixTimeSeconds(pubTs.Value).ToString("O")
-            : DateTimeOffset.UtcNow.ToString("O");
+            : null;
 
         // 正文：顶层评语 + （转发时）原文评语 + 图文正文，空段剔除、相邻重复剔除。
         var comment = Str(Path(item, "modules", "module_dynamic", "desc", "text"));
