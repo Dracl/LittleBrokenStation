@@ -73,5 +73,6 @@ public static class EventNames
     public const string LoginLogout = "login.logout";
 
     public const string AdminAction = "admin.action";
+    public const string AdminAnnounce = "admin.announce";
     public const string AdminBlocked = "admin.blocked";
 }

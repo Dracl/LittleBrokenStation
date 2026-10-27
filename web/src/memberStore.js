@@ -8,6 +8,7 @@ export const member = ref(null)
 export const loaded = ref(false) // 首次 load 是否落定（区分「还没查」与「查过是访客」）
 export const loginDialogOpen = ref(false)
 export const loginDialogMode = ref('admit') // admit=扫码进站 | bind=往账号池加号
+export const unread = ref(0) // 站内信箱未读数：铃铛角标只认这个数
 
 export async function load() {
   try {
@@ -19,6 +20,22 @@ export async function load() {
   } finally {
     loaded.value = true
   }
+  // 确认是成员才去拉未读；访客不敲信箱的门
+  refreshUnread()
+}
+
+/// 未读数顺手拉：借 unreadOnly 列表接口带回的 unread 字段，失败不叫（角标小差不差人命）。
+export async function refreshUnread() {
+  if (!member.value) {
+    unread.value = 0
+    return
+  }
+  try {
+    const res = await fetch('/api/member/messages?unreadOnly=true&limit=1')
+    unread.value = res.ok ? Number((await res.json())?.unread) || 0 : 0
+  } catch {
+    /* 断网时角标维持原样 */
+  }
 }
 
 export async function logout() {
@@ -28,4 +45,5 @@ export async function logout() {
     /* 后端没应答也照样把本地身份摘掉 */
   }
   member.value = null
+  unread.value = 0 // 登出即刻摘铃铛，不等下一轮心跳
 }

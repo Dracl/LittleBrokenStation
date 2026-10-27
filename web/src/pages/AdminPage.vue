@@ -793,6 +793,63 @@ function fmtBackupTime(iso) {
   return iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '—'
 }
 
+// ─── 全站公告：向 active 席位播送站内信（两段式防手滑，后端 message 原样展示）───
+const announceTitle = ref('')
+const announceBody = ref('')
+const announceBusy = ref(false)
+const announceText = ref('')
+const announceArmed = ref(false)
+let announceTimer = null
+
+function announceArm() {
+  if (announceArmed.value) return
+  announceArmed.value = true
+  announceText.value = '6 秒内不确认自动作废'
+  if (announceTimer) clearTimeout(announceTimer)
+  announceTimer = setTimeout(() => {
+    announceArmed.value = false
+    announceText.value = ''
+  }, 6000)
+}
+
+async function sendAnnounce() {
+  if (announceBusy.value) return
+  const title = announceTitle.value.trim()
+  const body = announceBody.value.trim()
+  if (!title || !body) {
+    announceText.value = '公告要有标题和正文'
+    return
+  }
+  if (!announceArmed.value) {
+    announceArm()
+    return
+  }
+  announceArmed.value = false
+  if (announceTimer) clearTimeout(announceTimer)
+  announceBusy.value = true
+  announceText.value = ''
+  try {
+    const res = await fetch('/api/admin/messages/announce', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, body }),
+    })
+    const data = await res.json().catch(() => null)
+    if (res.ok) {
+      announceText.value = `已送达 ${data?.sent ?? 0} 席`
+      announceTitle.value = ''
+      announceBody.value = ''
+      setTimeout(() => { announceText.value = '' }, 4000)
+    } else {
+      announceText.value = data?.message ?? '播送没成'
+    }
+  } catch {
+    announceText.value = '分站后端没有应答'
+  } finally {
+    announceBusy.value = false
+  }
+}
+
 // ─── 数据交换：勾选式导出打包 + 导入换库（档案柜 data/exports/，暂存 data/imports/）───
 const expStats = ref(null) // {videos, cmtImg, avatars, emotes, cache, dbBytes}
 const expPick = ref({ withCreds: false, withMedia: false, withCmtImg: false, withCaches: false })
@@ -1239,6 +1296,37 @@ onUnmounted(() => {
             </ul>
           </li>
         </ul>
+      </section>
+
+      <section class="lbs-card md:col-span-2">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            全站公告
+            <span class="ml-1 rounded-full border border-amber-400/30 px-2 py-0.5 text-[10px] normal-case tracking-normal text-amber-300/70">
+              只向 active 席位播送
+            </span>
+          </h3>
+        </div>
+        <div class="flex flex-col gap-2 md:flex-row md:items-start">
+          <input v-model="announceTitle" class="eng-input md:w-64" placeholder="公告标题" maxlength="60" />
+          <textarea
+            v-model="announceBody"
+            class="eng-input min-h-[40px] flex-1 resize-y"
+            placeholder="公告正文（成员在站内信箱里读到它）"
+            maxlength="2000"
+          ></textarea>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              class="lbs-btn"
+              :class="announceArmed ? 'lbs-btn-danger-armed' : ''"
+              :disabled="announceBusy"
+              @click="sendAnnounce"
+            >
+              {{ announceBusy ? '播送中……' : announceArmed ? '确定向全站播送？再点一次执行' : '向全站播送' }}
+            </button>
+            <span v-if="announceText" class="text-[11px] text-white/40">{{ announceText }}</span>
+          </div>
+        </div>
       </section>
 
       <section class="lbs-card md:col-span-2">

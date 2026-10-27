@@ -186,6 +186,27 @@ public sealed partial class StationDb
             members.ExecuteNonQuery();
         }
 
+        // M5.2 站内信箱：系统传票（欢迎/归档/失败回执）与全站公告都落行；
+        // 读态按 (to_mid, read_at_utc) 索引扫，标读永远带 to_mid 条件防越席。
+        using (var messages = connection.CreateCommand())
+        {
+            messages.CommandText = """
+                CREATE TABLE IF NOT EXISTS messages (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    to_mid         INTEGER NOT NULL,
+                    from_mid       INTEGER,
+                    kind           TEXT NOT NULL,
+                    title          TEXT NOT NULL,
+                    body           TEXT NOT NULL,
+                    link           TEXT,
+                    created_at_utc TEXT NOT NULL,
+                    read_at_utc    TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_messages_to_read ON messages (to_mid, read_at_utc);
+                """;
+            messages.ExecuteNonQuery();
+        }
+
         // 成员角色（owner/member）：头名即站长。建表语句自带头，早期无 role 列的开发库在这里补上。
         EnsureColumn(connection, "members", "role", "TEXT NOT NULL DEFAULT 'member'");
 

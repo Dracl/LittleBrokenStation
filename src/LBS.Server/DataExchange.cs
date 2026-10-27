@@ -723,7 +723,11 @@ public static class PendingImportSwapper
 /// 只在导入换库的那次开机跑（闸门见 <see cref="MediaReconcileGate">），普通开机绝不点名——
 /// 否则视频仓挂载瞬断一次，满仓健康件就被误判缺件、整仓误拉重下（引擎台账已随换库清过，不会撞 SkippedDuplicate）。
 /// </summary>
-public sealed record MediaReconcileGate(bool ReconcileOnBoot);
+/// <summary>闸门开合由 Program 在开机换库后拨闩。</summary>
+public sealed class MediaReconcileGate
+{
+    public bool ReconcileOnBoot { get; set; }
+}
 
 public static class MissingMediaReconciler
 {

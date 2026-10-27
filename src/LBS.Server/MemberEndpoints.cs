@@ -67,7 +67,7 @@ public static class MemberEndpoints
         });
 
         app.MapGet("/api/member/qr/poll", async (string? key, LbsQrLogin qr, StationDb db, MemberGate gate,
-            EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
+            EventRecorder events, ILoggerFactory loggerFactory, HttpContext http, CancellationToken cancellationToken) =>
         {
             if (string.IsNullOrWhiteSpace(key) || !sessions.TryGetValue(key, out var session))
             {
@@ -147,7 +147,8 @@ public static class MemberEndpoints
                         });
                     }
 
-                    var outcome = AdmitMember(db, gate, identity, session.Invite, cookie);
+                    var outcome = AdmitMember(db, gate, identity, session.Invite, cookie,
+                        loggerFactory.CreateLogger("MemberMail"));
                     sessions.TryRemove(key, out _);
                     if (outcome.Error is not null)
                     {
@@ -279,7 +280,7 @@ public static class MemberEndpoints
     }
 
     internal static (string? Token, string? Error, int Status) AdmitMember(StationDb db, MemberGate gate,
-        BilibiliIdentity identity, string? invite, string cookie)
+        BilibiliIdentity identity, string? invite, string cookie, ILogger? logger = null)
     {
         var existing = db.GetMemberByMid(identity.Mid);
         if (existing is not null)
@@ -326,6 +327,9 @@ public static class MemberEndpoints
         }
 
         db.UpsertMemberAccount(bound.Id, identity.Mid, identity.Name, identity.Face, cookie);
+        // 首扫建档那一刻寄欢迎信（邀请兑现与无主继位都走这里）；重登不重发。
+        // 寄信失败只 log warning（MemberMail 内部包裹），绝不阻断进站。
+        MemberMail.NotifyWelcome(db, logger, identity.Mid);
         return (gate.IssueSession(bound.Id).Token, null, 200);
     }
 

@@ -70,6 +70,7 @@ public sealed class StatusSyncWorker(
             {
                 // 没有引擎任务却挂着下载中，属于脏数据，直接判到站比卡死诚实
                 db.MarkArrived(videoId);
+                MemberMail.NotifyVideoArrived(db, logger, videoId);
                 _stalled.Remove(videoId);
                 continue;
             }
@@ -103,12 +104,14 @@ public sealed class StatusSyncWorker(
             if (target == VideoStatus.Failed)
             {
                 db.MarkFailed(videoId, failure!);
+                MemberMail.NotifyVideoFailed(db, logger, videoId, failure);
                 _stalled.Remove(videoId);
                 logger.LogWarning("馆藏 {VideoId} 引擎侧失败：{Failure}", videoId, failure);
             }
             else if (AllGone(taskIds, lookup, cancellationToken).GetAwaiter().GetResult())
             {
                 db.MarkArrived(videoId);
+                MemberMail.NotifyVideoArrived(db, logger, videoId);
                 _stalled.Remove(videoId);
                 var (archived, missingVideo) = db.FinalizeArtifacts(videoId, paths.Videos);
                 logger.LogInformation(

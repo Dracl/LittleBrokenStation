@@ -297,6 +297,7 @@ public sealed class DownloadWorker(
                     break;
                 default:
                     db.MarkFailed(videoId, JoinReasons(result));
+                    MemberMail.NotifyVideoFailed(db, logger, videoId, JoinReasons(result));
                     logger.LogWarning("视频 {VideoId} 提交失败：{Reasons}", videoId, JoinReasons(result));
                     break;
             }
@@ -309,6 +310,7 @@ public sealed class DownloadWorker(
         catch (Exception ex)
         {
             db.MarkFailed(videoId, ex.Message);
+            MemberMail.NotifyVideoFailed(db, logger, videoId, ex.Message);
             logger.LogWarning(ex, "视频 {VideoId} 提交异常", videoId);
         }
     }

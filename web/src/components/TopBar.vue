@@ -1,10 +1,10 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginDialog from './LoginDialog.vue'
 import CrownBadge from './CrownBadge.vue'
 import { submitDialogOpen } from '../submitStore'
-import { member, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember } from '../memberStore'
+import { member, unread, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember, refreshUnread } from '../memberStore'
 
 const route = useRoute()
 const router = useRouter()
@@ -53,9 +53,28 @@ async function doLogout() {
   await logoutMember()
 }
 
+function onVisible() {
+  if (document.visibilityState === 'visible') refreshUnread()
+}
+
+let unreadTimer = null
+
 onMounted(() => {
   loadMember()
+  // 未读角标三把锁：登录时 load 顺手拉一次，回到前台立刻补拉，30s 心跳兜底。
+  unreadTimer = setInterval(() => { refreshUnread() }, 30000)
+  document.addEventListener('visibilitychange', onVisible)
 })
+
+onUnmounted(() => {
+  if (unreadTimer) clearInterval(unreadTimer)
+  document.removeEventListener('visibilitychange', onVisible)
+})
+
+// 铃铛只对成员亮：访客连信箱的门都看不见，扫码按钮已经在旁边了
+function goMessages() {
+  router.push('/messages')
+}
 // 顶栏壳：版式按 B 站网页版对齐的大致轮廓，M2 对基准截图逐像素打磨
 </script>
 
@@ -99,6 +118,24 @@ onMounted(() => {
           @click="onSubmitClick"
         >
           投稿
+        </button>
+
+        <!-- 站内信箱铃铛：成员可见，未读>0 亮红点角标，爆 99 封显 99+ -->
+        <button
+          v-if="member"
+          class="relative flex h-8 w-8 items-center justify-center rounded-full text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+          title="站内信箱"
+          aria-label="站内信箱"
+          @click="goMessages"
+        >
+          <svg viewBox="0 0 24 24" class="h-[18px] w-[18px]" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M6 9.5a6 6 0 0 1 12 0c0 3.2.8 5.2 1.8 6.4.4.5.1 1.3-.6 1.3H4.8c-.7 0-1-.8-.6-1.3C5.2 14.7 6 12.7 6 9.5Z" stroke-linejoin="round" />
+            <path d="M10 20a2.2 2.2 0 0 0 4 0" stroke-linecap="round" />
+          </svg>
+          <span
+            v-if="unread > 0"
+            class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-stationPink px-1 text-[10px] font-medium leading-none text-white"
+          >{{ unread > 99 ? '99+' : unread }}</span>
         </button>
 
         <!-- 总门小头像：不分访客/成员都是这个圆——访客点开扫码窗，成员点开下拉菜单 -->
