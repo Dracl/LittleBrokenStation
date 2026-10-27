@@ -151,8 +151,8 @@ async function openThread(peerMemberId, peerHint = null) {
 function closeThread() {
   activePeer.value = null
   conversation.value = []
-  stopDmPoll()
   loadThreads()
+  restartDmPoll() // 不彻底停：退出会话后列表继续慢拍，新私信不至于要重开页面才现身
 }
 
 async function refreshConversation(silent = true) {
@@ -161,11 +161,18 @@ async function refreshConversation(silent = true) {
     const res = await fetch(`/api/dm/thread/${activePeer.value.memberId}`)
     if (res.ok) {
       const data = await res.json()
-      conversation.value = data.messages ?? []
+      const next = data.messages ?? []
+      // 只有「来了新消息且人本来就在底部附近」才跟滚；翻历史翻到一半的，每秒轮询不该把人硬拽回底部
+      const box = scrollAnchor.value?.parentElement
+      const nearBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 96
+      const grew = next.length > conversation.value.length
+      conversation.value = next
       const t = threads.value?.find((x) => x.peerMemberId === activePeer.value.memberId)
       if (t) t.unread = 0
-      await nextTick()
-      scrollAnchor.value?.scrollIntoView({ block: 'end' })
+      if (grew && nearBottom) {
+        await nextTick()
+        scrollAnchor.value?.scrollIntoView({ block: 'end' })
+      }
     } else if (!silent) {
       const data = await res.json().catch(() => null)
       flashDm(data?.message ?? '刷新没成')
@@ -184,10 +191,28 @@ function stopDmPoll() {
 
 function restartDmPoll() {
   stopDmPoll()
-  // 面板开着才 10s 拉一次；离开（关会话/切页签/卸载）即停
-  if (activePeer.value && activeTab.value === 'dm') {
-    dmPollTimer = setInterval(() => refreshConversation(), 10000)
-  }
+  // 单心跳 1s：开着会话每拍追新消息（近实时）；会话列表 5 拍跟一次；
+  // 没开会话时 15 拍才冒一次——平时可以晚，窗口开着就要快
+  if (activeTab.value !== 'dm') return
+  let tick = 0
+  dmPollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return
+    tick += 1
+    if (activePeer.value) {
+      refreshConversation()
+      if (tick % 5 === 0) syncThreads()
+    } else if (tick % 15 === 0) {
+      syncThreads()
+    }
+  }, 1000)
+}
+
+async function syncThreads() {
+  await loadThreads()
+  // 页签红点与顶栏铃铛跟着名录走；当前开着的那路已被拉取即标读，记 0 防旧值闪回
+  const open = activePeer.value?.memberId
+  dmUnread.value = (threads.value ?? []).reduce((s, t) => s + (t.peerMemberId === open ? 0 : t.unread || 0), 0)
+  refreshUnread()
 }
 
 async function openDirectory() {
