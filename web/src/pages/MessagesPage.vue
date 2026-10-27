@@ -1,11 +1,22 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import { member, loaded, unread, dmUnread, loginDialogOpen, loginDialogMode, load as loadMember, refreshUnread } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 
 const route = useRoute()
+const router = useRouter()
+
+// 私信里的动态分享卡：点卡回橱窗定位那条动态。
+function gotoSharedDynamic(dyn) {
+  if (dyn?.dynamicId) router.push({ path: '/dynamics', query: { focus: dyn.dynamicId } })
+}
+
+function sharedSummary(dyn) {
+  const raw = (dyn.text || '').split('\n\n转发自')[0].trim()
+  return raw.length > 80 ? `${raw.slice(0, 80)}…` : raw || '（一条动态）'
+}
 
 // ─── 页签 ───
 const activeTab = ref('inbox') // inbox | dm
@@ -471,7 +482,7 @@ function peerLabel(p) {
                     </span>
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-[13px] font-medium text-inkMain">{{ peerLabel(t) }}</span>
-                      <span class="block truncate text-[12px] text-inkSub">{{ t.lastBody }}</span>
+                      <span class="block truncate text-[12px] text-inkSub">{{ t.lastBody || (t.lastMsgType === 'dynamic' ? '📣 分享了一条动态' : '') }}</span>
                     </span>
                     <span class="flex shrink-0 flex-col items-end gap-1">
                       <span class="text-[10px] text-inkFaint">{{ friendlyTime(t.lastAtUtc) }}</span>
@@ -518,7 +529,46 @@ function peerLabel(p) {
                     class="flex"
                     :class="m.fromMemberId === member.memberId ? 'justify-end' : 'justify-start'"
                   >
+                    <!-- 动态分享卡：安利语在上，定格卡在下游走橱窗 -->
+                    <div v-if="m.msgType === 'dynamic' && m.dyn" class="max-w-[78%] min-w-0">
+                      <span
+                        v-if="m.body"
+                        class="mb-1.5 block w-fit max-w-full whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed"
+                        :class="m.fromMemberId === member.memberId
+                          ? 'rounded-br-md bg-stationPink text-white'
+                          : 'rounded-bl-md bg-lineSoft text-inkMain'"
+                      >{{ m.body }}</span>
+                      <button
+                        class="block w-full rounded-xl border border-lineSoft bg-cardBg p-2.5 text-left transition hover:border-stationPink/50 hover:shadow-sm"
+                        @click="gotoSharedDynamic(m.dyn)"
+                      >
+                        <div class="flex items-center gap-2">
+                          <img
+                            v-if="m.dyn.authorFace"
+                            :src="m.dyn.authorFace"
+                            referrerpolicy="no-referrer"
+                            class="h-7 w-7 shrink-0 rounded-full object-cover"
+                            alt=""
+                            @error="$event.target.style.display = 'none'"
+                          />
+                          <span v-else class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-stationPink/10 text-[11px] text-stationPink">{{ (m.dyn.authorName || '?').slice(0, 1) }}</span>
+                          <span class="min-w-0 flex-1">
+                            <span class="block truncate text-[12.5px] font-medium text-inkMain">{{ m.dyn.authorName || 'B站作者' }}</span>
+                            <span class="block text-[10.5px] text-inkFaint">{{ friendlyTime(m.dyn.publishedAtUtc) }}</span>
+                          </span>
+                          <span class="shrink-0 rounded bg-stationPink/10 px-1.5 py-0.5 text-[10px] text-stationPink">动态</span>
+                        </div>
+                        <div class="mt-2 flex gap-2">
+                          <span v-if="m.dyn.cover" class="relative block h-[46px] w-[68px] shrink-0 overflow-hidden rounded-md bg-[#eef0f2]">
+                            <img :src="m.dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
+                          </span>
+                          <p class="min-w-0 flex-1 text-[12.5px] leading-relaxed text-inkSub" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ sharedSummary(m.dyn) }}</p>
+                        </div>
+                        <span class="mt-1.5 block text-[11px] text-stationPink">去橱窗看这条 →</span>
+                      </button>
+                    </div>
                     <span
+                      v-else
                       class="max-w-[72%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed"
                       :class="m.fromMemberId === member.memberId
                         ? 'rounded-br-md bg-stationPink text-white'

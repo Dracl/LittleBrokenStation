@@ -127,7 +127,7 @@ public sealed class DynamicCacheTests : IDisposable
               "module_author":{"mid":222,"name":"转发君","pub_ts":1700000300},
               "module_dynamic":{"desc":{"text":"我也说两句"},"major":null}},
              "orig":{"id_str":"7770001","type":"DYNAMIC_TYPE_AV","modules":{
-              "module_author":{"mid":111,"name":"原作者","pub_ts":1700000200},
+              "module_author":{"mid":111,"name":"原作者","face":"https://i0.hdslb.com/face/orig.jpg","pub_ts":1700000200},
               "module_dynamic":{"desc":{"text":"原文在此"},"major":{
                 "type":"MAJOR_TYPE_ARCHIVE","archive":{"bvid":"BVorig00001"}}}}}}
             """;
@@ -141,6 +141,80 @@ public sealed class DynamicCacheTests : IDisposable
         Assert.StartsWith("我也说两句", parsed.Text);
         Assert.Contains("转发自 原作者", parsed.Text);
         Assert.Contains("原文在此", parsed.Text);
+        // 转发灰块的原作者名片也从 orig 定格（卡头归转发人，灰块归原作者）。
+        Assert.Equal(111, parsed.OrigAuthorMid);
+        Assert.Equal("原作者", parsed.OrigAuthorName);
+        Assert.Equal("https://i0.hdslb.com/face/orig.jpg", parsed.OrigAuthorFace);
+    }
+
+    [Fact]
+    public void ParseFeed_StatCounts_CapturedFromTopLevel()
+    {
+        var item = """
+            {"id_str":"8880009","type":"DYNAMIC_TYPE_WORD","modules":{
+              "module_author":{"mid":119,"name":"计数君","pub_ts":1700000900},
+              "module_dynamic":{"desc":{"text":"底栏有料"},"major":null,
+                "stat":{"comment":{"count":12},"forward":{"count":3},"like":{"count":72}}}}}
+            """;
+
+        var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
+        Assert.Equal(12, parsed.StatComment);
+        Assert.Equal(3, parsed.StatForward);
+        Assert.Equal(72, parsed.StatLike);
+        Assert.Null(parsed.OrigAuthorMid); // 非转发条没有灰块名片
+    }
+
+    [Fact]
+    public void ParseReplies_Main_ParsesTopCommentsAndSubRoots()
+    {
+        var json = """
+            {"code":0,"data":{"replies":[
+              {"rpid":111,"ctime":1700000000,"like":42,"rcount":3,
+               "content":{"message":"热评一号"},"member":{"mid":9001,"uname":"月光","face":"https://i0.hdslb.com/f/1.jpg"}},
+              {"rpid":112,"content":{"message":"   "},"member":{"mid":1}},
+              {"rpid":0,"content":{"message":"没楼号"},"member":{"mid":2}}]}}
+            """;
+
+        var result = LbsDynamicFetcher.ParseReplies(json, rootRpid: 0, max: 20, collectRoots: true);
+        Assert.Equal(FeedParseStatus.Ok, result.Status);
+        var top = Assert.Single(result.Replies); // 空正文与没楼号的行开不了楼
+        Assert.Equal(111, top.Rpid);
+        Assert.Equal(0, top.RootRpid);
+        Assert.Equal("月光", top.Name);
+        Assert.Equal(42, top.Like);
+        Assert.Equal("2023-11-14", top.CtimeUtc![..10]);
+        Assert.Equal([111L], result.Roots);
+    }
+
+    [Fact]
+    public void ParseReplies_Sub_AttachToParentFloor()
+    {
+        var json = """
+            {"code":0,"data":{"replies":[
+              {"rpid":211,"like":2,"content":{"message":"子回复一条"},"member":{"mid":7,"uname":"小林"}}]}}
+            """;
+
+        var result = LbsDynamicFetcher.ParseReplies(json, rootRpid: 111, max: 20, collectRoots: false);
+        Assert.Equal(FeedParseStatus.Ok, result.Status);
+        Assert.Empty(result.Roots);
+        Assert.Null(result.Reason);
+        var sub = Assert.Single(result.Replies);
+        Assert.Equal(111, sub.RootRpid);
+        Assert.Equal(111, sub.ParentRpid);
+        Assert.Equal("子回复一条", sub.Message);
+    }
+
+    [Fact]
+    public void ParseReplies_RiskControlled_SignalsAbort()
+    {
+        var json = """
+            {"code":-352,"message":"风控"}
+            """;
+        var result = LbsDynamicFetcher.ParseReplies(json, 0, 20, true);
+        Assert.Equal(FeedParseStatus.RiskControlled, result.Status);
+        Assert.Empty(result.Replies);
+        Assert.Empty(result.Roots);
+        Assert.Contains("-352", result.Reason);
     }
 
     [Fact]

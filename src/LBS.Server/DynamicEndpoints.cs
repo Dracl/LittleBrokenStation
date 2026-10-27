@@ -15,6 +15,8 @@ public static class DynamicEndpoints
 
     private sealed record RefreshRequest(long? Mid);
 
+    private sealed record ShareRequest(long? ToMemberId, string? Note);
+
     public static void MapDynamicEndpoints(this WebApplication app)
     {
         app.MapGet("/api/dynamics", (long? mid, int? limit, long? beforeId, StationDb db) =>
@@ -39,10 +41,103 @@ public static class DynamicEndpoints
                 // 卡面取材：馆藏有货优先，没入站的吃抓取定格的 B 站档案。
                 title = r.StationTitle ?? r.ArchiveTitle,
                 cover = r.StationCover ?? r.ArchiveCover,
-                duration = r.StationDuration ?? r.ArchiveDuration,
+                duration = DurationText.Normalize(r.StationDuration ?? r.ArchiveDuration),
                 viewCount = r.StatView,
+                // 底栏三计数与转发灰块的原作者名片（都随抓取定格）。
+                statComment = r.StatComment,
+                statForward = r.StatForward,
+                statLike = r.StatLike,
+                origAuthorMid = r.OrigAuthorMid,
+                origAuthorName = r.OrigAuthorName,
+                origAuthorFace = r.OrigAuthorFace,
+                commentsFetched = r.CommentsFetchedAtUtc is not null,
             });
             return Results.Ok(new { items, hasMore });
+        });
+
+        // 评论树：一级楼按抓取序（热评序），子回复挂在楼下；公开只读，与橱窗同权。
+        app.MapGet("/api/dynamics/{dynamicId}/comments", (string dynamicId, StationDb db) =>
+        {
+            var rows = db.ListDynamicComments(dynamicId);
+            var items = rows.Where(r => r.RootRpid == 0).Select(top => new
+            {
+                rpid = top.Rpid,
+                name = top.Name,
+                face = top.Face,
+                message = top.Message,
+                like = top.LikeCount,
+                ctimeUtc = top.CtimeUtc,
+                replies = rows.Where(r => r.RootRpid == top.Rpid).Select(r => new
+                {
+                    rpid = r.Rpid,
+                    name = r.Name,
+                    face = r.Face,
+                    message = r.Message,
+                    like = r.LikeCount,
+                    ctimeUtc = r.CtimeUtc,
+                }).ToList(),
+            }).ToList();
+            return Results.Ok(new
+            {
+                total = rows.Count,
+                fetched = db.GetCommentsFetchedAt(dynamicId) is not null,
+                items,
+            });
+        });
+
+        // 把动态安利给朋友：定格快照随私信落库，对方会话里直接看到卡，点卡回橱窗定位。
+        app.MapPost("/api/dynamics/{dynamicId}/share", (string dynamicId, ShareRequest? request, StationDb db, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is not { } me)
+            {
+                return Results.Json(new { message = "登录后才能给朋友安利" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            if (request?.ToMemberId is not long target)
+            {
+                return Results.Json(new { message = "得先有个收信人" }, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (target == me.Id)
+            {
+                return Results.Json(new { message = "给自己安利动态，那叫自娱自乐" }, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (db.GetMemberById(me.Id) is not { Status: MemberStatus.Active })
+            {
+                return Results.Json(new { message = "你的席位不在站上，分享闸落着" }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            if (db.GetMemberById(target) is not { Status: MemberStatus.Active })
+            {
+                return Results.Json(new { message = "对方不在站" }, statusCode: StatusCodes.Status404NotFound);
+            }
+
+            var note = request.Note?.Trim() ?? string.Empty;
+            if (note.Length > 500)
+            {
+                return Results.Json(new { message = "安利语太长了，500 字以内刚好" }, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (db.GetDynamicSnapshot(dynamicId) is not { } snap)
+            {
+                return Results.Json(new { message = "分站橱窗里没有这条动态，安利不了空气" }, statusCode: StatusCodes.Status404NotFound);
+            }
+
+            var dynJson = JsonSerializer.Serialize(new
+            {
+                dynamicId = snap.DynamicId,
+                type = snap.Type,
+                authorMid = snap.AuthorMid,
+                authorName = snap.AuthorName,
+                authorFace = snap.AuthorFace,
+                text = snap.Text,
+                bvid = snap.Bvid,
+                publishedAtUtc = snap.PublishedAtUtc,
+                cover = snap.Cover,
+            });
+            var id = db.SendDm(me.Id, target, note, "dynamic", snap.DynamicId, dynJson);
+            return Results.Ok(new { id, message = $"已把这条动态塞进对方信箱" });
         });
 
         app.MapGet("/api/dynamics/targets", (StationDb db) =>

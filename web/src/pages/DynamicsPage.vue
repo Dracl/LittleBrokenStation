@@ -1,9 +1,13 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import DynamicVideoCard from '../components/DynamicVideoCard.vue'
-import { member } from '../memberStore'
+import ShareDynamicDialog from '../components/ShareDynamicDialog.vue'
+import { member, loginDialogOpen } from '../memberStore'
 import { friendlyTime } from '../utils/time'
+
+const route = useRoute()
 
 const items = ref([])
 const hasMore = ref(false)
@@ -28,12 +32,72 @@ function isVideo(d) {
   return !!d.bvid
 }
 
-// 转发条正文是「评语\n\n转发自 XX：\n\n原文」三段式（解析器定格），卡头归转发人、灰块装原文
+// 转发条正文是「评语\n\n转发自 XX：\n\n原文」三段式（解析器定格），卡头归转发人、灰块装原文。
+// 拆成三块：评语 / 灰块头的原作者名 / 原文本体（「转发自」行升格成带头像的行，就不再塞在正文里）。
 function splitForward(text) {
-  if (!text) return { comment: '', orig: '' }
+  if (!text) return { comment: '', fromName: '', orig: '' }
   const i = text.indexOf('\n\n转发自')
-  if (i < 0) return { comment: text, orig: '' }
-  return { comment: text.slice(0, i), orig: text.slice(i + 2) }
+  if (i < 0) return { comment: text, fromName: '', orig: '' }
+  const rest = text.slice(i + 2)
+  const j = rest.indexOf('：')
+  if (j < 0) return { comment: text.slice(0, i), fromName: '', orig: rest }
+  return {
+    comment: text.slice(0, i),
+    fromName: rest.slice(0, j).replace(/^转发自\s*/, ''),
+    orig: rest.slice(j + 1).trim(),
+  }
+}
+
+// ─── 评论抽屉：每条评价现拉现展，收起来不拆数据（二次展开不重拉）───
+const commentsMap = reactive({})
+function cmtState(d) {
+  return (commentsMap[d.dynamicId] ||= { open: false, loading: false, loaded: false, fetched: false, total: 0, items: [], expanded: {} })
+}
+
+async function loadComments(d) {
+  const st = cmtState(d)
+  if (st.loaded || st.loading) return
+  st.loading = true
+  try {
+    const res = await fetch(`/api/dynamics/${encodeURIComponent(d.dynamicId)}/comments`)
+    if (res.ok) {
+      const data = await res.json()
+      st.items = data.items ?? []
+      st.total = data.total ?? 0
+      st.fetched = !!data.fetched
+      st.loaded = true
+    }
+  } catch {
+    /* 评论拉砸不阁主卡，收起重开可重试 */
+  } finally {
+    st.loading = false
+  }
+}
+
+function toggleComments(d) {
+  const st = cmtState(d)
+  st.open = !st.open
+  if (st.open && !st.loaded) loadComments(d)
+}
+
+function cmtCount(d) {
+  return d.statComment ?? commentsMap[d.dynamicId]?.total ?? null
+}
+
+// ─── 安利分享：登录门槛在按钮上就把关，未登录弹登录窗 ───
+const shareFor = ref(null)
+const focusHit = ref(null)
+function openShare(d) {
+  if (!member.value) {
+    loginDialogOpen.value = true
+    return
+  }
+  shareFor.value = d
+}
+function onShared(message) {
+  shareFor.value = null
+  toast.value = message || '已塞进对方信箱'
+  setTimeout(() => { toast.value = null }, 2600)
 }
 
 // B 站图格规矩：单图 1/3 宽、四图 2×2、其余三列，一律 3:4 裁切
@@ -138,6 +202,17 @@ async function refreshRound() {
 
 onMounted(async () => {
   await Promise.all([loadTargets(), loadFeed()])
+  // 从私信分享卡进来：定位到那条动态并粉框闪两秒（不在当前页就不硬造位置）。
+  const focus = typeof route.query.focus === 'string' ? route.query.focus : null
+  if (focus) {
+    await nextTick()
+    const el = document.querySelector(`[data-dyn="${CSS.escape(focus)}"]`)
+    if (el) {
+      focusHit.value = focus
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setTimeout(() => { focusHit.value = null }, 2400)
+    }
+  }
 })
 </script>
 
@@ -215,8 +290,9 @@ onMounted(async () => {
         <article
           v-for="d in shown"
           :key="d.id ?? d.dynamicId"
-          class="mb-2.5 rounded-lg border bg-cardBg p-4"
-          :class="isLive(d) ? 'border-stationPink/50' : 'border-lineSoft'"
+          :data-dyn="d.dynamicId"
+          class="mb-2.5 rounded-lg border bg-cardBg p-4 transition-shadow duration-500"
+          :class="[isLive(d) ? 'border-stationPink/50' : 'border-lineSoft', focusHit === d.dynamicId ? 'ring-2 ring-stationPink/60' : '']"
         >
           <!-- 头行：头像（抓取定格的缓存脸）+ 昵称 + 时间；视频卡右上挂内外签 -->
           <header class="mb-2 flex items-center gap-2.5">
@@ -263,10 +339,23 @@ onMounted(async () => {
             >看直播</a>
           </div>
 
-          <!-- 转发条：评语 + 灰块内嵌原文（B 站同款） -->
+          <!-- 转发条：评语 + 灰块内嵌原文（B 站同款）；灰块头挂原作者的小脸 -->
           <template v-else-if="isForward(d)">
             <p v-if="splitForward(d.text).comment" class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain">{{ splitForward(d.text).comment }}</p>
             <div class="rounded-md bg-[#f6f7f8] p-3">
+              <div v-if="d.origAuthorName || splitForward(d.text).fromName" class="mb-2 flex items-center gap-1.5">
+                <img
+                  v-if="d.origAuthorFace"
+                  :src="d.origAuthorFace"
+                  referrerpolicy="no-referrer"
+                  loading="lazy"
+                  class="h-[18px] w-[18px] shrink-0 rounded-full object-cover"
+                  alt=""
+                  @error="$event.target.style.display = 'none'"
+                />
+                <span v-else class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-stationPink/15 text-[10px] text-stationPink">{{ (d.origAuthorName || splitForward(d.text).fromName || '?').slice(0, 1) }}</span>
+                <span class="text-xs text-inkSub">转发自 {{ d.origAuthorName || splitForward(d.text).fromName }}</span>
+              </div>
               <p class="whitespace-pre-wrap break-words text-sm leading-relaxed text-inkSub">{{ splitForward(d.text).orig || '原文已被删' }}</p>
               <DynamicVideoCard v-if="d.bvid" :d="d" class="mt-2" />
               <div v-else-if="d.pics?.length" :class="['mt-2', picsLayout(d.pics.length)]">
@@ -301,6 +390,90 @@ onMounted(async () => {
             </div>
             <DynamicVideoCard v-if="d.bvid" :d="d" class="mt-1" />
           </template>
+
+          <!-- 底栏三段（B 站同款）：转发走私信安利，评论开抽屉，赞数只读 -->
+          <footer v-if="!isLive(d)" class="mt-2 flex items-stretch border-t border-lineSoft/70 pt-1">
+            <button class="flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-[13px] text-inkSub transition hover:text-stationPink" title="安利给分站朋友" @click="openShare(d)">
+              <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M13 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M18 10H9a5 5 0 0 0-5 5v3" stroke-linecap="round" />
+              </svg>
+              转发<span v-if="d.statForward" class="text-[12px] text-inkFaint">{{ d.statForward }}</span>
+            </button>
+            <button class="flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-[13px] text-inkSub transition hover:text-stationPink" @click="toggleComments(d)">
+              <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M21 12a8 8 0 0 1-8 8c-1.2 0-2.3-.2-3.3-.6L5 21l1.2-3.4A8 8 0 1 1 21 12Z" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span v-if="cmtCount(d) !== null">{{ cmtCount(d) }}</span>
+            </button>
+            <span class="flex flex-1 items-center justify-center gap-1.5 py-1.5 text-[13px] text-inkSub" :title="d.statLike !== null ? 'B 站赞数（抓取定格）' : ''">
+              <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M7 10v10H4.5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1H7Zm0 0l4.2-7a2 2 0 0 1 2 1v3.5h5.2a2 2 0 0 1 2 2.4l-1.3 6.2A2 2 0 0 1 17.1 19H7" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span v-if="d.statLike !== null">{{ d.statLike }}</span>
+            </span>
+          </footer>
+
+          <!-- 评论抽屉：热评与子回复都吃分站留档，名字粉红、时间淡灰，B 站同款排布 -->
+          <section v-if="cmtState(d).open" class="mt-1 border-t border-lineSoft/70 pt-3">
+            <p v-if="cmtState(d).loading" class="py-3 text-center text-xs text-inkFaint">评论拉取中…</p>
+            <p v-else-if="!cmtState(d).items.length" class="py-3 text-center text-xs text-inkFaint">
+              {{ cmtState(d).fetched ? '这条动态还没人开口' : '评论还没巡到货，等巡捕下轮补' }}
+            </p>
+            <template v-else>
+              <p class="mb-2 text-[11px] text-inkFaint">评论同步自 B 站，分站只读留档 · 共 {{ cmtState(d).total }} 条</p>
+              <div v-for="top in cmtState(d).items" :key="top.rpid" class="mb-3 flex gap-2.5">
+                <img
+                  v-if="top.face"
+                  :src="top.face"
+                  referrerpolicy="no-referrer"
+                  loading="lazy"
+                  class="h-8 w-8 shrink-0 rounded-full object-cover"
+                  alt=""
+                  @error="$event.target.style.display = 'none'"
+                />
+                <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stationPink/10 text-xs text-stationPink">{{ (top.name || '?').slice(0, 1) }}</span>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-baseline gap-2">
+                    <span class="text-[12.5px] font-medium text-stationPink">{{ top.name || '无名网友' }}</span>
+                    <span class="text-[11px] text-inkFaint">{{ friendlyTime(top.ctimeUtc) }}</span>
+                  </div>
+                  <p class="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain">{{ top.message }}</p>
+                  <div class="mt-0.5 flex items-center gap-3 text-[11.5px] text-inkFaint">
+                    <span v-if="top.like">👍 {{ top.like }}</span>
+                  </div>
+                  <!-- 子回复也随抓取定格，缩进挂在楼下 -->
+                  <div v-if="top.replies?.length" class="mt-2 space-y-2.5 border-l-2 border-lineSoft/80 pl-3">
+                    <template v-for="(sub, si) in top.replies" :key="sub.rpid">
+                      <div v-if="top.replies.length <= 3 || cmtState(d).expanded[top.rpid] || si < 3" class="flex gap-2">
+                        <img
+                          v-if="sub.face"
+                          :src="sub.face"
+                          referrerpolicy="no-referrer"
+                          loading="lazy"
+                          class="h-5 w-5 shrink-0 rounded-full object-cover"
+                          alt=""
+                          @error="$event.target.style.display = 'none'"
+                        />
+                        <div class="min-w-0 flex-1">
+                          <span class="text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
+                          <span class="ml-1.5 text-[10.5px] text-inkFaint">{{ friendlyTime(sub.ctimeUtc) }}</span>
+                          <p class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain">{{ sub.message }}</p>
+                        </div>
+                      </div>
+                    </template>
+                    <button
+                      v-if="top.replies.length > 3 && !cmtState(d).expanded[top.rpid]"
+                      class="text-[12px] text-stationPink transition hover:underline"
+                      @click="cmtState(d).expanded[top.rpid] = true"
+                    >
+                      展开查看全部 {{ top.replies.length }} 条子回复
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </section>
         </article>
 
         <div class="pb-4 pt-1 text-center">
@@ -317,6 +490,8 @@ onMounted(async () => {
       </template>
 
       <p v-if="toast" class="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-inkMain/85 px-4 py-2 text-xs text-white shadow-lg">{{ toast }}</p>
+
+      <ShareDynamicDialog v-if="shareFor" :d="shareFor" @close="shareFor = null" @done="onShared" />
     </main>
   </div>
 </template>

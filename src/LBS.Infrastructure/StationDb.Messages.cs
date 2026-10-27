@@ -156,11 +156,11 @@ public sealed partial class StationDb
 
     // ─── 用户间私信（M5.3，M5.4 起挂在席位 id 上）：往来说一行一发，会话在查询时按 peer 聚合 ───
 
-    /// <summary>一条私信（校验在端点层，这层只写）。</summary>
-    public sealed record DmMessage(long Id, long FromMemberId, long ToMemberId, string Body, string CreatedAtUtc, string? ReadAtUtc);
+    /// <summary>一条私信（校验在端点层，这层只写）。MsgType：text 普通信 / dynamic 分享动态（dynJson 存定格卡面）。</summary>
+    public sealed record DmMessage(long Id, long FromMemberId, long ToMemberId, string Body, string CreatedAtUtc, string? ReadAtUtc, string? MsgType = null, string? DynJson = null);
 
-    /// <summary>会话摘要：对方席位名片 + 最后一句 + 未读数。</summary>
-    public sealed record DmThread(long PeerMemberId, string? PeerName, string? PeerFace, string LastBody, string LastAtUtc, long Unread);
+    /// <summary>会话摘要：对方席位名片 + 最后一句 + 未读数（LastMsgType 让列表页知道最后一句是不是分享卡）。</summary>
+    public sealed record DmThread(long PeerMemberId, string? PeerName, string? PeerFace, string LastBody, string LastAtUtc, long Unread, string? LastMsgType = null);
 
     /// <summary>管理员视野的一行私信（带双方名片与已读态）。</summary>
     public sealed record DmInspectionRow(
@@ -173,19 +173,22 @@ public sealed partial class StationDb
         string CreatedAtUtc,
         string? ReadAtUtc);
 
-    public long SendDm(long fromMemberId, long toMemberId, string body)
+    public long SendDm(long fromMemberId, long toMemberId, string body, string? msgType = null, string? dynamicId = null, string? dynJson = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO dm_messages (from_mid, to_mid, from_member_id, to_member_id, body, created_at_utc)
-            VALUES (0, 0, $from, $to, $body, $now);
+            INSERT INTO dm_messages (from_mid, to_mid, from_member_id, to_member_id, body, created_at_utc, msg_type, dynamic_id, dyn_json)
+            VALUES (0, 0, $from, $to, $body, $now, $msgType, $dynId, $dynJson);
             SELECT last_insert_rowid();
             """;
         command.Parameters.AddWithValue("$from", fromMemberId);
         command.Parameters.AddWithValue("$to", toMemberId);
         command.Parameters.AddWithValue("$body", body);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$msgType", (object?)msgType ?? DBNull.Value);
+        command.Parameters.AddWithValue("$dynId", (object?)dynamicId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$dynJson", (object?)dynJson ?? DBNull.Value);
         return Convert.ToInt64(command.ExecuteScalar());
     }
 
@@ -215,7 +218,7 @@ public sealed partial class StationDb
         {
             using var last = connection.CreateCommand();
             last.CommandText = """
-                SELECT body, created_at_utc FROM dm_messages
+                SELECT body, created_at_utc, msg_type FROM dm_messages
                 WHERE (from_member_id = $me AND to_member_id = $peer) OR (from_member_id = $peer AND to_member_id = $me)
                 ORDER BY id DESC LIMIT 1;
                 """;
@@ -229,6 +232,7 @@ public sealed partial class StationDb
 
             var lastBody = lastReader.GetString(0);
             var lastAt = lastReader.GetString(1);
+            var lastMsgType = lastReader.IsDBNull(2) ? null : lastReader.GetString(2);
 
             using var unread = connection.CreateCommand();
             unread.CommandText = "SELECT COUNT(*) FROM dm_messages WHERE to_member_id = $me AND from_member_id = $peer AND read_at_utc IS NULL;";
@@ -238,7 +242,7 @@ public sealed partial class StationDb
 
             var name = roster.TryGetValue(peer, out var m) ? DisplayOf(m) : null;
             var face = roster.TryGetValue(peer, out var f) ? f.FaceUrl : null;
-            threads.Add(new DmThread(peer, name, face, lastBody, lastAt, unreadCount));
+            threads.Add(new DmThread(peer, name, face, lastBody, lastAt, unreadCount, lastMsgType));
         }
 
         return threads
@@ -253,7 +257,7 @@ public sealed partial class StationDb
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id, from_member_id, to_member_id, body, created_at_utc, read_at_utc
+            SELECT id, from_member_id, to_member_id, body, created_at_utc, read_at_utc, msg_type, dyn_json
             FROM dm_messages
             WHERE (from_member_id = $a AND to_member_id = $b) OR (from_member_id = $b AND to_member_id = $a)
             ORDER BY id DESC
@@ -273,7 +277,9 @@ public sealed partial class StationDb
                 reader.GetInt64(2),
                 reader.GetString(3),
                 reader.GetString(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6),
+                reader.IsDBNull(7) ? null : reader.GetString(7)));
         }
 
         list.Reverse(); // 取最新一批后翻回转序

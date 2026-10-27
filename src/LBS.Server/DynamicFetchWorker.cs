@@ -94,6 +94,7 @@ public sealed class DynamicFetchWorker(
         await roundGate.WaitAsync(cancellationToken);
         try
         {
+            var freshIds = new List<string>();
             foreach (var target in db.ListDynamicTargets())
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -106,12 +107,23 @@ public sealed class DynamicFetchWorker(
                 {
                     var outcome = await policy.RunForActivityAsync(() => fetcher.FetchTargetAsync(
                         target.Mid, target.LastOffset,
-                        parsed => Task.FromResult(db.UpsertDynamic(
-                            parsed.DynamicId, target.Mid, parsed.AuthorMid, parsed.AuthorName,
-                            parsed.Type, parsed.Text,
-                            parsed.Pics.Count > 0 ? System.Text.Json.JsonSerializer.Serialize(parsed.Pics) : null,
-                            parsed.Bvid, parsed.PublishedAtUtc,
-                            parsed.AuthorFaceUrl, parsed.ArchiveTitle, parsed.ArchiveCover, parsed.ArchiveDuration)),
+                        parsed =>
+                        {
+                            var fresh = db.UpsertDynamic(
+                                parsed.DynamicId, target.Mid, parsed.AuthorMid, parsed.AuthorName,
+                                parsed.Type, parsed.Text,
+                                parsed.Pics.Count > 0 ? System.Text.Json.JsonSerializer.Serialize(parsed.Pics) : null,
+                                parsed.Bvid, parsed.PublishedAtUtc,
+                                parsed.AuthorFaceUrl, parsed.ArchiveTitle, parsed.ArchiveCover, parsed.ArchiveDuration,
+                                parsed.StatComment, parsed.StatForward, parsed.StatLike,
+                                parsed.OrigAuthorMid, parsed.OrigAuthorName, parsed.OrigAuthorFace);
+                            if (fresh)
+                            {
+                                freshIds.Add(parsed.DynamicId);
+                            }
+
+                            return Task.FromResult(fresh);
+                        },
                         cancellationToken));
                     if (outcome.Ok)
                     {
@@ -132,10 +144,72 @@ public sealed class DynamicFetchWorker(
                     logger.LogWarning(ex, "动态巡捕：UP {Mid} 这轮翻车，下个 target 继续", target.Mid);
                 }
             }
+
+            await RunCommentRoundAsync(freshIds, cancellationToken);
         }
         finally
         {
             roundGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 评论段：先给本轮新收的动态收评论，再摄 5 条存量欠账（新→旧，逐轮摊平不打爆 B 站）。
+    /// 条间 350ms 节流；一旦风控信号现形，剩下的一律留下轮——评论没盖碑的欠账自会重逢。
+    /// </summary>
+    private async Task RunCommentRoundAsync(List<string> freshIds, CancellationToken cancellationToken)
+    {
+        var queue = freshIds.Concat(db.ListPendingCommentDynamics(5).Where(id => !freshIds.Contains(id))).ToList();
+        if (queue.Count == 0)
+        {
+            return;
+        }
+
+        var totalComments = 0;
+        var finished = 0;
+        foreach (var dynamicId in queue)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var outcome = await policy.RunForActivityAsync(() => fetcher.FetchCommentsAsync(dynamicId, cancellationToken));
+                if (!outcome.Ok && !outcome.RiskControlled)
+                {
+                    logger.LogWarning("动态评论：{DynamicId} 没取成（{Error}），欠账留下轮", dynamicId, outcome.Error);
+                    continue;
+                }
+
+                totalComments += db.UpsertComments(dynamicId, outcome.Comments
+                    .Select(c => new StationDb.DynamicCommentRow(c.Rpid, c.RootRpid, c.ParentRpid, c.Mid, c.Name, c.Face, c.Message, c.Like, c.CtimeUtc))
+                    .ToList());
+                if (outcome.Ok)
+                {
+                    db.MarkCommentsFetched(dynamicId);
+                    finished++;
+                }
+
+                if (outcome.RiskControlled)
+                {
+                    logger.LogWarning("动态评论：撞上风控，{DynamicId} 之后的单留下轮", dynamicId);
+                    break;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "动态评论：{DynamicId} 收评翻车，继续下一单", dynamicId);
+            }
+
+            await Task.Delay(350, cancellationToken);
+        }
+
+        if (totalComments > 0 || finished > 0)
+        {
+            logger.LogInformation("动态评论巡捕：本轮回货 {Comments} 条，盖章 {Finished}/{Queued} 条动态",
+                totalComments, finished, queue.Count);
         }
     }
 }

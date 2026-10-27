@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LBS.Domain;
 using LBS.Infrastructure;
 
@@ -70,6 +71,7 @@ public static class DmEndpoints
                 lastBody = t.LastBody,
                 lastAtUtc = t.LastAtUtc,
                 unread = t.Unread,
+                lastMsgType = t.LastMsgType,
             });
             return Results.Ok(new { threads });
         });
@@ -128,6 +130,8 @@ public static class DmEndpoints
                 body = m.Body,
                 createdAtUtc = m.CreatedAtUtc,
                 readAtUtc = m.ReadAtUtc,
+                msgType = m.MsgType,
+                dyn = ParseShareCard(m.DynJson),
             });
             return Results.Ok(new
             {
@@ -160,6 +164,24 @@ public static class DmEndpoints
             var id = db.SendDm(me.Id, target, body);
             return Results.Ok(new { id });
         });
+    }
+
+    /// <summary>分享卡的定格快照还原：坏 JSON 当普通信处理（body 还在，不拦阅读）。</summary>
+    private static JsonElement? ParseShareCard(string? dynJson)
+    {
+        if (string.IsNullOrWhiteSpace(dynJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<JsonElement>(dynJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     public static void MapAdminDmEndpoints(this WebApplication app)

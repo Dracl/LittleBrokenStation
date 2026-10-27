@@ -256,10 +256,34 @@ public sealed partial class StationDb
                     author_face_url  TEXT,
                     archive_title    TEXT,
                     archive_cover    TEXT,
-                    archive_duration TEXT
+                    archive_duration TEXT,
+                    stat_comment     INTEGER,
+                    stat_forward     INTEGER,
+                    stat_like        INTEGER,
+                    orig_author_mid  INTEGER,
+                    orig_author_name TEXT,
+                    orig_author_face TEXT,
+                    comments_fetched_at_utc TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_dynamics_target ON dynamics (target_mid, published_at_utc);
                 CREATE INDEX IF NOT EXISTS idx_dynamics_published ON dynamics (published_at_utc);
+                CREATE INDEX IF NOT EXISTS idx_dynamics_cmt_pending ON dynamics (comments_fetched_at_utc, id);
+                CREATE TABLE IF NOT EXISTS dynamic_comments (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dynamic_id    TEXT NOT NULL,
+                    rpid          INTEGER NOT NULL,
+                    root_rpid     INTEGER NOT NULL DEFAULT 0,
+                    parent_rpid   INTEGER NOT NULL DEFAULT 0,
+                    mid           INTEGER,
+                    name          TEXT,
+                    face          TEXT,
+                    message       TEXT NOT NULL,
+                    like_count    INTEGER NOT NULL DEFAULT 0,
+                    ctime_utc     TEXT,
+                    cached_at_utc TEXT NOT NULL,
+                    UNIQUE (dynamic_id, rpid)
+                );
+                CREATE INDEX IF NOT EXISTS idx_dyncmt_tree ON dynamic_comments (dynamic_id, root_rpid, id);
                 """;
             dynamics.ExecuteNonQuery();
         }
@@ -269,6 +293,20 @@ public sealed partial class StationDb
         EnsureColumn(connection, "dynamics", "archive_title", "TEXT");
         EnsureColumn(connection, "dynamics", "archive_cover", "TEXT");
         EnsureColumn(connection, "dynamics", "archive_duration", "TEXT");
+        // 动态底栏三计数 + 转发灰块原作者名片 + 评论抓取完工碑：同样建表自带头 + EnsureColumn 补旧库。
+        EnsureColumn(connection, "dynamics", "stat_comment", "INTEGER");
+        EnsureColumn(connection, "dynamics", "stat_forward", "INTEGER");
+        EnsureColumn(connection, "dynamics", "stat_like", "INTEGER");
+        EnsureColumn(connection, "dynamics", "orig_author_mid", "INTEGER");
+        EnsureColumn(connection, "dynamics", "orig_author_name", "TEXT");
+        EnsureColumn(connection, "dynamics", "orig_author_face", "TEXT");
+        EnsureColumn(connection, "dynamics", "comments_fetched_at_utc", "TEXT");
+
+        // M6+ 私信变厚：支持「分享动态」卡，msg_type 分文本/动态，dyn_json 存分享那刻定格的卡面快照
+        // （B 站删动态不连累分站留档，会话渲染也不回头查表）。
+        EnsureColumn(connection, "dm_messages", "msg_type", "TEXT");
+        EnsureColumn(connection, "dm_messages", "dynamic_id", "TEXT");
+        EnsureColumn(connection, "dm_messages", "dyn_json", "TEXT");
 
         // 成员角色（owner/member）：头名即站长。建表语句自带头，早期无 role 列的开发库在这里补上。
         EnsureColumn(connection, "members", "role", "TEXT NOT NULL DEFAULT 'member'");

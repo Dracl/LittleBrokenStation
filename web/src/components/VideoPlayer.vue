@@ -22,12 +22,46 @@ const trackEl = ref(null)
 
 const playing = ref(false)
 const waiting = ref(false)
-// 卡顿自愈：waiting 持续不推进先自动重播一次，再不行弹手动恢复按钮（用户点击带激活，play 必成）。
+// 卡顿自愈：waiting 持续不推进先自动重播一次；再不行看缓冲余量——缓冲区里有货却不走才算真死，
+// 货还没到货就继续转圈（首载/大 seek 的慢缓冲不冤枉），几轮救不回才弹手动恢复钮。
 const stuckRecover = ref(false)
 let stuckTimer = 0
 let lastTickTime = 0
 let seekTarget = null
 let seekMergeTimer = 0
+
+// 当前播放点后面还有没有 2 秒以上的缓冲存货（有货不推进才是真停滞）
+function bufferHeadroom(v) {
+  try {
+    for (let i = 0; i < v.buffered.length; i++) {
+      if (v.buffered.start(i) <= v.currentTime + 0.5 && v.buffered.end(i) >= v.currentTime + 2) return true
+    }
+  } catch {
+    /* 老内核异常当没缓冲处理 */
+  }
+  return false
+}
+
+// 复审阶梯：第一轮 3 秒，后两轮各 8 秒；每轮先试一手 play()，缓冲不足就多给时间，三轮封顶才认死
+function recheckStuck(roundsLeft) {
+  clearTimeout(stuckTimer)
+  stuckTimer = setTimeout(() => {
+    const v = video.value
+    if (!v || !playing.value) return
+    if (v.currentTime - lastTickTime >= 0.1) {
+      waiting.value = false
+      return
+    }
+    if (bufferHeadroom(v) || roundsLeft <= 0) {
+      stuckRecover.value = true
+      logEvent(`停滞复审定罪 rounds=${roundsLeft} headroom=${bufferHeadroom(v)}`)
+    } else {
+      logEvent(`缓冲未到货，继续等 rounds=${roundsLeft}`)
+      v.play().catch(() => {})
+      recheckStuck(roundsLeft - 1)
+    }
+  }, roundsLeft === 3 ? 3000 : 8000)
+}
 
 function onMediaWait() {
   const v = video.value
@@ -47,14 +81,7 @@ function tryUnstick() {
   }
   logEvent('缓冲停滞，自动重试播放')
   v.play().catch(() => {})
-  clearTimeout(stuckTimer)
-  stuckTimer = setTimeout(() => {
-    const vv = video.value
-    if (vv && playing.value && vv.currentTime - lastTickTime < 0.1) {
-      stuckRecover.value = true
-      logEvent('自动重试未恢复，等待手动点击')
-    }
-  }, 3000)
+  recheckStuck(3)
 }
 
 function onMediaPause() {

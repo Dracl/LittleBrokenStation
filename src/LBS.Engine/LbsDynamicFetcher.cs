@@ -20,7 +20,26 @@ public sealed record ParsedDynamic(
     string? AuthorFaceUrl = null,
     string? ArchiveTitle = null,
     string? ArchiveCover = null,
-    string? ArchiveDuration = null);
+    string? ArchiveDuration = null,
+    // 底栏三计数（B 站报的评论/转发/赞）+ 转发卡灰块里的原作者名片（卡头归转发人，灰块归原作者）。
+    long? StatComment = null,
+    long? StatForward = null,
+    long? StatLike = null,
+    long? OrigAuthorMid = null,
+    string? OrigAuthorName = null,
+    string? OrigAuthorFace = null);
+
+/// <summary>一条动态评论（root=0 一级楼；子回复 root/parent 挂父楼）。</summary>
+public sealed record ParsedComment(
+    long Rpid,
+    long RootRpid,
+    long ParentRpid,
+    long? Mid,
+    string? Name,
+    string? Face,
+    string Message,
+    long Like,
+    string? CtimeUtc);
 
 public enum FeedParseStatus
 {
@@ -38,6 +57,13 @@ public sealed record FeedParseResult(
     string? Offset,
     bool HasMore,
     string? Reason);
+
+/// <summary>评论拉取战报。RiskControlled 时调用方弃单不再连打，欠账留下轮补。</summary>
+public sealed record CommentFetchOutcome(
+    bool Ok,
+    bool RiskControlled,
+    IReadOnlyList<ParsedComment> Comments,
+    string? Error);
 
 /// <summary>一个 target 这一轮的拉取战报。Offset=null 表示历史见底/取齐，下轮从头开始。</summary>
 public sealed record DynamicFetchOutcome(
@@ -62,6 +88,12 @@ public sealed class LbsDynamicFetcher(
     ILogger<LbsDynamicFetcher> logger)
 {
     private const string FeedPath = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space";
+    private const string ReplyMainPath = "https://api.bilibili.com/x/v2/reply/main";
+    private const string ReplySubPath = "https://api.bilibili.com/x/v2/reply/reply";
+    private const int TypeDynamicReply = 17; // B 站评论区对动态的编号
+    private const int MaxTopComments = 20;
+    private const int MaxSubThreads = 3; // 只给前 3 个带子回复的楼挖到底，防单条动态吃光一轮预算
+    private const int MaxSubPerThread = 20;
     private const string Features = "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote";
 
     /// <summary>单 target 单轮续页封顶：五页足够追平一小时的量，再多就是在刷库。</summary>
@@ -174,6 +206,171 @@ public sealed class LbsDynamicFetcher(
     }
 
     // ─── 纯解析层：字段路径照调研报告的表，三套图片路径依次兜底；测试直喂 JSON ───
+
+    /// <summary>
+    /// 拉一条动态的评论：热评前 20 条 + 前 3 个带子回复的楼各挖 20 条子回复。
+    /// 风控与动态流同规矩：一旦现形立即弃单，剩下的楼不追，欠账由 worker 下轮补。
+    /// </summary>
+    public async Task<CommentFetchOutcome> FetchCommentsAsync(string dynamicId, CancellationToken cancellationToken)
+    {
+        var collected = new List<ParsedComment>();
+        var (mainStatus, topComments, subRoots, reason) = await FetchRepliesAsync(
+            ReplyMainPath, dynamicId, rootRpid: 0, extra: new Dictionary<string, object?>
+            {
+                ["mode"] = 3,
+                ["next"] = 0,
+            },
+            MaxTopComments,
+            collectRoots: true,
+            cancellationToken);
+        if (mainStatus != FeedParseStatus.Ok)
+        {
+            return new CommentFetchOutcome(false, mainStatus == FeedParseStatus.RiskControlled, collected, reason);
+        }
+
+        collected.AddRange(topComments);
+        foreach (var root in subRoots.Take(MaxSubThreads))
+        {
+            var (subStatus, subComments, _, subReason) = await FetchRepliesAsync(
+                ReplySubPath, dynamicId, rootRpid: root, extra: new Dictionary<string, object?>
+                {
+                    ["ps"] = MaxSubPerThread,
+                    ["sort"] = 2,
+                },
+                MaxSubPerThread,
+                collectRoots: false,
+                cancellationToken);
+            if (subStatus == FeedParseStatus.RiskControlled)
+            {
+                // 子楼里撞风控：一级热评已经到手，就此收兵，剩余子楼留下轮。
+                return new CommentFetchOutcome(false, true, collected, subReason);
+            }
+
+            collected.AddRange(subComments);
+        }
+
+        return new CommentFetchOutcome(true, false, collected, null);
+    }
+
+    private async Task<(FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, string? Reason)> FetchRepliesAsync(
+        string path, string dynamicId, long rootRpid, Dictionary<string, object?> extra, int max, bool collectRoots, CancellationToken cancellationToken)
+    {
+        var paras = new Dictionary<string, object?>
+        {
+            ["type"] = TypeDynamicReply,
+            ["oid"] = dynamicId,
+        };
+        foreach (var (key, value) in extra)
+        {
+            paras[key] = value;
+        }
+
+        if (rootRpid != 0)
+        {
+            paras["root"] = rootRpid;
+        }
+
+        return await WbiRequestExecutor.ExecuteAsync(
+            wbiKeys,
+            async (keys, wts) =>
+            {
+                var query = WbiSign.ParametersToQuery(WbiSign.EncodeWbi(paras, keys.ImgKey, keys.SubKey, wts));
+                try
+                {
+                    var raw = await client.GetStringAsync(
+                        new BilibiliHttpRequest($"{path}?{query}", $"https://t.bilibili.com/{dynamicId}"),
+                        cancellationToken);
+                    return ParseReplies(raw, rootRpid, max, collectRoots);
+                }
+                catch (HttpRequestException ex)
+                {
+                    return (FeedParseStatus.RiskControlled, (IReadOnlyList<ParsedComment>)[], (IReadOnlyList<long>)[], $"HTTP 层拒了：{ex.Message}");
+                }
+            },
+            timeProvider,
+            cancellationToken);
+    }
+
+    /// <summary>评论页纯解析：与 ParseFeed 同一张嘴认 code/v_voucher，replies[] 按形状剥平。测试直喂 JSON。</summary>
+    public static (FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, string? Reason) ParseReplies(
+        string json, long rootRpid, int max, bool collectRoots)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return (FeedParseStatus.Failed, [], [], "B 站回的不是 JSON");
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            var code = root.TryGetProperty("code", out var codeEl) && codeEl.ValueKind == JsonValueKind.Number
+                ? codeEl.GetInt32()
+                : -1;
+            if (code == -352)
+            {
+                return (FeedParseStatus.RiskControlled, [], [], "code=-352 风控校验失败");
+            }
+
+            if (code != 0)
+            {
+                return (FeedParseStatus.Failed, [], [], $"B 站返回 code={code}");
+            }
+
+            if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+            {
+                return (FeedParseStatus.Failed, [], [], "data 没影");
+            }
+
+            if (data.TryGetProperty("v_voucher", out var voucher) && voucher.ValueKind != JsonValueKind.Null)
+            {
+                return (FeedParseStatus.RiskControlled, [], [], "data.v_voucher 现形");
+            }
+
+            var replies = new List<ParsedComment>();
+            var roots = new List<long>();
+            if (data.TryGetProperty("replies", out var repliesEl) && repliesEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in repliesEl.EnumerateArray())
+                {
+                    if (replies.Count >= max)
+                    {
+                        break;
+                    }
+
+                    var rpid = Num(el, "rpid") ?? 0;
+                    var message = Str(Path(el, "content", "message"));
+                    if (rpid <= 0 || string.IsNullOrWhiteSpace(message))
+                    {
+                        continue; // 没楼号或空正文的行楼都开不了，丢了比猜强
+                    }
+
+                    var ctime = Num(el, "ctime");
+                    replies.Add(new ParsedComment(
+                        rpid,
+                        rootRpid,
+                        rootRpid == 0 ? 0 : rootRpid,
+                        Num(Path(el, "member"), "mid"),
+                        Str(Path(el, "member", "uname")),
+                        Str(Path(el, "member", "face")),
+                        message.Trim(),
+                        Num(el, "like") ?? 0,
+                        ctime is > 0 ? DateTimeOffset.FromUnixTimeSeconds(ctime.Value).ToString("O") : null));
+
+                    if (collectRoots && (Num(el, "rcount") ?? 0) > 0)
+                    {
+                        roots.Add(rpid);
+                    }
+                }
+            }
+
+            return (FeedParseStatus.Ok, replies, roots, null);
+        }
+    }
 
     public static FeedParseResult ParseFeed(string json)
     {
@@ -303,8 +500,26 @@ public sealed class LbsDynamicFetcher(
         var archiveCover = Str(Path(src, "modules", "module_dynamic", "major", "archive", "cover"));
         var archiveDuration = Str(Path(src, "modules", "module_dynamic", "major", "archive", "duration_text"));
 
+        // 底栏三计数：顶层 stat 是整卡口径（FORWARD 的评论/赞也算在转发卡上），与 B 站卡底同源。
+        var stat = Path(item, "modules", "module_dynamic", "stat");
+        var statComment = Num(Path(stat, "comment"), "count");
+        var statForward = Num(Path(stat, "forward"), "count");
+        var statLike = Num(Path(stat, "like"), "count");
+
+        // 转发灰块的原作者名片：FORWARD 时 srcAuthor 就是 orig 的 module_author，直接采脸与名。
+        long? origAuthorMid = null;
+        string? origAuthorName = null;
+        string? origAuthorFace = null;
+        if (isForward)
+        {
+            origAuthorMid = Num(srcAuthor, "mid");
+            origAuthorName = Str(Path(srcAuthor, "name"));
+            origAuthorFace = Str(Path(srcAuthor, "face"));
+        }
+
         return new ParsedDynamic(dynamicId, type, authorMid, authorName, text, pics, bvid, published,
-            authorFace, archiveTitle, archiveCover, archiveDuration);
+            authorFace, archiveTitle, archiveCover, archiveDuration,
+            statComment, statForward, statLike, origAuthorMid, origAuthorName, origAuthorFace);
     }
 
     private static IReadOnlyList<string> CollectPics(JsonElement src)
