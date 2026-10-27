@@ -419,6 +419,9 @@ const playerShellW = ref(0)
           </div>
         </div>
       </template>
+
+      <ShareDialog v-if="shareFor" :target="shareFor" @close="shareFor = null" @done="onShared" />
+      <p v-if="shareToast" class="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-inkMain/85 px-4 py-2 text-xs text-white shadow-lg">{{ shareToast }}</p>
     </main>
   </div>
 </template>

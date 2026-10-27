@@ -192,6 +192,39 @@ public sealed partial class StationDb
         return Convert.ToInt64(command.ExecuteScalar());
     }
 
+    /// <summary>放映厅分享定格快照：bvid 必查到馆（Arrived 才算在馆）；封面本地优先（与观看页同形 /media/…），无归档回落热链。</summary>
+    public sealed record VideoShareSnapshot(string Bvid, string? Title, string? Cover, string? UpName, string? DurationText);
+
+    public VideoShareSnapshot? GetVideoShareSnapshot(string bvid)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT v.bvid, v.title,
+                   COALESCE((SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
+                            v.cover_url),
+                   m.up_name,
+                   (SELECT p.duration_text FROM pages p WHERE p.video_id = v.id ORDER BY p.idx LIMIT 1)
+            FROM videos v
+            LEFT JOIN video_meta m ON m.video_id = v.id
+            WHERE v.bvid = $bvid AND v.status = $status;
+            """;
+        command.Parameters.AddWithValue("$bvid", bvid);
+        command.Parameters.AddWithValue("$status", VideoStatus.Arrived.ToString());
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new VideoShareSnapshot(
+            reader.GetString(0),
+            reader.IsDBNull(1) ? null : reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4));
+    }
+
     /// <summary>会话列表：对 from=me OR to=me 的行按 peer 席位聚合，最新一句倒序。名片现查 members（优先昵称，素净席位落 @username）。</summary>
     public IReadOnlyList<DmThread> ListDmThreads(long memberId)
     {

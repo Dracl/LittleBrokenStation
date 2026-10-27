@@ -16,6 +16,63 @@ public static class DmEndpoints
 
     private sealed record DmSendRequest(long? ToMemberId, string? Body);
 
+    private sealed record VideoShareRequest(long? ToMemberId, string? Note);
+
+    /// <summary>安利语封顶（与动态分享同规）。500 字以内刚好。</summary>
+    internal const int MaxShareNoteLength = 500;
+
+    /// <summary>
+    /// 放映厅安利的校验 + 定格（与动态分享同一张嘴，端点 lambda 与测试直驱的都是这里）：
+    /// 错误给状态码与文案，null = 放行；DynJson 是随信落库的视频族卡面（与动态分享 dyn_json 同族），
+    /// 带 watchUrl = /watch/bvid，对方点卡直落站内放映厅。
+    /// </summary>
+    internal static ((int Status, string Message)? Error, long ToMemberId, string Note, string? DynJson) ValidateVideoShare(
+        StationDb db, long fromMemberId, long? toMemberId, string bvid, string? rawNote)
+    {
+        if (toMemberId is not long target)
+        {
+            return ((StatusCodes.Status400BadRequest, "得先有个收信人"), 0, string.Empty, null);
+        }
+
+        if (target == fromMemberId)
+        {
+            return ((StatusCodes.Status400BadRequest, "给自己安利片子，那叫自娱自乐"), 0, string.Empty, null);
+        }
+
+        if (db.GetMemberById(fromMemberId) is not { Status: MemberStatus.Active })
+        {
+            return ((StatusCodes.Status403Forbidden, "你的席位不在站上，分享闸落着"), 0, string.Empty, null);
+        }
+
+        if (db.GetMemberById(target) is not { Status: MemberStatus.Active })
+        {
+            return ((StatusCodes.Status404NotFound, "对方不在站"), 0, string.Empty, null);
+        }
+
+        var note = rawNote?.Trim() ?? string.Empty;
+        if (note.Length > MaxShareNoteLength)
+        {
+            return ((StatusCodes.Status400BadRequest, "安利语太长了，500 字以内刚好"), 0, string.Empty, null);
+        }
+
+        if (db.GetVideoShareSnapshot(bvid) is not { } snap)
+        {
+            return ((StatusCodes.Status404NotFound, "分站馆藏里没有这个片子，安利不了空气"), 0, string.Empty, null);
+        }
+
+        var dynJson = JsonSerializer.Serialize(new
+        {
+            type = "video",
+            bvid = snap.Bvid,
+            title = snap.Title,
+            cover = snap.Cover,
+            upName = snap.UpName,
+            durationText = snap.DurationText,
+            watchUrl = $"/watch/{snap.Bvid}",
+        });
+        return (null, target, note, dynJson);
+    }
+
     /// <summary>发送前校验：错误给状态码与文案，null = 放行（body 已 trim）。全程席位 id。</summary>
     internal static ((int Status, string Message)? Error, long ToMemberId, string Body) ValidateSend(
         StationDb db, long fromMemberId, long? toMemberId, string? rawBody)
@@ -163,6 +220,25 @@ public static class DmEndpoints
 
             var id = db.SendDm(me.Id, target, body);
             return Results.Ok(new { id });
+        });
+
+        // 放映厅安利：动态分享的视频形态——bvid 必查在馆，定格卡面随信落库（dyn_json 视频族），
+        // 对方会话里点卡直落 /watch/{bvid}。校验全收进 ValidateVideoShare（与动态分享同规）。
+        app.MapPost("/api/videos/{bvid}/share", (string bvid, VideoShareRequest? request, StationDb db, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is not { } me)
+            {
+                return Results.Json(new { message = "登录后才能给朋友安利" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            var (error, target, note, dynJson) = ValidateVideoShare(db, me.Id, request?.ToMemberId, bvid, request?.Note);
+            if (error is not null)
+            {
+                return Results.Json(new { message = error.Value.Message }, statusCode: error.Value.Status);
+            }
+
+            var id = db.SendDm(me.Id, target, note, "video", bvid, dynJson!);
+            return Results.Ok(new { id, message = "已把这个片子塞进对方信箱" });
         });
     }
 

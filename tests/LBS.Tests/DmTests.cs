@@ -2,6 +2,7 @@ using LBS.Domain;
 using LBS.Engine;
 using LBS.Infrastructure;
 using LBS.Server;
+using Microsoft.AspNetCore.Http;
 
 namespace LBS.Tests;
 
@@ -256,5 +257,53 @@ public sealed class DmTests : IDisposable
 
         var roster = _db.GetActiveMembersForDirectory();
         Assert.Equal([8001L, 8002L], roster.Where(m => m.Mid is not null).Select(m => m.Mid).OrderBy(m => m));
+    }
+
+    [Fact]
+    public void VideoShare_ValidatesAndFreezesCard_SameMouth()
+    {
+        // 放映厅安利：端点 lambda 薄薄一层皮，校验与定格全收进 ValidateVideoShare（与动态分享同规），这里直驱同一张嘴。
+        var me = AdmitSeat(7101, "我");
+        var peer = AdmitSeat(7102, "对方");
+        var vid = _db.AddVideo("https://www.bilibili.com/video/BVshare001", "BVshare001").VideoId;
+        _db.MarkSubmitted(vid, new[] { "t1" }, "好片子", "https://i0.hdslb.com/c.jpg");
+        _db.MarkArrived(vid);
+
+        var (error, target, note, dynJson) = DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", "  都给我去看！  ");
+        Assert.Null(error);
+        Assert.Equal(peer, target);
+        Assert.Equal("都给我去看！", note);
+        using (var card = System.Text.Json.JsonDocument.Parse(dynJson!))
+        {
+            Assert.Equal("video", card.RootElement.GetProperty("type").GetString());
+            Assert.Equal("BVshare001", card.RootElement.GetProperty("bvid").GetString());
+            Assert.Equal("好片子", card.RootElement.GetProperty("title").GetString());
+            Assert.Equal("https://i0.hdslb.com/c.jpg", card.RootElement.GetProperty("cover").GetString());
+            Assert.Equal("/watch/BVshare001", card.RootElement.GetProperty("watchUrl").GetString());
+        }
+
+        // 归档封面后卡面升级 /media/（与观看页同形，本地优先）；安利语可不写（空串，卡即正文）。
+        _db.RegisterCoverArtifact(vid, "BVshare001.Cover.jpg");
+        var (_, _, emptyNote, upgraded) = DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", null);
+        Assert.Equal(string.Empty, emptyNote);
+        using (var card2 = System.Text.Json.JsonDocument.Parse(upgraded!))
+        {
+            Assert.Equal("/media/BVshare001.Cover.jpg", card2.RootElement.GetProperty("cover").GetString());
+        }
+
+        // 随信落库（video 族与动态分享同表同形），对方会话里拿得到卡。
+        var id = _db.SendDm(me, peer, emptyNote, "video", "BVshare001", upgraded);
+        var convo = _db.ListDmConversation(peer, me);
+        var landed = Assert.Single(convo, m => m.Id == id);
+        Assert.Equal("video", landed.MsgType);
+        Assert.Contains("/watch/BVshare001", landed.DynJson);
+
+        // 校验嘴脸与动态分享同款：空气收信人/自娱自乐/查无此片/安利语超长/待邀空席。
+        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, null, "BVshare001", null).Error!.Value.Status);
+        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, me, "BVshare001", null).Error!.Value.Status);
+        Assert.Equal(StatusCodes.Status404NotFound, DmEndpoints.ValidateVideoShare(_db, me, peer, "BV查无此片0", null).Error!.Value.Status);
+        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", new string('字', 501)).Error!.Value.Status);
+        var (pendingId, _) = _db.CreateMemberInvite(null);
+        Assert.Equal(StatusCodes.Status404NotFound, DmEndpoints.ValidateVideoShare(_db, me, pendingId, "BVshare001", null).Error!.Value.Status);
     }
 }
