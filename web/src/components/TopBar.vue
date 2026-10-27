@@ -152,17 +152,8 @@ function goMessages() {
           >{{ unread > 99 ? '99+' : unread }}</span>
         </button>
 
-        <!-- 总门小头像：不分访客/成员都是这个圆——访客点开登录窗，成员点开下拉菜单 -->
-        <div class="relative flex items-center gap-2">
-          <!-- 访客多一个入口：不想扫码就注册个席位 -->
-          <RouterLink
-            v-if="!member"
-            to="/register"
-            class="hidden shrink-0 rounded-full border border-lineSoft px-3 py-1 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink sm:block"
-            title="用站名密码注册个席位"
-          >
-            注册
-          </RouterLink>
+        <!-- 总门小头像：不分访客/成员都是这个圆——访客点开登录窗（内含注册入口），成员点开下拉菜单 -->
+        <div class="relative">
           <button
             class="block h-8 w-8 shrink-0 overflow-visible rounded-full transition"
             :title="member ? (member.role === 'owner' ? `站长「${displayName}」` : `「${displayName}」`) : '登录 / 注册'"
