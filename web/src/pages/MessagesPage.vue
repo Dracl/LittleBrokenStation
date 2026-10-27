@@ -310,17 +310,58 @@ function peerLabel(p) {
   <div class="min-h-screen bg-pageBg">
     <TopBar />
     <main class="mx-auto max-w-[960px] px-6 py-6">
-      <h1 class="mb-3 text-lg font-medium text-inkMain">站内信箱</h1>
+      <!-- 页眉：仿投稿窗的装裱语言——粉盾圆图标 + 渐变衬底 -->
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-lineSoft bg-cardBg bg-gradient-to-r from-stationPink/10 via-stationPink/5 to-transparent px-5 py-4">
+        <div class="flex items-center gap-3">
+          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-stationPink/10">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8">
+              <rect x="3" y="5" width="18" height="14" rx="2.5" />
+              <path d="m3 7 9 6 9-6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <div>
+            <h1 class="text-[17px] font-semibold text-inkMain">站内信箱</h1>
+            <p class="mt-0.5 text-xs text-inkFaint">站点的大小事与悄悄话，都从这里收发</p>
+          </div>
+        </div>
+        <!-- 双页签：投稿窗同款胶囊，激活粉底白字（访客没得点，藏起来） -->
+        <div v-if="member" class="flex gap-2">
+          <button
+            class="rounded-full border px-3.5 py-1.5 text-sm transition"
+            :class="activeTab === 'inbox'
+              ? 'border-stationPink bg-stationPink text-white shadow-sm shadow-stationPink/30'
+              : 'border-lineSoft text-inkSub hover:border-stationPink/40 hover:text-inkMain'"
+            @click="switchTab('inbox')"
+          >
+            信箱<span v-if="inboxUnread > 0" class="ml-1 text-[11px]" :class="activeTab === 'inbox' ? 'text-white/80' : 'text-stationPink'">({{ inboxUnread }})</span>
+          </button>
+          <button
+            class="relative rounded-full border px-3.5 py-1.5 text-sm transition"
+            :class="activeTab === 'dm'
+              ? 'border-stationPink bg-stationPink text-white shadow-sm shadow-stationPink/30'
+              : 'border-lineSoft text-inkSub hover:border-stationPink/40 hover:text-inkMain'"
+            @click="switchTab('dm')"
+          >
+            私信
+            <span
+              v-if="dmUnread > 0"
+              class="absolute -right-1.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-stationPink px-1 text-[10px] font-medium leading-none text-white"
+            >{{ dmUnread > 99 ? '99+' : dmUnread }}</span>
+          </button>
+        </div>
+      </div>
 
-      <!-- 访客：信箱与私信都是成员待遇，指路扫码 -->
+      <!-- 访客：信箱与私信都是分站成员待遇——投稿窗同款渐变钮指路 -->
       <section v-if="loaded && !member" class="rounded-2xl border border-lineSoft bg-cardBg px-6 py-14 text-center">
-        <svg viewBox="0 0 64 48" class="mx-auto mb-4 h-14 w-16 text-lineSoft" fill="none" stroke="currentColor" stroke-width="2.4">
-          <rect x="3" y="5" width="58" height="38" rx="6" />
-          <path d="M5 9 32 29 59 9" stroke-linejoin="round" />
-        </svg>
-        <p class="text-sm text-inkSub">信箱和私信是分站成员的待遇——进站，第一封欢迎信就在等你。</p>
+        <span class="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-stationPink/10">
+          <svg viewBox="0 0 24 24" class="h-7 w-7 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="3" y="5" width="18" height="14" rx="2.5" />
+            <path d="m3 7 9 6 9-6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
+        <p class="mt-4 text-sm text-inkSub">信箱和私信是分站成员的待遇——进站，第一封欢迎信就在等你。</p>
         <button
-          class="mt-5 rounded-full bg-stationPink px-6 py-2 text-sm text-white transition hover:bg-stationPink/90"
+          class="mt-5 rounded-lg bg-gradient-to-r from-stationPink to-[#f994b6] px-6 py-2 text-sm font-medium text-white shadow-md shadow-stationPink/30 transition hover:-translate-y-px hover:shadow-lg hover:shadow-stationPink/40 active:translate-y-0"
           @click="loginDialogMode = 'admit'; loginDialogOpen = true"
         >
           直接登录
@@ -329,28 +370,6 @@ function peerLabel(p) {
       </section>
 
       <template v-else-if="member">
-        <!-- 双页签：朴素下划线式，激活站粉 -->
-        <div class="mb-4 flex items-center gap-6 border-b border-lineSoft">
-          <button
-            class="-mb-px border-b-2 pb-2 text-sm transition"
-            :class="activeTab === 'inbox' ? 'border-stationPink font-medium text-stationPink' : 'border-transparent text-inkSub hover:text-inkMain'"
-            @click="switchTab('inbox')"
-          >
-            信箱<span v-if="inboxUnread > 0" class="ml-1 text-[11px] text-stationPink">({{ inboxUnread }})</span>
-          </button>
-          <button
-            class="relative -mb-px border-b-2 pb-2 text-sm transition"
-            :class="activeTab === 'dm' ? 'border-stationPink font-medium text-stationPink' : 'border-transparent text-inkSub hover:text-inkMain'"
-            @click="switchTab('dm')"
-          >
-            私信
-            <span
-              v-if="dmUnread > 0"
-              class="absolute -right-3 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-stationPink px-1 text-[10px] font-medium leading-none text-white"
-            >{{ dmUnread > 99 ? '99+' : dmUnread }}</span>
-          </button>
-        </div>
-
         <!-- ═══ 信箱页签 ═══ -->
         <template v-if="activeTab === 'inbox'">
           <section class="overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
@@ -370,16 +389,18 @@ function peerLabel(p) {
             <p v-if="loading" class="px-5 py-10 text-center text-sm text-inkFaint">正在翻信箱…</p>
 
             <div v-else-if="!items.length" class="px-6 py-14 text-center">
-              <svg viewBox="0 0 64 48" class="mx-auto mb-4 h-14 w-16 text-lineSoft" fill="none" stroke="currentColor" stroke-width="2.4">
-                <rect x="3" y="5" width="58" height="38" rx="6" />
-                <path d="M5 9 32 29 59 9" stroke-linejoin="round" />
-                <path d="M44 34c2.5-3 6-3.4 9-1" stroke-linecap="round" opacity="0.55" />
-              </svg>
-              <p class="text-sm text-inkFaint">邮箱空空，岁月静好。投的稿子入档时，这里会亮起来。</p>
+              <span class="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-stationPink/10">
+                <svg viewBox="0 0 24 24" class="h-7 w-7 text-stationPink/70" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <rect x="3" y="5" width="18" height="14" rx="2.5" />
+                  <path d="m3 7 9 6 9-6" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M16 17c1.2-1.6 3-1.8 4.5-.5" stroke-linecap="round" opacity="0.55" />
+                </svg>
+              </span>
+              <p class="mt-4 text-sm text-inkFaint">邮箱空空，岁月静好。投的稿子入档时，这里会亮起来。</p>
             </div>
 
             <ul v-else>
-              <li v-for="item in items" :key="item.id" class="border-b border-lineSoft/60 last:border-b-0">
+              <li v-for="item in items" :key="item.id" class="border-b border-lineSoft/60 last:border-b-0" :class="item.readAtUtc ? '' : 'bg-stationPink/[0.03]'">
                 <button class="flex w-full items-center gap-3 px-5 py-3.5 text-left transition hover:bg-stationPink/5" @click="toggle(item)">
                   <span class="shrink-0 rounded-md px-1.5 py-0.5 text-[11px]" :class="meta(item.kind).cls">{{ meta(item.kind).label }}</span>
                   <span class="min-w-0 flex-1">
@@ -467,8 +488,12 @@ function peerLabel(p) {
             <!-- 右：聊天面板 -->
             <section class="flex min-h-[420px] min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
               <template v-if="activePeer">
-                <div class="flex items-center justify-between border-b border-lineSoft px-4 py-3">
+                <div class="flex items-center justify-between border-b border-lineSoft bg-gradient-to-r from-stationPink/10 via-stationPink/5 to-transparent px-4 py-3">
                   <span class="flex items-center gap-2 text-[13px] font-medium text-inkMain">
+                    <img v-if="activePeer.faceUrl" :src="activePeer.faceUrl" referrerpolicy="no-referrer" class="h-7 w-7 rounded-full object-cover" alt="" />
+                    <span v-else class="flex h-7 w-7 items-center justify-center rounded-full bg-stationPink/10">
+                      <svg viewBox="0 0 24 24" class="h-4 w-4 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8.5" r="3.5" /><path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" /></svg>
+                    </span>
                     {{ peerLabel(activePeer) }}
                     <span class="text-[11px] font-normal text-inkFaint">
                       <template v-if="activePeer.username">{{ activePeer.username }} · </template>UID #{{ activePeer.memberId }}
@@ -479,7 +504,14 @@ function peerLabel(p) {
 
                 <div class="flex-1 space-y-2.5 overflow-y-auto bg-[#f8f9fa] px-4 py-4" style="max-height: 480px">
                   <p v-if="convoLoading && !conversation.length" class="py-8 text-center text-sm text-inkFaint">正在翻记录…</p>
-                  <p v-else-if="!conversation.length" class="py-8 text-center text-sm text-inkFaint">还没说过话，第一句由你来。</p>
+                  <div v-else-if="!conversation.length" class="flex flex-col items-center justify-center gap-2.5 py-12 text-center">
+                    <span class="flex h-11 w-11 items-center justify-center rounded-full bg-stationPink/10">
+                      <svg viewBox="0 0 24 24" class="h-5 w-5 text-stationPink/70" fill="none" stroke="currentColor" stroke-width="1.8">
+                        <path d="M21 12a8 8 0 0 1-8 8c-1.2 0-2.3-.2-3.3-.6L5 21l1.2-3.4A8 8 0 1 1 21 12Z" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                    <p class="text-sm text-inkFaint">还没说过话，第一句由你来。</p>
+                  </div>
                   <div
                     v-for="m in conversation"
                     :key="m.id"
@@ -496,18 +528,18 @@ function peerLabel(p) {
                   <div ref="scrollAnchor"></div>
                 </div>
 
-                <div class="border-t border-lineSoft p-3">
+                <div class="border-t border-lineSoft bg-[#fafbfc] p-3">
                   <div class="flex items-end gap-2">
                     <textarea
                       v-model="draft"
                       rows="2"
                       maxlength="2000"
-                      class="min-h-[52px] flex-1 resize-none rounded-xl border border-lineSoft bg-pageBg px-3 py-2 text-[13px] outline-none transition placeholder:text-inkFaint focus:border-stationPink/60"
+                      class="min-h-[52px] flex-1 resize-none rounded-xl border border-lineSoft bg-[#f6f7f8] px-3.5 py-2 text-[13px] text-inkMain outline-none transition placeholder:text-inkFaint focus:border-stationPink focus:bg-white focus:ring-2 focus:ring-stationPink/20"
                       placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"
                       @keydown="onDraftKeydown"
                     ></textarea>
                     <button
-                      class="h-[52px] shrink-0 rounded-xl bg-stationPink px-5 text-sm text-white transition hover:bg-stationPink/90 disabled:cursor-not-allowed disabled:opacity-50"
+                      class="h-[52px] shrink-0 rounded-xl bg-gradient-to-r from-stationPink to-[#f994b6] px-5 text-sm font-medium text-white shadow-md shadow-stationPink/30 transition hover:-translate-y-px hover:shadow-lg hover:shadow-stationPink/40 active:translate-y-0 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
                       :disabled="sending || !draft.trim()"
                       @click="sendDm"
                     >
@@ -517,7 +549,12 @@ function peerLabel(p) {
                 </div>
               </template>
 
-              <div v-else class="flex flex-1 items-center justify-center px-6 text-center">
+              <div v-else class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+                <span class="flex h-14 w-14 items-center justify-center rounded-full bg-stationPink/10">
+                  <svg viewBox="0 0 24 24" class="h-7 w-7 text-stationPink/70" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M21 12a8 8 0 0 1-8 8c-1.2 0-2.3-.2-3.3-.6L5 21l1.2-3.4A8 8 0 1 1 21 12Z" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
                 <p class="text-sm text-inkFaint">左边挑个会话，或「＋ 发起私聊」认识位分站伙伴。</p>
               </div>
             </section>
@@ -529,9 +566,18 @@ function peerLabel(p) {
           <template v-if="directoryOpen">
             <div class="fixed inset-0 z-30 bg-black/30" @click="directoryOpen = false"></div>
             <div class="fixed left-1/2 top-1/2 z-40 w-[340px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-lineSoft bg-cardBg shadow-[0_20px_60px_-12px_rgba(0,0,0,0.35)]">
-              <div class="flex items-center justify-between border-b border-lineSoft px-4 py-3">
-                <span class="text-sm font-medium text-inkMain">发起私聊</span>
-                <button class="text-inkFaint transition hover:text-inkMain" @click="directoryOpen = false">✕</button>
+              <div class="flex items-center justify-between border-b border-lineSoft bg-gradient-to-r from-stationPink/10 via-stationPink/5 to-transparent px-4 py-3">
+                <span class="flex items-center gap-2.5 text-sm font-medium text-inkMain">
+                  <span class="flex h-8 w-8 items-center justify-center rounded-full bg-stationPink/10">
+                    <svg viewBox="0 0 24 24" class="h-4 w-4 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8">
+                      <circle cx="10" cy="8.5" r="3.5" />
+                      <path d="M3.5 19.5c1.3-3.1 3.8-4.4 6.5-4.4s5.2 1.3 6.5 4.4" stroke-linecap="round" />
+                      <path d="M17 9h5M19.5 6.5v5" stroke-linecap="round" />
+                    </svg>
+                  </span>
+                  发起私聊
+                </span>
+                <button class="flex h-7 w-7 items-center justify-center rounded-full text-inkFaint transition hover:bg-black/5 hover:text-inkMain" @click="directoryOpen = false">✕</button>
               </div>
               <p v-if="directory === null" class="px-4 py-8 text-center text-sm text-inkFaint">在点名…</p>
               <div v-else-if="!directory.length" class="px-4 py-8 text-center text-sm text-inkFaint">站上没别人可聊。</div>
