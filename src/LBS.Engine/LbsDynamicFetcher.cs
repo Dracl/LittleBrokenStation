@@ -69,7 +69,9 @@ public sealed record CommentFetchOutcome(
     IReadOnlyList<ParsedComment> Comments,
     string? Error,
     // 一级评论总数（B 站 page.count）：动态流不带 stat，底栏评论数就靠巡捕回执回住。
-    int TotalCount = 0);
+    int TotalCount = 0,
+    // 正文里真用到的表情（转义符→远程 url），由 content.emote 汇集；落盘交给评论资产缓存。
+    IReadOnlyList<(string Seq, string Url)>? Emotes = null);
 
 /// <summary>一个 target 这一轮的拉取战报。Offset=null 表示历史见底/取齐，下轮从头开始。</summary>
 public sealed record DynamicFetchOutcome(
@@ -222,7 +224,7 @@ public sealed class LbsDynamicFetcher(
         var replyType = commentType is > 0 ? commentType.Value : TypeDynamicReply;
         var replyOid = string.IsNullOrWhiteSpace(commentOid) ? dynamicId : commentOid;
         var collected = new List<ParsedComment>();
-        var (mainStatus, topComments, subRoots, totalCount, reason) = await FetchRepliesAsync(
+        var (mainStatus, topComments, subRoots, totalCount, reason, mainEmotes) = await FetchRepliesAsync(
             ReplyOldPath, dynamicId, replyType, replyOid, rootRpid: 0, extra: new Dictionary<string, object?>
             {
                 ["sort"] = 2, // 热度序，与新 main 的 mode=3 同源；而且只有老口肯给 page.count 总评数
@@ -234,13 +236,19 @@ public sealed class LbsDynamicFetcher(
             cancellationToken);
         if (mainStatus != FeedParseStatus.Ok)
         {
-            return new CommentFetchOutcome(false, mainStatus == FeedParseStatus.RiskControlled, collected, reason);
+            return new CommentFetchOutcome(false, mainStatus == FeedParseStatus.RiskControlled, collected, reason, 0, mainEmotes);
+        }
+
+        var emotes = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (seq, url) in mainEmotes)
+        {
+            emotes[seq] = url;
         }
 
         collected.AddRange(topComments);
         foreach (var root in subRoots.Take(MaxSubThreads))
         {
-            var (subStatus, subComments, _, _, subReason) = await FetchRepliesAsync(
+            var (subStatus, subComments, _, _, subReason, subEmotes) = await FetchRepliesAsync(
                 ReplySubPath, dynamicId, replyType, replyOid, rootRpid: root, extra: new Dictionary<string, object?>
                 {
                     ["pn"] = 1, // 楼中楼翻页认 pn/ps（同归档器 FetchSubsAsync）
@@ -252,16 +260,20 @@ public sealed class LbsDynamicFetcher(
             if (subStatus == FeedParseStatus.RiskControlled)
             {
                 // 子楼里撞风控：一级热评已经到手，就此收兵，剩余子楼留下轮。
-                return new CommentFetchOutcome(false, true, collected, subReason, totalCount);
+                return new CommentFetchOutcome(false, true, collected, subReason, totalCount, emotes.Count > 0 ? emotes.Select(kv => (kv.Key, kv.Value)).ToList() : mainEmotes);
             }
 
             collected.AddRange(subComments);
+            foreach (var (seq, url) in subEmotes)
+            {
+                emotes[seq] = url;
+            }
         }
 
-        return new CommentFetchOutcome(true, false, collected, null, totalCount);
+        return new CommentFetchOutcome(true, false, collected, null, totalCount, emotes.Count > 0 ? emotes.Select(kv => (kv.Key, kv.Value)).ToList() : null);
     }
 
-    private async Task<(FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, int TotalCount, string? Reason)> FetchRepliesAsync(
+    private async Task<(FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, int TotalCount, string? Reason, IReadOnlyList<(string Seq, string Url)> Emotes)> FetchRepliesAsync(
         string path, string dynamicId, long replyType, string replyOid, long rootRpid, Dictionary<string, object?> extra, int max, bool collectRoots, CancellationToken cancellationToken)
     {
         var paras = new Dictionary<string, object?>
@@ -293,15 +305,15 @@ public sealed class LbsDynamicFetcher(
                 }
                 catch (HttpRequestException ex)
                 {
-                    return (FeedParseStatus.RiskControlled, (IReadOnlyList<ParsedComment>)[], (IReadOnlyList<long>)[], 0, $"HTTP 层拒了：{ex.Message}");
+                    return (FeedParseStatus.RiskControlled, (IReadOnlyList<ParsedComment>)[], (IReadOnlyList<long>)[], 0, $"HTTP 层拒了：{ex.Message}", (IReadOnlyList<(string Seq, string Url)>)[]);
                 }
             },
             timeProvider,
             cancellationToken);
     }
 
-    /// <summary>评论页纯解析：与 ParseFeed 同一张嘴认 code/v_voucher，replies[] 按形状剥平；顺手拿 page.count 当一级评论总数。测试直喂 JSON。</summary>
-    public static (FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, int TotalCount, string? Reason) ParseReplies(
+    /// <summary>评论页纯解析：与 ParseFeed 同一张嘴认 code/v_voucher，replies[] 按形状剥平；顺手拿 page.count 当一级评论总数，剥 content.emote 当表情清单。测试直喂 JSON。</summary>
+    public static (FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, int TotalCount, string? Reason, IReadOnlyList<(string Seq, string Url)> Emotes) ParseReplies(
         string json, long rootRpid, int max, bool collectRoots)
     {
         JsonDocument doc;
@@ -311,7 +323,7 @@ public sealed class LbsDynamicFetcher(
         }
         catch (JsonException)
         {
-            return (FeedParseStatus.Failed, [], [], 0, "B 站回的不是 JSON");
+            return (FeedParseStatus.Failed, [], [], 0, "B 站回的不是 JSON", []);
         }
 
         using (doc)
@@ -322,7 +334,7 @@ public sealed class LbsDynamicFetcher(
                 : -1;
             if (code == -352)
             {
-                return (FeedParseStatus.RiskControlled, [], [], 0, "code=-352 风控校验失败");
+                return (FeedParseStatus.RiskControlled, [], [], 0, "code=-352 风控校验失败", []);
             }
 
             if (code != 0)
@@ -330,20 +342,20 @@ public sealed class LbsDynamicFetcher(
                 // -404 = 这个评论区地址本家没开评论（如开播提醒卡、被销号的作品）：当空评论页交差，免它永世欠账。
                 if (code == -404)
                 {
-                    return (FeedParseStatus.Ok, [], [], 0, null);
+                    return (FeedParseStatus.Ok, [], [], 0, null, []);
                 }
 
-                return (FeedParseStatus.Failed, [], [], 0, $"B 站返回 code={code}");
+                return (FeedParseStatus.Failed, [], [], 0, $"B 站返回 code={code}", []);
             }
 
             if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
             {
-                return (FeedParseStatus.Failed, [], [], 0, "data 没影");
+                return (FeedParseStatus.Failed, [], [], 0, "data 没影", []);
             }
 
             if (data.TryGetProperty("v_voucher", out var voucher) && voucher.ValueKind != JsonValueKind.Null)
             {
-                return (FeedParseStatus.RiskControlled, [], [], 0, "data.v_voucher 现形");
+                return (FeedParseStatus.RiskControlled, [], [], 0, "data.v_voucher 现形", []);
             }
 
             // page.count = 一级评论总数（不管抽了几条），拿回住底栏评论数。
@@ -355,6 +367,8 @@ public sealed class LbsDynamicFetcher(
 
             var replies = new List<ParsedComment>();
             var roots = new List<long>();
+            var emotes = new List<(string Seq, string Url)>();
+            var emoteSeen = new HashSet<string>(StringComparer.Ordinal);
             if (data.TryGetProperty("replies", out var repliesEl) && repliesEl.ValueKind == JsonValueKind.Array)
             {
                 foreach (var el in repliesEl.EnumerateArray())
@@ -371,6 +385,22 @@ public sealed class LbsDynamicFetcher(
                         continue; // 没楼号或空正文的行楼都开不了，丢了比猜强
                     }
 
+                    // 表情清单：B 站随正文自带 content.emote（转义符→图 url），只含真正用到的。
+                    if (Path(el, "content") is { } content
+                        && content.TryGetProperty("emote", out var emote) && emote.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var prop in emote.EnumerateObject())
+                        {
+                            var url = prop.Value.ValueKind == JsonValueKind.Object && prop.Value.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String
+                                ? u.GetString()
+                                : null;
+                            if (!string.IsNullOrWhiteSpace(prop.Name) && !string.IsNullOrWhiteSpace(url) && emoteSeen.Add(prop.Name))
+                            {
+                                emotes.Add((prop.Name, url!));
+                            }
+                        }
+                    }
+
                     var ctime = Num(el, "ctime");
                     replies.Add(new ParsedComment(
                         rpid,
@@ -378,7 +408,8 @@ public sealed class LbsDynamicFetcher(
                         rootRpid == 0 ? 0 : rootRpid,
                         Num(Path(el, "member"), "mid"),
                         Str(Path(el, "member", "uname")),
-                        Str(Path(el, "member", "face")),
+                        // 老口 /x/v2/reply 的 member 只给 avatar 不给 face（视频归档器认的就是 avatar）；两个 key 都认，免得再剃光头。
+                        Str(Path(el, "member", "face")) ?? Str(Path(el, "member", "avatar")),
                         message.Trim(),
                         Num(el, "like") ?? 0,
                         ctime is > 0 ? DateTimeOffset.FromUnixTimeSeconds(ctime.Value).ToString("O") : null));
@@ -390,7 +421,7 @@ public sealed class LbsDynamicFetcher(
                 }
             }
 
-            return (FeedParseStatus.Ok, replies, roots, totalCount, null);
+            return (FeedParseStatus.Ok, replies, roots, totalCount, null, emotes);
         }
     }
 

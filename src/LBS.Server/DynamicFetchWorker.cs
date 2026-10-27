@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LBS.Engine;
 using LBS.Infrastructure;
 
@@ -12,6 +13,7 @@ namespace LBS.Server;
 public sealed class DynamicFetchWorker(
     StationDb db,
     LbsDynamicFetcher fetcher,
+    LbsCommentArchiver assetCache,
     LbsOwnerPolicy policy,
     ILogger<DynamicFetchWorker> logger) : BackgroundService
 {
@@ -185,13 +187,22 @@ public sealed class DynamicFetchWorker(
                     continue;
                 }
 
+                // 头像与表情复用视频评论区的落盘库（data/avatars、data/emotes）：存不下的前端热链兑底。
+                var faceMap = await assetCache.CacheAvatarUrlsAsync(
+                    outcome.Comments.Select(c => c.Face), cancellationToken);
+                var emoteMap = outcome.Emotes is { Count: > 0 } emotePairs
+                    ? await assetCache.CacheEmoteUrlsAsync(emotePairs, cancellationToken)
+                    : null;
+
                 totalComments += db.UpsertComments(dynamicId, outcome.Comments
-                    .Select(c => new StationDb.DynamicCommentRow(c.Rpid, c.RootRpid, c.ParentRpid, c.Mid, c.Name, c.Face, c.Message, c.Like, c.CtimeUtc))
+                    .Select(c => new StationDb.DynamicCommentRow(c.Rpid, c.RootRpid, c.ParentRpid, c.Mid, c.Name, c.Face, c.Message, c.Like, c.CtimeUtc,
+                        c.Face is not null && faceMap.TryGetValue(c.Face, out var local) ? local : null))
                     .ToList());
                 if (outcome.Ok)
                 {
-                    // 盖章时顺手把 B 站报的一级评论总数回住底栏（动态流不带 stat，这是唯一可靠来源）。
-                    db.MarkCommentsFetched(dynamicId, outcome.TotalCount > 0 ? outcome.TotalCount : null);
+                    // 盖章时顺手把 B 站报的一级评论总数回住底栏（动态流不带 stat，这是唯一可靠来源），表情映射一并定格。
+                    db.MarkCommentsFetched(dynamicId, outcome.TotalCount > 0 ? outcome.TotalCount : null,
+                        emoteMap is { Count: > 0 } ? JsonSerializer.Serialize(emoteMap) : null);
                     finished++;
                 }
 

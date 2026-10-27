@@ -62,7 +62,8 @@ public sealed partial class StationDb
         string? Face,
         string Message,
         long LikeCount,
-        string? CtimeUtc);
+        string? CtimeUtc,
+        string? FaceLocal = null);
 
     /// <summary>分享卡定格快照：转发到私信那一刻的卡面，B 站后续删改不连累分站。</summary>
     public sealed record DynamicSnapshot(
@@ -244,8 +245,8 @@ public sealed partial class StationDb
         using var insert = connection.CreateCommand();
         insert.CommandText = """
             INSERT OR IGNORE INTO dynamic_comments
-                (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, message, like_count, ctime_utc, cached_at_utc)
-            VALUES ($did, $rpid, $root, $parent, $mid, $name, $face, $msg, $like, $ctime, $cached);
+                (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, cached_at_utc)
+            VALUES ($did, $rpid, $root, $parent, $mid, $name, $face, $facelocal, $msg, $like, $ctime, $cached);
             """;
         var pDid = insert.Parameters.Add("$did", SqliteType.Text);
         var pRpid = insert.Parameters.Add("$rpid", SqliteType.Integer);
@@ -254,6 +255,7 @@ public sealed partial class StationDb
         var pMid = insert.Parameters.Add("$mid", SqliteType.Integer);
         var pName = insert.Parameters.Add("$name", SqliteType.Text);
         var pFace = insert.Parameters.Add("$face", SqliteType.Text);
+        var pFaceLocal = insert.Parameters.Add("$facelocal", SqliteType.Text);
         var pMsg = insert.Parameters.Add("$msg", SqliteType.Text);
         var pLike = insert.Parameters.Add("$like", SqliteType.Integer);
         var pCtime = insert.Parameters.Add("$ctime", SqliteType.Text);
@@ -267,6 +269,7 @@ public sealed partial class StationDb
             pMid.Value = (object?)c.Mid ?? DBNull.Value;
             pName.Value = (object?)c.Name ?? DBNull.Value;
             pFace.Value = (object?)c.Face ?? DBNull.Value;
+            pFaceLocal.Value = (object?)c.FaceLocal ?? DBNull.Value;
             pMsg.Value = c.Message;
             pLike.Value = c.LikeCount;
             pCtime.Value = (object?)c.CtimeUtc ?? DBNull.Value;
@@ -278,20 +281,32 @@ public sealed partial class StationDb
     }
 
     /// <summary>评论完工碑：盖了章的下轮不再补抓（零评论的动态也算办完，免得天天空跑）；
-    /// 顺手把 B 站报的一级评论总数回写底栏（动态流不带 stat，这是唯一可靠来源）。</summary>
-    public void MarkCommentsFetched(string dynamicId, int? totalCount = null)
+    /// 顺手把 B 站报的一级评论总数回写底栏（动态流不带 stat，这是唯一可靠来源），表情定格映射也此时存入。</summary>
+    public void MarkCommentsFetched(string dynamicId, int? totalCount = null, string? emotesJson = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE dynamics SET comments_fetched_at_utc = $now,
-                stat_comment = COALESCE($count, stat_comment)
+                stat_comment = COALESCE($count, stat_comment),
+                emotes_json = COALESCE($emotes, emotes_json)
             WHERE dynamic_id = $did;
             """;
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$count", (object?)totalCount ?? DBNull.Value);
+        command.Parameters.AddWithValue("$emotes", (object?)emotesJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$did", dynamicId);
         command.ExecuteNonQuery();
+    }
+
+    /// <summary>表情定格映射 JSON（转义符→/emotes/xx.png）：盖章时存入，端点原样透传给前端。</summary>
+    public string? GetDynamicEmotesJson(string dynamicId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT emotes_json FROM dynamics WHERE dynamic_id = $did LIMIT 1;";
+        command.Parameters.AddWithValue("$did", dynamicId);
+        return command.ExecuteScalar() is string s ? s : null;
     }
 
     /// <summary>待抓评论的一条动态：id + B 站给的评论区坐标（缺了巡捕退回 type=17+id）。</summary>
@@ -339,7 +354,7 @@ public sealed partial class StationDb
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT rpid, root_rpid, parent_rpid, mid, name, face, message, like_count, ctime_utc
+            SELECT rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc
             FROM dynamic_comments WHERE dynamic_id = $did ORDER BY root_rpid, id;
             """;
         command.Parameters.AddWithValue("$did", dynamicId);

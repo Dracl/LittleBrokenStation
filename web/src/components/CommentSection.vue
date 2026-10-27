@@ -1,5 +1,5 @@
 <script setup>
-import { mentionHtml } from '../utils/mention'
+import { richHtml } from '../utils/emote'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 const props = defineProps({
@@ -12,16 +12,9 @@ const snapshot = ref(null)
 const state = ref('idle') // idle | loading | ready | empty | failed
 const emoteMap = ref({}) // 转义符 → /emotes/xx.png（下载失败时为远程热链）
 
-// 正文渲染：转义→@高亮→[表情]换图，同一根管线。
+// 正文渲染：转义→@高亮→[表情]换图，与动态评论区共用 utils/emote 同一根管线。
 function rich(text) {
-  let html = mentionHtml(text)
-  for (const [seq, loc] of Object.entries(emoteMap.value)) {
-    if (!seq || !loc) continue
-    const safeSrc = String(loc).replace(/"/g, '&quot;')
-    const alt = String(seq).replace(/"/g, '&quot;')
-    html = html.split(seq).join(`<img src="${safeSrc}" alt="${alt}" referrerpolicy="no-referrer" class="mx-[1px] inline h-[18px] align-text-bottom" />`)
-  }
-  return html
+  return richHtml(text, emoteMap.value)
 }
 
 function picLocal(item, i) {

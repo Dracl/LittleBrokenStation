@@ -417,18 +417,27 @@ public sealed class LbsCommentArchiver(
 
     private static long EffectiveReplyCount(ReplyRaw raw) => Math.Max(raw.Rcount, raw.ReplyCount);
 
-    /// <summary>头像批量落盘：data/avatars/{sha1(url)}.{ext}，已存在即跳过；单张失败只丢那张的热链回退。</summary>
-    private async Task<Dictionary<string, string>> CacheAvatarsAsync(IEnumerable<ReplyRaw> raws, CancellationToken cancellationToken)
+    /// <summary>头像批量落盘（公共入口，动态评论也复用）：data/avatars/{sha1(url)}.{ext}，已存在即跳过；单张失败只丢那张（不进 map，前端回退热链）。</summary>
+    public Task<Dictionary<string, string>> CacheAvatarUrlsAsync(IEnumerable<string?> urls, CancellationToken cancellationToken)
+    {
+        return CacheAvatarsCoreAsync(urls, cancellationToken);
+    }
+
+    private Task<Dictionary<string, string>> CacheAvatarsAsync(IEnumerable<ReplyRaw> raws, CancellationToken cancellationToken)
+    {
+        return CacheAvatarsCoreAsync(raws.Select(r => r.Member?.Avatar), cancellationToken);
+    }
+
+    private async Task<Dictionary<string, string>> CacheAvatarsCoreAsync(IEnumerable<string?> urls, CancellationToken cancellationToken)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        var urls = raws
-            .Select(r => r.Member?.Avatar)
+        var targets = urls
             .Where(u => !string.IsNullOrWhiteSpace(u) && u!.StartsWith("http", StringComparison.Ordinal))
             .Distinct()
             .Take(MaxAvatarDownloads)
             .ToList();
 
-        foreach (var url in urls)
+        foreach (var url in targets)
         {
             if (map.TryGetValue(url!, out _))
             {
@@ -492,10 +501,14 @@ public sealed class LbsCommentArchiver(
         return map;
     }
 
-    /// <summary>表情落盘 data/emotes：只下 content.emote 里实际用到的；下载失败的映射直接指远程热链。</summary>
-    private async Task<Dictionary<string, string>> CacheEmotesAsync(IEnumerable<ReplyRaw> raws, CancellationToken cancellationToken)
+    /// <summary>表情落盘（公共入口，动态评论也复用）：只下给到的 (转义符, url) 对；下载失败的映射直接指远程热链。</summary>
+    public Task<Dictionary<string, string>> CacheEmoteUrlsAsync(IEnumerable<(string Seq, string Url)> pairs, CancellationToken cancellationToken)
     {
-        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        return CacheEmotesCoreAsync(pairs, cancellationToken);
+    }
+
+    private Task<Dictionary<string, string>> CacheEmotesAsync(IEnumerable<ReplyRaw> raws, CancellationToken cancellationToken)
+    {
         var pairs = new List<(string Seq, string Url)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var raw in raws)
@@ -510,6 +523,12 @@ public sealed class LbsCommentArchiver(
             }
         }
 
+        return CacheEmotesCoreAsync(pairs, cancellationToken);
+    }
+
+    private async Task<Dictionary<string, string>> CacheEmotesCoreAsync(IEnumerable<(string Seq, string Url)> pairs, CancellationToken cancellationToken)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (seq, url) in pairs.Take(MaxEmoteDownloads))
         {
             if (cancellationToken.IsCancellationRequested)

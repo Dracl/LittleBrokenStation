@@ -201,7 +201,8 @@ public sealed class DynamicCacheTests : IDisposable
         var json = """
             {"code":0,"data":{"page":{"count":128},"replies":[
               {"rpid":111,"ctime":1700000000,"like":42,"rcount":3,
-               "content":{"message":"热评一号"},"member":{"mid":9001,"uname":"月光","face":"https://i0.hdslb.com/f/1.jpg"}},
+               "content":{"message":"热评一号[爱心]","emote":{"[爱心]":{"url":"https://i0.hdslb.com/emote/love.png"}}},
+               "member":{"mid":9001,"uname":"月光","avatar":"https://i0.hdslb.com/f/1.jpg"}},
               {"rpid":112,"content":{"message":"   "},"member":{"mid":1}},
               {"rpid":0,"content":{"message":"没楼号"},"member":{"mid":2}}]}}
             """;
@@ -209,14 +210,17 @@ public sealed class DynamicCacheTests : IDisposable
         var result = LbsDynamicFetcher.ParseReplies(json, rootRpid: 0, max: 20, collectRoots: true);
         Assert.Equal(FeedParseStatus.Ok, result.Status);
         Assert.Equal(128, result.TotalCount); // 底栏评论数认 page.count，不认抽了几条
-        Assert.Equal(FeedParseStatus.Ok, result.Status);
         var top = Assert.Single(result.Replies); // 空正文与没楼号的行开不了楼
         Assert.Equal(111, top.Rpid);
         Assert.Equal(0, top.RootRpid);
         Assert.Equal("月光", top.Name);
+        // 老口 /x/v2/reply 的 member 只给 avatar 不给 face：两 key 都得认，不然是全场剃光头。
+        Assert.Equal("https://i0.hdslb.com/f/1.jpg", top.Face);
         Assert.Equal(42, top.Like);
         Assert.Equal("2023-11-14", top.CtimeUtc![..10]);
         Assert.Equal([111L], result.Roots);
+        // 表情清单：转义符→图 url 随正文自带，交给评论资产缓存落盘。
+        Assert.Equal(("[爱心]", "https://i0.hdslb.com/emote/love.png"), Assert.Single(result.Emotes));
     }
 
     [Fact]

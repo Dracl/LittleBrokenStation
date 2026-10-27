@@ -6,6 +6,7 @@ import DynamicVideoCard from '../components/DynamicVideoCard.vue'
 import ShareDynamicDialog from '../components/ShareDynamicDialog.vue'
 import { member, loginDialogOpen } from '../memberStore'
 import { friendlyTime } from '../utils/time'
+import { richHtml } from '../utils/emote'
 
 const route = useRoute()
 
@@ -51,7 +52,7 @@ function splitForward(text) {
 // ─── 评论抽屉：每条评价现拉现展，收起来不拆数据（二次展开不重拉）───
 const commentsMap = reactive({})
 function cmtState(d) {
-  return (commentsMap[d.dynamicId] ||= { open: false, loading: false, loaded: false, fetched: false, total: 0, items: [], expanded: {} })
+  return (commentsMap[d.dynamicId] ||= { open: false, loading: false, loaded: false, fetched: false, total: 0, items: [], expanded: {}, emotes: {} })
 }
 
 async function loadComments(d) {
@@ -65,6 +66,7 @@ async function loadComments(d) {
       st.items = data.items ?? []
       st.total = data.total ?? 0
       st.fetched = !!data.fetched
+      st.emotes = data.emotes ?? {}
       st.loaded = true
     }
   } catch {
@@ -424,8 +426,8 @@ onMounted(async () => {
               <p class="mb-2 text-[11px] text-inkFaint">评论同步自 B 站，分站只读留档 · 共 {{ cmtState(d).total }} 条</p>
               <div v-for="top in cmtState(d).items" :key="top.rpid" class="mb-3 flex gap-2.5">
                 <img
-                  v-if="top.face"
-                  :src="top.face"
+                  v-if="top.faceLocal || top.face"
+                  :src="top.faceLocal || top.face"
                   referrerpolicy="no-referrer"
                   loading="lazy"
                   class="h-8 w-8 shrink-0 rounded-full object-cover"
@@ -438,7 +440,7 @@ onMounted(async () => {
                     <span class="text-[12.5px] font-medium text-stationPink">{{ top.name || '无名网友' }}</span>
                     <span class="text-[11px] text-inkFaint">{{ friendlyTime(top.ctimeUtc) }}</span>
                   </div>
-                  <p class="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain">{{ top.message }}</p>
+                  <p class="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain" v-html="richHtml(top.message, cmtState(d).emotes)"></p>
                   <div class="mt-0.5 flex items-center gap-3 text-[11.5px] text-inkFaint">
                     <span v-if="top.like">👍 {{ top.like }}</span>
                   </div>
@@ -447,8 +449,8 @@ onMounted(async () => {
                     <template v-for="(sub, si) in top.replies" :key="sub.rpid">
                       <div v-if="top.replies.length <= 3 || cmtState(d).expanded[top.rpid] || si < 3" class="flex gap-2">
                         <img
-                          v-if="sub.face"
-                          :src="sub.face"
+                          v-if="sub.faceLocal || sub.face"
+                          :src="sub.faceLocal || sub.face"
                           referrerpolicy="no-referrer"
                           loading="lazy"
                           class="h-5 w-5 shrink-0 rounded-full object-cover"
@@ -458,7 +460,7 @@ onMounted(async () => {
                         <div class="min-w-0 flex-1">
                           <span class="text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
                           <span class="ml-1.5 text-[10.5px] text-inkFaint">{{ friendlyTime(sub.ctimeUtc) }}</span>
-                          <p class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain">{{ sub.message }}</p>
+                          <p class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain" v-html="richHtml(sub.message, cmtState(d).emotes)"></p>
                         </div>
                       </div>
                     </template>

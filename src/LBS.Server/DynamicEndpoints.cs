@@ -65,6 +65,7 @@ public static class DynamicEndpoints
                 rpid = top.Rpid,
                 name = top.Name,
                 face = top.Face,
+                faceLocal = top.FaceLocal,
                 message = top.Message,
                 like = top.LikeCount,
                 ctimeUtc = top.CtimeUtc,
@@ -73,16 +74,31 @@ public static class DynamicEndpoints
                     rpid = r.Rpid,
                     name = r.Name,
                     face = r.Face,
+                    faceLocal = r.FaceLocal,
                     message = r.Message,
                     like = r.LikeCount,
                     ctimeUtc = r.CtimeUtc,
                 }).ToList(),
             }).ToList();
+            // 表情定格原样透传（转义符→/emotes/xx.png）；前端 rich() 同一根管线把 [xx] 换图。
+            object? emotes = null;
+            if (db.GetDynamicEmotesJson(dynamicId) is { } emotesJson)
+            {
+                try
+                {
+                    emotes = JsonSerializer.Deserialize<Dictionary<string, string>>(emotesJson);
+                }
+                catch (JsonException)
+                {
+                    // 存坏的映射当没存，前端顶多裸显转义符，不拦端点。
+                }
+            }
             return Results.Ok(new
             {
                 // 总数优先拿巡捕盖章的 page.count（本地只存热评前 20，数条数会低估）。
                 total = db.GetStatComment(dynamicId) ?? rows.Count,
                 fetched = db.GetCommentsFetchedAt(dynamicId) is not null,
+                emotes,
                 items,
             });
         });
