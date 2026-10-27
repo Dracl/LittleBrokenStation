@@ -48,6 +48,7 @@ public sealed class DownloadWorker(
     HeadlessSubmissionService submission,
     LbsAccountRouter router,
     DownloadPauseBoard board,
+    MediaReconcileGate mediaGate,
     ILogger<DownloadWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -59,7 +60,17 @@ public sealed class DownloadWorker(
             await queue.EnqueueAsync(candidate.Id, stoppingToken);
         }
 
-        logger.LogInformation("后台提交 Worker 到站，接管 {Recovered} 条待提交视频", recovered.Count);
+        // 导入/缺件回炉：只在开机换过库的那次点名磁盘实物（闸门见 MediaReconcileGate），
+        // 普通开机一律跳过——仓挂载瞬断时点名会把满仓健康件误拉重下。
+        var returned = mediaGate.ReconcileOnBoot
+            ? MissingMediaReconciler.Reconcile(db, paths, logger)
+            : Array.Empty<long>();
+        foreach (var videoId in returned)
+        {
+            await queue.EnqueueAsync(videoId, stoppingToken);
+        }
+
+        logger.LogInformation("后台提交 Worker 到站，接管 {Recovered} 条待提交视频，缺件回炉 {Returned} 条（换库开机={Swapped}）", recovered.Count, returned.Count, mediaGate.ReconcileOnBoot);
 
         var mainLoop = Task.Run(() => ConsumeMainAsync(stoppingToken), stoppingToken);
         var codecLoop = Task.Run(() => ConsumeCodecAsync(stoppingToken), stoppingToken);

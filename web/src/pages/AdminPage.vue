@@ -793,6 +793,218 @@ function fmtBackupTime(iso) {
   return iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '—'
 }
 
+// ─── 数据交换：勾选式导出打包 + 导入换库（档案柜 data/exports/，暂存 data/imports/）───
+const expStats = ref(null) // {videos, cmtImg, avatars, emotes, cache, dbBytes}
+const expPick = ref({ withCreds: false, withMedia: false, withCmtImg: false, withCaches: false })
+const expBusy = ref(false)
+const expText = ref('')
+const exportList = ref([])
+const armedExport = ref(null) // 两段式销包：同一行再点一次才真删
+let expTimer = null
+let exportArmTimer = null
+
+const cachesBytes = computed(() => (expStats.value?.avatars ?? 0) + (expStats.value?.emotes ?? 0) + (expStats.value?.cache ?? 0))
+
+async function loadExportStats() {
+  try {
+    const res = await fetch('/api/admin/export/stats')
+    expStats.value = res.ok ? await res.json() : null
+  } catch {
+    /* 后端打盹就不报体积 */
+  }
+}
+
+async function loadExports() {
+  try {
+    const res = await fetch('/api/admin/exports')
+    exportList.value = res.ok ? await res.json() : []
+  } catch {
+    exportList.value = []
+  }
+}
+
+function startExport() {
+  if (expBusy.value) return
+  expBusy.value = true
+  expText.value = ''
+  fetch('/api/admin/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(expPick.value),
+  })
+    .then(async (res) => {
+      const d = await res.json().catch(() => null)
+      if (!res.ok || !d?.jobId) {
+        expBusy.value = false
+        expText.value = d?.message ?? '打包没发起成'
+        return
+      }
+      pollExportJob(d.jobId)
+    })
+    .catch(() => {
+      expBusy.value = false
+      expText.value = '分站后端没有应答'
+    })
+}
+
+// 大包在后台流式写盘，这里 2 秒一探，完了刷新档案柜
+function pollExportJob(jobId) {
+  expTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/admin/export/jobs/${jobId}`)
+      const d = await res.json().catch(() => null)
+      if (!res.ok) {
+        expBusy.value = false
+        expText.value = d?.error ?? '任务丢了'
+        return
+      }
+      if (d?.state === 'running') {
+        pollExportJob(jobId)
+        return
+      }
+      expBusy.value = false
+      if (d?.state === 'done') {
+        expText.value = `包已出炉：${d.name}`
+        await loadExports()
+      } else {
+        expText.value = d?.error ?? '打包失败'
+      }
+    } catch {
+      expBusy.value = false
+      expText.value = '分站后端没有应答'
+    }
+  }, 2000)
+}
+
+async function deleteExport(item) {
+  if (armedExport.value !== item.name) {
+    armedExport.value = item.name
+    clearTimeout(exportArmTimer)
+    exportArmTimer = setTimeout(() => {
+      armedExport.value = null
+    }, 5000)
+    return
+  }
+  clearTimeout(exportArmTimer)
+  armedExport.value = null
+  try {
+    await fetch(`/api/admin/exports/${encodeURIComponent(item.name)}`, { method: 'DELETE' })
+  } catch {
+    /* 删不动也照常重扫，列表见真章 */
+  }
+  await loadExports()
+}
+
+// 导入：上传暂存（解包+安检+验库）→ 预览 → 两段式应用 → 等站回来
+const importBusy = ref(false)
+const importText = ref('')
+const importPreview = ref(null) // {stationName, exportedAtUtc, options, counts}
+const importWarnings = ref([])
+const importReceipt = ref('')
+const applyArmed = ref(false)
+const restarting = ref(false)
+const importState = ref(null) // {pending, lastError}
+let pendingTimer = null
+
+async function loadImportState() {
+  try {
+    const res = await fetch('/api/admin/import/pending')
+    importState.value = res.ok ? await res.json() : null
+  } catch {
+    /* 拿不到就不摆状态条 */
+  }
+}
+
+async function onImportFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file || importBusy.value) return
+  importBusy.value = true
+  importText.value = ''
+  importPreview.value = null
+  importWarnings.value = []
+  importReceipt.value = ''
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch('/api/admin/import/upload', { method: 'POST', body: form })
+    const d = await res.json().catch(() => null)
+    if (!res.ok) {
+      importText.value = d?.error ?? '包没收成'
+      return
+    }
+    importReceipt.value = d.receipt
+    importPreview.value = d.preview
+    importWarnings.value = d.warnings ?? []
+  } catch {
+    importText.value = '分站后端没有应答'
+  } finally {
+    importBusy.value = false
+  }
+}
+
+async function applyImport() {
+  if (!importReceipt.value || importBusy.value) return
+  if (!applyArmed.value) {
+    applyArmed.value = true
+    setTimeout(() => {
+      applyArmed.value = false
+    }, 6000)
+    return
+  }
+  applyArmed.value = false
+  importBusy.value = true
+  importText.value = ''
+  try {
+    const res = await fetch('/api/admin/import/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ receipt: importReceipt.value }),
+    })
+    const d = await res.json().catch(() => null)
+    if (!res.ok) {
+      importText.value = d?.error ?? '导入没应用成'
+      importBusy.value = false
+      return
+    }
+    restarting.value = true
+    watchRestart()
+  } catch {
+    importText.value = '分站后端没有应答'
+    importBusy.value = false
+  }
+}
+
+// 等站回魂：换库期间请求注定失败，pending 消失且 health 正常才算完
+function watchRestart() {
+  clearTimeout(pendingTimer)
+  pendingTimer = setTimeout(async () => {
+    try {
+      const res = await fetch('/api/admin/import/pending')
+      const d = await res.json().catch(() => null)
+      importState.value = d
+      const health = await fetch('/api/health')
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)
+      if (d && !d.pending && health?.ok) {
+        restarting.value = false
+        importBusy.value = false
+        importReceipt.value = ''
+        importPreview.value = null
+        importWarnings.value = []
+        loadBackups()
+        loadMembers()
+        loadExports()
+        loadExportStats()
+        return
+      }
+    } catch {
+      /* 站正在换心，什么都拿不到才是常态 */
+    }
+    watchRestart()
+  }, 2500)
+}
+
 async function bootAdmin() {
   // 先拿站长专属端点探身份：401=访客（请扫码），403=普通成员（送客去用户控制室）。
   adminAuth.value = 'loading'
@@ -830,6 +1042,9 @@ async function bootAdmin() {
   loadDlQueue()
   loadBackups()
   loadMembers()
+  loadExportStats()
+  loadExports()
+  loadImportState()
   if (!dlTimer) dlTimer = setInterval(loadDlQueue, 5000)
 }
 
@@ -844,6 +1059,9 @@ watch(member, () => {
 
 onUnmounted(() => {
   if (dlTimer) clearInterval(dlTimer)
+  clearTimeout(expTimer)
+  clearTimeout(exportArmTimer)
+  clearTimeout(pendingTimer)
 })
 </script>
 
@@ -1620,6 +1838,132 @@ onUnmounted(() => {
         </ul>
         <p v-else class="text-xs text-white/25">档案柜还空着，点「立即拍一张」开张。</p>
         <p v-if="backupText" class="mt-2 text-xs text-adminAccent/80">{{ backupText }}</p>
+      </section>
+
+      <section class="lbs-card md:col-span-2">
+        <div class="mb-4 flex items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            数据交换
+            <span class="ml-1 rounded-full border border-adminAccent/30 px-2 py-0.5 text-[10px] normal-case tracking-normal text-adminAccent/70">导出打包 · 导入换库</span>
+          </h3>
+          <p class="text-[11px] text-white/30">档案柜 data/exports/</p>
+        </div>
+
+        <!-- 状态条：导入换库待重启 / 上次换库失败 -->
+        <p v-if="importState?.pending" class="mb-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-200">
+          换库单已落定，分站正等着重启换心——请重新启动服务端进程，起来后本卡自动对账。
+        </p>
+        <p v-else-if="importState?.lastError" class="mb-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs leading-5 text-rose-200">
+          上次导入换库没成：{{ importState.lastError }}
+        </p>
+
+        <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          <!-- 导出 -->
+          <div class="rounded border border-white/5 p-4">
+            <h4 class="mb-3 text-xs tracking-widest text-white/50">导出打包 <span class="text-white/25">必含 station.db + manifest</span></h4>
+            <label class="mb-1.5 flex items-center gap-2 text-xs text-white/65">
+              <input v-model="expPick.withCreds" type="checkbox" class="accent-adminAccent" />
+              登录态（成员 cookie · 副号 · 站长登录）
+              <span class="ml-auto font-mono text-white/25">{{ fmtBytes(expStats?.dbBytes) }} + 凭证件</span>
+            </label>
+            <p v-if="expPick.withCreds" class="mb-1.5 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
+              ⚠ 包含 B 站凭证，请妥善保管
+            </p>
+            <label class="mb-1.5 flex items-center gap-2 text-xs text-white/65">
+              <input v-model="expPick.withMedia" type="checkbox" class="accent-adminAccent" />
+              视频媒体（data/videos 全量）
+              <span class="ml-auto font-mono text-white/25">{{ fmtBytes(expStats?.videos) }}</span>
+            </label>
+            <label class="mb-1.5 flex items-center gap-2 text-xs text-white/65">
+              <input v-model="expPick.withCmtImg" type="checkbox" class="accent-adminAccent" />
+              评论图
+              <span class="ml-auto font-mono text-white/25">{{ fmtBytes(expStats?.cmtImg) }}</span>
+            </label>
+            <label class="mb-3 flex items-center gap-2 text-xs text-white/65">
+              <input v-model="expPick.withCaches" type="checkbox" class="accent-adminAccent" />
+              头像表情缓存
+              <span class="ml-auto font-mono text-white/25">{{ fmtBytes(cachesBytes) }}</span>
+            </label>
+            <div>
+              <button class="lbs-btn" :disabled="expBusy" @click="startExport">
+                {{ expBusy ? '打包中……' : '打包邮走' }}
+              </button>
+              <p v-if="expText" class="mt-2 text-xs text-adminAccent/80">{{ expText }}</p>
+            </div>
+
+            <div class="mt-4 border-t border-white/5 pt-3">
+              <p class="mb-2 text-[11px] uppercase tracking-widest text-white/35">档案柜</p>
+              <div v-if="!exportList.length" class="py-3 text-xs text-white/25">还没有包，勾几个框出第一单。</div>
+              <ul v-else class="max-h-[220px] space-y-1.5 overflow-y-auto pr-1">
+                <li v-for="e in exportList" :key="e.name" class="flex items-center gap-2 font-mono text-xs text-white/60">
+                  <span class="min-w-0 flex-1 truncate" :title="e.name">{{ e.name }}</span>
+                  <span v-if="e.options?.withCreds" class="shrink-0 rounded-full border border-amber-400/50 px-1.5 text-[10px] text-amber-300">凭证</span>
+                  <span v-if="e.options?.withMedia" class="shrink-0 rounded-full border border-stationPink/60 px-1.5 text-[10px] text-stationPink">媒体</span>
+                  <span v-if="e.options?.withCmtImg" class="shrink-0 rounded-full border border-adminAccent/50 px-1.5 text-[10px] text-adminAccent">评论图</span>
+                  <span v-if="e.options?.withCaches" class="shrink-0 rounded-full border border-white/25 px-1.5 text-[10px] text-white/50">缓存</span>
+                  <span class="shrink-0 text-white/30">{{ fmtBytes(e.bytes) }}</span>
+                  <span class="shrink-0 text-white/30">{{ fmtBackupTime(e.createdAtUtc) }}</span>
+                  <a
+                    class="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/50 transition hover:border-adminAccent/50 hover:text-adminAccent"
+                    :href="`/api/admin/exports/${encodeURIComponent(e.name)}/download`"
+                  >下</a>
+                  <button
+                    :class="armedExport === e.name ? 'lbs-btn-danger-armed !px-2 !py-0.5 !text-[11px]' : 'lbs-btn-danger !px-2 !py-0.5 !text-[11px]'"
+                    :disabled="expBusy"
+                    @click="deleteExport(e)"
+                  >
+                    {{ armedExport === e.name ? '确认销' : '销' }}
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- 导入 -->
+          <div class="rounded border border-white/5 p-4">
+            <h4 class="mb-3 text-xs tracking-widest text-white/50">导入换库 <span class="text-white/25">上传后重启生效</span></h4>
+            <label class="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 bg-black/20 py-6 transition hover:border-adminAccent/50">
+              <span class="text-xs text-white/55">{{ importBusy ? '收包处理中……' : '点我选 lbs-export-*.zip 导出包' }}</span>
+              <span class="text-[10px] text-white/25">须是本卡出的包：station.db + manifest.json 缺一不可，坏包整包拒收</span>
+              <input type="file" accept=".zip" class="hidden" :disabled="importBusy" @change="onImportFile" />
+            </label>
+
+            <div v-if="importPreview" class="mt-3 rounded-lg border border-white/10 bg-black/25 px-3 py-2.5">
+              <p class="text-xs text-white/80">
+                分站名 <b class="font-mono">{{ importPreview.stationName ?? '?' }}</b>
+                · 出于 {{ fmtBackupTime(importPreview.exportedAtUtc) }}
+              </p>
+              <p class="mt-1 font-mono text-[11px] text-white/40">
+                {{ importPreview.counts ? `${importPreview.counts.videos} 视频 · ${importPreview.counts.members} 成员 · ${importPreview.counts.events} 事件` : '台账数目不详' }}
+                <template v-if="importPreview.options">
+                  · {{ importPreview.options.withMedia ? '带媒体' : '无媒体' }}
+                  · {{ importPreview.options.withCreds ? '带登录态' : '无登录态' }}
+                </template>
+              </p>
+            </div>
+            <ul v-if="importWarnings.length" class="mt-2 space-y-1">
+              <li v-for="w in importWarnings" :key="w" class="rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">⚠ {{ w }}</li>
+            </ul>
+            <p v-if="importText" class="mt-2 text-xs text-rose-300/85">{{ importText }}</p>
+
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                :class="applyArmed ? 'lbs-btn-danger-armed' : 'lbs-btn'"
+                :disabled="importBusy || !importReceipt || restarting"
+                @click="applyImport"
+              >
+                {{ restarting ? '换库中，等分站回魂……' : applyArmed ? '确定丢下现站跑？先自救快照一张 — 再点执行' : '应用并重启' }}
+              </button>
+              <span v-if="applyArmed && !restarting" class="text-[11px] text-rose-300/60">6 秒内不确认自动作废</span>
+            </div>
+            <p v-if="restarting" class="mt-2 text-xs leading-5 text-amber-200">
+              分站正在自我停机换心——请重新启动服务端进程，起来后本卡自动对账换库结果。
+            </p>
+            <p class="mt-3 text-[10px] leading-4 text-white/25">
+              换库前保底：自动给现站自救快照（data/backups/），现台账与登录态移入 data/pre-import/ 留底，缺件视频开机后自动回炉重下。
+            </p>
+          </div>
+        </div>
       </section>
 
       <section class="lbs-card-danger md:col-span-2">

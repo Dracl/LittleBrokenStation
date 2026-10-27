@@ -814,6 +814,42 @@ public sealed partial class StationDb
         ExecuteUpdate(id, VideoStatus.Pending, null, null);
     }
 
+    /// <summary>导入缺件点名花名册：完成态视频（id, bvid），供磁盘实物核对。</summary>
+    public IReadOnlyList<(long Id, string Bvid)> GetArrivedVideosForMediaScan()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, bvid FROM videos WHERE status = $status ORDER BY id;";
+        command.Parameters.AddWithValue("$status", VideoStatus.Arrived.ToString());
+
+        using var reader = command.ExecuteReader();
+        var list = new List<(long, string)>();
+        while (reader.Read())
+        {
+            list.Add((reader.GetInt64(0), reader.GetString(1)));
+        }
+
+        return list;
+    }
+
+    /// <summary>某视频的全部产物相对路径（相对 data/videos）；无行回空表。</summary>
+    public IReadOnlyList<string> GetArtifactRelPaths(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT rel_path FROM artifacts WHERE video_id = $id;";
+        command.Parameters.AddWithValue("$id", videoId);
+
+        using var reader = command.ExecuteReader();
+        var list = new List<string>();
+        while (reader.Read())
+        {
+            list.Add(reader.GetString(0));
+        }
+
+        return list;
+    }
+
     /// <summary>下载面板的下载中行：除 id 外带卡片展示字段，TaskIdsJson 供暂停板拿引擎任务。</summary>
     public sealed record DownloadingRow(long Id, string Bvid, string? Title, string? CoverUrl, string? TaskIdsJson);
 

@@ -52,6 +52,9 @@ builder.Services.AddSingleton<DownloadPauseBoard>();
 builder.Services.AddSingleton<AdminGate>();
 // 台账备份员：station.db 在线快照到 data/backups，周期巡工 + 站长室手动补拍。
 builder.Services.AddSingleton<LedgerBackup>();
+// 数据交换：勾选式导出打包（大包走内存任务牌）+ 导入暂存（开机换库）。
+builder.Services.AddSingleton<StationExporter>();
+builder.Services.AddSingleton<ExportJobBoard>();
 builder.Services.AddHostedService<LedgerBackupWorker>();
 // 分站海马体：业务侧 Record 一下就走，抄录员后台攒批落 events 表，供站长与未来 AI 分析。
 builder.Services.AddSingleton<EventRecorder>();
@@ -78,6 +81,12 @@ var urls = Environment.GetEnvironmentVariable("LBS_URLS") ?? "http://0.0.0.0:809
 builder.WebHost.UseUrls(urls);
 
 var app = builder.Build();
+
+// 数据交换·开机换库：必须赶在 StationDb 首次打开之前（DI 工厂是懒的，workers 也还没起，此刻盘上只有刚 Resolve 的目录）。
+// pending.json 在 = 要换进刚导入的包：换台账 + 回写登录态 + 解媒体/缓存 + 清引擎台账；无论成败都删标记，绝不带标记死循环。
+var swappedThisBoot = PendingImportSwapper.ApplyIfNeeded(dataPaths, app.Logger);
+// 缺件回炉闸门：只在本次开机真换过库时才允许 DownloadWorker 点名磁盘实物，普通开机不点名（防仓挂载瞬断误判满仓缺件）。
+builder.Services.AddSingleton(new MediaReconcileGate(swappedThisBoot));
 
 // SPA 缓存纪律：index.html 每次必须回源验新（它决定加载哪个哈希 JS，缓存了就等于发布后用户还开着旧壳），
 // 带内容哈希的 /assets 产物则相反，永久缓存也无害。html 的统一在 OnStarting 里盖（覆盖静态伺服与 fallback 两条路）。
@@ -311,6 +320,9 @@ app.MapAdminMemberEndpoints();
 
 // 前端行为上报：播放心跳、停留、页面浏览——白名单内客户端才能写，身份由服务端盖章。
 app.MapEventIngestEndpoints();
+
+// 数据交换：导出打包/档案柜/导入暂存与换库（全在 /api/admin/** 站长门下）。
+app.MapDataExchangeApi();
 
 // 旧档案的后补：有 mid 但名片从未采过（up_face 为 NULL）时，开页顺手异步采一次，下次刷新就有。
 // 失败也销账（置空串）；并发重复触发用 in-flight 集合挡掉。
