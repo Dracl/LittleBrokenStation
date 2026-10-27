@@ -104,11 +104,26 @@ function onShared(message) {
   setTimeout(() => { toast.value = null }, 2600)
 }
 
-// B 站图格规矩：单图 1/3 宽、四图 2×2、其余三列，一律 3:4 裁切
+// B 站图格规矩：多图才进格（四图 2×2、其余三列，一律 3:4 裁切）；
+// 单图不裁——直接按原比例翻出来（B 站时间线同款），格宽上限 340px，w-fit 让角标贴着图而不是格子。
 function picsLayout(count) {
-  if (count === 1) return 'grid grid-cols-3 gap-1 max-w-[340px]'
+  if (count === 1) return 'w-fit'
   if (count === 4) return 'grid grid-cols-2 gap-1 max-w-[340px]'
   return 'grid grid-cols-3 gap-1 max-w-[500px]'
+}
+
+// 单图样式：有宽高就按比例预留盒子（防跳动）；超长图（高>宽×2，即「长图」角标货）
+// 定高 450px 顶部对齐裁个引子，点开灯箱看全图；宽高缺失的裸串回退 contain 装，不硬裁。
+function singlePicStyle(pic) {
+  const w = pic?.width ?? pic?.Width ?? 0
+  const h = pic?.height ?? pic?.Height ?? 0
+  if (w > 0 && h > 0 && h > w * 2) {
+    return { width: 'min(340px, 100%)', height: '450px', objectFit: 'cover', objectPosition: 'top' }
+  }
+  if (w > 0 && h > 0) {
+    return { width: `${Math.min(340, w)}px`, maxWidth: '100%', aspectRatio: `${w} / ${h}` }
+  }
+  return { maxWidth: '340px', maxHeight: '450px', objectFit: 'contain', background: '#f1f2f3' }
 }
 
 // 九宫格取图：端点吐 pics 对象数组 [{url,width,height}] + picsLocal 同序本地数组（单图失败为 null）。
@@ -400,7 +415,8 @@ onMounted(async () => {
                     :src="picSrc(d, i)"
                     referrerpolicy="no-referrer"
                     loading="lazy"
-                    class="aspect-[3/4] w-full cursor-zoom-in rounded object-cover"
+                    :class="d.pics.length === 1 ? 'block cursor-zoom-in rounded' : 'aspect-[3/4] w-full cursor-zoom-in rounded object-cover'"
+                    :style="d.pics.length === 1 ? singlePicStyle(pic) : undefined"
                     :alt="`原动态配图 ${i + 1}`"
                     @error="$event.target.style.display = 'none'"
                     @click="openPicZoom(d, i)"
@@ -420,7 +436,8 @@ onMounted(async () => {
                   :src="picSrc(d, i)"
                   referrerpolicy="no-referrer"
                   loading="lazy"
-                  class="aspect-[3/4] w-full cursor-zoom-in rounded object-cover"
+                  :class="d.pics.length === 1 ? 'block cursor-zoom-in rounded' : 'aspect-[3/4] w-full cursor-zoom-in rounded object-cover'"
+                  :style="d.pics.length === 1 ? singlePicStyle(pic) : undefined"
                   :alt="`动态配图 ${i + 1}`"
                   @error="$event.target.style.display = 'none'"
                   @click="openPicZoom(d, i)"

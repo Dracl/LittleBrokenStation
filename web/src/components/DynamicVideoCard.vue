@@ -13,7 +13,8 @@ const clampStyle = 'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:
 const shell = 'block overflow-hidden rounded-md bg-[#f6f7f8] no-underline transition hover:shadow-md'
 
 function coverSrc(d) {
-  return d.coverLocal || coverThumb(normUrl(d.cover)) || ''
+  // 容器实宽 ~576px，480w 拉上来必糊；热链兑底按 1280w 要图（webp 也才几十 KB）。
+  return d.coverLocal || coverThumb(normUrl(d.cover), 1280) || ''
 }
 </script>
 
