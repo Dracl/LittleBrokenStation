@@ -369,9 +369,10 @@ public sealed partial class StationDb
                 reader.IsDBNull(3) ? null : reader.GetInt64(3),
                 reader.IsDBNull(4) ? null : reader.GetString(4),
                 reader.IsDBNull(5) ? null : reader.GetString(5),
-                reader.GetString(6),
-                reader.GetInt64(7),
-                reader.IsDBNull(8) ? null : reader.GetString(8)));
+                reader.GetString(7),
+                reader.GetInt64(8),
+                reader.IsDBNull(9) ? null : reader.GetString(9),
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
         }
 
         return list;

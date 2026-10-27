@@ -465,9 +465,22 @@ public sealed class DynamicCacheTests : IDisposable
         Assert.Equal(11, pending.CommentType);
         Assert.Equal("413420393", pending.CommentOid);
 
-        Assert.Equal(1, _db.UpsertComments("cd1",
-            [new StationDb.DynamicCommentRow(501, 0, 0, 9, "楼", "https://i0.hdslb.com/f/9.jpg", "一楼", 3, null)]));
-        _db.MarkCommentsFetched("cd1", 57);
+        Assert.Equal(2, _db.UpsertComments("cd1",
+            [new StationDb.DynamicCommentRow(501, 0, 0, 9, "楼", "https://i0.hdslb.com/f/9.jpg", "一楼", 3, null, "/avatars/abc.jpg"),
+             new StationDb.DynamicCommentRow(502, 501, 501, 10, "客", null, "二楼", 0, "2026-01-02T00:00:00+00:00")]));
+        _db.MarkCommentsFetched("cd1", 57, """{"[爱心]":"/emotes/love.png"}""");
+
+        // 读回验列位：message/like/ctime/face_local 各归各位，表情映射随盖章定格。
+        var tree = _db.ListDynamicComments("cd1");
+        var topRow = Assert.Single(tree, r => r.Rpid == 501);
+        Assert.Equal("一楼", topRow.Message);
+        Assert.Equal(3, topRow.LikeCount);
+        Assert.Equal("/avatars/abc.jpg", topRow.FaceLocal);
+        var subRow = Assert.Single(tree, r => r.Rpid == 502);
+        Assert.Equal("二楼", subRow.Message);
+        Assert.Equal(501, subRow.RootRpid);
+        Assert.Equal("2026-01-02T00:00:00+00:00", subRow.CtimeUtc);
+        Assert.Equal("""{"[爱心]":"/emotes/love.png"}""", _db.GetDynamicEmotesJson("cd1"));
 
         // 盖章后退出欠账名单；底栏评论数从 page.count 回写（动态流不带 stat，巡捕回执是唯一来源）。
         Assert.Empty(_db.ListPendingCommentDynamics());
