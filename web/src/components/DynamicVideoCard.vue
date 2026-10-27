@@ -1,20 +1,28 @@
 <script setup>
 // 动态流里的视频卡：B 站同款「封面 + 时长角 + 灰底标题条」。
-// 已入站走站内放映厅（馆藏封面优先，端点已合并好），未入站热链封面、整块开 B 站外链。
+// 已入站走站内放映厅（馆藏封面优先，端点已合并好）；未入站的档案封面也吃分站缓存：本地优先（coverLocal），
+// 热链兑底走 normUrl + coverThumb（hdslb CDN 缩图，不拉原图）；整块开 B 站外链。
+import { coverThumb } from '../utils/cover'
+import { normUrl } from '../utils/dynpic'
+
 defineProps({
-  d: { type: Object, required: true }, // { bvid, inStation, title, cover, duration, viewCount }
+  d: { type: Object, required: true }, // { bvid, inStation, title, cover, coverLocal, duration, viewCount }
 })
 
 const clampStyle = 'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden'
 const shell = 'block overflow-hidden rounded-md bg-[#f6f7f8] no-underline transition hover:shadow-md'
+
+function coverSrc(d) {
+  return d.coverLocal || coverThumb(normUrl(d.cover)) || ''
+}
 </script>
 
 <template>
   <RouterLink v-if="d.inStation" :to="`/watch/${d.bvid}`" :class="shell">
     <div class="relative aspect-video bg-[#eef0f2]">
       <img
-        v-if="d.cover"
-        :src="d.cover"
+        v-if="d.cover || d.coverLocal"
+        :src="coverSrc(d)"
         referrerpolicy="no-referrer"
         loading="lazy"
         class="absolute inset-0 h-full w-full object-cover"
@@ -38,8 +46,8 @@ const shell = 'block overflow-hidden rounded-md bg-[#f6f7f8] no-underline transi
   >
     <div class="relative aspect-video bg-[#eef0f2]">
       <img
-        v-if="d.cover"
-        :src="d.cover"
+        v-if="d.cover || d.coverLocal"
+        :src="coverSrc(d)"
         referrerpolicy="no-referrer"
         loading="lazy"
         class="absolute inset-0 h-full w-full object-cover"

@@ -3,10 +3,12 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import DynamicVideoCard from '../components/DynamicVideoCard.vue'
+import ImageLightbox from '../components/ImageLightbox.vue'
 import ShareDynamicDialog from '../components/ShareDynamicDialog.vue'
 import { member, loginDialogOpen } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 import { richHtml } from '../utils/emote'
+import { normUrl, inferImageBadge } from '../utils/dynpic'
 
 const route = useRoute()
 
@@ -107,6 +109,38 @@ function picsLayout(count) {
   if (count === 1) return 'grid grid-cols-3 gap-1 max-w-[340px]'
   if (count === 4) return 'grid grid-cols-2 gap-1 max-w-[340px]'
   return 'grid grid-cols-3 gap-1 max-w-[500px]'
+}
+
+// 九宫格取图：端点吐 pics 对象数组 [{url,width,height}] + picsLocal 同序本地数组（单图失败为 null）。
+// 本地优先、远程兑底走 normUrl（协议相对链补 https）；角标照 dynamic-bot：.gif → 动图，高>宽×2 → 长图。
+// 库里曾有 PascalCase 脏行（首轮 bug），读时两形都认，不让老货空图。
+function picUrl(pic) {
+  if (typeof pic === 'string') return pic
+  return pic?.url || pic?.Url || ''
+}
+function picSrc(d, i) {
+  return d.picsLocal?.[i] || normUrl(picUrl(d.pics?.[i])) || ''
+}
+function picBadge(pic) {
+  return inferImageBadge(picUrl(pic), pic?.width ?? pic?.Width, pic?.height ?? pic?.Height)
+}
+
+// 图片灯箱：九宫格（正常卡+转发灰块）与评论配图共用公共 ImageLightbox，同组多图左右翻。
+// 点开设本地原图（picsLocal/pictures 已本地优先，不走 coverThumb 缩图）；失败空位剔除但点击下标同步修正。
+const lightbox = ref(null) // { images: string[], index: number } | null
+function openZoom(rawList, rawIndex) {
+  const images = []
+  let click = 0
+  ;(rawList ?? []).forEach((u, idx) => {
+    if (!u) return
+    if (idx < rawIndex) click++
+    images.push(u)
+  })
+  if (!images.length) return
+  lightbox.value = { images, index: Math.min(click, images.length - 1) }
+}
+function openPicZoom(d, i) {
+  openZoom((d.pics ?? []).map((_, pi) => picSrc(d, pi)), i)
 }
 
 const avatarPalette = ['bg-stationPink/70', 'bg-emerald-500/70', 'bg-sky-500/70', 'bg-amber-500/70', 'bg-violet-500/70']
@@ -343,7 +377,7 @@ onMounted(async () => {
 
           <!-- 转发条：评语 + 灰块内嵌原文（B 站同款）；灰块头挂原作者的小脸 -->
           <template v-else-if="isForward(d)">
-            <p v-if="splitForward(d.text).comment" class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain">{{ splitForward(d.text).comment }}</p>
+            <p v-if="splitForward(d.text).comment" class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" v-html="richHtml(splitForward(d.text).comment, d.bodyEmotes)"></p>
             <div class="rounded-md bg-[#f6f7f8] p-3">
               <div v-if="d.origAuthorName || splitForward(d.text).fromName" class="mb-2 flex items-center gap-1.5">
                 <img
@@ -358,37 +392,41 @@ onMounted(async () => {
                 <span v-else class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-stationPink/15 text-[10px] text-stationPink">{{ (d.origAuthorName || splitForward(d.text).fromName || '?').slice(0, 1) }}</span>
                 <span class="text-xs text-inkSub">转发自 {{ d.origAuthorName || splitForward(d.text).fromName }}</span>
               </div>
-              <p class="whitespace-pre-wrap break-words text-sm leading-relaxed text-inkSub">{{ splitForward(d.text).orig || '原文已被删' }}</p>
+              <p class="whitespace-pre-wrap break-words text-sm leading-relaxed text-inkSub" v-html="richHtml(splitForward(d.text).orig || '原文已被删', d.bodyEmotes)"></p>
               <DynamicVideoCard v-if="d.bvid" :d="d" class="mt-2" />
               <div v-else-if="d.pics?.length" :class="['mt-2', picsLayout(d.pics.length)]">
-                <img
-                  v-for="(pic, i) in d.pics"
-                  :key="i"
-                  :src="pic"
-                  referrerpolicy="no-referrer"
-                  loading="lazy"
-                  class="aspect-[3/4] w-full rounded object-cover"
-                  :alt="`原动态配图 ${i + 1}`"
-                  @error="$event.target.style.display = 'none'"
-                />
+                <div v-for="(pic, i) in d.pics" :key="i" class="relative">
+                  <img
+                    :src="picSrc(d, i)"
+                    referrerpolicy="no-referrer"
+                    loading="lazy"
+                    class="aspect-[3/4] w-full cursor-zoom-in rounded object-cover"
+                    :alt="`原动态配图 ${i + 1}`"
+                    @error="$event.target.style.display = 'none'"
+                    @click="openPicZoom(d, i)"
+                  />
+                  <span v-if="picBadge(pic)" class="absolute bottom-1 right-1 rounded bg-black/50 px-1 py-px text-[10px] leading-none text-white">{{ picBadge(pic) }}</span>
+                </div>
               </div>
             </div>
           </template>
 
           <!-- 平常条：正文 → 图格 → 视频卡 -->
           <template v-else>
-            <p v-if="d.text" class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain">{{ d.text }}</p>
+            <p v-if="d.text" class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" v-html="richHtml(d.text, d.bodyEmotes)"></p>
             <div v-if="d.pics?.length" :class="['mb-1', picsLayout(d.pics.length)]">
-              <img
-                v-for="(pic, i) in d.pics"
-                :key="i"
-                :src="pic"
-                referrerpolicy="no-referrer"
-                loading="lazy"
-                class="aspect-[3/4] w-full rounded object-cover"
-                :alt="`动态配图 ${i + 1}`"
-                @error="$event.target.style.display = 'none'"
-              />
+              <div v-for="(pic, i) in d.pics" :key="i" class="relative">
+                <img
+                  :src="picSrc(d, i)"
+                  referrerpolicy="no-referrer"
+                  loading="lazy"
+                  class="aspect-[3/4] w-full cursor-zoom-in rounded object-cover"
+                  :alt="`动态配图 ${i + 1}`"
+                  @error="$event.target.style.display = 'none'"
+                  @click="openPicZoom(d, i)"
+                />
+                <span v-if="picBadge(pic)" class="absolute bottom-1 right-1 rounded bg-black/50 px-1 py-px text-[10px] leading-none text-white">{{ picBadge(pic) }}</span>
+              </div>
             </div>
             <DynamicVideoCard v-if="d.bvid" :d="d" class="mt-1" />
           </template>
@@ -441,6 +479,21 @@ onMounted(async () => {
                     <span class="text-[11px] text-inkFaint">{{ friendlyTime(top.ctimeUtc) }}</span>
                   </div>
                   <p class="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain" v-html="richHtml(top.message, cmtState(d).emotes)"></p>
+                  <!-- 评论配图：端点已本地优先合并；单图 200px 宽、多图小方格（照视频侧 CommentSection 观感） -->
+                  <div v-if="top.pictures?.length" class="mt-1 flex flex-wrap gap-1">
+                    <img
+                      v-for="(pic, pi) in top.pictures"
+                      :key="pi"
+                      :src="pic"
+                      referrerpolicy="no-referrer"
+                      loading="lazy"
+                      class="cursor-zoom-in rounded object-cover"
+                      :class="top.pictures.length === 1 ? 'h-auto w-[200px] max-w-full' : 'h-20 w-20'"
+                      alt=""
+                      @error="$event.target.style.display = 'none'"
+                      @click="openZoom(top.pictures, pi)"
+                    />
+                  </div>
                   <div class="mt-0.5 flex items-center gap-3 text-[11.5px] text-inkFaint">
                     <span v-if="top.like">👍 {{ top.like }}</span>
                   </div>
@@ -461,6 +514,20 @@ onMounted(async () => {
                           <span class="text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
                           <span class="ml-1.5 text-[10.5px] text-inkFaint">{{ friendlyTime(sub.ctimeUtc) }}</span>
                           <p class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain" v-html="richHtml(sub.message, cmtState(d).emotes)"></p>
+                          <div v-if="sub.pictures?.length" class="mt-1 flex flex-wrap gap-1">
+                            <img
+                              v-for="(pic, pi) in sub.pictures"
+                              :key="pi"
+                              :src="pic"
+                              referrerpolicy="no-referrer"
+                              loading="lazy"
+                              class="cursor-zoom-in rounded object-cover"
+                              :class="sub.pictures.length === 1 ? 'h-auto w-[200px] max-w-full' : 'h-16 w-16'"
+                              alt=""
+                              @error="$event.target.style.display = 'none'"
+                              @click="openZoom(sub.pictures, pi)"
+                            />
+                          </div>
                         </div>
                       </div>
                     </template>
@@ -492,6 +559,8 @@ onMounted(async () => {
       </template>
 
       <p v-if="toast" class="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-inkMain/85 px-4 py-2 text-xs text-white shadow-lg">{{ toast }}</p>
+
+      <ImageLightbox v-if="lightbox" :images="lightbox.images" :index="lightbox.index" @close="lightbox = null" />
 
       <ShareDynamicDialog v-if="shareFor" :d="shareFor" @close="shareFor = null" @done="onShared" />
     </main>

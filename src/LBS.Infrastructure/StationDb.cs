@@ -266,7 +266,10 @@ public sealed partial class StationDb
                     comment_type     INTEGER,
                     comment_oid      TEXT,
                     emotes_json      TEXT,
-                    comments_fetched_at_utc TEXT
+                    comments_fetched_at_utc TEXT,
+                    pics_local_json  TEXT,
+                    cover_local      TEXT,
+                    body_emotes_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_dynamics_target ON dynamics (target_mid, published_at_utc);
                 CREATE INDEX IF NOT EXISTS idx_dynamics_published ON dynamics (published_at_utc);
@@ -285,6 +288,8 @@ public sealed partial class StationDb
                     like_count    INTEGER NOT NULL DEFAULT 0,
                     ctime_utc     TEXT,
                     cached_at_utc TEXT NOT NULL,
+                    pictures_json TEXT,
+                    pictures_local_json TEXT,
                     UNIQUE (dynamic_id, rpid)
                 );
                 CREATE INDEX IF NOT EXISTS idx_dyncmt_tree ON dynamic_comments (dynamic_id, root_rpid, id);
@@ -311,6 +316,13 @@ public sealed partial class StationDb
         // 表情定格（转义符→本地图 url 的 JSON）挂动态行；评论头像本地化路径挂评论行，与视频评论区同一套 data/avatars、data/emotes。
         EnsureColumn(connection, "dynamics", "emotes_json", "TEXT");
         EnsureColumn(connection, "dynamic_comments", "face_local", "TEXT");
+        // 动态侧图片资产落盘路径（与视频侧同库 data/avatars、emotes、cmt-img）：九宫格本地图数组与 pics_json 同序对齐（单图失败存 null 元素）、
+        // 卡面封面前本地、正文 [表情] 定格映射；动态评论配图远程/本地两数组同序对齐。
+        EnsureColumn(connection, "dynamics", "pics_local_json", "TEXT");
+        EnsureColumn(connection, "dynamics", "cover_local", "TEXT");
+        EnsureColumn(connection, "dynamics", "body_emotes_json", "TEXT");
+        EnsureColumn(connection, "dynamic_comments", "pictures_json", "TEXT");
+        EnsureColumn(connection, "dynamic_comments", "pictures_local_json", "TEXT");
 
         // M6+ 私信变厚：支持「分享动态」卡，msg_type 分文本/动态，dyn_json 存分享那刻定格的卡面快照
         // （B 站删动态不连累分站留档，会话渲染也不回头查表）。

@@ -78,14 +78,17 @@ public sealed class DynamicCacheTests : IDisposable
               "module_author":{"mid":112,"name":"图图酱","pub_ts":1700000100},
               "module_dynamic":{"desc":{"text":""},"major":{
                 "type":"MAJOR_TYPE_OPUS","opus":{"summary":{"text":"图文正文在此处"},
-                "pics":[{"url":"https://i0.hdslb.com/bfs/opus/a.jpg"},{"url":"https://i0.hdslb.com/bfs/opus/b.jpg"}]}}}}}
+                "pics":[{"url":"https://i0.hdslb.com/bfs/opus/a.jpg","width":1000,"height":1500},{"url":"https://i0.hdslb.com/bfs/opus/b.jpg"}]}}}}}
             """;
 
         var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
         Assert.Equal("图文正文在此处", parsed.Text);
         Assert.Equal(
             ["https://i0.hdslb.com/bfs/opus/a.jpg", "https://i0.hdslb.com/bfs/opus/b.jpg"],
-            parsed.Pics);
+            parsed.Pics.Select(p => p.Url));
+        // 宽高随图定格（前端拿去判「长图」角标）；没给的留 null。
+        Assert.Equal((1000, 1500), (parsed.Pics[0].Width, parsed.Pics[0].Height));
+        Assert.Null(parsed.Pics[1].Width);
         Assert.Null(parsed.Bvid);
     }
 
@@ -96,12 +99,17 @@ public sealed class DynamicCacheTests : IDisposable
             {"id_str":"8880003","type":"DYNAMIC_TYPE_DRAW","modules":{
               "module_author":{"mid":113,"name":"老相簿","pub_ts":1700000150},
               "module_dynamic":{"major":{
-                "type":"MAJOR_TYPE_DRAW","draw":{"items":[{"src":"https://i0.hdslb.com/d/1.jpg"},{"src":"https://i0.hdslb.com/d/2.jpg"},{"src":"https://i0.hdslb.com/d/3.jpg"}]}}}}}
+                "type":"MAJOR_TYPE_DRAW","draw":{
+                  "items":[{"src":"https://i0.hdslb.com/d/1.jpg","width":800,"height":2000},{"src":"https://i0.hdslb.com/d/2.jpg"},{"src":"https://i0.hdslb.com/d/3.jpg"}],
+                  "images":[{"width":800,"height":2000},{"width":400,"height":500},{"width":600,"height":600}]}}}}}
             """;
 
         var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
         Assert.Equal(3, parsed.Pics.Count);
-        Assert.Equal("https://i0.hdslb.com/d/2.jpg", parsed.Pics[1]);
+        Assert.Equal("https://i0.hdslb.com/d/2.jpg", parsed.Pics[1].Url);
+        // 尺寸两处都认：items 自带的优先，没带的按同一 index 吃平行 images 数组兑尺寸。
+        Assert.Equal((800, 2000), (parsed.Pics[0].Width, parsed.Pics[0].Height));
+        Assert.Equal((400, 500), (parsed.Pics[1].Width, parsed.Pics[1].Height));
         Assert.Null(parsed.Text);
     }
 
@@ -116,7 +124,119 @@ public sealed class DynamicCacheTests : IDisposable
             """;
 
         var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
-        Assert.Equal(["https://i0.hdslb.com/cov/one.jpg", "https://i0.hdslb.com/cov/two.jpg"], parsed.Pics);
+        Assert.Equal(["https://i0.hdslb.com/cov/one.jpg", "https://i0.hdslb.com/cov/two.jpg"], parsed.Pics.Select(p => p.Url));
+        Assert.All(parsed.Pics, p => Assert.Null(p.Width)); // 专栏封面是裸字符串，宽高无从定格
+    }
+
+    [Fact]
+    public void ParseFeed_DescEmote_CarriesBodyEmotes_ForwardMergesOrig()
+    {
+        // 正文 [表情] 兼容形态：desc.emote 字典（转义符→{url}），与评论区 content.emote 同款剥法（真 feed 主货架在
+        // rich_text_nodes，另测锁形）；转发条顶层评语与原文都带表情时两边合并、按转义符去重。
+        var withEmote = """
+            {"id_str":"8880012","type":"DYNAMIC_TYPE_WORD","modules":{
+              "module_author":{"mid":120,"name":"表情君","pub_ts":1700001200},
+              "module_dynamic":{"desc":{"text":"今天也要元气满满[打call][脱单doge]",
+                "emote":{"[打call]":{"url":"https://i0.hdslb.com/emote/call.png"},
+                  "[脱单doge]":{"url":"//i0.hdslb.com/emote/doge.png"},"[坏掉]":{}}},"major":null}}}
+            """;
+
+        var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(withEmote)).Items);
+        // 只认带 url 的：空对象 [坏掉] 丢弃；协议相对链原样携带（落盘时缓存层只吃 http 前缀，存不下的热链兑底）。
+        Assert.Equal(
+            [("[打call]", "https://i0.hdslb.com/emote/call.png"), ("[脱单doge]", "//i0.hdslb.com/emote/doge.png")],
+            parsed.Emotes);
+
+        // 无表情的普通条：Emotes 留 null 不占座。
+        var plain = """
+            {"id_str":"8880014","type":"DYNAMIC_TYPE_WORD","modules":{
+              "module_author":{"mid":120,"name":"素面君","pub_ts":1700001400},
+              "module_dynamic":{"desc":{"text":"裸正文"},"major":null}}}
+            """;
+        Assert.Null(Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(plain)).Items).Emotes);
+
+        // 转发条：顶层评语与原文的 emote 两边都剥，重复转义符只留首见的那份。
+        var forward = """
+            {"id_str":"8880013","type":"DYNAMIC_TYPE_FORWARD","modules":{
+              "module_author":{"mid":223,"name":"转发君","pub_ts":1700001300},
+              "module_dynamic":{"desc":{"text":"赞[打call]",
+                "emote":{"[打call]":{"url":"https://i0.hdslb.com/emote/call.png"},
+                  "[笑哭]":{"url":"https://i0.hdslb.com/emote/cry.png"}}},"major":null}},
+             "orig":{"modules":{
+              "module_author":{"mid":121,"name":"原作者","pub_ts":1700001250},
+              "module_dynamic":{"desc":{"text":"原文[脱单doge]",
+                "emote":{"[脱单doge]":{"url":"https://i0.hdslb.com/emote/doge.png"},
+                  "[打call]":{"url":"https://i0.hdslb.com/emote/call2.png"}}},"major":null}}}}
+            """;
+
+        var fwd = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(forward)).Items);
+        Assert.Equal(
+            [("[打call]", "https://i0.hdslb.com/emote/call.png"), ("[笑哭]", "https://i0.hdslb.com/emote/cry.png"), ("[脱单doge]", "https://i0.hdslb.com/emote/doge.png")],
+            fwd.Emotes);
+    }
+
+    [Fact]
+    public void ParseFeed_RichTextNodes_EmojiNodesAreTheRealShelf()
+    {
+        // 真 feed 的正文表情货架（照 bilibili-API-collect space.md 响应示例锁形）：desc 里没有 emote 字典，
+        // 表情挂在 desc.rich_text_nodes[] 的 RICH_TEXT_NODE_TYPE_EMOJI 节点（emoji.text 转义符 + emoji.icon_url 图链）——
+        // 首轮只认字典形态时 body_emotes_json 全空（Bug2 回归锚）；顶层评语与原文（orig）两边都剥。
+        var item = """
+            {"id_str":"8880015","type":"DYNAMIC_TYPE_FORWARD","modules":{
+              "module_author":{"mid":122,"name":"转发君","pub_ts":1700001500},
+              "module_dynamic":{"desc":{"text":"哈哈[笑哭]",
+                "rich_text_nodes":[
+                  {"orig_text":"哈哈","text":"哈哈","type":"RICH_TEXT_NODE_TYPE_TEXT"},
+                  {"emoji":{"icon_url":"https://i0.hdslb.com/bfs/emote/cry.png","size":1,"text":"[笑哭]","type":1},
+                   "orig_text":"[笑哭]","text":"[笑哭]","type":"RICH_TEXT_NODE_TYPE_EMOJI"}]},"major":null}},
+             "orig":{"modules":{
+              "module_author":{"mid":123,"name":"原作者","pub_ts":1700001450},
+              "module_dynamic":{"desc":{"text":"[坠落·空_自闭][坠落·空_哭泣]",
+                "rich_text_nodes":[
+                  {"emoji":{"icon_url":"https://i0.hdslb.com/bfs/emote/a.png","size":2,"text":"[坠落·空_自闭]","type":3},
+                   "orig_text":"[坠落·空_自闭]","text":"[坠落·空_自闭]","type":"RICH_TEXT_NODE_TYPE_EMOJI"},
+                  {"emoji":{"icon_url":"https://i0.hdslb.com/bfs/emote/b.png","size":2,"text":"[坠落·空_哭泣]","type":3},
+                   "orig_text":"[坠落·空_哭泣]","text":"[坠落·空_哭泣]","type":"RICH_TEXT_NODE_TYPE_EMOJI"}]},"major":null}}}}
+            """;
+
+        var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
+        // 断言「转义符→url 清单非空」：这是实跑里全灭的那条链，锁死。
+        Assert.NotNull(parsed.Emotes);
+        Assert.NotEmpty(parsed.Emotes!);
+        Assert.Equal(
+            [("[笑哭]", "https://i0.hdslb.com/bfs/emote/cry.png"),
+             ("[坠落·空_自闭]", "https://i0.hdslb.com/bfs/emote/a.png"),
+             ("[坠落·空_哭泣]", "https://i0.hdslb.com/bfs/emote/b.png")],
+            parsed.Emotes);
+    }
+
+    [Fact]
+    public void ParseFeed_OpusSummary_RichTextNodesCarryEmojis()
+    {
+        // 图文卡正文表情挂在 major.opus.summary.rich_text_nodes（OPUS 卡型的实测货架）。
+        var item = """
+            {"id_str":"8880016","type":"DYNAMIC_TYPE_OPUS","modules":{
+              "module_author":{"mid":124,"name":"图文君","pub_ts":1700001600},
+              "module_dynamic":{"desc":null,"major":{"type":"MAJOR_TYPE_OPUS","opus":{
+                "summary":{"text":"图文[打call]",
+                  "rich_text_nodes":[
+                    {"emoji":{"icon_url":"https://i0.hdslb.com/bfs/emote/call.png","text":"[打call]","type":1},
+                     "orig_text":"图文[打call]","text":"图文[打call]","type":"RICH_TEXT_NODE_TYPE_EMOJI"}]},
+                "pics":[{"url":"https://i0.hdslb.com/bfs/opus/a.jpg","width":800,"height":2000}]}}}}}
+            """;
+
+        var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
+        Assert.Equal(("[打call]", "https://i0.hdslb.com/bfs/emote/call.png"), Assert.Single(parsed.Emotes!));
+        Assert.Equal((800, 2000), (Assert.Single(parsed.Pics).Width, Assert.Single(parsed.Pics).Height));
+    }
+
+    [Fact]
+    public void ParsedPic_Serializes_CamelCaseEvenWithDefaultOptions()
+    {
+        // Bug1 回归锚：首轮 persist 闭包拿默认 options 裸奔，pics_json 落库成了 PascalCase（"Url"/"Width"/"Height"）。
+        // [JsonPropertyName] 锁死后，即便序列化方忘了传 camelCase options，落库形态也必须是 camelCase。
+        var json = System.Text.Json.JsonSerializer.Serialize(new List<ParsedPic> { new("https://i0.hdslb.com/x.jpg", 1576, 886) });
+        Assert.Equal("""[{"url":"https://i0.hdslb.com/x.jpg","width":1576,"height":886}]""", json);
     }
 
     [Fact]
@@ -239,6 +359,43 @@ public sealed class DynamicCacheTests : IDisposable
         Assert.Equal(111, sub.RootRpid);
         Assert.Equal(111, sub.ParentRpid);
         Assert.Equal("子回复一条", sub.Message);
+    }
+
+    [Fact]
+    public void ParseReplies_Pictures_ParsedAlignedAndFiltered()
+    {
+        // 评论配图：content.pictures[].img_src 随手剥下（与视频侧归档器 ReplyPicture 同款模型）；
+        // 只认绝对 http 链，非 http 与空 src 丢弃，单条封顶 9 张。
+        var json = """
+            {"code":0,"data":{"replies":[
+              {"rpid":301,"content":{"message":"看图","pictures":[
+                {"img_src":"https://i0.hdslb.com/new/1.jpg"},
+                {"img_src":"//i0.hdslb.com/proto/2.jpg"},
+                {"img_src":""},
+                {"img_src":"https://i0.hdslb.com/new/3.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/4.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/5.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/6.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/7.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/8.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/9.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/10.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/11.jpg"},
+                {"img_src":"https://i0.hdslb.com/new/12.jpg"}]},
+               "member":{"mid":1,"uname":"甲"}},
+              {"rpid":302,"content":{"message":"纯文"},"member":{"mid":2,"uname":"乙"}}]}}
+            """;
+
+        var result = LbsDynamicFetcher.ParseReplies(json, rootRpid: 0, max: 20, collectRoots: false);
+        Assert.Equal(FeedParseStatus.Ok, result.Status);
+        var withPics = Assert.Single(result.Replies, r => r.Rpid == 301);
+        // 协议相对链不算绝对 http 链、空 src 丢；11 张合法图只留前 9 张（11/12 被封顶掉了）。
+        Assert.Equal(
+            ["https://i0.hdslb.com/new/1.jpg", "https://i0.hdslb.com/new/3.jpg", "https://i0.hdslb.com/new/4.jpg",
+             "https://i0.hdslb.com/new/5.jpg", "https://i0.hdslb.com/new/6.jpg", "https://i0.hdslb.com/new/7.jpg",
+             "https://i0.hdslb.com/new/8.jpg", "https://i0.hdslb.com/new/9.jpg", "https://i0.hdslb.com/new/10.jpg"],
+            withPics.Pictures);
+        Assert.Null(Assert.Single(result.Replies, r => r.Rpid == 302).Pictures);
     }
 
     [Fact]
@@ -466,7 +623,9 @@ public sealed class DynamicCacheTests : IDisposable
         Assert.Equal("413420393", pending.CommentOid);
 
         Assert.Equal(2, _db.UpsertComments("cd1",
-            [new StationDb.DynamicCommentRow(501, 0, 0, 9, "楼", "https://i0.hdslb.com/f/9.jpg", "一楼", 3, null, "/avatars/abc.jpg"),
+            [new StationDb.DynamicCommentRow(501, 0, 0, 9, "楼", "https://i0.hdslb.com/f/9.jpg", "一楼", 3, null, "/avatars/abc.jpg",
+                """["https://i0.hdslb.com/p/1.jpg","https://i0.hdslb.com/p/2.jpg"]""",
+                """["/cmt-img/aaa.jpg",null]"""),
              new StationDb.DynamicCommentRow(502, 501, 501, 10, "客", null, "二楼", 0, "2026-01-02T00:00:00+00:00")]));
         _db.MarkCommentsFetched("cd1", 57, """{"[爱心]":"/emotes/love.png"}""");
 
@@ -476,16 +635,26 @@ public sealed class DynamicCacheTests : IDisposable
         Assert.Equal("一楼", topRow.Message);
         Assert.Equal(3, topRow.LikeCount);
         Assert.Equal("/avatars/abc.jpg", topRow.FaceLocal);
+        // 配图两数组同序读回（单图失败存 null 元素）；无图楼两列都空。
+        Assert.Equal("""["https://i0.hdslb.com/p/1.jpg","https://i0.hdslb.com/p/2.jpg"]""", topRow.PicturesJson);
+        Assert.Equal("""["/cmt-img/aaa.jpg",null]""", topRow.PicturesLocalJson);
         var subRow = Assert.Single(tree, r => r.Rpid == 502);
         Assert.Equal("二楼", subRow.Message);
         Assert.Equal(501, subRow.RootRpid);
         Assert.Equal("2026-01-02T00:00:00+00:00", subRow.CtimeUtc);
+        Assert.Null(subRow.PicturesJson);
         Assert.Equal("""{"[爱心]":"/emotes/love.png"}""", _db.GetDynamicEmotesJson("cd1"));
+
+        // 图片资产回写：九宫格本地数组（含失败 null 洞）、封面前本地、正文表情映射各归各位。
+        _db.SetDynamicAssetLocals("cd1", """["/cmt-img/p1.jpg",null]""", "/cmt-img/cover.jpg", """{"[打call]":"/emotes/call.png"}""");
 
         // 盖章后退出欠账名单；底栏评论数从 page.count 回写（动态流不带 stat，巡捕回执是唯一来源）。
         Assert.Empty(_db.ListPendingCommentDynamics());
         var row = Assert.Single(_db.ListDynamics(7001));
         Assert.Equal(57, row.StatComment);
         Assert.NotNull(row.CommentsFetchedAtUtc);
+        Assert.Equal("""["/cmt-img/p1.jpg",null]""", row.PicsLocalJson);
+        Assert.Equal("/cmt-img/cover.jpg", row.CoverLocal);
+        Assert.Equal("""{"[打call]":"/emotes/call.png"}""", row.BodyEmotesJson);
     }
 }

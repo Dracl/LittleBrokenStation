@@ -1,10 +1,19 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DownKyi.Application.Bilibili;
 using DownKyi.Core.BiliApi;
 using DownKyi.Core.BiliApi.Sign;
 using Microsoft.Extensions.Logging;
 
 namespace LBS.Engine;
+
+/// <summary>动态配图：url + 可选宽高（feed 的 opus.pics / draw.items(+images) 带尺寸，专栏封面无）；
+/// 宽高前端拿去判「长图」角标，url 尾 .gif 判「动图」。
+/// JsonPropertyName 锁死 camelCase：pics_json 落库形态不吃序列化 options，双保险防再出 PascalCase 脏库。</summary>
+public sealed record ParsedPic(
+    [property: JsonPropertyName("url")] string Url,
+    [property: JsonPropertyName("width")] int? Width = null,
+    [property: JsonPropertyName("height")] int? Height = null);
 
 /// <summary>解析出的一条动态（落库形态的原料）。</summary>
 public sealed record ParsedDynamic(
@@ -13,7 +22,7 @@ public sealed record ParsedDynamic(
     long? AuthorMid,
     string? AuthorName,
     string? Text,
-    IReadOnlyList<string> Pics,
+    IReadOnlyList<ParsedPic> Pics,
     string? Bvid,
     string? PublishedAtUtc,
     // 卡面原料随抓取定格：作者头像、档案三件套（未入站视频卡靠它们不剃光头）。
@@ -31,7 +40,9 @@ public sealed record ParsedDynamic(
     // 评论区寻址坐标：B 站自己把评论区挂在 basic.comment_type/comment_id_str 上——
     // 视频卡挂视频评论区（type=1+aid）、图文卡挂相簿（type=11+rid）、纯文/转发卡才是 type=17+动态 id。
     long? CommentType = null,
-    string? CommentOid = null);
+    string? CommentOid = null,
+    // 正文 [表情] 集合：module_dynamic.desc.emote（转义符→远程 url），随入库落盘 data/emotes 后存 body_emotes_json。
+    IReadOnlyList<(string Seq, string Url)>? Emotes = null);
 
 /// <summary>一条动态评论（root=0 一级楼；子回复 root/parent 挂父楼）。</summary>
 public sealed record ParsedComment(
@@ -43,7 +54,9 @@ public sealed record ParsedComment(
     string? Face,
     string Message,
     long Like,
-    string? CtimeUtc);
+    string? CtimeUtc,
+    // 评论配图远程 url（content.pictures[].img_src）；落盘交给评论资产缓存，同序对齐存 pictures_local_json。
+    IReadOnlyList<string>? Pictures = null);
 
 public enum FeedParseStatus
 {
@@ -402,6 +415,30 @@ public sealed class LbsDynamicFetcher(
                     }
 
                     var ctime = Num(el, "ctime");
+                    // 评论配图：content.pictures[].img_src（与视频侧归档器 ReplyPicture 同款模型），只认绝对 http 链、每条封顶 9 张。
+                    List<string>? pictures = null;
+                    if (Path(el, "content", "pictures") is { ValueKind: JsonValueKind.Array } picsEl)
+                    {
+                        var urls = new List<string>();
+                        foreach (var pic in picsEl.EnumerateArray())
+                        {
+                            var picUrl = Str(Path(pic, "img_src"));
+                            if (!string.IsNullOrWhiteSpace(picUrl) && picUrl.StartsWith("http", StringComparison.Ordinal))
+                            {
+                                urls.Add(picUrl.Trim());
+                                if (urls.Count >= 9)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (urls.Count > 0)
+                        {
+                            pictures = urls;
+                        }
+                    }
+
                     replies.Add(new ParsedComment(
                         rpid,
                         rootRpid,
@@ -412,7 +449,8 @@ public sealed class LbsDynamicFetcher(
                         Str(Path(el, "member", "face")) ?? Str(Path(el, "member", "avatar")),
                         message.Trim(),
                         Num(el, "like") ?? 0,
-                        ctime is > 0 ? DateTimeOffset.FromUnixTimeSeconds(ctime.Value).ToString("O") : null));
+                        ctime is > 0 ? DateTimeOffset.FromUnixTimeSeconds(ctime.Value).ToString("O") : null,
+                        pictures));
 
                     if (collectRoots && (Num(el, "rcount") ?? 0) > 0)
                     {
@@ -575,49 +613,142 @@ public sealed class LbsDynamicFetcher(
             origAuthorFace = Str(Path(srcAuthor, "face"));
         }
 
+        // 正文表情集：真实 feed（x/polymer/web-dynamic/v1/feed/space）的 [表情] 不是评论区那种 content.emote 字典，
+        // 而是挂在 desc.rich_text_nodes[] 的 RICH_TEXT_NODE_TYPE_EMOJI 节点上（emoji.text 转义符 + emoji.icon_url 图链），
+        // 图文卡的正文表情同理在 major.opus.summary.rich_text_nodes；desc.emote 字典形态作兼容照剥（部分卡型/视图会出现）。
+        // 顶层评语与正文（转发吃 orig）两边都剥、按转义符去重；实测无 emote 字典时旧读法恒空，节点形态才是主货架。
+        var bodyEmotes = new List<(string Seq, string Url)>();
+        var emoteSeen = new HashSet<string>(StringComparer.Ordinal);
+        CollectEmotes(Path(item, "modules", "module_dynamic", "desc", "emote"), bodyEmotes, emoteSeen);
+        CollectEmoteNodes(Path(item, "modules", "module_dynamic", "desc", "rich_text_nodes"), bodyEmotes, emoteSeen);
+        CollectEmotes(Path(src, "modules", "module_dynamic", "desc", "emote"), bodyEmotes, emoteSeen);
+        CollectEmoteNodes(Path(src, "modules", "module_dynamic", "desc", "rich_text_nodes"), bodyEmotes, emoteSeen);
+        CollectEmotes(Path(src, "modules", "module_dynamic", "major", "opus", "summary", "emote"), bodyEmotes, emoteSeen);
+        CollectEmoteNodes(Path(src, "modules", "module_dynamic", "major", "opus", "summary", "rich_text_nodes"), bodyEmotes, emoteSeen);
+
         return new ParsedDynamic(dynamicId, type, authorMid, authorName, text, pics, bvid, published,
             authorFace, archiveTitle, archiveCover, archiveDuration,
             statComment, statForward, statLike, origAuthorMid, origAuthorName, origAuthorFace,
-            commentType, commentOid);
+            commentType, commentOid,
+            bodyEmotes.Count > 0 ? bodyEmotes : null);
     }
 
-    private static IReadOnlyList<string> CollectPics(JsonElement src)
+    private static void CollectEmotes(JsonElement? node, List<(string Seq, string Url)> sink, HashSet<string> seen)
     {
-        var pics = ReadStringArray(Path(src, "modules", "module_dynamic", "major", "opus", "pics"), "url");
+        if (node is not { ValueKind: JsonValueKind.Object } obj)
+        {
+            return;
+        }
+
+        foreach (var prop in obj.EnumerateObject())
+        {
+            var url = prop.Value.ValueKind == JsonValueKind.Object && prop.Value.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String
+                ? u.GetString()
+                : null;
+            if (!string.IsNullOrWhiteSpace(prop.Name) && !string.IsNullOrWhiteSpace(url) && seen.Add(prop.Name))
+            {
+                sink.Add((prop.Name, url!));
+            }
+        }
+    }
+
+    /// <summary>feed 正文表情的真货架：rich_text_nodes[] 里 EMOJI 节点的 emoji.text（转义符）+ emoji.icon_url（图链，
+    /// 比评论区 content.emote 的 url 键名不同，两键都认）；转义符丢了回退节点的 orig_text。</summary>
+    private static void CollectEmoteNodes(JsonElement? node, List<(string Seq, string Url)> sink, HashSet<string> seen)
+    {
+        if (node is not { ValueKind: JsonValueKind.Array } arr)
+        {
+            return;
+        }
+
+        foreach (var el in arr.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.Object
+                || !el.TryGetProperty("emoji", out var emoji)
+                || emoji.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var url = Str(Path(emoji, "icon_url")) ?? Str(Path(emoji, "url"));
+            var seq = Str(Path(emoji, "text")) ?? Str(Path(el, "orig_text"));
+            if (!string.IsNullOrWhiteSpace(seq) && !string.IsNullOrWhiteSpace(url) && seen.Add(seq!))
+            {
+                sink.Add((seq!, url!));
+            }
+        }
+    }
+
+    private static IReadOnlyList<ParsedPic> CollectPics(JsonElement src)
+    {
+        var pics = ReadPicArray(Path(src, "modules", "module_dynamic", "major", "opus", "pics"), "url");
         if (pics.Count > 0)
         {
             return pics;
         }
 
-        pics = ReadStringArray(Path(src, "modules", "module_dynamic", "major", "draw", "items"), "src");
+        pics = ReadDrawPics(src);
         if (pics.Count > 0)
         {
             return pics;
         }
 
         // 专栏封面是裸字符串数组。
-        return ReadStringArray(Path(src, "modules", "module_dynamic", "major", "article", "covers"), null);
+        return ReadPicArray(Path(src, "modules", "module_dynamic", "major", "article", "covers"), null);
     }
 
-    private static IReadOnlyList<string> ReadStringArray(JsonElement? node, string? propName)
+    private static IReadOnlyList<ParsedPic> ReadPicArray(JsonElement? node, string? propName)
     {
         if (node is not { ValueKind: JsonValueKind.Array } arr)
         {
             return [];
         }
 
-        var list = new List<string>();
+        var list = new List<ParsedPic>();
         foreach (var el in arr.EnumerateArray())
         {
             var value = propName is null ? Str(el) : Str(Path(el, propName));
             if (!string.IsNullOrWhiteSpace(value))
             {
-                list.Add(value.Trim());
+                list.Add(new ParsedPic(value.Trim(), Dim(el, "width"), Dim(el, "height")));
             }
         }
 
         return list;
     }
+
+    /// <summary>老相簿：图在 draw.items[].src，尺寸多半随身在 items 自己，部分卡型只在平行的 draw.images 里——两处都认，按下标配对兑尺寸。</summary>
+    private static IReadOnlyList<ParsedPic> ReadDrawPics(JsonElement src)
+    {
+        if (Path(src, "modules", "module_dynamic", "major", "draw", "items") is not { ValueKind: JsonValueKind.Array } items)
+        {
+            return [];
+        }
+
+        var images = Path(src, "modules", "module_dynamic", "major", "draw", "images") is { ValueKind: JsonValueKind.Array } imgs
+            ? imgs.EnumerateArray().ToList()
+            : null;
+
+        var list = new List<ParsedPic>();
+        var index = 0;
+        foreach (var item in items.EnumerateArray())
+        {
+            var value = Str(Path(item, "src"));
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                var paired = images is not null && index < images.Count ? images[index] : (JsonElement?)null;
+                list.Add(new ParsedPic(value.Trim(),
+                    Dim(item, "width") ?? Dim(paired, "width"),
+                    Dim(item, "height") ?? Dim(paired, "height")));
+            }
+
+            index++;
+        }
+
+        return list;
+    }
+
+    private static int? Dim(JsonElement? node, string name) => (int?)Num(node, name);
 
     private static JsonElement? Path(JsonElement? element, params string[] names)
     {

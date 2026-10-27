@@ -1,6 +1,7 @@
 <script setup>
 import { richHtml } from '../utils/emote'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import ImageLightbox from './ImageLightbox.vue'
 
 const props = defineProps({
   src: { type: String, default: null },
@@ -24,7 +25,21 @@ const sortBy = ref('hot') // hot | time
 const floors = ref({}) // rpid -> { open, loaded, page, loading, hasMore }
 const brokenAvatars = ref(new Set())
 const liked = ref(loadLiked())
-const zoomImage = ref(null)
+// 图片放大：交给公共灯箱 ImageLightBox（同一楼多图可左右翻），图路本地原图优先（cmt-img）。
+const zoom = ref(null) // { images: string[], index: number } | null
+
+function openZoom(item, i) {
+  const raw = (item.pictures ?? []).map((_, pi) => picLocal(item, pi))
+  const images = []
+  let click = 0
+  raw.forEach((u, idx) => {
+    if (!u) return
+    if (idx < i) click++
+    images.push(u)
+  })
+  if (!images.length) return
+  zoom.value = { images, index: Math.min(click, images.length - 1) }
+}
 
 function loadLiked() {
   try {
@@ -197,13 +212,6 @@ function likeCount(item) {
   return (item.like ?? 0) + (liked.value.has(item.rpid) ? 1 : 0)
 }
 
-function onKeydown(event) {
-  if (event.key === 'Escape') zoomImage.value = null
-}
-
-window.addEventListener('keydown', onKeydown)
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
-
 function initials(name) {
   return name ? Array.from(name)[0] : '?'
 }
@@ -251,7 +259,7 @@ function initials(name) {
               <span class="whitespace-pre-line" v-html="rich(topReply.content)"></span>
             </p>
             <div v-if="topReply.pictures?.length" class="mt-2 flex flex-wrap gap-1">
-              <img v-for="(pic, pi) in topReply.pictures" :key="pi" :src="picLocal(topReply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-pointer rounded object-cover" loading="lazy" @click="zoomImage = picLocal(topReply, pi)" />
+              <img v-for="(pic, pi) in topReply.pictures" :key="pi" :src="picLocal(topReply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(topReply, pi)" />
             </div>
             <div class="mt-2 flex items-center gap-5 text-xs text-inkFaint">
               <span>{{ timeText(topReply.time) }}</span>
@@ -293,7 +301,7 @@ function initials(name) {
           <p class="mt-1 whitespace-pre-line text-[15px] leading-7 text-inkMain" v-html="rich(reply.content)"></p>
 
           <div v-if="reply.pictures?.length" class="mt-2 flex flex-wrap gap-1">
-            <img v-for="(pic, pi) in reply.pictures" :key="pi" :src="picLocal(reply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-pointer rounded object-cover" loading="lazy" @click="zoomImage = picLocal(reply, pi)" />
+            <img v-for="(pic, pi) in reply.pictures" :key="pi" :src="picLocal(reply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(reply, pi)" />
           </div>
 
           <div class="mt-2 flex items-center gap-5 text-xs text-inkFaint">
@@ -368,10 +376,8 @@ function initials(name) {
       </div>
     </div>
 
-    <!-- 图片放大 -->
-    <div v-if="zoomImage" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" @click="zoomImage = null">
-      <img :src="zoomImage" referrerpolicy="no-referrer" class="max-h-[85vh] max-w-[85vw] rounded-lg" @click.stop />
-    </div>
+    <!-- 图片放大：公共灯箱（点遮罩/Esc 关，多图 ←/→ 翻） -->
+    <ImageLightbox v-if="zoom" :images="zoom.images" :index="zoom.index" @close="zoom = null" />
   </section>
 </template>
 

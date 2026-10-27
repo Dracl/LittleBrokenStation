@@ -555,13 +555,24 @@ public sealed class LbsCommentArchiver(
         return map;
     }
 
-    /// <summary>评论图片原图落盘 data/cmt-img（灯箱要看原图）；失败的不进映射，前端热链兑底。</summary>
-    private async Task<Dictionary<string, string>> CachePicturesAsync(IEnumerable<ReplyRaw> raws, CancellationToken cancellationToken)
+    /// <summary>评论图片落盘（公共入口，动态九宫格/封面也复用）：data/cmt-img 原图（灯箱要看原图）；
+    /// 失败的不进映射（前端热链兑底），命名与视频侧同库同 sha1 规矩。</summary>
+    public Task<Dictionary<string, string>> CachePictureUrlsAsync(IEnumerable<string?> urls, CancellationToken cancellationToken)
+    {
+        return CachePicturesCoreAsync(urls, cancellationToken);
+    }
+
+    private Task<Dictionary<string, string>> CachePicturesAsync(IEnumerable<ReplyRaw> raws, CancellationToken cancellationToken)
+    {
+        return CachePicturesCoreAsync(
+            raws.SelectMany(r => r.Content?.Pictures ?? []).Select(p => p.ImgSrc),
+            cancellationToken);
+    }
+
+    private async Task<Dictionary<string, string>> CachePicturesCoreAsync(IEnumerable<string?> sourceUrls, CancellationToken cancellationToken)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        var urls = raws
-            .SelectMany(r => r.Content?.Pictures ?? [])
-            .Select(p => p.ImgSrc)
+        var urls = sourceUrls
             .Where(u => !string.IsNullOrWhiteSpace(u) && u!.StartsWith("http", StringComparison.Ordinal))
             .Distinct()
             .Take(MaxPictureDownloads)

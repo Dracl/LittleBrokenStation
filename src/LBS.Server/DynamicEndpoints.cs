@@ -18,6 +18,12 @@ public static class DynamicEndpoints
 
     private sealed record ShareRequest(long? ToMemberId, string? Note);
 
+    /// <summary>配图对象（与 worker 存的 pics_json 同形）：前端拿 url 画图、拿宽高判「长图」角标。</summary>
+    private sealed record PicOut(string? Url, int? Width, int? Height);
+
+    /// <summary>worker 存的是 camelCase，这里宽容反序化，两种写法都认。</summary>
+    private static readonly JsonSerializerOptions LooseJson = new() { PropertyNameCaseInsensitive = true };
+
     public static void MapDynamicEndpoints(this WebApplication app)
     {
         app.MapGet("/api/dynamics", (long? mid, int? limit, long? beforeId, string? beforeTime, StationDb db) =>
@@ -35,13 +41,16 @@ public static class DynamicEndpoints
                 type = r.Type,
                 text = r.Text,
                 pics = ParsePics(r.PicsJson),
+                // 本地资产与远程同序对齐（单图失败为 null 元素），优先级归前端：本地优先、热链兑底。
+                picsLocal = ParseNullableStrings(r.PicsLocalJson),
                 bvid = r.Bvid,
                 publishedAtUtc = r.PublishedAtUtc,
                 inStation = r.InStation,
                 authorFaceUrl = r.AuthorFaceUrl,
-                // 卡面取材：馆藏有货优先，没入站的吃抓取定格的 B 站档案。
+                // 卡面取材：馆藏有货优先，没入站的吃抓取定格的 B 站档案；封面前本地只在档案热链上桌时才给（馆藏图自有路径）。
                 title = r.StationTitle ?? r.ArchiveTitle,
                 cover = r.StationCover ?? r.ArchiveCover,
+                coverLocal = r.StationCover is null ? r.CoverLocal : null,
                 duration = DurationText.Normalize(r.StationDuration ?? r.ArchiveDuration),
                 viewCount = r.StatView,
                 // 底栏三计数与转发灰块的原作者名片（都随抓取定格）。
@@ -52,6 +61,8 @@ public static class DynamicEndpoints
                 origAuthorName = r.OrigAuthorName,
                 origAuthorFace = r.OrigAuthorFace,
                 commentsFetched = r.CommentsFetchedAtUtc is not null,
+                // 正文 [表情] 定格映射（转义符→/emotes/…）：前端 richHtml 同一根管线把 [xx] 换图。
+                bodyEmotes = ParseEmoteMap(r.BodyEmotesJson),
             });
             return Results.Ok(new { items, hasMore });
         });
@@ -69,6 +80,7 @@ public static class DynamicEndpoints
                 message = top.Message,
                 like = top.LikeCount,
                 ctimeUtc = top.CtimeUtc,
+                pictures = MergePictures(top.PicturesJson, top.PicturesLocalJson),
                 replies = rows.Where(r => r.RootRpid == top.Rpid).Select(r => new
                 {
                     rpid = r.Rpid,
@@ -78,21 +90,11 @@ public static class DynamicEndpoints
                     message = r.Message,
                     like = r.LikeCount,
                     ctimeUtc = r.CtimeUtc,
+                    pictures = MergePictures(r.PicturesJson, r.PicturesLocalJson),
                 }).ToList(),
             }).ToList();
             // 表情定格原样透传（转义符→/emotes/xx.png）；前端 rich() 同一根管线把 [xx] 换图。
-            object? emotes = null;
-            if (db.GetDynamicEmotesJson(dynamicId) is { } emotesJson)
-            {
-                try
-                {
-                    emotes = JsonSerializer.Deserialize<Dictionary<string, string>>(emotesJson);
-                }
-                catch (JsonException)
-                {
-                    // 存坏的映射当没存，前端顶多裸显转义符，不拦端点。
-                }
-            }
+            object? emotes = ParseEmoteMap(db.GetDynamicEmotesJson(dynamicId));
             return Results.Ok(new
             {
                 // 总数优先拿巡捕盖章的 page.count（本地只存热评前 20，数条数会低估）。
@@ -206,7 +208,7 @@ public static class DynamicEndpoints
                 : new { busy = true }));
     }
 
-    private static IReadOnlyList<string> ParsePics(string? picsJson)
+    private static IReadOnlyList<PicOut> ParsePics(string? picsJson)
     {
         if (string.IsNullOrWhiteSpace(picsJson))
         {
@@ -215,11 +217,64 @@ public static class DynamicEndpoints
 
         try
         {
-            return JsonSerializer.Deserialize<List<string>>(picsJson) ?? [];
+            return JsonSerializer.Deserialize<List<PicOut>>(picsJson, LooseJson) ?? [];
         }
         catch (JsonException)
         {
             return [];
         }
+    }
+
+    /// <summary>同序本地路径数组（允许 null 元素）；坏 JSON 当没存，前端全量热链兑底。</summary>
+    private static IReadOnlyList<string?>? ParseNullableStrings(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string?>>(json, LooseJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>转义符→图路 映射（坏 JSON 当没存，前端顶多裸显转义符，不拦端点）。</summary>
+    private static Dictionary<string, string>? ParseEmoteMap(string? emotesJson)
+    {
+        if (string.IsNullOrWhiteSpace(emotesJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(emotesJson, LooseJson);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>评论配图本地优先合并：逐张有本地用本地，否则回远程 url；没图给 null。</summary>
+    private static IReadOnlyList<string>? MergePictures(string? picturesJson, string? picturesLocalJson)
+    {
+        var remote = ParseNullableStrings(picturesJson);
+        if (remote is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var locals = ParseNullableStrings(picturesLocalJson);
+        return remote
+            .Select((url, i) => locals is not null && i < locals.Count && !string.IsNullOrEmpty(locals[i]) ? locals[i] : url)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Select(u => u!)
+            .ToList();
     }
 }

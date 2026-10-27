@@ -20,6 +20,9 @@ public sealed class DynamicFetchWorker(
     private readonly SemaphoreSlim roundGate = new(1, 1);
     private int manualBusy;
 
+    /// <summary>图片资产类 JSON（pics_local_json / body_emotes_json / pictures_*_json）统一 camelCase 存。</summary>
+    private static readonly JsonSerializerOptions AssetJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("动态巡捕上岗，90 秒后灌种子补首轮，之后每小时抖一抖");
@@ -97,6 +100,7 @@ public sealed class DynamicFetchWorker(
         try
         {
             var freshIds = new List<(string DynamicId, long? CommentType, string? CommentOid)>();
+            var freshDynamics = new List<ParsedDynamic>();
             foreach (var target in db.ListDynamicTargets())
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -114,7 +118,8 @@ public sealed class DynamicFetchWorker(
                             var fresh = db.UpsertDynamic(
                                 parsed.DynamicId, target.Mid, parsed.AuthorMid, parsed.AuthorName,
                                 parsed.Type, parsed.Text,
-                                parsed.Pics.Count > 0 ? System.Text.Json.JsonSerializer.Serialize(parsed.Pics) : null,
+                                // pics_json 走 AssetJson（camelCase）+ ParsedPic 的 [JsonPropertyName] 双保险：首轮实跑曾拿默认 options 裸奔，入库成了 PascalCase。
+                                parsed.Pics.Count > 0 ? System.Text.Json.JsonSerializer.Serialize(parsed.Pics, AssetJson) : null,
                                 parsed.Bvid, parsed.PublishedAtUtc,
                                 parsed.AuthorFaceUrl, parsed.ArchiveTitle, parsed.ArchiveCover, parsed.ArchiveDuration,
                                 parsed.StatComment, parsed.StatForward, parsed.StatLike,
@@ -123,6 +128,7 @@ public sealed class DynamicFetchWorker(
                             if (fresh)
                             {
                                 freshIds.Add((parsed.DynamicId, parsed.CommentType, parsed.CommentOid));
+                                freshDynamics.Add(parsed);
                             }
 
                             return Task.FromResult(fresh);
@@ -148,11 +154,70 @@ public sealed class DynamicFetchWorker(
                 }
             }
 
+            // 新货的九宫格/封面/正文表情先落盘（与评论巡捕同款位置风格：policy 之外直接 await），再进评论段。
+            await CacheDynamicAssetsAsync(freshDynamics, cancellationToken);
             await RunCommentRoundAsync(freshIds, cancellationToken);
         }
         finally
         {
             roundGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 新收动态的图片资产落盘：九宫格与卡面封面走评论图同库（data/cmt-img，sha1 命名），正文 [表情] 走 data/emotes——
+    /// 批量一次下载，风控弃单不受影响：存不下的行留 null 洞 / 不落库，前端热链兑底，绝不拦巡捕。
+    /// </summary>
+    private async Task CacheDynamicAssetsAsync(IReadOnlyList<ParsedDynamic> fresh, CancellationToken cancellationToken)
+    {
+        if (fresh.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var urls = fresh
+                .SelectMany(d => d.Pics.Select(p => p.Url))
+                .Concat(fresh.Select(d => d.ArchiveCover))
+                .ToList();
+            var pictureMap = await assetCache.CachePictureUrlsAsync(urls, cancellationToken);
+
+            var emotePairs = fresh.SelectMany(d => d.Emotes ?? []).Distinct().ToList();
+            var emoteMap = emotePairs.Count > 0
+                ? await assetCache.CacheEmoteUrlsAsync(emotePairs, cancellationToken)
+                : null;
+
+            foreach (var d in fresh)
+            {
+                // 本地图数组与 pics_json 同序对齐：单图失败存 null 元素，前端逐格回退热链。
+                var picsLocal = d.Pics.Count > 0
+                    ? d.Pics.Select(p => pictureMap.TryGetValue(p.Url, out var local) ? local : null).ToList()
+                    : null;
+                var coverLocal = d.ArchiveCover is not null && pictureMap.TryGetValue(d.ArchiveCover, out var cover) ? cover : null;
+                string? bodyEmotesJson = d.Emotes is { Count: > 0 } seqs
+                    ? JsonSerializer.Serialize(
+                        seqs.Where(e => emoteMap is not null && emoteMap.ContainsKey(e.Seq))
+                            .ToDictionary(e => e.Seq, e => emoteMap![e.Seq]),
+                        AssetJson)
+                    : null;
+                if (picsLocal is not null || coverLocal is not null || bodyEmotesJson is not null)
+                {
+                    db.SetDynamicAssetLocals(
+                        d.DynamicId,
+                        picsLocal is not null ? JsonSerializer.Serialize(picsLocal, AssetJson) : null,
+                        coverLocal,
+                        bodyEmotesJson);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "动态图片资产落盘翻车（前端热链兑底，不拦巡捕）");
         }
     }
 
@@ -187,16 +252,25 @@ public sealed class DynamicFetchWorker(
                     continue;
                 }
 
-                // 头像与表情复用视频评论区的落盘库（data/avatars、data/emotes）：存不下的前端热链兑底。
+                // 头像、表情与评论配图复用视频评论区的落盘库（data/avatars、data/emotes、data/cmt-img）：存不下的前端热链兑底。
                 var faceMap = await assetCache.CacheAvatarUrlsAsync(
                     outcome.Comments.Select(c => c.Face), cancellationToken);
                 var emoteMap = outcome.Emotes is { Count: > 0 } emotePairs
                     ? await assetCache.CacheEmoteUrlsAsync(emotePairs, cancellationToken)
                     : null;
+                var pictureMap = await assetCache.CachePictureUrlsAsync(
+                    outcome.Comments.SelectMany(c => c.Pictures ?? (IReadOnlyList<string>)[]), cancellationToken);
 
                 totalComments += db.UpsertComments(dynamicId, outcome.Comments
                     .Select(c => new StationDb.DynamicCommentRow(c.Rpid, c.RootRpid, c.ParentRpid, c.Mid, c.Name, c.Face, c.Message, c.Like, c.CtimeUtc,
-                        c.Face is not null && faceMap.TryGetValue(c.Face, out var local) ? local : null))
+                        c.Face is not null && faceMap.TryGetValue(c.Face, out var local) ? local : null,
+                        // 配图两数组同序对齐：单图下载失败存 null 元素，端点层逐张本地优先合并。
+                        c.Pictures is { Count: > 0 } remotePics ? JsonSerializer.Serialize(remotePics, AssetJson) : null,
+                        c.Pictures is { Count: > 0 } localPics
+                            ? JsonSerializer.Serialize(
+                                localPics.Select(u => pictureMap.TryGetValue(u, out var picLocal) ? picLocal : null).ToList(),
+                                AssetJson)
+                            : null))
                     .ToList());
                 if (outcome.Ok)
                 {

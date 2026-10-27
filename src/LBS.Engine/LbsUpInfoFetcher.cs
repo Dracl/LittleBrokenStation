@@ -1,6 +1,5 @@
 using System.Text.Json;
 using DownKyi.Application.Bilibili;
-using LBS.Infrastructure;
 using Microsoft.Extensions.Logging;
 
 namespace LBS.Engine;
@@ -13,11 +12,11 @@ public sealed record VideoStat(long? Like, long? Coin, long? Favorite, long? Sha
 
 /// <summary>
 /// UP 主名片采集器：走官方 web-interface/card 拿头像、简介、粉丝数（复用引擎登录态客户端），
-/// 头像本地化到 data/avatars/up-{mid}.jpg 由 /avatars 端点伺服。失败不逞强：返回 null，前端按"—"降级。
+/// 头像落盘交给 LbsCommentArchiver（与视频/动态评论区共用 data/avatars 的 sha1 命名 + CDN 缩图那一套库，不再自存 up-{mid}.jpg）。失败不逞强：返回 null，前端按"—"降级。
 /// </summary>
 public sealed class LbsUpInfoFetcher(
     LbsQueryClient client,
-    DataPaths paths,
+    LbsCommentArchiver assetCache,
     ILogger<LbsUpInfoFetcher> logger)
 {
     private const string Referer = "https://www.bilibili.com";
@@ -60,18 +59,13 @@ public sealed class LbsUpInfoFetcher(
         }
     }
 
-    /// <summary>头像落盘 up-{mid}.jpg；已存在即跳过（幂等）。失败返回 null，调用方回退热链。</summary>
+    /// <summary>头像落盘交给评论资产缓存（sha1 命名 + CDN 缩图，与视频/动态评论区同库同命名）；已存在即跳过（幂等）。失败返回 null，调用方回退热链。</summary>
     private async Task<string?> CacheFaceAsync(string faceUrl, long mid, CancellationToken cancellationToken)
     {
         try
         {
-            var dest = Path.Combine(paths.Avatars, $"up-{mid}.jpg");
-            if (!File.Exists(dest))
-            {
-                await client.DownloadFileAsync(new BilibiliHttpRequest(faceUrl, Referer), dest, cancellationToken);
-            }
-
-            return File.Exists(dest) ? $"/avatars/up-{mid}.jpg" : null;
+            var map = await assetCache.CacheAvatarUrlsAsync([faceUrl], cancellationToken);
+            return map.TryGetValue(faceUrl, out var local) ? local : null;
         }
         catch (OperationCanceledException)
         {

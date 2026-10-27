@@ -50,7 +50,12 @@ public sealed partial class StationDb
         long? OrigAuthorMid = null,
         string? OrigAuthorName = null,
         string? OrigAuthorFace = null,
-        string? CommentsFetchedAtUtc = null);
+        string? CommentsFetchedAtUtc = null,
+        // 动态侧图片资产落盘路径（与视频侧同库）：九宫格本地图 JSON 数组（与 pics_json 同序，失败为 null 元素）、
+        // 卡面封面本地路径、正文 [表情] 定格映射（转义符→/emotes/…）。
+        string? PicsLocalJson = null,
+        string? CoverLocal = null,
+        string? BodyEmotesJson = null);
 
     /// <summary>一条动态评论（root=0 是一级楼；子回复 root 挂父楼 rpid）。</summary>
     public sealed record DynamicCommentRow(
@@ -63,7 +68,10 @@ public sealed partial class StationDb
         string Message,
         long LikeCount,
         string? CtimeUtc,
-        string? FaceLocal = null);
+        string? FaceLocal = null,
+        // 评论配图：远程 url JSON 数组 + 本地路径 JSON 数组（同序对齐，单图失败为 null 元素），端点层本地优先合并。
+        string? PicturesJson = null,
+        string? PicturesLocalJson = null);
 
     /// <summary>分享卡定格快照：转发到私信那一刻的卡面，B 站后续删改不连累分站。</summary>
     public sealed record DynamicSnapshot(
@@ -175,7 +183,8 @@ public sealed partial class StationDb
                    d.author_face_url, d.archive_title, d.archive_cover, d.archive_duration,
                    v.title, v.cover_url, p.duration_text, m.view_count,
                    d.stat_comment, d.stat_forward, d.stat_like,
-                   d.orig_author_mid, d.orig_author_name, d.orig_author_face, d.comments_fetched_at_utc
+                   d.orig_author_mid, d.orig_author_name, d.orig_author_face, d.comments_fetched_at_utc,
+                   d.pics_local_json, d.cover_local, d.body_emotes_json
             FROM dynamics d
             LEFT JOIN videos v ON v.bvid = d.bvid
             LEFT JOIN video_meta m ON m.video_id = v.id
@@ -226,7 +235,10 @@ public sealed partial class StationDb
                 reader.IsDBNull(23) ? null : reader.GetInt64(23),
                 reader.IsDBNull(24) ? null : reader.GetString(24),
                 reader.IsDBNull(25) ? null : reader.GetString(25),
-                reader.IsDBNull(26) ? null : reader.GetString(26)));
+                reader.IsDBNull(26) ? null : reader.GetString(26),
+                reader.IsDBNull(27) ? null : reader.GetString(27),
+                reader.IsDBNull(28) ? null : reader.GetString(28),
+                reader.IsDBNull(29) ? null : reader.GetString(29)));
         }
 
         return list;
@@ -245,8 +257,8 @@ public sealed partial class StationDb
         using var insert = connection.CreateCommand();
         insert.CommandText = """
             INSERT OR IGNORE INTO dynamic_comments
-                (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, cached_at_utc)
-            VALUES ($did, $rpid, $root, $parent, $mid, $name, $face, $facelocal, $msg, $like, $ctime, $cached);
+                (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, cached_at_utc, pictures_json, pictures_local_json)
+            VALUES ($did, $rpid, $root, $parent, $mid, $name, $face, $facelocal, $msg, $like, $ctime, $cached, $pics, $picslocal);
             """;
         var pDid = insert.Parameters.Add("$did", SqliteType.Text);
         var pRpid = insert.Parameters.Add("$rpid", SqliteType.Integer);
@@ -260,6 +272,8 @@ public sealed partial class StationDb
         var pLike = insert.Parameters.Add("$like", SqliteType.Integer);
         var pCtime = insert.Parameters.Add("$ctime", SqliteType.Text);
         var pCached = insert.Parameters.Add("$cached", SqliteType.Text);
+        var pPics = insert.Parameters.Add("$pics", SqliteType.Text);
+        var pPicsLocal = insert.Parameters.Add("$picslocal", SqliteType.Text);
         foreach (var c in comments)
         {
             pDid.Value = dynamicId;
@@ -274,10 +288,29 @@ public sealed partial class StationDb
             pLike.Value = c.LikeCount;
             pCtime.Value = (object?)c.CtimeUtc ?? DBNull.Value;
             pCached.Value = DateTimeOffset.UtcNow.ToString("O");
+            pPics.Value = (object?)c.PicturesJson ?? DBNull.Value;
+            pPicsLocal.Value = (object?)c.PicturesLocalJson ?? DBNull.Value;
             fresh += insert.ExecuteNonQuery();
         }
 
         return fresh;
+    }
+
+    /// <summary>动态图片资产落盘回写：九宫格本地数组（与 pics_json 同序）、卡面封面本地、正文表情定格映射。
+    /// 巡捕对新收动态缓存完图后调一次；null 参数也直写（同一轮重跑以最后一次为准，不兑旧值）。</summary>
+    public void SetDynamicAssetLocals(string dynamicId, string? picsLocalJson, string? coverLocal, string? bodyEmotesJson)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE dynamics SET pics_local_json = $picsLocal, cover_local = $cover, body_emotes_json = $bodyEmotes
+            WHERE dynamic_id = $did;
+            """;
+        command.Parameters.AddWithValue("$picsLocal", (object?)picsLocalJson ?? DBNull.Value);
+        command.Parameters.AddWithValue("$cover", (object?)coverLocal ?? DBNull.Value);
+        command.Parameters.AddWithValue("$bodyEmotes", (object?)bodyEmotesJson ?? DBNull.Value);
+        command.Parameters.AddWithValue("$did", dynamicId);
+        command.ExecuteNonQuery();
     }
 
     /// <summary>评论完工碑：盖了章的下轮不再补抓（零评论的动态也算办完，免得天天空跑）；
@@ -354,7 +387,7 @@ public sealed partial class StationDb
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc
+            SELECT rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, pictures_json, pictures_local_json
             FROM dynamic_comments WHERE dynamic_id = $did ORDER BY root_rpid, id;
             """;
         command.Parameters.AddWithValue("$did", dynamicId);
@@ -372,7 +405,9 @@ public sealed partial class StationDb
                 reader.GetString(7),
                 reader.GetInt64(8),
                 reader.IsDBNull(9) ? null : reader.GetString(9),
-                reader.IsDBNull(6) ? null : reader.GetString(6)));
+                reader.IsDBNull(6) ? null : reader.GetString(6),
+                reader.IsDBNull(10) ? null : reader.GetString(10),
+                reader.IsDBNull(11) ? null : reader.GetString(11)));
         }
 
         return list;
