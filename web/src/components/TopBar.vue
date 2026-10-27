@@ -152,8 +152,8 @@ function goMessages() {
           >{{ unread > 99 ? '99+' : unread }}</span>
         </button>
 
-        <!-- 总门小头像：不分访客/成员都是这个圆——访客点开扫码窗，成员点开下拉菜单 -->
-        <div class="relative">
+        <!-- 总门小头像：不分访客/成员都是这个圆——访客点开登录窗，成员点开下拉菜单 -->
+        <div class="relative flex items-center gap-2">
           <!-- 访客多一个入口：不想扫码就注册个席位 -->
           <RouterLink
             v-if="!member"
