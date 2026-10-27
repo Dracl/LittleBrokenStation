@@ -219,6 +219,16 @@ public sealed class CommentArchiveTests : IDisposable
         Assert.EndsWith(".jpg", a);
         Assert.EndsWith(".png", LbsCommentArchiver.AvatarFileName("https://x/y.png?_1=2"));
         Assert.EndsWith(".jpg", LbsCommentArchiver.AvatarFileName("https://x/y"));
+        // 存档原图路线：gif/webp 也认（认不出才退 .jpg），名体是裸链 sha1 的前 20 位小写十六进制。
+        Assert.EndsWith(".gif", LbsCommentArchiver.AvatarFileName("https://i0.hdslb.com/bfs/face/x.gif"));
+        Assert.EndsWith(".webp", LbsCommentArchiver.AvatarFileName("https://i0.hdslb.com/bfs/face/x.webp"));
+        Assert.Matches("^[0-9a-f]{20}\\.jpg$", a);
+        // sha1 拿裸链原样进哈希：异链异名，查询串也算身份（同图异参不串件），但扩展名只认 path 尾巴。
+        Assert.NotEqual(a, LbsCommentArchiver.AvatarFileName("https://i0.hdslb.com/bfs/face/abd.jpg"));
+        var bare = LbsCommentArchiver.AvatarFileName("https://x/y.png");
+        var queried = LbsCommentArchiver.AvatarFileName("https://x/y.png?_1=2");
+        Assert.EndsWith(".png", queried);
+        Assert.NotEqual(bare[..20], queried[..20]);
     }
 
     [Fact]

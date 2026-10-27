@@ -417,7 +417,9 @@ public sealed class LbsCommentArchiver(
 
     private static long EffectiveReplyCount(ReplyRaw raw) => Math.Max(raw.Rcount, raw.ReplyCount);
 
-    /// <summary>头像批量落盘（公共入口，动态评论也复用）：data/avatars/{sha1(url)}.{ext}，已存在即跳过；单张失败只丢那张（不进 map，前端回退热链）。</summary>
+    /// <summary>头像批量落盘（公共入口，动态评论与 UP 主名片都复用）：data/avatars/{sha1(url)}.{ext}，已存在即跳过。
+    /// 存档原则：本地一律存最高清——裸链直取原图，不挂 _220x220 缩略后缀（显示端缩水是 img CSS 的事）；
+    /// 单张失败只丢那张（不进 map，前端回退热链）。</summary>
     public Task<Dictionary<string, string>> CacheAvatarUrlsAsync(IEnumerable<string?> urls, CancellationToken cancellationToken)
     {
         return CacheAvatarsCoreAsync(urls, cancellationToken);
@@ -446,47 +448,15 @@ public sealed class LbsCommentArchiver(
 
             try
             {
-                // 先拿 CDN 缩图（_220x220.jpg，约 5KB）；失败再拉原图。历史存下的胖图（>80KB）也会被缩图顶替。
-                var baseName = AvatarHash(url!);
-                var dest = Path.Combine(paths.Avatars, baseName + ".jpg");
-                var staleFat = File.Exists(dest) && new FileInfo(dest).Length > 80_000;
-                if (!File.Exists(dest) || staleFat)
+                // 存档原则：本地一律存最高清——裸链直取原图（不挂 _220x220，命名惯例 sha1(url)+原扩展不变）；
+                // 半路存下的 0 字节残件算缺件，重下。
+                var dest = Path.Combine(paths.Avatars, AvatarFileName(url!));
+                if (!File.Exists(dest) || new FileInfo(dest).Length == 0)
                 {
-                    var got = false;
-                    try
-                    {
-                        await client.DownloadFileAsync(Request(url! + "_220x220.jpg"), dest, cancellationToken);
-                        got = true;
-                    }
-                    catch when (!staleFat && !cancellationToken.IsCancellationRequested)
-                    {
-                        // 缩图失败落回原图，下面再试。
-                    }
-
-                    if (!got)
-                    {
-                        dest = Path.Combine(paths.Avatars, baseName + OriginalExtension(url!));
-                        if (!File.Exists(dest))
-                        {
-                            await client.DownloadFileAsync(Request(url!), dest, cancellationToken);
-                        }
-                    }
+                    await client.DownloadFileAsync(Request(url!), dest, cancellationToken);
                 }
 
                 map[url!] = "/avatars/" + Path.GetFileName(dest);
-
-                // 缩图顶替成功后，同一头像的原始大尺寸旧文件就成了孤儿，顺手清掉。
-                if (Path.GetFileName(dest).EndsWith(".jpg", StringComparison.Ordinal))
-                {
-                    foreach (var ext in new[] { ".png", ".gif", ".webp", ".jpeg", ".bmp" })
-                    {
-                        var orphan = Path.Combine(paths.Avatars, baseName + ext);
-                        if (File.Exists(orphan))
-                        {
-                            File.Delete(orphan);
-                        }
-                    }
-                }
             }
             catch (OperationCanceledException)
             {

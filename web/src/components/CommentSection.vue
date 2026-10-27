@@ -2,6 +2,7 @@
 import { richHtml } from '../utils/emote'
 import { computed, ref, watch } from 'vue'
 import ImageLightbox from './ImageLightbox.vue'
+import AvatarImg from './AvatarImg.vue'
 
 const props = defineProps({
   src: { type: String, default: null },
@@ -23,7 +24,6 @@ function picLocal(item, i) {
 }
 const sortBy = ref('hot') // hot | time
 const floors = ref({}) // rpid -> { open, loaded, page, loading, hasMore }
-const brokenAvatars = ref(new Set())
 const liked = ref(loadLiked())
 // 图片放大：交给公共灯箱 ImageLightBox（同一楼多图可左右翻），图路本地原图优先（cmt-img）。
 const zoom = ref(null) // { images: string[], index: number } | null
@@ -179,15 +179,6 @@ function isUp(item) {
   return props.upMid != null && item.mid != null && String(item.mid) === String(props.upMid)
 }
 
-function avatarOf(item) {
-  if (brokenAvatars.value.has(item.rpid)) return null
-  return item.faceLocal || item.face || null
-}
-
-function markAvatarBroken(item) {
-  brokenAvatars.value = new Set([...brokenAvatars.value, item.rpid])
-}
-
 function medalStyle(color) {
   const hex = color && color.startsWith('#') ? color : `#${color || 'fb7299'}`
   return { backgroundColor: hex }
@@ -212,9 +203,6 @@ function likeCount(item) {
   return (item.like ?? 0) + (liked.value.has(item.rpid) ? 1 : 0)
 }
 
-function initials(name) {
-  return name ? Array.from(name)[0] : '?'
-}
 </script>
 
 <template>
@@ -243,10 +231,7 @@ function initials(name) {
       <!-- 置顶：浅灰底块 -->
       <div v-if="topReply" class="rounded-xl bg-[#f6f7f8] p-4">
         <div class="flex gap-3">
-          <div class="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-white">
-            <img v-if="avatarOf(topReply)" :src="avatarOf(topReply)" class="h-full w-full object-cover" loading="lazy" @error="markAvatarBroken(topReply)" />
-            <div v-else class="flex h-full w-full items-center justify-center text-sm text-inkFaint">{{ initials(topReply.name) }}</div>
-          </div>
+          <AvatarImg :face="topReply.face" :face-local="topReply.faceLocal" :name="topReply.name" class="h-11 w-11 shrink-0 rounded-full object-cover bg-white text-sm text-inkFaint" />
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-1.5">
               <span class="text-[15px] text-inkMain">{{ topReply.name }}</span>
@@ -285,10 +270,7 @@ function initials(name) {
         class="flex gap-3"
         :class="ri > 0 || topReply ? 'border-t border-lineSoft pt-5' : ''"
       >
-        <div class="h-11 w-11 shrink-0 overflow-hidden rounded-full bg-[#f1f2f3]">
-          <img v-if="avatarOf(reply)" :src="avatarOf(reply)" class="h-full w-full object-cover" loading="lazy" @error="markAvatarBroken(reply)" />
-          <div v-else class="flex h-full w-full items-center justify-center text-sm text-inkFaint">{{ initials(reply.name) }}</div>
-        </div>
+        <AvatarImg :face="reply.face" :face-local="reply.faceLocal" :name="reply.name" class="h-11 w-11 shrink-0 rounded-full object-cover bg-[#f1f2f3] text-sm text-inkFaint" />
 
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-1.5">
@@ -322,10 +304,7 @@ function initials(name) {
           <!-- 楼中楼 -->
           <div v-if="replyCountOf(reply) > 0" class="mt-3 space-y-3">
             <div v-for="sub in visibleSubs(reply)" :key="sub.rpid" class="flex gap-2.5">
-              <div class="mt-0.5 h-7 w-7 shrink-0 overflow-hidden rounded-full bg-[#f1f2f3]">
-                <img v-if="avatarOf(sub)" :src="avatarOf(sub)" class="h-full w-full object-cover" loading="lazy" @error="markAvatarBroken(sub)" />
-                <div v-else class="flex h-full w-full items-center justify-center text-[10px] text-inkFaint">{{ initials(sub.name) }}</div>
-              </div>
+              <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover bg-[#f1f2f3] text-[10px] text-inkFaint" />
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-1.5">
                   <span class="text-[13px]" :class="isUp(sub) ? 'text-inkMain' : 'text-stationPink'">{{ sub.name }}</span>

@@ -227,6 +227,9 @@ public sealed class DynamicFetchWorker(
     /// </summary>
     private async Task RunCommentRoundAsync(List<(string DynamicId, long? CommentType, string? CommentOid)> freshIds, CancellationToken cancellationToken)
     {
+        // 存量头像补员：早于头像存档上线的老行（或当年存图失败的）face_local 空着，每轮摄 200 个 URL 补档盖章；图床挂了自然留待下轮。
+        await BackfillAvatarsAsync(cancellationToken);
+
         // 新货带完整坐标直接办；存量欠账从库里拿坐标（没坐标的行等重巡补完再办，不拿兑底误盖章）。
         var pending = db.ListPendingCommentDynamics(60)
             .Where(row => !freshIds.Any(f => f.DynamicId == row.DynamicId))
@@ -302,6 +305,30 @@ public sealed class DynamicFetchWorker(
         {
             logger.LogInformation("动态评论巡捕：本轮回货 {Comments} 条，盖章 {Finished}/{Queued} 条动态",
                 totalComments, finished, queue.Count);
+        }
+    }
+
+    /// <summary>存量头像补员：拉 face_local 空的老行头像 URL，交给视频评论区同一套落盘库（data/avatars，sha1 命名存原图），
+    /// 存上一张盖一张戳；张间 120ms 节流，存不上的（图床拒链/网络抖）自然留下轮。</summary>
+    private async Task BackfillAvatarsAsync(CancellationToken cancellationToken)
+    {
+        var urls = db.ListPendingAvatarUrls(200);
+        if (urls.Count == 0)
+        {
+            return;
+        }
+
+        var map = await assetCache.CacheAvatarUrlsAsync(urls, cancellationToken);
+        var stamped = 0;
+        foreach (var (url, local) in map)
+        {
+            stamped += db.BackfillCommentFaceLocal(url, local);
+            await Task.Delay(120, cancellationToken);
+        }
+
+        if (stamped > 0)
+        {
+            logger.LogInformation("头像补员：本轮给 {Count} 条存量评论的头像补档盖戳（候选 {Candidates} 张）", stamped, urls.Count);
         }
     }
 }

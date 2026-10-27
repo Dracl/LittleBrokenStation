@@ -332,6 +332,41 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
     }
 
+    /// <summary>存量头像补员名单：没落盘盖戳（face_local 空）的评论头像 URL 去重限量。
+    /// 存量行是 INSERT OR IGNORE 进的，当年没存上就没人再管——巡捕每轮顺手捞这批。</summary>
+    public List<string> ListPendingAvatarUrls(int limit)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT face FROM dynamic_comments
+            WHERE face_local IS NULL AND face IS NOT NULL AND face <> ''
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var urls = new List<string>();
+        while (reader.Read())
+        {
+            urls.Add(reader.GetString(0));
+        }
+        return urls;
+    }
+
+    /// <summary>头像补员盖章：只更新同 URL 且还没盖戳的行，重复调用幂等。</summary>
+    public int BackfillCommentFaceLocal(string faceUrl, string localPath)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE dynamic_comments SET face_local = $local
+            WHERE face = $url AND face_local IS NULL;
+            """;
+        command.Parameters.AddWithValue("$local", localPath);
+        command.Parameters.AddWithValue("$url", faceUrl);
+        return command.ExecuteNonQuery();
+    }
+
     /// <summary>表情定格映射 JSON（转义符→/emotes/xx.png）：盖章时存入，端点原样透传给前端。</summary>
     public string? GetDynamicEmotesJson(string dynamicId)
     {

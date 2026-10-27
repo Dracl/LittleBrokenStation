@@ -4,7 +4,8 @@ import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import DynamicVideoCard from '../components/DynamicVideoCard.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
-import ShareDynamicDialog from '../components/ShareDynamicDialog.vue'
+import AvatarImg from '../components/AvatarImg.vue'
+import ShareDialog from '../components/ShareDialog.vue'
 import { member, loginDialogOpen } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 import { richHtml } from '../utils/emote'
@@ -96,7 +97,7 @@ function openShare(d) {
     loginDialogOpen.value = true
     return
   }
-  shareFor.value = d
+  shareFor.value = { type: 'dynamic', dynamicId: d.dynamicId, authorName: d.authorName, authorFaceUrl: d.authorFaceUrl, text: d.text }
 }
 function onShared(message) {
   shareFor.value = null
@@ -347,20 +348,11 @@ onMounted(async () => {
         >
           <!-- 头行：头像（抓取定格的缓存脸）+ 昵称 + 时间；视频卡右上挂内外签 -->
           <header class="mb-2 flex items-center gap-2.5">
-            <img
-              v-if="authorFace(d)"
-              :src="authorFace(d)"
-              referrerpolicy="no-referrer"
-              loading="lazy"
-              class="h-10 w-10 shrink-0 rounded-full object-cover"
-              alt=""
-              @error="$event.target.style.display = 'none'"
+            <AvatarImg
+              :face="authorFace(d)"
+              :name="d.authorName || String(d.authorMid ?? '?')"
+              :class="['h-10 w-10 shrink-0 rounded-full object-cover text-sm text-white', avatarClass(d.authorMid)]"
             />
-            <span
-              v-else
-              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm text-white"
-              :class="avatarClass(d.authorMid)"
-            >{{ (d.authorName || String(d.authorMid ?? '?')).slice(0, 1) }}</span>
             <span class="min-w-0 flex-1">
               <span class="block truncate text-sm font-semibold text-inkMain">{{ d.authorName || `B站号 ${d.authorMid}` }}</span>
               <span class="block text-xs text-inkFaint">{{ friendlyTime(d.publishedAtUtc) }}</span>
@@ -480,16 +472,7 @@ onMounted(async () => {
             <template v-else>
               <p class="mb-2 text-[11px] text-inkFaint">评论同步自 B 站，分站只读留档 · 共 {{ cmtState(d).total }} 条</p>
               <div v-for="top in cmtState(d).items" :key="top.rpid" class="mb-3 flex gap-2.5">
-                <img
-                  v-if="top.faceLocal || top.face"
-                  :src="top.faceLocal || top.face"
-                  referrerpolicy="no-referrer"
-                  loading="lazy"
-                  class="h-8 w-8 shrink-0 rounded-full object-cover"
-                  alt=""
-                  @error="$event.target.style.display = 'none'"
-                />
-                <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stationPink/10 text-xs text-stationPink">{{ (top.name || '?').slice(0, 1) }}</span>
+                <AvatarImg :face="top.face" :face-local="top.faceLocal" :name="top.name" class="h-8 w-8 shrink-0 rounded-full object-cover bg-stationPink/10 text-xs text-stationPink" />
                 <div class="min-w-0 flex-1">
                   <div class="flex items-baseline gap-2">
                     <span class="text-[12.5px] font-medium text-stationPink">{{ top.name || '无名网友' }}</span>
@@ -518,15 +501,7 @@ onMounted(async () => {
                   <div v-if="top.replies?.length" class="mt-2 space-y-2.5 border-l-2 border-lineSoft/80 pl-3">
                     <template v-for="(sub, si) in top.replies" :key="sub.rpid">
                       <div v-if="top.replies.length <= 3 || cmtState(d).expanded[top.rpid] || si < 3" class="flex gap-2">
-                        <img
-                          v-if="sub.faceLocal || sub.face"
-                          :src="sub.faceLocal || sub.face"
-                          referrerpolicy="no-referrer"
-                          loading="lazy"
-                          class="h-5 w-5 shrink-0 rounded-full object-cover"
-                          alt=""
-                          @error="$event.target.style.display = 'none'"
-                        />
+                        <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="h-5 w-5 shrink-0 rounded-full object-cover bg-[#f1f2f3] text-[9px] text-inkFaint" />
                         <div class="min-w-0 flex-1">
                           <span class="text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
                           <span class="ml-1.5 text-[10.5px] text-inkFaint">{{ friendlyTime(sub.ctimeUtc) }}</span>
@@ -579,7 +554,7 @@ onMounted(async () => {
 
       <ImageLightbox v-if="lightbox" :images="lightbox.images" :index="lightbox.index" @close="lightbox = null" />
 
-      <ShareDynamicDialog v-if="shareFor" :d="shareFor" @close="shareFor = null" @done="onShared" />
+      <ShareDialog v-if="shareFor" :target="shareFor" @close="shareFor = null" @done="onShared" />
     </main>
   </div>
 </template>
