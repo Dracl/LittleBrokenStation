@@ -66,8 +66,7 @@ const displayName = computed(() => {
 
 function identityLine(m) {
   const role = m.role === 'owner' ? '站长' : '分站成员'
-  if (m.mid) return `${role} · UID ${m.mid}`
-  return `${role} · ${m.username ? `@${m.username}` : '素净席位'}`
+  return `${role} · UID #${m.memberId}${m.username ? ` · @${m.username}` : ''}`
 }
 
 let unreadTimer = null

@@ -446,9 +446,7 @@ function peerLabel(p) {
                   <span class="flex items-center gap-2 text-[13px] font-medium text-inkMain">
                     {{ peerLabel(activePeer) }}
                     <span class="text-[11px] font-normal text-inkFaint">
-                      <template v-if="activePeer.mid">UID {{ activePeer.mid }}</template>
-                      <template v-else-if="activePeer.username">@{{ activePeer.username }}</template>
-                      <template v-else>席位 #{{ activePeer.memberId }}</template>
+                      <template v-if="activePeer.username">@{{ activePeer.username }} · </template>UID #{{ activePeer.memberId }}
                     </span>
                   </span>
                   <button class="text-xs text-inkFaint transition hover:text-stationPink" @click="closeThread">收起</button>
@@ -534,9 +532,7 @@ function peerLabel(p) {
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-[13px] text-inkMain">{{ peerLabel(p) }}</span>
                       <span class="block text-[11px] text-inkFaint">
-                        <template v-if="p.mid">UID {{ p.mid }}</template>
-                        <template v-else-if="p.username">@{{ p.username }}</template>
-                        <template v-else>站内席位</template>
+                        <template v-if="p.username">@{{ p.username }} · </template>UID #{{ p.peerMemberId ?? p.memberId }}
                       </span>
                     </span>
                     <span class="shrink-0 rounded-full bg-stationPink/10 px-2.5 py-1 text-[11px] text-stationPink">开聊</span>

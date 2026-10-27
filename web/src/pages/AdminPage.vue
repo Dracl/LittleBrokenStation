@@ -721,7 +721,7 @@ async function memberAction(action, item) {
 
 async function memberAccountDelete(acc, item) {
   if (membersBusy.value) return
-  const who = acc.accountName || `UID ${acc.accountMid}`
+  const who = acc.accountName || `B站账号 ${acc.accountMid}`
   if (!window.confirm(`确定从「${seatLabel(item)}」的席位上解绑「${who}」？`)) return
   membersBusy.value = true
   memberText.value = ''
@@ -875,8 +875,7 @@ function seatLabel(m) {
   return m.nickname || (m.username ? `@${m.username}` : `席位 ${m.id}`)
 }
 function seatIdLine(m) {
-  if (m.mid) return `UID ${m.mid}`
-  return m.username ? `@${m.username}` : `席位 #${m.id}`
+  return `UID #${m.id}`
 }
 
 // ─── 全站公告：向 active 席位播送站内信（两段式防手滑，后端 message 原样展示）───
@@ -1443,7 +1442,7 @@ onUnmounted(() => {
                 <img v-if="acc.faceUrl" :src="acc.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-6 w-6 shrink-0 rounded-full object-cover" alt="" />
                 <span v-else class="h-6 w-6 shrink-0 rounded-full bg-white/10"></span>
                 <span class="min-w-0 flex-1 truncate text-[11px] text-white/70">
-                  {{ acc.accountName || `UID ${acc.accountMid}` }}
+                  {{ acc.accountName || `B站账号 ${acc.accountMid}` }}
                   <span v-if="acc.isPrimary" class="ml-1 text-adminAccent/80">主号</span>
                   <span v-if="acc.expired" class="ml-1 text-rose-300/70">已失效</span>
                 </span>
@@ -1572,8 +1571,8 @@ onUnmounted(() => {
             <img v-if="t.faceUrl" :src="t.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-7 w-7 shrink-0 rounded-full object-cover" alt="" />
             <span v-else class="h-7 w-7 shrink-0 rounded-full bg-white/10"></span>
             <span class="min-w-0 flex-1 truncate text-[12px] text-white/75">
-              {{ t.nickname || `UID ${t.mid}` }}
-              <span class="font-mono text-[10px] text-white/30">UID {{ t.mid }}</span>
+              {{ t.nickname || `B站号 ${t.mid}` }}
+              <span class="font-mono text-[10px] text-white/30">B站号 {{ t.mid }}</span>
             </span>
             <span class="shrink-0 font-mono text-[11px] text-white/45">{{ t.count }} 条</span>
             <span class="shrink-0 font-mono text-[10px] text-white/25">{{ t.lastFetchAtUtc ? friendlyTime(t.lastFetchAtUtc) : '未抓' }}</span>
@@ -2100,7 +2099,7 @@ onUnmounted(() => {
                 <textarea v-model="keywordDraft" rows="3" class="eng-input resize-none"></textarea>
               </div>
               <div>
-                <label class="mb-1 block text-xs text-white/40">UID 黑名单（一行一个）</label>
+                <label class="mb-1 block text-xs text-white/40">B站 UID 黑名单（一行一个）</label>
                 <textarea v-model="uidDraft" rows="3" class="eng-input resize-none"></textarea>
               </div>
             </div>

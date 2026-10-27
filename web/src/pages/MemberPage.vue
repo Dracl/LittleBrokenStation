@@ -91,7 +91,7 @@ function fmtBytes(b) {
 // 账号池操作：id 传 accountMid（/me 的 accounts 行没给别的 id）；后端 message 原样展示
 async function accountAction(action, acc) {
   if (busy.value) return
-  const who = acc.accountName || `UID ${acc.accountMid}`
+  const who = acc.accountName || `B站账号 ${acc.accountMid}`
   if (action === 'delete' && !window.confirm(`确定解绑「${who}」？解绑后这个号不再替分站出力。`)) return
   busy.value = true
   notice.value = null
@@ -187,8 +187,7 @@ async function doLogout() {
                 </span>
               </div>
               <p class="mt-1.5 font-mono text-xs text-inkFaint">
-                <template v-if="member.mid">UID {{ member.mid }}</template>
-                <template v-else-if="member.username">@{{ member.username }} · 素净席位</template>
+                UID #{{ member.memberId }}<template v-if="member.username"> · @{{ member.username }}</template>
                 <template v-else>站内席位 #{{ member.memberId }}</template>
                 · 上次登录 {{ friendlyTime(member.lastLoginAtUtc) }}
                 <template v-if="member.note"> · 站长备注：{{ member.note }}</template>
@@ -346,11 +345,11 @@ async function doLogout() {
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-2 text-sm text-inkMain">
                   <span class="shrink-0 rounded-md bg-[#fb7299]/10 px-1.5 py-0.5 text-[10px] font-medium text-[#fb7299]">B 站</span>
-                  <span class="truncate">{{ acc.accountName || `UID ${acc.accountMid}` }}</span>
+                  <span class="truncate">{{ acc.accountName || `B站账号 ${acc.accountMid}` }}</span>
                   <span v-if="acc.isPrimary" class="shrink-0 rounded-full bg-stationPink px-1.5 py-0.5 text-[10px] leading-none text-white">主号</span>
                   <span v-if="acc.expired" class="shrink-0 rounded-full border border-rose-300 px-1.5 py-0.5 text-[10px] leading-none text-rose-500">登录已失效</span>
                 </p>
-                <p class="mt-1 font-mono text-xs text-inkFaint">UID {{ acc.accountMid }}</p>
+                <p class="mt-1 font-mono text-xs text-inkFaint">B站号 {{ acc.accountMid }}</p>
               </div>
               <div class="flex shrink-0 items-center gap-2">
                 <button

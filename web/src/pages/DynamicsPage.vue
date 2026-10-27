@@ -159,7 +159,7 @@ onMounted(async () => {
         >
           <img v-if="t.faceUrl" :src="t.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-5 w-5 rounded-full object-cover" alt="" />
           <span v-else class="flex h-5 w-5 items-center justify-center rounded-full text-[10px] text-white" :class="avatarClass(t.mid)">{{ (t.nickname || String(t.mid)).slice(0, 1) }}</span>
-          <span class="max-w-[110px] truncate">{{ t.nickname || `UID ${t.mid}` }}</span>
+          <span class="max-w-[110px] truncate">{{ t.nickname || `B站号 ${t.mid}` }}</span>
         </button>
       </div>
 
@@ -196,7 +196,7 @@ onMounted(async () => {
               :class="avatarClass(d.authorMid)"
             >{{ (d.authorName || String(d.authorMid ?? '?')).slice(0, 1) }}</span>
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-[13px] font-medium text-inkMain">{{ d.authorName || `UID ${d.authorMid}` }}</span>
+              <span class="block truncate text-[13px] font-medium text-inkMain">{{ d.authorName || `B站号 ${d.authorMid}` }}</span>
               <span class="block text-[11px] text-inkFaint">{{ friendlyTime(d.publishedAtUtc) }}</span>
             </span>
             <span class="shrink-0 rounded-md px-1.5 py-0.5 text-[11px]" :class="typeBadge(d.type).cls">{{ typeBadge(d.type).label }}</span>
