@@ -1,6 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import DanmakuLayer from './DanmakuLayer.vue'
+import BIcon from './BIcon.vue'
+import { biPlay, biVolume, biSetting, biPip, biFull, biDmOn, biDmSet } from '../assets/bicons'
 import { probeTrackBitrates } from '../utils/mp4Meta'
 
 const props = defineProps({
@@ -580,6 +582,95 @@ function applyVolume(x) {
   localStorage.setItem('lbs.player.volume', String(volume.value))
 }
 
+// ─── 音量竖条（B 站 .bpx-player-ctrl-volume-box 同款）：拖拽/点选都只跟 applyVolume 说话，静音联动全走老口 ───
+// 可见性不吃 CSS group-hover（弹层与音量钮间有 8px 死区，穿越瞬间 CSS :hover 就断），改由三个状态合成：
+//   volHovering —— 真 hover（mouseenter/leave 维护；弹层与桥都是容器子树，进出子树不算离开）；
+//   volPinned  —— 拖拽锁（pointerdown 起锁，拖到哪都看得见）或鼠标已离场后的收起宽限；
+//   可见 = volHovering || volPinned；离场后 200ms 才卸 pinned（重新进入则取消），手抖穿越间隙不闪没。
+//   pointer capture 期间 hover 事件会被抑制，松手时用 容器∩弹层 包围盒实测坐标补判一次。
+const volTrackEl = ref(null)
+const volZoneEl = ref(null)
+const volPopEl = ref(null)
+const volHovering = ref(false)
+const volPinned = ref(false)
+const volDragging = ref(false)
+const volVisible = computed(() => volHovering.value || volPinned.value)
+const volumePercent = computed(() => Math.round((muted.value ? 0 : volume.value) * 100))
+let volHideTimer = null
+
+function volClearTimer() {
+  if (volHideTimer) {
+    clearTimeout(volHideTimer)
+    volHideTimer = null
+  }
+}
+
+function volArmHide(delay) {
+  volClearTimer()
+  volHideTimer = setTimeout(() => {
+    volHideTimer = null
+    if (!volDragging.value) volPinned.value = false // 拖拽中途绝不卸锁
+  }, delay)
+}
+
+function volEnter() {
+  volClearTimer()
+  volHovering.value = true
+  volPinned.value = false
+}
+
+function volLeave() {
+  volHovering.value = false
+  volArmHide(200)
+}
+
+function volInsidePoint(e) {
+  // 松手时指针落在音量钮区或弹层（含桥）都算「人还在」，继续显示不收。
+  for (const el of [volZoneEl.value, volPopEl.value]) {
+    if (!el) continue
+    const r = el.getBoundingClientRect()
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return true
+  }
+  return false
+}
+
+function volFromPointer(e) {
+  const el = volTrackEl.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const ratio = (rect.bottom - e.clientY) / rect.height // Y 自底向上映射 0-1
+  applyVolume(Math.round(Math.min(1, Math.max(0, ratio)) * 100) / 100)
+}
+
+function volTrackDown(e) {
+  volDragging.value = true
+  volClearTimer()
+  volPinned.value = true // 拖拽锁：无论 hover 与否都保持可见 + 可命中
+  volTrackEl.value?.setPointerCapture(e.pointerId) // 滑出元素也能续拖
+  volFromPointer(e) // 单点轨道任意位置直接跳到该音量
+  e.preventDefault()
+}
+
+function volTrackMove(e) {
+  if (volDragging.value) volFromPointer(e)
+}
+
+function volTrackUp(e) {
+  volDragging.value = false
+  try {
+    volTrackEl.value?.releasePointerCapture(e.pointerId)
+  } catch {
+    /* 已自动释放，不管 */
+  }
+  volHovering.value = volInsidePoint(e)
+  if (volHovering.value) {
+    volClearTimer()
+    volPinned.value = false // 人还在，hover 状态接管，锁当场卸
+  } else {
+    volArmHide(150) // 松手即离场：宽限期内锁继续撑着，timer 回调里才卸锁再收
+  }
+}
+
 function setRate(x) {
   rate.value = x
   logEvent(`倍速 ${x}×`)
@@ -1087,7 +1178,7 @@ const STROKE_ITEMS = [
       class="absolute left-1/2 top-1/2 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur transition hover:bg-stationPink"
       @click.stop="togglePlay"
     >
-      <svg viewBox="0 0 24 24" class="ml-1 h-8 w-8" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+      <BIcon :meta="biPlay" class="ml-1 h-8 w-8" />
     </button>
 
     <!-- 缓冲圈 -->
@@ -1140,32 +1231,49 @@ const STROKE_ITEMS = [
 
       <div class="flex items-center gap-0.5 text-white">
         <button class="flex h-8 w-8 items-center justify-center rounded hover:bg-white/10" :title="playing ? '暂停（空格）' : '播放（空格）'" @click="togglePlay">
-          <svg v-if="!playing" viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-          <svg v-else viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
+          <BIcon v-if="!playing" :meta="biPlay" class="h-5 w-5" />
+          <!-- 暂停态官方包里没有，自绘两条圆角竖条顶上（不碰 bicons.js） -->
+          <svg v-else viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2" /><rect x="14" y="5" width="4" height="14" rx="1.2" /></svg>
         </button>
 
         <span class="mx-1.5 text-xs tabular-nums text-white/90">{{ fmt(currentTime) }} / {{ fmt(duration) }}</span>
 
         <span class="flex-1"></span>
 
-        <!-- 音量 -->
-        <div class="group/vol flex h-8 items-center gap-1 rounded px-1 hover:bg-white/10">
+        <!-- 音量：悬停弹 B 站同款竖条（深底圆角盒：数字 28 + 轨道 60 + 留白，骑在音量钮正上方）。
+             可见性走 volVisible 状态机（hover+拖拽锁+收起宽限），不用 CSS group-hover：
+             弹层与按钮间那 8px 是 :hover 死区，穿越瞬间会把弹层抽走、拖拽腰断。 -->
+        <div ref="volZoneEl" class="relative flex h-8 items-center gap-1 rounded px-1 hover:bg-white/10" @mouseenter="volEnter" @mouseleave="volLeave">
           <button class="flex h-6 w-6 items-center justify-center" :title="muted ? '取消静音（M）' : '静音（M）'" @click="muted ? (applyVolume(volume || 1)) : applyVolume(0)">
-            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor">
-              <path d="M3 10v4h4l5 4V6L7 10H3z" />
-              <path v-if="!muted && volume > 0" d="M16 8.5a4.5 4.5 0 010 7M18.5 6a8 8 0 010 12" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
-              <path v-if="muted || volume === 0" d="M16 9l6 6m0-6l-6 6" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" />
-            </svg>
+            <span class="relative flex h-5 w-5 items-center justify-center">
+              <BIcon :meta="biVolume" class="h-5 w-5" />
+              <!-- 静音态官方包里没有，白身斜杠叠加在音量图标上（纯 CSS，不碰 bicons.js） -->
+              <span v-if="muted || volume === 0" class="pointer-events-none absolute left-1/2 top-1/2 h-[1.6px] w-[15px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded bg-white"></span>
+            </span>
           </button>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.02"
-            :value="muted ? 0 : volume"
-            class="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/30 opacity-0 transition-all duration-200 accent-stationPink group-hover/vol:w-16 group-hover/vol:opacity-100"
-            @input="applyVolume(Number($event.target.value))"
-          />
+          <!-- 透明桥：填平弹层底边到容器顶边的 8px 间隙，鼠标垂直上移全程命中容器子树，不会触发 leave；观感零变化 -->
+          <span class="pointer-events-auto absolute bottom-8 left-1/2 h-2 w-8 -translate-x-1/2" aria-hidden="true"></span>
+          <div
+            ref="volPopEl"
+            class="absolute bottom-[40px] left-1/2 z-20 -translate-x-1/2 rounded-[4px] bg-[rgba(20,20,20,0.9)] backdrop-blur transition-opacity duration-150"
+            :class="volVisible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'"
+          >
+            <div class="flex w-8 flex-col items-center pb-2">
+              <span class="flex h-7 items-center justify-center text-xs tabular-nums text-[#e5e9ef]">{{ volumePercent }}</span>
+              <div
+                ref="volTrackEl"
+                class="relative h-[60px] w-2 cursor-pointer touch-none"
+                @pointerdown="volTrackDown"
+                @pointermove="volTrackMove"
+                @pointerup="volTrackUp"
+                @pointercancel="volTrackUp"
+              >
+                <span class="absolute left-1/2 top-0 h-full w-0.5 -translate-x-1/2 rounded bg-white/90"></span>
+                <span class="absolute bottom-0 left-1/2 w-0.5 -translate-x-1/2 rounded bg-[#00aedc]" :style="{ height: volumePercent + '%' }"></span>
+                <span class="absolute left-1/2 h-3 w-3 -translate-x-1/2 rounded-full bg-[#00aedc]" :style="{ bottom: `calc(${volumePercent}% - 6px)` }"></span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 清晰度（只展示不切换） -->
@@ -1228,27 +1336,17 @@ const STROKE_ITEMS = [
           title="播放设定"
           @click.stop="playPanel = !playPanel; gearPanel = false; rateMenu = false; qualityMenu = false; wakeControls()"
         >
-          <svg viewBox="0 0 24 24" class="h-5 w-5" fill="currentColor">
-            <path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7.03 7.03 0 00-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84a.48.48 0 00-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.63-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.25.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1112 8.4a3.6 3.6 0 010 7.2z" />
-          </svg>
+          <BIcon :meta="biSetting" class="h-5 w-5" />
         </button>
 
         <!-- 画中画 -->
         <button class="flex h-8 w-8 items-center justify-center rounded hover:bg-white/10" title="画中画" @click="togglePip">
-          <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.7">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <rect x="12" y="11" width="7" height="6" rx="1" fill="currentColor" stroke="none" />
-          </svg>
+          <BIcon :meta="biPip" class="h-5 w-5" />
         </button>
 
         <!-- 全屏 -->
         <button class="flex h-8 w-8 items-center justify-center rounded hover:bg-white/10" title="全屏（F）" @click="toggleFullscreen">
-          <svg v-if="!isFs" viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-            <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-            <path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5" />
-          </svg>
+          <BIcon :meta="biFull" class="h-5 w-5" />
         </button>
       </div>
     </div>
@@ -1512,14 +1610,8 @@ const STROKE_ITEMS = [
         <span v-if="localItems.length > 0" class="hidden text-inkFaint/70 sm:inline">站内弹幕 +{{ localItems.length }}</span>
         <!-- 弹幕开关与设定：从控制栏搬来计数右边（B 站把弹幕设定也放弹幕栏一带） -->
         <button class="flex h-7 w-7 items-center justify-center rounded hover:bg-black/5" title="弹幕（D）" @click="danmaku.on = !danmaku.on">
-          <svg viewBox="0 0 26 26" class="h-[20px] w-[20px]" :class="danmaku.on ? 'text-inkSub' : 'text-inkFaint/50'">
-            <g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-              <path d="M8.6 5.6 10.6 3.1M17.4 5.6 15.4 3.1" />
-              <rect x="3.4" y="5.4" width="19.2" height="15.6" rx="3.4" />
-            </g>
-            <text x="13" y="17.6" font-size="10.5" text-anchor="middle" fill="currentColor" stroke="none">弹</text>
-            <path v-if="danmaku.on" d="M16 20.5l2.4 2.6 4.6-5.2" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <!-- 官方弹幕枚：开启时对勾（第二条 path）染 B 站蓝，关闭态整枚灰掉 -->
+          <BIcon :meta="biDmOn" class="h-[20px] w-[20px] transition" :class="danmaku.on ? 'dm-on text-inkSub' : 'text-inkFaint/50'" />
         </button>
         <button
           class="flex h-7 w-7 items-center justify-center rounded hover:bg-black/5"
@@ -1527,17 +1619,7 @@ const STROKE_ITEMS = [
           title="弹幕设定"
           @click.stop="gearPanel = !gearPanel; playPanel = false; rateMenu = false; qualityMenu = false; wakeControls()"
         >
-          <svg viewBox="0 0 26 26" class="h-[20px] w-[20px] text-inkSub">
-            <g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-              <path d="M8.6 5.6 10.6 3.1M17.4 5.6 15.4 3.1" />
-              <rect x="3.4" y="5.4" width="19.2" height="15.6" rx="3.4" />
-            </g>
-            <text x="13" y="17.6" font-size="10.5" text-anchor="middle" fill="currentColor" stroke="none">弹</text>
-            <g stroke="currentColor" stroke-width="1.6" fill="none">
-              <path d="M20.4 17.2l2.6 1.5v3l-2.6 1.5-2.6-1.5v-3z" />
-              <circle cx="20.4" cy="20.2" r="1.1" fill="currentColor" stroke="none" />
-            </g>
-          </svg>
+          <BIcon :meta="biDmSet" class="h-[20px] w-[20px] text-inkSub" />
         </button>
       </div>
       <div class="flex min-w-0 flex-1 items-center gap-2 rounded-full bg-[#f1f2f3] px-3.5 py-1.5">
@@ -1564,3 +1646,11 @@ const STROKE_ITEMS = [
   </div>
   </div>
 </template>
+
+<style scoped>
+/* 弹幕开启态：官方弹幕枚的第二条 path（对勾）染 B 站蓝。
+   BIcon 用 v-html 注入图标内容，scoped 样式够不到，得 :deep。 */
+.dm-on :deep(path:nth-of-type(2)) {
+  fill: #00a1d6;
+}
+</style>
