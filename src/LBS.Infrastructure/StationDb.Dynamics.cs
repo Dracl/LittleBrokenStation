@@ -162,8 +162,8 @@ public sealed partial class StationDb
         return fresh;
     }
 
-    /// <summary>橱窗列表：新→旧（id 倒序），可按 target 过滤，beforeId 游标翻页；inStation 现 JOIN videos。</summary>
-    public IReadOnlyList<CachedDynamic> ListDynamics(long? targetMid, int limit = 20, long? beforeId = null)
+    /// <summary>橱窗列表：新→旧（发布时间倒序，同时刻按 id），可按 target 过滤；翻页用 (beforeTime, beforeId) 双指针游标，只给 beforeId 时退化为 id 游标。</summary>
+    public IReadOnlyList<CachedDynamic> ListDynamics(long? targetMid, int limit = 20, long? beforeId = null, string? beforeTime = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
@@ -181,12 +181,17 @@ public sealed partial class StationDb
             LEFT JOIN pages p ON p.video_id = v.id
                  AND p.idx = (SELECT MIN(idx) FROM pages WHERE video_id = v.id)
             WHERE ($target IS NULL OR d.target_mid = $target)
-              AND ($before IS NULL OR d.id < $before)
-            ORDER BY d.id DESC
+              AND (
+                    ($beforeTime IS NOT NULL AND ($before IS NULL OR d.published_at_utc < $beforeTime
+                        OR (d.published_at_utc = $beforeTime AND d.id < $before)))
+                 OR ($beforeTime IS NULL AND ($before IS NULL OR d.id < $before))
+              )
+            ORDER BY d.published_at_utc DESC, d.id DESC
             LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$target", (object?)targetMid ?? DBNull.Value);
         command.Parameters.AddWithValue("$before", (object?)beforeId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$beforeTime", (object?)beforeTime ?? DBNull.Value);
         command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 100));
 
         using var reader = command.ExecuteReader();

@@ -20,10 +20,10 @@ public static class DynamicEndpoints
 
     public static void MapDynamicEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/dynamics", (long? mid, int? limit, long? beforeId, StationDb db) =>
+        app.MapGet("/api/dynamics", (long? mid, int? limit, long? beforeId, string? beforeTime, StationDb db) =>
         {
             // 多取一条探底：hasMore 就是「这次是不是取满了」，前端「看更多」按钮只看它。
-            var rows = db.ListDynamics(mid, (limit ?? 20) + 1, beforeId);
+            var rows = db.ListDynamics(mid, (limit ?? 20) + 1, beforeId, beforeTime);
             var hasMore = rows.Count > (limit ?? 20);
             var items = rows.Take(limit ?? 20).Select(r => new
             {

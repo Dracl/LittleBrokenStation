@@ -159,7 +159,7 @@ async function loadMore() {
   if (!hasMore.value || !items.value.length || loadingMore.value) return
   loadingMore.value = true
   try {
-    const q = new URLSearchParams({ limit: String(PAGE_SIZE), beforeId: String(items.value[items.value.length - 1].id ?? 0) })
+    const q = new URLSearchParams({ limit: String(PAGE_SIZE), beforeId: String(items.value[items.value.length - 1].id ?? 0), beforeTime: String(items.value[items.value.length - 1].publishedAtUtc ?? '') })
     if (filterMid.value) q.set('mid', String(filterMid.value))
     const res = await fetch(`/api/dynamics?${q}`)
     if (res.ok) {

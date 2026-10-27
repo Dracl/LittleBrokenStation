@@ -353,6 +353,24 @@ public sealed class DynamicCacheTests : IDisposable
     }
 
     [Fact]
+    public void ListDynamics_OrdersByPublishedTime_NotInsertionOrder()
+    {
+        // 回扫补坐标会把旧动态重插、id 翻新；列表必须按发布时间新→旧，不能让旧货窜到队头。
+        // 故意把最旧的 old 最后插（id 最大），连翻页游标一起验：不能拿 id 全局截断。
+        _db.AddDynamicTarget(2003);
+        _db.UpsertDynamic("new", 2003, 2003, "甲", "DYNAMIC_TYPE_WORD", "新鲜", null, null, "2026-10-20T00:00:00+00:00");
+        _db.UpsertDynamic("sneaky", 2003, 2003, "甲", "DYNAMIC_TYPE_WORD", "回扫重插的旧货", null, null, "2026-02-05T00:00:00+00:00");
+        _db.UpsertDynamic("old", 2003, 2003, "甲", "DYNAMIC_TYPE_WORD", "旧货但插得晚", null, null, "2025-12-01T00:00:00+00:00");
+
+        var all = _db.ListDynamics(null);
+        Assert.Equal(new[] { "new", "sneaky", "old" }, all.Select(d => d.DynamicId).ToArray());
+
+        // (时间, id) 双指针游标：从 sneaky 那条起翻，只剩更早的 old
+        var page2 = _db.ListDynamics(2003, limit: 10, beforeId: all[1].Id, beforeTime: all[1].PublishedAtUtc);
+        Assert.Equal("old", Assert.Single(page2).DynamicId);
+    }
+
+    [Fact]
     public void ListDynamics_MarksInStationViaVideosJoin()
     {
         _db.AddDynamicTarget(2101);
