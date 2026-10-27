@@ -226,6 +226,40 @@ public sealed partial class StationDb
             dm.ExecuteNonQuery();
         }
 
+        // M6 UP 主动态缓存：targets 是被盯的 UP（订阅台账种子 + 站长自加），dynamics 是抓回的动态橱窗。
+        // 缓存键 dynamic_id 全局唯一（同一动态被两个 target 拓到只存一份），游标存 targets.last_offset。
+        using (var dynamics = connection.CreateCommand())
+        {
+            dynamics.CommandText = """
+                CREATE TABLE IF NOT EXISTS dynamics_targets (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mid               INTEGER UNIQUE NOT NULL,
+                    nickname          TEXT,
+                    face_url          TEXT,
+                    enabled           INTEGER NOT NULL DEFAULT 1,
+                    last_offset       TEXT,
+                    last_fetch_at_utc TEXT,
+                    created_at_utc    TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS dynamics (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dynamic_id       TEXT UNIQUE NOT NULL,
+                    target_mid       INTEGER NOT NULL,
+                    author_mid       INTEGER,
+                    author_name      TEXT,
+                    type             TEXT NOT NULL,
+                    text             TEXT,
+                    pics_json        TEXT,
+                    bvid             TEXT,
+                    published_at_utc TEXT NOT NULL,
+                    cached_at_utc    TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_dynamics_target ON dynamics (target_mid, published_at_utc);
+                CREATE INDEX IF NOT EXISTS idx_dynamics_published ON dynamics (published_at_utc);
+                """;
+            dynamics.ExecuteNonQuery();
+        }
+
         // 成员角色（owner/member）：头名即站长。建表语句自带头，早期无 role 列的开发库在这里补上。
         EnsureColumn(connection, "members", "role", "TEXT NOT NULL DEFAULT 'member'");
 

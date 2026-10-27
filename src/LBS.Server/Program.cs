@@ -43,6 +43,10 @@ builder.Services.AddHostedService<StatusSyncWorker>();
 // 订阅爬工：单例注册以便站长室手动触发拿到同一个实例（串行闸在它手里）。
 builder.Services.AddSingleton<SubscriptionCrawler>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SubscriptionCrawler>());
+// 动态巡捕（M6）：取数员单例；巡捕也单例注册，站长室「立即巡一轮」拿同一个实例吃同一把重入闸。
+builder.Services.AddSingleton<LBS.Engine.LbsDynamicFetcher>();
+builder.Services.AddSingleton<DynamicFetchWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DynamicFetchWorker>());
 // 崩溃遗留的僵尸下载：StatusSyncWorker 负责发现（停滞销案），Reviver 负责救活（手动端点 + 启动自愈共用）。
 builder.Services.AddSingleton<LbsTaskReviver>();
 builder.Services.AddHostedService<StartupReviverWorker>();
@@ -328,6 +332,8 @@ app.MapAdminDmEndpoints();
 
 // 数据交换：导出打包/档案柜/导入暂存与换库（全在 /api/admin/** 站长门下）。
 app.MapDataExchangeApi();
+app.MapDynamicEndpoints();
+app.MapAdminDynamicEndpoints();
 
 // 旧档案的后补：有 mid 但名片从未采过（up_face 为 NULL）时，开页顺手异步采一次，下次刷新就有。
 // 失败也销账（置空串）；并发重复触发用 in-flight 集合挡掉。

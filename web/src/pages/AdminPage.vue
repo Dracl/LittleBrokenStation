@@ -882,6 +882,84 @@ async function sendAnnounce() {
   }
 }
 
+// ─── 动态关注（M6）：盯梢名单管理 + 催巡一轮（两段式删，后端 message 原样展示）───
+const dynTargets = ref(null)
+const dynBusy = ref(false)
+const dynText = ref('')
+const dynDraft = ref('')
+const dynArmedDelete = ref(null) // 同一行再点一次才真删
+let dynArmedTimer = null
+const dynRoundBusy = ref(false)
+
+async function loadDynTargets() {
+  try {
+    const res = await fetch('/api/dynamics/targets')
+    dynTargets.value = res.ok ? await res.json() : []
+  } catch {
+    dynTargets.value = []
+  }
+}
+
+async function addDynTarget() {
+  if (dynBusy.value) return
+  const value = dynDraft.value.trim()
+  if (!value) {
+    dynText.value = '先填个 MID 或空间链接'
+    return
+  }
+  dynBusy.value = true
+  dynText.value = ''
+  try {
+    const res = await fetch('/api/admin/dynamics/targets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mid: value }),
+    })
+    const data = await res.json().catch(() => null)
+    dynText.value = data?.message ?? (res.ok ? '记下' : '添加没成')
+    if (res.ok) {
+      dynDraft.value = ''
+      await loadDynTargets()
+    }
+  } catch {
+    dynText.value = '分站后端没有应答'
+  } finally {
+    dynBusy.value = false
+  }
+}
+
+async function removeDynTarget(t) {
+  if (dynArmedDelete.value !== t.mid) {
+    dynArmedDelete.value = t.mid
+    if (dynArmedTimer) clearTimeout(dynArmedTimer)
+    dynArmedTimer = setTimeout(() => { dynArmedDelete.value = null }, 5000)
+    return
+  }
+  dynArmedDelete.value = null
+  try {
+    const res = await fetch(`/api/admin/dynamics/targets/${t.mid}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => null)
+    dynText.value = data?.message ?? '撤了'
+    await loadDynTargets()
+  } catch {
+    dynText.value = '撤除没成'
+  }
+}
+
+async function dynRefreshRound() {
+  if (dynRoundBusy.value) return
+  dynRoundBusy.value = true
+  try {
+    const res = await fetch('/api/admin/dynamics/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    const data = await res.json().catch(() => null)
+    dynText.value = res.ok && data?.started ? '已催巡捕出门，稍后刷新橱窗' : '巡捕正在外头跑，等等再来'
+  } catch {
+    dynText.value = '催轮没递上去'
+  } finally {
+    dynRoundBusy.value = false
+  }
+}
+
 // ─── 数据交换：勾选式导出打包 + 导入换库（档案柜 data/exports/，暂存 data/imports/）───
 const expStats = ref(null) // {videos, cmtImg, avatars, emotes, cache, dbBytes}
 const expPick = ref({ withCreds: false, withMedia: false, withCmtImg: false, withCaches: false })
@@ -1134,6 +1212,7 @@ async function bootAdmin() {
   loadExportStats()
   loadExports()
   loadImportState()
+  loadDynTargets()
   if (!dlTimer) dlTimer = setInterval(loadDlQueue, 5000)
 }
 
@@ -1389,6 +1468,46 @@ onUnmounted(() => {
             <span v-if="announceText" class="text-[11px] text-white/40">{{ announceText }}</span>
           </div>
         </div>
+      </section>
+
+      <section class="lbs-card md:col-span-2">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            动态关注
+            <span class="ml-1 rounded-full border border-adminAccent/30 px-2 py-0.5 text-[10px] normal-case tracking-normal text-adminAccent/70">
+              {{ dynTargets ? `${dynTargets.length} 位盯梢` : '—' }}
+            </span>
+          </h3>
+          <button class="lbs-btn shrink-0" :disabled="dynRoundBusy" @click="dynRefreshRound">
+            {{ dynRoundBusy ? '巡捕在跑…' : '立即巡一轮' }}
+          </button>
+        </div>
+        <div class="mb-3 flex flex-wrap items-center gap-2">
+          <input v-model="dynDraft" class="eng-input md:w-72" placeholder="UP 的 MID 或 space.bilibili.com/…" maxlength="80" @keyup.enter="addDynTarget" />
+          <button class="lbs-btn" :disabled="dynBusy" @click="addDynTarget">{{ dynBusy ? '存盘中…' : '添加' }}</button>
+          <span v-if="dynText" class="text-[11px] text-white/40">{{ dynText }}</span>
+        </div>
+        <ul class="space-y-1">
+          <li v-for="t in dynTargets ?? []" :key="t.mid" class="flex items-center gap-2.5 rounded-lg bg-white/5 px-2.5 py-1.5">
+            <img v-if="t.faceUrl" :src="t.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-7 w-7 shrink-0 rounded-full object-cover" alt="" />
+            <span v-else class="h-7 w-7 shrink-0 rounded-full bg-white/10"></span>
+            <span class="min-w-0 flex-1 truncate text-[12px] text-white/75">
+              {{ t.nickname || `UID ${t.mid}` }}
+              <span class="font-mono text-[10px] text-white/30">UID {{ t.mid }}</span>
+            </span>
+            <span class="shrink-0 font-mono text-[11px] text-white/45">{{ t.count }} 条</span>
+            <span class="shrink-0 font-mono text-[10px] text-white/25">{{ t.lastFetchAtUtc ? friendlyTime(t.lastFetchAtUtc) : '未抓' }}</span>
+            <span class="shrink-0 rounded-full px-1.5 text-[10px]" :class="t.enabled ? 'border border-emerald-400/40 text-emerald-300' : 'border border-white/15 text-white/35'">{{ t.enabled ? '盯中' : '停盯' }}</span>
+            <button
+              class="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] transition"
+              :class="dynArmedDelete === t.mid ? 'lbs-btn-danger-armed' : 'text-rose-300/70 hover:bg-rose-500/10'"
+              @click="removeDynTarget(t)"
+            >
+              {{ dynArmedDelete === t.mid ? '确认撤' : '撤' }}
+            </button>
+          </li>
+          <li v-if="!dynTargets?.length" class="py-2 text-[11px] text-white/25">还没盯任何 UP。订阅台账里的 UP 主会自动灌进名单，这里也能手动加。</li>
+        </ul>
       </section>
 
       <section class="lbs-card md:col-span-2">

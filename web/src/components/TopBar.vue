@@ -92,6 +92,7 @@ function goMessages() {
       </RouterLink>
 
       <nav class="flex items-center gap-4 text-[13px] text-inkMain">
+        <RouterLink to="/dynamics" class="transition hover:text-stationPink" :class="route.path.startsWith('/dynamics') ? 'text-stationPink' : ''">动态</RouterLink>
         <span class="cursor-not-allowed text-inkFaint" title="M2 到站">番剧</span>
         <span class="cursor-not-allowed text-inkFaint" title="M2 到站">直播</span>
         <span class="cursor-not-allowed text-inkFaint" title="M2 到站">合集</span>
