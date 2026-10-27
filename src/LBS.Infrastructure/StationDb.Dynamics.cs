@@ -71,7 +71,9 @@ public sealed partial class StationDb
         string? FaceLocal = null,
         // 评论配图：远程 url JSON 数组 + 本地路径 JSON 数组（同序对齐，单图失败为 null 元素），端点层本地优先合并。
         string? PicturesJson = null,
-        string? PicturesLocalJson = null);
+        string? PicturesLocalJson = null,
+        // 发评人 B 站等级（官方徽记渲染）；存量行由等级补员盖章，认不到留 null。
+        int? Level = null);
 
     /// <summary>分享卡定格快照：转发到私信那一刻的卡面，B 站后续删改不连累分站。</summary>
     public sealed record DynamicSnapshot(
@@ -257,8 +259,8 @@ public sealed partial class StationDb
         using var insert = connection.CreateCommand();
         insert.CommandText = """
             INSERT OR IGNORE INTO dynamic_comments
-                (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, cached_at_utc, pictures_json, pictures_local_json)
-            VALUES ($did, $rpid, $root, $parent, $mid, $name, $face, $facelocal, $msg, $like, $ctime, $cached, $pics, $picslocal);
+                (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, cached_at_utc, pictures_json, pictures_local_json, level)
+            VALUES ($did, $rpid, $root, $parent, $mid, $name, $face, $facelocal, $msg, $like, $ctime, $cached, $pics, $picslocal, $level);
             """;
         var pDid = insert.Parameters.Add("$did", SqliteType.Text);
         var pRpid = insert.Parameters.Add("$rpid", SqliteType.Integer);
@@ -274,6 +276,7 @@ public sealed partial class StationDb
         var pCached = insert.Parameters.Add("$cached", SqliteType.Text);
         var pPics = insert.Parameters.Add("$pics", SqliteType.Text);
         var pPicsLocal = insert.Parameters.Add("$picslocal", SqliteType.Text);
+        var pLevel = insert.Parameters.Add("$level", SqliteType.Integer);
         foreach (var c in comments)
         {
             pDid.Value = dynamicId;
@@ -290,6 +293,7 @@ public sealed partial class StationDb
             pCached.Value = DateTimeOffset.UtcNow.ToString("O");
             pPics.Value = (object?)c.PicturesJson ?? DBNull.Value;
             pPicsLocal.Value = (object?)c.PicturesLocalJson ?? DBNull.Value;
+            pLevel.Value = (object?)c.Level ?? DBNull.Value;
             fresh += insert.ExecuteNonQuery();
         }
 
@@ -367,6 +371,42 @@ public sealed partial class StationDb
         return command.ExecuteNonQuery();
     }
 
+    /// <summary>存量等级补员名单：有 mid 却没登 level 的评论行 mid 去重限量。
+    /// 存量行是 INSERT OR IGNORE 进的、新解析也没赶上趟，巡捕每轮顺手捞这批。</summary>
+    public List<long> ListPendingLevelMids(int limit)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT mid FROM dynamic_comments
+            WHERE level IS NULL AND mid IS NOT NULL
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = command.ExecuteReader();
+        var mids = new List<long>();
+        while (reader.Read())
+        {
+            mids.Add(reader.GetInt64(0));
+        }
+
+        return mids;
+    }
+
+    /// <summary>等级补员盖章：只补该 mid 还没 level 的行，重复调用幂等。返回盖上行数。</summary>
+    public int BackfillCommentLevel(long mid, int level)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE dynamic_comments SET level = $lv
+            WHERE mid = $mid AND level IS NULL;
+            """;
+        command.Parameters.AddWithValue("$lv", level);
+        command.Parameters.AddWithValue("$mid", mid);
+        return command.ExecuteNonQuery();
+    }
+
     /// <summary>表情定格映射 JSON（转义符→/emotes/xx.png）：盖章时存入，端点原样透传给前端。</summary>
     public string? GetDynamicEmotesJson(string dynamicId)
     {
@@ -422,7 +462,7 @@ public sealed partial class StationDb
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, pictures_json, pictures_local_json
+            SELECT rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, pictures_json, pictures_local_json, level
             FROM dynamic_comments WHERE dynamic_id = $did ORDER BY root_rpid, id;
             """;
         command.Parameters.AddWithValue("$did", dynamicId);
@@ -442,7 +482,8 @@ public sealed partial class StationDb
                 reader.IsDBNull(9) ? null : reader.GetString(9),
                 reader.IsDBNull(6) ? null : reader.GetString(6),
                 reader.IsDBNull(10) ? null : reader.GetString(10),
-                reader.IsDBNull(11) ? null : reader.GetString(11)));
+                reader.IsDBNull(11) ? null : reader.GetString(11),
+                reader.IsDBNull(12) ? null : reader.GetInt32(12)));
         }
 
         return list;

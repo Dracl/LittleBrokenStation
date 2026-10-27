@@ -330,6 +330,31 @@ public sealed class StationDbTests : IDisposable
         Assert.Empty(_db.ListVideosMissingCover());
     }
 
+    [Fact]
+    public void 等级补员_只捞没登号的并幂等盖章()
+    {
+        // 存量行是 INSERT OR IGNORE 进的不会回头补：补员只捞 level 空且有 mid 的行，同 mid 一次盖齐，已有值不重盖。
+        _db.UpsertDynamic("DYN001", 100, 200, "甲", "DYNAMIC_TYPE_AV", "正文", null, null, null);
+        _db.UpsertComments("DYN001", new[]
+        {
+            new StationDb.DynamicCommentRow(1, 0, 0, 700, "甲", null, "楼一", 0, null),
+            new StationDb.DynamicCommentRow(2, 0, 0, 700, "甲", null, "楼二", 0, null),
+            new StationDb.DynamicCommentRow(3, 0, 0, 701, "乙", null, "楼三", 0, null, null, null, null, 4),
+            new StationDb.DynamicCommentRow(4, 0, 0, null, "无名", null, "楼四", 0, null),
+        });
+
+        Assert.Equal([700L], _db.ListPendingLevelMids(10));
+        Assert.Equal(2, _db.BackfillCommentLevel(700, 5));
+        Assert.Equal(0, _db.BackfillCommentLevel(700, 6)); // 幂等：盖过戳的不回头
+        Assert.Empty(_db.ListPendingLevelMids(10));
+
+        var rows = _db.ListDynamicComments("DYN001");
+        Assert.Equal(5, Assert.Single(rows, r => r.Rpid == 1).Level);
+        Assert.Equal(5, Assert.Single(rows, r => r.Rpid == 2).Level);
+        Assert.Equal(4, Assert.Single(rows, r => r.Rpid == 3).Level); // 入库自带值原样保
+        Assert.Null(Assert.Single(rows, r => r.Rpid == 4).Level);
+    }
+
     public void Dispose()
     {
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();

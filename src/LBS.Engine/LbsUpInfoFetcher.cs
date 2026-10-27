@@ -78,6 +78,44 @@ public sealed class LbsUpInfoFetcher(
         }
     }
 
+    /// <summary>轻量查等级：同走 card 接口、同一张嘴（client + Referer + 无 cookie），只取 level_info.current_level、退 card.level。
+    /// 给存量评论等级补员用；认不到给 null，调用方留待下轮。</summary>
+    public async Task<int?> FetchLevelAsync(long mid, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = $"https://api.bilibili.com/x/web-interface/card?mid={mid}&photo=false";
+            var raw = await client.GetStringAsync(new BilibiliHttpRequest(url, Referer), cancellationToken);
+            using var doc = JsonDocument.Parse(raw);
+
+            if (doc.RootElement.TryGetProperty("code", out var code) && code.GetInt32() != 0)
+            {
+                return null;
+            }
+
+            if (!doc.RootElement.TryGetProperty("data", out var data) || !data.TryGetProperty("card", out var card))
+            {
+                return null;
+            }
+
+            if (card.TryGetProperty("level_info", out var li) && li.TryGetProperty("current_level", out var cl) && cl.TryGetInt32(out var lv) && lv is >= 0 and <= 99)
+            {
+                return lv;
+            }
+
+            return Num(card, "level") is long flat and >= 0 and <= 99 ? (int)flat : null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "UP 主 {Mid} 等级没查到（不致命）", mid);
+            return null;
+        }
+    }
+
     /// <summary>互动数据：走公开 view 接口，点赞/投币/收藏/分享/回复五维真数。</summary>
     public async Task<VideoStat?> FetchStatAsync(string bvid, CancellationToken cancellationToken)
     {

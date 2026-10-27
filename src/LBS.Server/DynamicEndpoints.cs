@@ -80,6 +80,7 @@ public static class DynamicEndpoints
                 message = top.Message,
                 like = top.LikeCount,
                 ctimeUtc = top.CtimeUtc,
+                level = top.Level,
                 pictures = MergePictures(top.PicturesJson, top.PicturesLocalJson),
                 replies = rows.Where(r => r.RootRpid == top.Rpid).Select(r => new
                 {
@@ -90,6 +91,7 @@ public static class DynamicEndpoints
                     message = r.Message,
                     like = r.LikeCount,
                     ctimeUtc = r.CtimeUtc,
+                    level = r.Level,
                     pictures = MergePictures(r.PicturesJson, r.PicturesLocalJson),
                 }).ToList(),
             }).ToList();

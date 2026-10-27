@@ -3,6 +3,7 @@ import { richHtml } from '../utils/emote'
 import { computed, ref, watch } from 'vue'
 import ImageLightbox from './ImageLightbox.vue'
 import AvatarImg from './AvatarImg.vue'
+import LevelBadge from './LevelBadge.vue'
 
 const props = defineProps({
   src: { type: String, default: null },
@@ -236,7 +237,7 @@ function likeCount(item) {
             <div class="flex flex-wrap items-center gap-1.5">
               <span class="text-[15px] text-inkMain">{{ topReply.name }}</span>
               <span v-for="(medal, mi) in topReply.medals ?? []" :key="mi" class="rounded-[3px] px-1 py-[2px] text-[10px] leading-none text-white" :style="medalStyle(medal.color)">{{ medal.level }} {{ medal.name }}</span>
-              <span v-if="topReply.level" class="rounded-[3px] bg-[#fb7299] px-1 py-[2px] text-[10px] font-medium leading-none text-white">LV{{ topReply.level }}</span>
+              <LevelBadge :level="topReply.level" />
               <span v-if="isUp(topReply)" class="rounded-[3px] bg-[#fb7299] px-1 py-[2px] text-[10px] font-medium leading-none text-white">UP</span>
             </div>
             <p class="mt-1.5 text-[15px] leading-7 text-inkMain">
@@ -276,7 +277,7 @@ function likeCount(item) {
           <div class="flex flex-wrap items-center gap-1.5">
             <span class="text-[15px] text-inkMain">{{ reply.name }}</span>
             <span v-for="(medal, mi) in reply.medals ?? []" :key="mi" class="rounded-[3px] px-1 py-[2px] text-[10px] leading-none text-white" :style="medalStyle(medal.color)">{{ medal.level }} {{ medal.name }}</span>
-            <span v-if="reply.level" class="rounded-[3px] bg-[#fb7299] px-1 py-[2px] text-[10px] font-medium leading-none text-white">LV{{ reply.level }}</span>
+            <LevelBadge :level="reply.level" />
             <span v-if="isUp(reply)" class="rounded-[3px] bg-[#fb7299] px-1 py-[2px] text-[10px] font-medium leading-none text-white">UP</span>
           </div>
 
@@ -309,7 +310,7 @@ function likeCount(item) {
                 <div class="flex flex-wrap items-center gap-1.5">
                   <span class="text-[13px]" :class="isUp(sub) ? 'text-inkMain' : 'text-stationPink'">{{ sub.name }}</span>
                   <span v-for="(medal, mi) in sub.medals ?? []" :key="mi" class="rounded-[3px] px-1 py-[1px] text-[9px] leading-none text-white" :style="medalStyle(medal.color)">{{ medal.level }} {{ medal.name }}</span>
-                  <span v-if="sub.level" class="rounded-[3px] bg-[#fb7299] px-1 py-[1px] text-[9px] font-medium leading-none text-white">LV{{ sub.level }}</span>
+                  <LevelBadge :level="sub.level" class="h-3" />
                   <span v-if="isUp(sub)" class="rounded-[3px] bg-[#fb7299] px-1 py-[1px] text-[9px] font-medium leading-none text-white">UP</span>
                 </div>
                 <p class="mt-0.5 whitespace-pre-line text-sm leading-6 text-inkMain">

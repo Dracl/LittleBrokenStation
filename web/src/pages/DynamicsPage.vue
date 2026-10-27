@@ -5,6 +5,7 @@ import TopBar from '../components/TopBar.vue'
 import DynamicVideoCard from '../components/DynamicVideoCard.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import AvatarImg from '../components/AvatarImg.vue'
+import LevelBadge from '../components/LevelBadge.vue'
 import ShareDialog from '../components/ShareDialog.vue'
 import { member, loginDialogOpen } from '../memberStore'
 import { friendlyTime } from '../utils/time'
@@ -476,6 +477,7 @@ onMounted(async () => {
                 <div class="min-w-0 flex-1">
                   <div class="flex items-baseline gap-2">
                     <span class="text-[12.5px] font-medium text-stationPink">{{ top.name || '无名网友' }}</span>
+                    <LevelBadge :level="top.level" />
                     <span class="text-[11px] text-inkFaint">{{ friendlyTime(top.ctimeUtc) }}</span>
                   </div>
                   <p class="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain" v-html="richHtml(top.message, cmtState(d).emotes)"></p>
@@ -504,6 +506,7 @@ onMounted(async () => {
                         <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="h-5 w-5 shrink-0 rounded-full object-cover bg-[#f1f2f3] text-[9px] text-inkFaint" />
                         <div class="min-w-0 flex-1">
                           <span class="text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
+                          <LevelBadge :level="sub.level" class="h-3" />
                           <span class="ml-1.5 text-[10.5px] text-inkFaint">{{ friendlyTime(sub.ctimeUtc) }}</span>
                           <p class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain" v-html="richHtml(sub.message, cmtState(d).emotes)"></p>
                           <div v-if="sub.pictures?.length" class="mt-1 flex flex-wrap gap-1">

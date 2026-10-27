@@ -56,7 +56,9 @@ public sealed record ParsedComment(
     long Like,
     string? CtimeUtc,
     // 评论配图远程 url（content.pictures[].img_src）；落盘交给评论资产缓存，同序对齐存 pictures_local_json。
-    IReadOnlyList<string>? Pictures = null);
+    IReadOnlyList<string>? Pictures = null,
+    // 发评人 B 站等级（member.level_info.current_level，老口没这个袋就退 member.level）；认不到 null，前端不渲染徽记。
+    int? Level = null);
 
 public enum FeedParseStatus
 {
@@ -439,6 +441,11 @@ public sealed class LbsDynamicFetcher(
                         }
                     }
 
+                    // 等级优先新袋 level_info.current_level，老口没这个袋就退 member.level；两个都没有或离谱值就 null（前端不渲染徽记）。
+                    int? level = (Num(Path(el, "member", "level_info"), "current_level") ?? Num(Path(el, "member"), "level")) is long lv and >= 0 and <= 99
+                        ? (int)lv
+                        : null;
+
                     replies.Add(new ParsedComment(
                         rpid,
                         rootRpid,
@@ -450,7 +457,8 @@ public sealed class LbsDynamicFetcher(
                         message.Trim(),
                         Num(el, "like") ?? 0,
                         ctime is > 0 ? DateTimeOffset.FromUnixTimeSeconds(ctime.Value).ToString("O") : null,
-                        pictures));
+                        pictures,
+                        level));
 
                     if (collectRoots && (Num(el, "rcount") ?? 0) > 0)
                     {

@@ -323,6 +323,8 @@ public sealed partial class StationDb
         EnsureColumn(connection, "dynamics", "body_emotes_json", "TEXT");
         EnsureColumn(connection, "dynamic_comments", "pictures_json", "TEXT");
         EnsureColumn(connection, "dynamic_comments", "pictures_local_json", "TEXT");
+        // 发评人 B 站等级（官方徽记渲染用）；存量行由巡捕的等级补员逐批盖章。
+        EnsureColumn(connection, "dynamic_comments", "level", "INTEGER");
 
         // M6+ 私信变厚：支持「分享动态」卡，msg_type 分文本/动态，dyn_json 存分享那刻定格的卡面快照
         // （B 站删动态不连累分站留档，会话渲染也不回头查表）。

@@ -344,6 +344,24 @@ public sealed class DynamicCacheTests : IDisposable
     }
 
     [Fact]
+    public void ParseReplies_Level_NewBagFirst_OldKeyFallback()
+    {
+        // 等级取数口径：member.level_info.current_level 优先，老口没这个袋退 member.level，两个都没有 null（前端不渲染徽记）。
+        var json = """
+            {"code":0,"data":{"page":{"count":3},"replies":[
+              {"rpid":401,"content":{"message":"新袋流"},"member":{"mid":1,"uname":"甲","level":2,"level_info":{"current_level":5}}},
+              {"rpid":402,"content":{"message":"老口流"},"member":{"mid":2,"uname":"乙","level":3}},
+              {"rpid":403,"content":{"message":"没等级流"},"member":{"mid":3,"uname":"丙"}}]}}
+            """;
+
+        var result = LbsDynamicFetcher.ParseReplies(json, rootRpid: 0, max: 20, collectRoots: false);
+        Assert.Equal(FeedParseStatus.Ok, result.Status);
+        Assert.Equal(5, Assert.Single(result.Replies, r => r.Rpid == 401).Level);
+        Assert.Equal(3, Assert.Single(result.Replies, r => r.Rpid == 402).Level);
+        Assert.Null(Assert.Single(result.Replies, r => r.Rpid == 403).Level);
+    }
+
+    [Fact]
     public void ParseReplies_Sub_AttachToParentFloor()
     {
         var json = """

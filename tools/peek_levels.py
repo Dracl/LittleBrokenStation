@@ -1,0 +1,11 @@
+import sqlite3, os
+con = sqlite3.connect('data/station.db')
+cur = con.cursor()
+print('level filled:', cur.execute("SELECT COUNT(*) FROM dynamic_comments WHERE level IS NOT NULL").fetchone()[0])
+print('level pending:', cur.execute("SELECT COUNT(*) FROM dynamic_comments WHERE level IS NULL").fetchone()[0])
+print('distinct mid pending:', cur.execute("SELECT COUNT(DISTINCT mid) FROM dynamic_comments WHERE level IS NULL AND mid IS NOT NULL").fetchone()[0])
+print('face pending:', cur.execute("SELECT COUNT(*) FROM dynamic_comments WHERE face_local IS NULL AND face IS NOT NULL AND face <> ''").fetchone()[0])
+print('avatars files:', len(os.listdir('data/avatars')))
+sample = cur.execute("SELECT name, level FROM dynamic_comments WHERE level IS NOT NULL LIMIT 3").fetchall()
+print('sample:', sample)
+con.close()

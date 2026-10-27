@@ -14,6 +14,7 @@ public sealed class DynamicFetchWorker(
     StationDb db,
     LbsDynamicFetcher fetcher,
     LbsCommentArchiver assetCache,
+    LbsUpInfoFetcher upInfo,
     LbsOwnerPolicy policy,
     ILogger<DynamicFetchWorker> logger) : BackgroundService
 {
@@ -229,6 +230,7 @@ public sealed class DynamicFetchWorker(
     {
         // 存量头像补员：早于头像存档上线的老行（或当年存图失败的）face_local 空着，每轮摄 200 个 URL 补档盖章；图床挂了自然留待下轮。
         await BackfillAvatarsAsync(cancellationToken);
+        await BackfillCommentLevelsAsync(cancellationToken);
 
         // 新货带完整坐标直接办；存量欠账从库里拿坐标（没坐标的行等重巡补完再办，不拿兑底误盖章）。
         var pending = db.ListPendingCommentDynamics(60)
@@ -273,7 +275,8 @@ public sealed class DynamicFetchWorker(
                             ? JsonSerializer.Serialize(
                                 localPics.Select(u => pictureMap.TryGetValue(u, out var picLocal) ? picLocal : null).ToList(),
                                 AssetJson)
-                            : null))
+                            : null,
+                        c.Level))
                     .ToList());
                 if (outcome.Ok)
                 {
@@ -329,6 +332,46 @@ public sealed class DynamicFetchWorker(
         if (stamped > 0)
         {
             logger.LogInformation("头像补员：本轮给 {Count} 条存量评论的头像补档盖戳（候选 {Candidates} 张）", stamped, urls.Count);
+        }
+    }
+
+    /// <summary>存量等级补员：拉 level 空的老评论行 mid（去重、每轮封顶 50），逐个走 card 接口查级后 UPDATE 盖章
+    /// （存量行是 INSERT OR IGNORE 进的、新解析不会回头补）。个间 200ms 节流，单点失败跳过留待下轮；
+    /// 除取消外一切异常只记 LogDebug，绝不扰巡捕主流程。</summary>
+    private async Task BackfillCommentLevelsAsync(CancellationToken cancellationToken)
+    {
+        var mids = db.ListPendingLevelMids(50);
+        if (mids.Count == 0)
+        {
+            return;
+        }
+
+        var stamped = 0;
+        foreach (var mid in mids)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (await upInfo.FetchLevelAsync(mid, cancellationToken) is int level)
+                {
+                    stamped += db.BackfillCommentLevel(mid, level);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "等级补员：mid {Mid} 这趟没查到，下轮再来", mid);
+            }
+
+            await Task.Delay(200, cancellationToken);
+        }
+
+        if (stamped > 0)
+        {
+            logger.LogInformation("等级补员：本轮给 {Count} 条存量评论盖上等级戳（候选 {Candidates} 位）", stamped, mids.Count);
         }
     }
 }
