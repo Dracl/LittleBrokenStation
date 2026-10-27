@@ -12,7 +12,9 @@ public sealed record EventDraft(
     string? SubjectId,
     string? PayloadJson,
     string? Ip,
-    string TsUtc);
+    string TsUtc,
+    // M5.4：成员事件另挂站内身份（素净席位无 mid，全靠这列认人）；访客事件留 NULL。
+    long? ActorMemberId = null);
 
 /// <summary>事件台账一行（查询回形）。</summary>
 public sealed record EventRow(
@@ -64,6 +66,8 @@ public static class EventNames
     public const string MemberDelete = "member.delete";
     public const string MemberSetPrimary = "member.set_primary";
     public const string MemberDropAccount = "member.drop_account";
+    public const string MemberRegister = "member.register";
+    public const string MemberPasswordChange = "member.password.change";
 
     public const string LoginStart = "login.qr.start";
     public const string LoginScanned = "login.qr.scanned";
@@ -71,6 +75,8 @@ public static class EventNames
     public const string LoginExpired = "login.qr.expired";
     public const string LoginDenied = "login.qr.denied";
     public const string LoginLogout = "login.logout";
+    public const string LoginPassword = "login.password";
+    public const string LoginPasswordDenied = "login.password.denied";
 
     public const string AdminAction = "admin.action";
     public const string AdminAnnounce = "admin.announce";

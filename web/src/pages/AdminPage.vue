@@ -697,8 +697,8 @@ async function memberAction(action, item) {
   const verbs = { ban: '封禁', unban: '解封', delete: '撤席位' }
   const hint =
     action === 'delete'
-      ? `确定撤掉「${item.nickname}」的席位？历史事件保留，想回来得重新领邀请码。`
-      : `确定${verbs[action]}「${item.nickname}」？`
+      ? `确定撤掉「${seatLabel(item)}」的席位？历史事件保留，想回来得重新领邀请码。`
+      : `确定${verbs[action]}「${seatLabel(item)}」？`
   if (!window.confirm(hint)) return
   membersBusy.value = true
   memberText.value = ''
@@ -722,7 +722,7 @@ async function memberAction(action, item) {
 async function memberAccountDelete(acc, item) {
   if (membersBusy.value) return
   const who = acc.accountName || `UID ${acc.accountMid}`
-  if (!window.confirm(`确定从「${item.nickname}」的席位上解绑「${who}」？`)) return
+  if (!window.confirm(`确定从「${seatLabel(item)}」的席位上解绑「${who}」？`)) return
   membersBusy.value = true
   memberText.value = ''
   try {
@@ -810,8 +810,9 @@ async function toggleDmLog(m) {
   dmLog.value = null
   dmLogBusy.value = true
   try {
-    const mine = member.value?.mid
-    const query = mine && m.mid ? `?peerA=${mine}&peerB=${m.mid}` : ''
+    // M5.4：管理员视野锁席位 id 对（素净席位没 mid 也能查往来）
+    const mine = member.value?.memberId
+    const query = mine && m.id ? `?peerA=${mine}&peerB=${m.id}` : ''
     const res = await fetch(`/api/admin/dm${query}`)
     dmLog.value = res.ok ? (await res.json()).messages ?? [] : []
   } catch {
@@ -822,7 +823,60 @@ async function toggleDmLog(m) {
 }
 
 function openDmWith(m) {
-  router.push({ path: '/messages', query: { dm: String(m.mid) } })
+  // 跳信箱预开会话：私信认席位，带 m.id 不带 mid
+  router.push({ path: '/messages', query: { dm: String(m.id) } })
+}
+
+// 站长代重置密码（忘密自救/成员求助都走这）：展开区就地填新密，提交后收摊
+const resetTarget = ref(null) // 正在代重置的成员 id
+const resetPwd = ref('')
+const resetBusy = ref(false)
+const resetNotice = ref(null) // { kind, text, id }
+
+function startReset(m) {
+  if (resetTarget.value === m.id) {
+    resetTarget.value = null
+    resetPwd.value = ''
+    return
+  }
+  resetTarget.value = m.id
+  resetPwd.value = ''
+  resetNotice.value = null
+}
+
+async function confirmReset(m) {
+  if (resetBusy.value) return
+  if (resetPwd.value.length < 8) {
+    resetNotice.value = { kind: 'err', id: m.id, text: '至少 8 位' }
+    return
+  }
+  resetBusy.value = true
+  try {
+    const res = await fetch(`/api/admin/members/${m.id}/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: resetPwd.value }),
+    })
+    const data = await res.json().catch(() => null)
+    resetNotice.value = { kind: res.ok ? 'ok' : 'err', id: m.id, text: data?.message ?? '分站后端没有应答' }
+    if (res.ok) {
+      resetTarget.value = null
+      resetPwd.value = ''
+    }
+  } catch {
+    resetNotice.value = { kind: 'err', id: m.id, text: '分站后端没有应答' }
+  } finally {
+    resetBusy.value = false
+  }
+}
+
+// 席位对人的展示名：昵称 → @站名 → 席位号（素净席位不再叫 UID null）
+function seatLabel(m) {
+  return m.nickname || (m.username ? `@${m.username}` : `席位 ${m.id}`)
+}
+function seatIdLine(m) {
+  if (m.mid) return `UID ${m.mid}`
+  return m.username ? `@${m.username}` : `席位 #${m.id}`
 }
 
 // ─── 全站公告：向 active 席位播送站内信（两段式防手滑，后端 message 原样展示）───
@@ -1339,10 +1393,12 @@ onUnmounted(() => {
           <li v-for="m in members" :key="m.id" class="rounded-lg border border-white/5 bg-black/20">
             <div class="flex flex-wrap items-center gap-3 px-3 py-2">
               <img v-if="m.faceUrl" :src="m.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-8 w-8 shrink-0 rounded-full object-cover" alt="" />
-              <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs text-white/40">{{ (m.nickname || '?').slice(0, 1) }}</span>
+              <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs text-white/40">{{ (m.nickname || m.username || '?').slice(0, 1).toUpperCase() }}</span>
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-1.5 text-xs text-white/85">
-                  <span class="truncate">{{ m.nickname }}</span>
+                  <span class="truncate">{{ seatLabel(m) }}</span>
+                  <span v-if="m.username && m.nickname" class="shrink-0 rounded-full border border-white/10 bg-white/5 px-1.5 py-px text-[10px] text-white/40">@{{ m.username }}</span>
+                  <span v-if="!m.mid && !m.username" class="shrink-0 rounded-full border border-white/10 bg-white/5 px-1.5 py-px text-[10px] text-white/40">素净</span>
                   <span v-if="m.role === 'owner'" class="shrink-0 rounded-full border border-amber-400/50 bg-amber-400/10 px-1.5 py-px text-[10px] text-amber-300">♛ 站长</span>
                   <span v-else class="flex shrink-0 items-center gap-1 rounded-full border border-slate-400/40 bg-slate-400/10 px-1.5 py-px text-[10px] text-slate-300">
                     <CrownBadge tier="member" class="h-2.5 w-2.5" />
@@ -1356,7 +1412,7 @@ onUnmounted(() => {
                   </span>
                 </p>
                 <p class="mt-0.5 font-mono text-[10px] text-white/30">
-                  UID {{ m.mid }} · 入站 {{ fmtBackupTime(m.createdAtUtc) }} · 上次登录 {{ friendlyTime(m.lastLoginAtUtc) }}
+                  {{ seatIdLine(m) }} · 入站 {{ fmtBackupTime(m.createdAtUtc) }} · 上次登录 {{ friendlyTime(m.lastLoginAtUtc) }}
                 </p>
               </div>
               <span class="shrink-0 font-mono text-[11px] text-white/45">投稿 {{ m.submitted ?? 0 }}</span>
@@ -1403,7 +1459,7 @@ onUnmounted(() => {
                   </svg>
                 </button>
               </li>
-              <li v-if="!m.accounts?.length" class="py-1 text-[11px] text-white/25">这席还没绑任何 B 站账号。</li>
+              <li v-if="!m.accounts?.length" class="py-1 text-[11px] text-white/25">这席还没绑任何 B 站账号（素净席位：可逛可看可私信，不能投稿）。</li>
             </ul>
             <div v-if="expandedMember === m.id" class="border-t border-white/5 px-3 pb-2 pt-1.5">
               <div class="flex items-center gap-2">
@@ -1414,12 +1470,36 @@ onUnmounted(() => {
                   私信记录 {{ dmLogMember === m.id ? '▴' : '▾' }}
                 </button>
                 <button
-                  v-if="m.status === 'active' && m.mid && m.mid !== member?.mid"
+                  v-if="m.status === 'active' && m.id !== member?.memberId"
                   class="rounded-md border border-stationPink/40 px-2 py-0.5 text-[11px] text-stationPink/80 transition hover:bg-stationPink/10"
                   @click="openDmWith(m)"
                 >
                   发私信 →
                 </button>
+                <button
+                  class="rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/45 transition hover:border-amber-400/50 hover:text-amber-300"
+                  @click="startReset(m)"
+                >
+                  代重置密码 {{ resetTarget === m.id ? '▴' : '▾' }}
+                </button>
+              </div>
+              <div v-if="resetTarget === m.id" class="mt-1.5 flex items-center gap-2">
+                <input
+                  v-model="resetPwd"
+                  type="text"
+                  placeholder="新密码（至少 8 位）"
+                  class="eng-input w-44 rounded-md border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-white/80 placeholder:text-white/25"
+                  :disabled="resetBusy"
+                  @keyup.enter="confirmReset(m)"
+                />
+                <button
+                  class="rounded-md border border-amber-400/50 px-2 py-0.5 text-[11px] text-amber-300 transition hover:bg-amber-400/10 disabled:opacity-40"
+                  :disabled="resetBusy"
+                  @click="confirmReset(m)"
+                >
+                  {{ resetBusy ? '提交中…' : '确认重置' }}
+                </button>
+                <span v-if="resetNotice?.id === m.id" class="text-[10px]" :class="resetNotice.kind === 'ok' ? 'text-emerald-300' : 'text-rose-300'">{{ resetNotice.text }}</span>
               </div>
               <div v-if="dmLogMember === m.id" class="mt-1.5">
                 <p v-if="dmLogBusy" class="py-1 text-[11px] text-white/25">正在拉往来…</p>
@@ -1428,7 +1508,7 @@ onUnmounted(() => {
                   <li v-for="row in dmLog" :key="row.id" class="flex items-start gap-2 rounded-lg bg-white/5 px-2 py-1.5">
                     <span class="shrink-0 font-mono text-[10px] text-white/30">{{ friendlyTime(row.createdAtUtc) }}</span>
                     <span class="min-w-0 flex-1 break-words text-[11px] text-white/70">
-                      <b class="font-normal text-white/45">{{ row.fromMid === member?.mid ? '我' : (row.fromName || `UID ${row.fromMid}`) }} → {{ row.toMid === member?.mid ? '我' : (row.toName || `UID ${row.toMid}`) }}：</b>{{ row.body }}
+                      <b class="font-normal text-white/45">{{ row.fromMemberId === member?.memberId ? '我' : (row.fromName || `席位 ${row.fromMemberId}`) }} → {{ row.toMemberId === member?.memberId ? '我' : (row.toName || `席位 ${row.toMemberId}`) }}：</b>{{ row.body }}
                     </span>
                     <span class="shrink-0 text-[10px]" :class="row.readAtUtc ? 'text-white/20' : 'text-adminAccent/60'">{{ row.readAtUtc ? '已读' : '未读' }}</span>
                   </li>

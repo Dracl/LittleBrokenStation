@@ -14,17 +14,17 @@ public static class MemberMail
     public const string KindFail = "fail";
     public const string KindAnnounce = "announce";
 
-    /// <summary>欢迎信：只在首次建档（席位 invited→active 或首扫继位）那一刻寄一次。</summary>
-    public static void NotifyWelcome(StationDb db, ILogger? logger, long toMid)
+    /// <summary>欢迎信：只在首次建档（邀请/注册兑现或首扫继位）那一刻寄一次。收件人是站内席位 id。</summary>
+    public static void NotifyWelcome(StationDb db, ILogger? logger, long toMemberId)
     {
         TrySend(logger, "欢迎信", () =>
         {
             var stationName = db.GetSetting("station-name");
             stationName = string.IsNullOrWhiteSpace(stationName) ? "小破分站" : stationName.Trim();
-            db.SendToMember(toMid, KindWelcome, "欢迎来到小破分站",
+            db.SendToMember(toMemberId, KindWelcome, "欢迎来到小破分站",
                 $"「{stationName}」灯给你留着——进站就是一起守站的人了。去用户控制室看看自己的账号池和投稿账本吧。",
                 "/me");
-        }, toMid);
+        }, toMemberId);
     }
 
     /// <summary>归档回执：视频到站且投稿有归属才寄；无归属行（站长代下等）静默跳过。</summary>
@@ -33,13 +33,13 @@ public static class MemberMail
         TrySend(logger, "归档回执", () =>
         {
             var target = db.GetVideoMailTarget(videoId);
-            if (target?.SubmitterMid is not long submitterMid)
+            if (target?.SubmitterMemberId is not long submitterMemberId)
             {
                 return;
             }
 
             var display = string.IsNullOrWhiteSpace(target.Title) ? target.Bvid : target.Title;
-            db.SendToMember(submitterMid, KindComplete, "投稿已入档",
+            db.SendToMember(submitterMemberId, KindComplete, "投稿已入档",
                 $"「{display}」完整入档：正片、弹幕、字幕与封面都已上架，随时可放映。",
                 $"/watch/{target.Bvid}");
         }, videoId);
@@ -51,14 +51,14 @@ public static class MemberMail
         TrySend(logger, "失败回执", () =>
         {
             var target = db.GetVideoMailTarget(videoId);
-            if (target?.SubmitterMid is not long submitterMid)
+            if (target?.SubmitterMemberId is not long submitterMemberId)
             {
                 return;
             }
 
             var display = string.IsNullOrWhiteSpace(target.Title) ? target.Bvid : target.Title;
             var reason = FirstLine(error ?? target.LastError);
-            db.SendToMember(submitterMid, KindFail, "投稿打了个趔趄",
+            db.SendToMember(submitterMemberId, KindFail, "投稿打了个趔趄",
                 $"「{display}」没能入档：{(string.IsNullOrWhiteSpace(reason) ? "引擎没说原因" : reason)}。稍后重试或换个链接再来。",
                 null);
         }, videoId);

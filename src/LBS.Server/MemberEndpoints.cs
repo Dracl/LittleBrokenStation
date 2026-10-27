@@ -139,7 +139,7 @@ public static class MemberEndpoints
                         db.UpsertMemberAccount(binder.Id, identity.Mid, identity.Name, identity.Face, cookie);
                         sessions.TryRemove(key, out _);
                         events.Record(EventActors.Member, binderMid, EventNames.LoginSuccess, "member",
-                            identity.Mid.ToString(), "{\"mode\":\"bind\"}", ip);
+                            identity.Mid.ToString(), "{\"mode\":\"bind\"}", ip, binder.Id);
                         return Results.Ok(new
                         {
                             phase = "success",
@@ -166,7 +166,7 @@ public static class MemberEndpoints
                     });
 
                     events.Record(EventActors.Member, identity.Mid, EventNames.LoginSuccess, "member",
-                        identity.Mid.ToString(), ip: ip);
+                        identity.Mid.ToString(), ip: ip, actorMemberId: db.GetMemberByMid(identity.Mid)?.Id);
                     return Results.Ok(new
                     {
                         phase = "success",
@@ -188,11 +188,11 @@ public static class MemberEndpoints
         app.MapPost("/api/member/logout", (EventRecorder events, HttpContext http) =>
         {
             var member = MemberGate.Current(http);
-            if (member?.Mid is long mid)
+            if (member is not null)
             {
                 // 退出只拆本端 cookie：朋友可能多端在线，按成员吊销太重；残留令牌 30 天自然过期。
-                events.Record(EventActors.Member, mid, EventNames.LoginLogout, "member", mid.ToString(),
-                    ip: http.Connection.RemoteIpAddress?.ToString());
+                events.Record(EventActors.Member, member.Mid, EventNames.LoginLogout, "member", member.Id.ToString(),
+                    ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: member.Id);
             }
 
             http.Response.Cookies.Delete(MemberGate.Cookie, new CookieOptions { Path = "/" });
@@ -208,10 +208,14 @@ public static class MemberEndpoints
             }
 
             var accounts = db.ListMemberAccounts(member.Id);
-            var stats = db.ListMemberIngestStats().SingleOrDefault(s => s.SubmitterMid == member.Mid);
+            var stats = db.ListMemberIngestStats().SingleOrDefault(s => s.SubmitterMemberId == member.Id);
             return Results.Ok(new
             {
+                memberId = member.Id,
                 mid = member.Mid,
+                username = member.Username,
+                hasPassword = db.HasMemberPassword(member.Id),
+                hasBilibili = db.PickMemberAccountForDownload(member.Id) is not null,
                 nickname = member.Nickname,
                 faceUrl = member.FaceUrl,
                 note = member.Note,
@@ -246,7 +250,7 @@ public static class MemberEndpoints
 
             db.SetMemberAccountPrimary(request.Id);
             events.Record(EventActors.Member, member.Mid, EventNames.MemberSetPrimary, "account", request.Id.ToString(),
-                ip: http.Connection.RemoteIpAddress?.ToString());
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: member.Id);
             return Results.Ok(new { message = "主号已切换，下载默认用它" });
         });
 
@@ -266,7 +270,7 @@ public static class MemberEndpoints
 
             db.DeleteMemberAccount(request.Id);
             events.Record(EventActors.Member, member.Mid, EventNames.MemberDropAccount, "account", request.Id.ToString(),
-                ip: http.Connection.RemoteIpAddress?.ToString());
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: member.Id);
             return Results.Ok(new { message = "号已从池中逐出" });
         });
 
@@ -327,9 +331,9 @@ public static class MemberEndpoints
         }
 
         db.UpsertMemberAccount(bound.Id, identity.Mid, identity.Name, identity.Face, cookie);
-        // 首扫建档那一刻寄欢迎信（邀请兑现与无主继位都走这里）；重登不重发。
+        // 首扫建档那一刻寄欢迎信（邀请兑现与无主继位都走这里）；重登不重发。收件人是站内席位 id（M5.4）。
         // 寄信失败只 log warning（MemberMail 内部包裹），绝不阻断进站。
-        MemberMail.NotifyWelcome(db, logger, identity.Mid);
+        MemberMail.NotifyWelcome(db, logger, bound.Id);
         return (gate.IssueSession(bound.Id).Token, null, 200);
     }
 

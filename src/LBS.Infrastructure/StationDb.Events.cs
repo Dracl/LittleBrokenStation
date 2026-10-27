@@ -20,8 +20,8 @@ public sealed partial class StationDb
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO events (ts_utc, actor_type, actor_mid, event, subject_type, subject_id, payload, ip)
-            VALUES ($ts, $at, $am, $ev, $st, $si, $p, $ip);
+            INSERT INTO events (ts_utc, actor_type, actor_mid, event, subject_type, subject_id, payload, ip, actor_member_id)
+            VALUES ($ts, $at, $am, $ev, $st, $si, $p, $ip, $amb);
             """;
         var pTs = command.Parameters.Add("$ts", SqliteType.Text);
         var pAt = command.Parameters.Add("$at", SqliteType.Text);
@@ -31,6 +31,7 @@ public sealed partial class StationDb
         var pSi = command.Parameters.Add("$si", SqliteType.Text);
         var pP = command.Parameters.Add("$p", SqliteType.Text);
         var pIp = command.Parameters.Add("$ip", SqliteType.Text);
+        var pAmb = command.Parameters.Add("$amb", SqliteType.Integer);
 
         foreach (var draft in drafts)
         {
@@ -42,6 +43,7 @@ public sealed partial class StationDb
             pSi.Value = (object?)draft.SubjectId ?? DBNull.Value;
             pP.Value = (object?)draft.PayloadJson ?? DBNull.Value;
             pIp.Value = (object?)draft.Ip ?? DBNull.Value;
+            pAmb.Value = (object?)draft.ActorMemberId ?? DBNull.Value;
             command.ExecuteNonQuery();
         }
 

@@ -283,6 +283,63 @@ public sealed partial class StationDb
                 """;
             events.ExecuteNonQuery();
         }
+
+        // M5.4 站内账户体系：站内身份才是真身份，B 站 mid 降级为可选绑定。
+        // members 加 username/password_hash（SQLite 不能给既有表 ADD COLUMN UNIQUE，唯一性走 COLLATE NOCASE 唯一索引，
+        // NULL 随便多份——素净席位可以没用户名）；四张锚在 mid 上的表各加 *_member_id 列并一次性回填，
+        // 旧 mid 列保留不再写（存量日志与 AI 旧账照旧可读）。
+        EnsureColumn(connection, "members", "username", "TEXT");
+        EnsureColumn(connection, "members", "password_hash", "TEXT");
+        EnsureColumn(connection, "messages", "to_member_id", "INTEGER");
+        EnsureColumn(connection, "dm_messages", "from_member_id", "INTEGER");
+        EnsureColumn(connection, "dm_messages", "to_member_id", "INTEGER");
+        EnsureColumn(connection, "videos", "submitter_member_id", "INTEGER");
+        EnsureColumn(connection, "events", "actor_member_id", "INTEGER");
+        using (var uname = connection.CreateCommand())
+        {
+            // 大小写不敏感判重（NOCASE 对 ASCII 生效，汉字本无大小写）；登录也按这把尺子认人。
+            uname.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS idx_members_username ON members(username COLLATE NOCASE) WHERE username IS NOT NULL;";
+            uname.ExecuteNonQuery();
+        }
+
+        // 回填只跑一次：settings KV 立碑守卫（跑前查、跑后置位），整段一个事务不给半吊子留缝。
+        var migrated = false;
+        using (var probe = connection.CreateCommand())
+        {
+            probe.CommandText = "SELECT 1 FROM settings WHERE key = 'm54-migrated' LIMIT 1;";
+            migrated = probe.ExecuteScalar() is not null;
+        }
+
+        if (!migrated)
+        {
+            using var backfill = connection.BeginTransaction();
+            foreach (var sql in new[]
+            {
+                "UPDATE messages SET to_member_id = (SELECT id FROM members WHERE members.mid = messages.to_mid) WHERE to_member_id IS NULL;",
+                """
+                UPDATE dm_messages
+                SET from_member_id = (SELECT id FROM members WHERE members.mid = dm_messages.from_mid),
+                    to_member_id   = (SELECT id FROM members WHERE members.mid = dm_messages.to_mid)
+                WHERE from_member_id IS NULL OR to_member_id IS NULL;
+                """,
+                "UPDATE videos SET submitter_member_id = (SELECT id FROM members WHERE members.mid = videos.submitter_mid) WHERE submitter_member_id IS NULL AND submitter_mid IS NOT NULL;",
+                // 访客事件 actor_mid=0 不是任何人，不挂身份。
+                "UPDATE events SET actor_member_id = (SELECT id FROM members WHERE members.mid = events.actor_mid) WHERE actor_member_id IS NULL AND actor_mid IS NOT NULL AND actor_mid <> 0;",
+            })
+            {
+                using var statement = connection.CreateCommand();
+                statement.Transaction = backfill;
+                statement.CommandText = sql;
+                statement.ExecuteNonQuery();
+            }
+
+            using var marker = connection.CreateCommand();
+            marker.Transaction = backfill;
+            marker.CommandText = "INSERT OR REPLACE INTO settings (key, value) VALUES ('m54-migrated', $now);";
+            marker.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            marker.ExecuteNonQuery();
+            backfill.Commit();
+        }
     }
 
     private static void EnsureColumn(SqliteConnection connection, string table, string column, string type)
@@ -730,6 +787,16 @@ public sealed partial class StationDb
             """;
         command.Parameters.AddWithValue("$key", key);
         command.Parameters.AddWithValue("$value", value);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>删一条 KV 设定（迁移守卫重跑、开关复位用）。</summary>
+    public void RemoveSetting(string key)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM settings WHERE key = $key;";
+        command.Parameters.AddWithValue("$key", key);
         command.ExecuteNonQuery();
     }
 

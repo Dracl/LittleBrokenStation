@@ -7,7 +7,7 @@ import { ref } from 'vue'
 export const member = ref(null)
 export const loaded = ref(false) // 首次 load 是否落定（区分「还没查」与「查过是访客」）
 export const loginDialogOpen = ref(false)
-export const loginDialogMode = ref('admit') // admit=扫码进站 | bind=往账号池加号
+export const loginDialogMode = ref('admit') // admit=默认登录窗（账密单屏）| bind=往账号池加号（扫码绑外部平台）
 export const unread = ref(0) // 顶栏铃铛角标：信箱未读 + 私信未读的合流数
 export const dmUnread = ref(0) // 私信未读单值（私信页签小红点用）
 

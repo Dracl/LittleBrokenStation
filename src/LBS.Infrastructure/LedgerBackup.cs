@@ -81,11 +81,13 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
         }
 
         var target = Path.Combine(dir, name);
-        using (var source = new SqliteConnection($"Data Source={paths.DatabaseFile};Mode=ReadOnly"))
-        using (var destination = new SqliteConnection($"Data Source={target}"))
+        using (var source = new SqliteConnection($"Data Source={paths.DatabaseFile};Mode=ReadOnly;Default Timeout=10"))
+        using (var destination = new SqliteConnection($"Data Source={target};Default Timeout=10"))
         {
             source.Open();
             destination.Open();
+            // 备份 API 与并发写者抢锁会给 BUSY：Default Timeout 就是 SQLite 的忙等窗口，
+            // 不设的话高负载下间歇性炸雷（测试并行里撞过一回，生产上 worker 常年写着，周期快照同理）。
             source.BackupDatabase(destination);
         }
 

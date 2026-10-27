@@ -271,10 +271,10 @@ public class StationMemberEventTests : IDisposable
     {
         var videoId = _db.AddVideo("https://www.bilibili.com/video/BV1xx411c7mD", "BV1xx411c7mD").VideoId;
         Assert.True(videoId > 0);
-        Assert.Null(_db.GetVideoSubmitter(videoId));
+        Assert.Null(_db.GetVideoSubmitterMember(videoId));
 
-        _db.SetVideoSubmitter(videoId, 4321L);
-        Assert.Equal(4321L, _db.GetVideoSubmitter(videoId));
+        _db.SetVideoSubmitterMember(videoId, 4321L);
+        Assert.Equal(4321L, _db.GetVideoSubmitterMember(videoId));
     }
 
     [Fact]
@@ -282,7 +282,7 @@ public class StationMemberEventTests : IDisposable
     {
         // 占用字节的真源是产物登记的磁盘实数（旧版在这里查了个不存在的列，真机才暴雷）。
         var videoId = _db.AddVideo("https://www.bilibili.com/video/BV1ingest01", "BV1ingest01").VideoId;
-        _db.SetVideoSubmitter(videoId, 5566L);
+        _db.SetVideoSubmitterMember(videoId, 5566L);
 
         var dir = Path.Combine(_tempDir, "UP测试", "入站测试 - 2026");
         Directory.CreateDirectory(dir);
@@ -290,7 +290,7 @@ public class StationMemberEventTests : IDisposable
         _db.RegisterCommentsArtifact(videoId, Path.Combine("UP测试", "入站测试 - 2026", "p1.mp4"));
 
         var stats = Assert.Single(_db.ListMemberIngestStats());
-        Assert.Equal(5566L, stats.SubmitterMid);
+        Assert.Equal(5566L, stats.SubmitterMemberId);
         Assert.Equal(1, stats.VideoCount);
         Assert.Equal(300L, stats.TotalBytes);
     }

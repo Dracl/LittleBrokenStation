@@ -30,13 +30,13 @@ public sealed class EventRecorder
         _logger = logger;
     }
 
-    /// <summary>记一笔（发生瞬间就盖戳，落库交给后台）。任何调用方都不该为它等待。</summary>
+    /// <summary>记一笔（发生瞬间就盖戳，落库交给后台）。任何调用方都不该为它等待。actorMemberId：成员事件的站内身份（M5.4），访客/系统留 null。</summary>
     public void Record(string actorType, long? actorMid, string eventType,
         string? subjectType = null, string? subjectId = null,
-        string? payloadJson = null, string? ip = null)
+        string? payloadJson = null, string? ip = null, long? actorMemberId = null)
     {
         var draft = new EventDraft(actorType, actorMid, eventType, subjectType, subjectId,
-            payloadJson, ip, DateTimeOffset.UtcNow.ToString("O"));
+            payloadJson, ip, DateTimeOffset.UtcNow.ToString("O"), actorMemberId);
         if (!_channel.Writer.TryWrite(draft))
         {
             _logger.LogWarning("事件队列满了，丢掉一笔 {Event}（{Actor}）", eventType, actorType);
@@ -104,7 +104,7 @@ public sealed class EventRecorder
 
     /// <summary>把 payload 对象就地序列化成 JSON 的便捷口（序列化炸了也不拖累业务）。</summary>
     public void RecordWithPayload(string actorType, long? actorMid, string eventType,
-        string? subjectType, string? subjectId, object? payload, string? ip = null)
+        string? subjectType, string? subjectId, object? payload, string? ip = null, long? actorMemberId = null)
     {
         string? json = null;
         if (payload != null)
@@ -119,6 +119,6 @@ public sealed class EventRecorder
             }
         }
 
-        Record(actorType, actorMid, eventType, subjectType, subjectId, json, ip);
+        Record(actorType, actorMid, eventType, subjectType, subjectId, json, ip, actorMemberId);
     }
 }

@@ -153,7 +153,7 @@ app.MapGet("/api/search", (string? q, string? sort, StationDb db, EventRecorder 
     var member = MemberGate.Current(http);
     events.RecordWithPayload(member is null ? EventActors.Guest : EventActors.Member, member?.Mid,
         EventNames.SearchQuery, "query", trimmed, new { hits = hits.Count, sort },
-        http.Connection.RemoteIpAddress?.ToString());
+        http.Connection.RemoteIpAddress?.ToString(), member?.Id);
     return Results.Ok(hits);
 });
 
@@ -242,7 +242,7 @@ app.Use(async (context, next) =>
             context.RequestServices.GetRequiredService<EventRecorder>()
                 .Record(member is null ? EventActors.Guest : EventActors.Member, member?.Mid, EventNames.AdminBlocked, "path",
                     context.Request.Path.Value ?? "",
-                    ip: context.Connection.RemoteIpAddress?.ToString());
+                    ip: context.Connection.RemoteIpAddress?.ToString(), actorMemberId: member?.Id);
             var forbidden = member is not null;
             context.Response.StatusCode = forbidden ? StatusCodes.Status403Forbidden : StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(new
@@ -320,6 +320,7 @@ app.MapPost("/api/gate/release", (AdminGate gate, HttpContext http) =>
 
 // 会员登录面：扫码握手（领码/代轮询/成功发会话）+ 登出 + 我是谁；邀请制在核销那一步把关。
 app.MapMemberEndpoints();
+app.MapMemberAccountEndpoints();
 
 // 站长室的成员管理：席位清单、发邀请码、封禁/解封、撤席位（owner 会话门已在前置 middleware 把关）。
 app.MapAdminMemberEndpoints();
@@ -820,16 +821,26 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
         return Results.Conflict(new { message = "这个视频已经到过了" });
     }
 
-    // 投稿定人：谁投的归谁，下载提交时走他自己的账号池。
+    // 投稿定人：谁投的归谁，下载提交时走他自己的账号池（M5.4：定的是站内席位 id）。
     var submitter = MemberGate.Current(http);
-    if (submitter?.Mid is long submitterMid)
+    // 投稿闸门（M5.4）：素净席位能看能聊不能投稿——得有一个未过期的 B 站号才烧得起别人的登录态；站长拿引擎登录态投稿，不受此闸。
+    if (submitter is not null && !SubmissionGate.Allows(db, submitter))
     {
-        db.SetVideoSubmitter(outcome.VideoId, submitterMid);
+        return Results.Json(new
+        {
+            error = "no-bilibili-account",
+            message = "还没绑 B 站号，先去何处？用户控制室——绑定后就能投稿，看片私信不耽误",
+        }, statusCode: StatusCodes.Status403Forbidden);
+    }
+
+    if (submitter is not null)
+    {
+        db.SetVideoSubmitterMember(outcome.VideoId, submitter.Id);
     }
 
     events.RecordWithPayload(submitter is null ? EventActors.Guest : EventActors.Member, submitter?.Mid,
         EventNames.VideoSubmit, "video", bvid, new { url = request.Url, via = "link" },
-        http.Connection.RemoteIpAddress?.ToString());
+        http.Connection.RemoteIpAddress?.ToString(), submitter?.Id);
 
     await queue.EnqueueAsync(outcome.VideoId, cancellationToken);
     return Results.Ok(new { videoId = outcome.VideoId, message = $"已加入进站队列，{bvid} 正在赶来" });
@@ -861,13 +872,13 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
         }
     }
 
-    var bookmarkSubmitter = MemberGate.Current(http)?.Mid;
+    var bookmarkSeat = MemberGate.Current(http)?.Id;
     var outcome = db.AddVideosBulk(videos);
     foreach (var videoId in outcome.InsertedIds)
     {
-        if (bookmarkSubmitter is long mid)
+        if (bookmarkSeat is long seatId)
         {
-            db.SetVideoSubmitter(videoId, mid);
+            db.SetVideoSubmitterMember(videoId, seatId);
         }
 
         await queue.EnqueueAsync(videoId, cancellationToken);
@@ -879,7 +890,7 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
         events.RecordWithPayload(actor is null ? EventActors.Guest : EventActors.Member, actor?.Mid,
             EventNames.VideoSubmit, "batch", "bookmarks",
             new { via = "bookmarks", added = outcome.Added, duplicated = outcome.Duplicated, ignored },
-            http.Connection.RemoteIpAddress?.ToString());
+            http.Connection.RemoteIpAddress?.ToString(), actor?.Id);
     }
 
     return Results.Ok(new
@@ -908,13 +919,13 @@ app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest reques
         return Results.BadRequest(new { message = outcome.Error });
     }
 
-    var favSubmitter = MemberGate.Current(http)?.Mid;
+    var favSeat = MemberGate.Current(http)?.Id;
     var bulk = db.AddVideosBulk(outcome.Videos);
     foreach (var videoId in bulk.InsertedIds)
     {
-        if (favSubmitter is long mid)
+        if (favSeat is long seatId)
         {
-            db.SetVideoSubmitter(videoId, mid);
+            db.SetVideoSubmitterMember(videoId, seatId);
         }
 
         await queue.EnqueueAsync(videoId, cancellationToken);
@@ -1008,13 +1019,13 @@ app.MapPost("/api/up/import", async (UpImportRequest request,
         return Results.Ok(new { total = 0, added = 0, duplicated = 0, message = "这位 UP 主名下没翻到视频（或空间设了权限）" });
     }
 
-    var upSubmitter = MemberGate.Current(http)?.Mid;
+    var upSeat = MemberGate.Current(http)?.Id;
     var upBulk = db.AddVideosBulk(videos);
     foreach (var videoId in upBulk.InsertedIds)
     {
-        if (upSubmitter is long uploaderMid)
+        if (upSeat is long seatId)
         {
-            db.SetVideoSubmitter(videoId, uploaderMid);
+            db.SetVideoSubmitterMember(videoId, seatId);
         }
 
         await queue.EnqueueAsync(videoId, cancellationToken);

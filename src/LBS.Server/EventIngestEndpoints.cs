@@ -68,7 +68,7 @@ public static class EventIngestEndpoints
                 }
 
                 events.Record(actor, member?.Mid, item.Name,
-                    TrimSubject(item.SubjectType), TrimSubject(item.SubjectId), payload, ip);
+                    TrimSubject(item.SubjectType), TrimSubject(item.SubjectId), payload, ip, member?.Id);
                 accepted++;
             }
 

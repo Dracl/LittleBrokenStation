@@ -30,7 +30,7 @@ public sealed partial class StationDb
     private static readonly string[] MemberColumns =
     [
         "id", "mid", "nickname", "face_url", "note", "status", "role",
-        "created_at_utc", "bound_at_utc", "last_login_at_utc",
+        "created_at_utc", "bound_at_utc", "last_login_at_utc", "username",
     ];
 
     private static StationMember ReadMember(SqliteDataReader reader) => new(
@@ -43,7 +43,8 @@ public sealed partial class StationDb
         reader.IsDBNull(6) ? MemberRoles.Member : reader.GetString(6),
         reader.GetString(7),
         reader.IsDBNull(8) ? null : reader.GetString(8),
-        reader.IsDBNull(9) ? null : reader.GetString(9));
+        reader.IsDBNull(9) ? null : reader.GetString(9),
+        reader.IsDBNull(10) ? null : reader.GetString(10));
 
     /// <summary>站长建空位发邀请码：mid 留白，等朋友扫码绑定后转 active。</summary>
     public (long Id, string Code) CreateMemberInvite(string? note)
@@ -93,6 +94,19 @@ public sealed partial class StationDb
     public StationMember? GetMemberByMid(long mid) => QueryMember("mid", mid);
 
     public StationMember? GetMemberById(long id) => QueryMember("id", id);
+
+    /// <summary>按用户名认人（唯一索引就是 NOCASE 的，登录与判重共用这把尺子）。</summary>
+    public StationMember? GetMemberByUsername(string username)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT {string.Join(", ", MemberColumns)} FROM members WHERE username = $u COLLATE NOCASE;
+            """;
+        command.Parameters.AddWithValue("$u", username);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? ReadMember(reader) : null;
+    }
 
     private StationMember? QueryMember(string column, long value)
     {
@@ -154,6 +168,87 @@ public sealed partial class StationDb
             // mid 唯一键撞车：这个 B 站号已有席位，交上层走重登分支。
             return null;
         }
+    }
+
+    /// <summary>
+    /// 账密注册兑现：空位认主转 active（无 mid，素净席位）——同样带“无主则继位”的同语句自问，
+    /// 与扫码 BindMember 的首扫继位语义对齐。用户名撞 NOCASE 唯一索引返 null 交上层报重名。
+    /// </summary>
+    public StationMember? ActivateMemberByRegistration(long memberId, string username, string passwordHash)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        try
+        {
+            using var connection = Open(_dbPath);
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    UPDATE members
+                    SET username = $username, password_hash = $hash, status = 'active',
+                        invite_code = NULL, bound_at_utc = $now, last_login_at_utc = $now,
+                        role = CASE WHEN NOT EXISTS (SELECT 1 FROM members WHERE role = 'owner')
+                                    THEN 'owner' ELSE 'member' END
+                    WHERE id = $id AND status = 'invited';
+                    """;
+                command.Parameters.AddWithValue("$username", username);
+                command.Parameters.AddWithValue("$hash", passwordHash);
+                command.Parameters.AddWithValue("$now", now);
+                command.Parameters.AddWithValue("$id", memberId);
+                if (command.ExecuteNonQuery() == 0)
+                {
+                    return null;
+                }
+            }
+
+            return GetMemberById(memberId);
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+        {
+            // 用户名撞车（NOCASE 唯一索引）：交上层报「这站名被人占了」。
+            return null;
+        }
+    }
+
+    /// <summary>设/换密码（哈希串由上层用 MemberPasswords 铸好送来；站长代重置也走这张门）。</summary>
+    public void SetMemberPassword(long memberId, string passwordHash)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE members SET password_hash = $h WHERE id = $id;";
+        command.Parameters.AddWithValue("$h", passwordHash);
+        command.Parameters.AddWithValue("$id", memberId);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>验密：没设过密码的席位一律不过（调用方给访客同一句拒词，不泄席位形态）。</summary>
+    public bool VerifyMemberPassword(long memberId, string? candidate)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT password_hash FROM members WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", memberId);
+        var stored = command.ExecuteScalar() as string;
+        return Domain.MemberPasswords.Verify(stored, candidate);
+    }
+
+    public bool HasMemberPassword(long memberId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM members WHERE id = $id AND password_hash IS NOT NULL AND password_hash <> '';";
+        command.Parameters.AddWithValue("$id", memberId);
+        return command.ExecuteScalar() is not null;
+    }
+
+    /// <summary>账密登录刷登录时刻（不碰昵称头像——素净席位的名号自己说了算）。</summary>
+    public void TouchMemberLoginById(long memberId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE members SET last_login_at_utc = $now WHERE id = $id;";
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$id", memberId);
+        command.ExecuteNonQuery();
     }
 
     /// <summary>站上有主了吗？（登录页用来挂“首位扫码者继位站长”的告示）。</summary>
@@ -423,7 +518,7 @@ public sealed partial class StationDb
     // ── 入站统计（站长室成员卡 / 未来 AI） ──────────────────────────────────
 
     /// <summary>
-    /// 某成员的入站概览：投稿数（videos 台账）与占用字节（artifacts 产物的磁盘真数，与 AdminStats 同口径）。
+    /// 某成员的入站概览（M5.4 起锤 submitter_member_id）：投稿数与占用字节（与 AdminStats 同口径）。
     /// 产物登记了但文件已蒸发的那份不计，宁缺毋假。
     /// </summary>
     public IReadOnlyList<MemberIngestStats> ListMemberIngestStats()
@@ -434,7 +529,7 @@ public sealed partial class StationDb
 
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "SELECT submitter_mid, COUNT(*) FROM videos WHERE submitter_mid IS NOT NULL GROUP BY submitter_mid;";
+            command.CommandText = "SELECT submitter_member_id, COUNT(*) FROM videos WHERE submitter_member_id IS NOT NULL GROUP BY submitter_member_id;";
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
@@ -445,17 +540,17 @@ public sealed partial class StationDb
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """
-                SELECT v.submitter_mid, a.rel_path
+                SELECT v.submitter_member_id, a.rel_path
                 FROM artifacts a JOIN videos v ON v.id = a.video_id
-                WHERE v.submitter_mid IS NOT NULL;
+                WHERE v.submitter_member_id IS NOT NULL;
                 """;
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
-                var mid = reader.GetInt64(0);
+                var memberId = reader.GetInt64(0);
                 try
                 {
-                    bytes[mid] = bytes.GetValueOrDefault(mid) + new FileInfo(Path.Combine(_paths.Videos, reader.GetString(1))).Length;
+                    bytes[memberId] = bytes.GetValueOrDefault(memberId) + new FileInfo(Path.Combine(_paths.Videos, reader.GetString(1))).Length;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -466,26 +561,26 @@ public sealed partial class StationDb
 
         return counts
             .Select(kv => new MemberIngestStats(kv.Key, kv.Value, bytes.GetValueOrDefault(kv.Key)))
-            .OrderBy(s => s.SubmitterMid)
+            .OrderBy(s => s.SubmitterMemberId)
             .ToList();
     }
 
-    /// <summary>投稿定人（提交入库那一刻由 worker 落笔）。</summary>
-    public void SetVideoSubmitter(long videoId, long? submitterMid)
+    /// <summary>投稿定人（M5.4：定的是站内席位 id，提交入库那一刻由提交端点落笔）。</summary>
+    public void SetVideoSubmitterMember(long videoId, long? submitterMemberId)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE videos SET submitter_mid = $s WHERE id = $id;";
-        command.Parameters.AddWithValue("$s", (object?)submitterMid ?? DBNull.Value);
+        command.CommandText = "UPDATE videos SET submitter_member_id = $s WHERE id = $id;";
+        command.Parameters.AddWithValue("$s", (object?)submitterMemberId ?? DBNull.Value);
         command.Parameters.AddWithValue("$id", videoId);
         command.ExecuteNonQuery();
     }
 
-    public long? GetVideoSubmitter(long videoId)
+    public long? GetVideoSubmitterMember(long videoId)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT submitter_mid FROM videos WHERE id = $id;";
+        command.CommandText = "SELECT submitter_member_id FROM videos WHERE id = $id;";
         command.Parameters.AddWithValue("$id", videoId);
         using var reader = command.ExecuteReader();
         return reader.Read() && !reader.IsDBNull(0) ? reader.GetInt64(0) : null;

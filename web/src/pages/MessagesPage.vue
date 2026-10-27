@@ -92,7 +92,7 @@ async function markAll() {
 
 // ─── 私信（M5.3）───
 const threads = ref(null) // null=还没拉
-const activePeer = ref(null) // {mid, nickname, faceUrl}
+const activePeer = ref(null) // {memberId, nickname, username, displayName, faceUrl, mid?}（M5.4 私信认席位不认 mid）
 const conversation = ref([])
 const convoLoading = ref(false)
 const directoryOpen = ref(false)
@@ -118,20 +118,20 @@ async function loadThreads() {
   }
 }
 
-async function openThread(peerMid, peerHint = null) {
+async function openThread(peerMemberId, peerHint = null) {
   if (!member.value) return
   convoLoading.value = true
-  activePeer.value = peerHint ? { ...peerHint } : activePeer.value ?? { mid: peerMid }
+  activePeer.value = peerHint ? { ...peerHint } : activePeer.value ?? { memberId: peerMemberId }
   directoryOpen.value = false
   try {
-    const res = await fetch(`/api/dm/thread/${peerMid}`)
+    const res = await fetch(`/api/dm/thread/${peerMemberId}`)
     if (res.ok) {
       const data = await res.json()
-      activePeer.value = data.peer ?? { mid: peerMid }
+      activePeer.value = data.peer ?? { memberId: peerMemberId }
       conversation.value = data.messages ?? []
       // 后端拉取即标读：本地两本账跟着清
-      dmUnread.value = Math.max(0, dmUnread.value - conversation.value.filter((m) => m.toMid === member.value?.mid && !m.readAtUtc).length)
-      const t = threads.value?.find((x) => x.peerMid === peerMid)
+      dmUnread.value = Math.max(0, dmUnread.value - conversation.value.filter((m) => m.toMemberId === member.value?.memberId && !m.readAtUtc).length)
+      const t = threads.value?.find((x) => x.peerMemberId === peerMemberId)
       if (t) t.unread = 0
       await nextTick()
       scrollAnchor.value?.scrollIntoView({ block: 'end' })
@@ -158,11 +158,11 @@ function closeThread() {
 async function refreshConversation(silent = true) {
   if (!activePeer.value || !member.value) return
   try {
-    const res = await fetch(`/api/dm/thread/${activePeer.value.mid}`)
+    const res = await fetch(`/api/dm/thread/${activePeer.value.memberId}`)
     if (res.ok) {
       const data = await res.json()
       conversation.value = data.messages ?? []
-      const t = threads.value?.find((x) => x.peerMid === activePeer.value.mid)
+      const t = threads.value?.find((x) => x.peerMemberId === activePeer.value.memberId)
       if (t) t.unread = 0
       await nextTick()
       scrollAnchor.value?.scrollIntoView({ block: 'end' })
@@ -208,20 +208,20 @@ async function sendDm() {
     const res = await fetch('/api/dm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ toMid: activePeer.value.mid, body }),
+      body: JSON.stringify({ toMemberId: activePeer.value.memberId, body }),
     })
     const data = await res.json().catch(() => null)
     if (res.ok) {
       conversation.value.push({
         id: data?.id ?? Date.now(),
-        fromMid: member.value.mid,
-        toMid: activePeer.value.mid,
+        fromMemberId: member.value.memberId,
+        toMemberId: activePeer.value.memberId,
         body,
         createdAtUtc: new Date().toISOString(),
         readAtUtc: null,
       })
       draft.value = ''
-      const t = threads.value?.find((x) => x.peerMid === activePeer.value.mid)
+      const t = threads.value?.find((x) => x.peerMemberId === activePeer.value.memberId)
       if (t) {
         t.lastBody = body
         t.lastAtUtc = new Date().toISOString()
@@ -261,7 +261,7 @@ function switchTab(tab) {
 onMounted(async () => {
   if (!loaded.value) await loadMember()
   await loadInbox()
-  // 站长室「发私信」跳转：/messages?dm={mid} 预开会话
+  // 站长室「发私信」跳转：/messages?dm={memberId} 预开会话（M5.4 起锁席位 id）
   const dmPeer = typeof route.query.dm === 'string' ? Number(route.query.dm) : null
   if (dmPeer && Number.isFinite(dmPeer)) {
     switchTab('dm')
@@ -273,7 +273,12 @@ onUnmounted(() => {
   stopDmPoll()
 })
 
-const peerMid = computed(() => activePeer.value?.mid ?? null)
+const peerId = computed(() => activePeer.value?.memberId ?? null)
+// 对人的展示名：昵称 → @站名 → 席位号，素净席位不再叫 UID 0
+function peerLabel(p) {
+  if (!p) return ''
+  return p.displayName || p.nickname || p.peerName || p.peerDisplayName || (p.username ? `@${p.username}` : `席位 ${p.memberId ?? p.peerMemberId ?? ''}`)
+}
 </script>
 
 <template>
@@ -288,13 +293,14 @@ const peerMid = computed(() => activePeer.value?.mid ?? null)
           <rect x="3" y="5" width="58" height="38" rx="6" />
           <path d="M5 9 32 29 59 9" stroke-linejoin="round" />
         </svg>
-        <p class="text-sm text-inkSub">信箱和私信是分站成员的待遇——扫码进站，第一封欢迎信就在等你。</p>
+        <p class="text-sm text-inkSub">信箱和私信是分站成员的待遇——进站，第一封欢迎信就在等你。</p>
         <button
           class="mt-5 rounded-full bg-stationPink px-6 py-2 text-sm text-white transition hover:bg-stationPink/90"
           @click="loginDialogMode = 'admit'; loginDialogOpen = true"
         >
-          扫码进站
+          直接登录
         </button>
+        <RouterLink to="/register" class="mt-3 block text-xs text-inkSub underline-offset-4 transition hover:text-stationPink hover:underline">还没有站籍？注册去 →</RouterLink>
       </section>
 
       <template v-else-if="member">
@@ -398,11 +404,11 @@ const peerMid = computed(() => activePeer.value?.mid ?? null)
                 <p class="text-sm text-inkFaint">还没有人来敲门。<br />点「发起私聊」找位分站伙伴聊聊。</p>
               </div>
               <ul v-else>
-                <li v-for="t in threads" :key="t.peerMid">
+                <li v-for="t in threads" :key="t.peerMemberId">
                   <button
                     class="flex w-full items-center gap-2.5 border-b border-lineSoft/60 px-4 py-3 text-left transition hover:bg-stationPink/5"
-                    :class="peerMid === t.peerMid ? 'bg-stationPink/5' : ''"
-                    @click="openThread(t.peerMid, { mid: t.peerMid, nickname: t.peerName, faceUrl: t.peerFace })"
+                    :class="peerId === t.peerMemberId ? 'bg-stationPink/5' : ''"
+                    @click="openThread(t.peerMemberId, { memberId: t.peerMemberId, nickname: t.peerName, faceUrl: t.peerFace })"
                   >
                     <img
                       v-if="t.peerFace"
@@ -418,7 +424,7 @@ const peerMid = computed(() => activePeer.value?.mid ?? null)
                       </svg>
                     </span>
                     <span class="min-w-0 flex-1">
-                      <span class="block truncate text-[13px] font-medium text-inkMain">{{ t.peerName || `UID ${t.peerMid}` }}</span>
+                      <span class="block truncate text-[13px] font-medium text-inkMain">{{ peerLabel(t) }}</span>
                       <span class="block truncate text-[12px] text-inkSub">{{ t.lastBody }}</span>
                     </span>
                     <span class="flex shrink-0 flex-col items-end gap-1">
@@ -438,8 +444,12 @@ const peerMid = computed(() => activePeer.value?.mid ?? null)
               <template v-if="activePeer">
                 <div class="flex items-center justify-between border-b border-lineSoft px-4 py-3">
                   <span class="flex items-center gap-2 text-[13px] font-medium text-inkMain">
-                    {{ activePeer.nickname || `UID ${activePeer.mid}` }}
-                    <span class="text-[11px] font-normal text-inkFaint">UID {{ activePeer.mid }}</span>
+                    {{ peerLabel(activePeer) }}
+                    <span class="text-[11px] font-normal text-inkFaint">
+                      <template v-if="activePeer.mid">UID {{ activePeer.mid }}</template>
+                      <template v-else-if="activePeer.username">@{{ activePeer.username }}</template>
+                      <template v-else>席位 #{{ activePeer.memberId }}</template>
+                    </span>
                   </span>
                   <button class="text-xs text-inkFaint transition hover:text-stationPink" @click="closeThread">收起</button>
                 </div>
@@ -451,11 +461,11 @@ const peerMid = computed(() => activePeer.value?.mid ?? null)
                     v-for="m in conversation"
                     :key="m.id"
                     class="flex"
-                    :class="m.fromMid === member.mid ? 'justify-end' : 'justify-start'"
+                    :class="m.fromMemberId === member.memberId ? 'justify-end' : 'justify-start'"
                   >
                     <span
                       class="max-w-[72%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed"
-                      :class="m.fromMid === member.mid
+                      :class="m.fromMemberId === member.memberId
                         ? 'rounded-br-md bg-stationPink text-white'
                         : 'rounded-bl-md bg-lineSoft text-inkMain'"
                     >{{ m.body }}</span>
@@ -503,15 +513,15 @@ const peerMid = computed(() => activePeer.value?.mid ?? null)
               <p v-if="directory === null" class="px-4 py-8 text-center text-sm text-inkFaint">在点名…</p>
               <div v-else-if="!directory.length" class="px-4 py-8 text-center text-sm text-inkFaint">站上没别人可聊。</div>
               <ul v-else class="max-h-[320px] overflow-y-auto p-1.5">
-                <li v-for="p in directory" :key="p.mid">
+                <li v-for="p in directory" :key="p.memberId">
                   <button
                     class="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-stationPink/10"
-                    @click="openThread(p.mid, { mid: p.mid, nickname: p.nickname, faceUrl: p.faceUrl })"
+                    @click="openThread(p.memberId, { memberId: p.memberId, nickname: p.nickname, username: p.username, displayName: p.displayName, faceUrl: p.faceUrl })"
                   >
                     <img
                       v-if="p.faceUrl"
                       :src="p.faceUrl"
-                      :alt="p.nickname || ''"
+                      :alt="p.nickname || p.username || ''"
                       referrerpolicy="no-referrer"
                       class="h-9 w-9 shrink-0 rounded-full object-cover"
                     />
@@ -522,8 +532,12 @@ const peerMid = computed(() => activePeer.value?.mid ?? null)
                       </svg>
                     </span>
                     <span class="min-w-0 flex-1">
-                      <span class="block truncate text-[13px] text-inkMain">{{ p.nickname || `UID ${p.mid}` }}</span>
-                      <span class="block text-[11px] text-inkFaint">UID {{ p.mid }}</span>
+                      <span class="block truncate text-[13px] text-inkMain">{{ peerLabel(p) }}</span>
+                      <span class="block text-[11px] text-inkFaint">
+                        <template v-if="p.mid">UID {{ p.mid }}</template>
+                        <template v-else-if="p.username">@{{ p.username }}</template>
+                        <template v-else>站内席位</template>
+                      </span>
                     </span>
                     <span class="shrink-0 rounded-full bg-stationPink/10 px-2.5 py-1 text-[11px] text-stationPink">开聊</span>
                   </button>

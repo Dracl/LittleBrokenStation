@@ -6,8 +6,8 @@ using LBS.Server;
 namespace LBS.Tests;
 
 /// <summary>
-/// M5.2 站内信箱：落库读写（倒序/limit/未读统计/标读）、越席防护、公告只发 active，
-/// 以及三封系统信的钩子——欢迎信钉在 AdmitMember 首扫建档处（真路径），
+/// M5.2 站内信箱（M5.4 起挂站内席位 id）：落库读写（倒序/limit/未读统计/标读）、越席防护、
+/// 公告只发 active，以及三封系统信的钩子——欢迎信钉在 AdmitMember 首扫建档处（真路径），
 /// 归档/失败回执直接驱动送信员 MemberMail（worker 侧调用点是同款一行，编译期已验）。
 /// </summary>
 public sealed class StationMessageTests : IDisposable
@@ -40,24 +40,20 @@ public sealed class StationMessageTests : IDisposable
 
     private static BilibiliIdentity Identity(long mid, string name = "小张") => new(mid, name, "https://face/y.jpg");
 
-    private long SeedVideo(string bvid, string? title = null)
+    /// <summary>走真收编路径造 active 席位，返回站内席位 id（M5.4 后信箱的收件钥匙）。</summary>
+    private long AdmitSeat(long mid, string name = "小张")
     {
-        var outcome = _db.AddVideosBulk(new[] { new NewVideo($"https://www.bilibili.com/video/{bvid}", bvid, title) });
-        return Assert.Single(outcome.InsertedIds);
-    }
-
-    private long AdmitActive(long mid, string name = "小张")
-    {
-        // 无主站首扫继位、后继者持码进站：统一走真收编路径造 active 席位。
         if (!_db.HasOwner())
         {
             MemberEndpoints.AdmitMember(_db, _gate, Identity(mid, name), invite: null, "SESSDATA=a");
-            return mid;
+        }
+        else
+        {
+            var (_, code) = _db.CreateMemberInvite(null);
+            MemberEndpoints.AdmitMember(_db, _gate, Identity(mid, name), code, "SESSDATA=a");
         }
 
-        var (_, code) = _db.CreateMemberInvite(null);
-        MemberEndpoints.AdmitMember(_db, _gate, Identity(mid, name), code, "SESSDATA=a");
-        return mid;
+        return _db.GetMemberByMid(mid)!.Id;
     }
 
     [Fact]
@@ -115,43 +111,42 @@ public sealed class StationMessageTests : IDisposable
     [Fact]
     public void Broadcast_ReachesOnlyActiveSeats()
     {
-        AdmitActive(3001, "甲");
-        AdmitActive(3002, "乙");
-        var bannedSeat = _db.GetMemberByMid(AdmitActive(3003, "丙"))!;
-        _db.SetMemberStatus(bannedSeat.Id, MemberStatus.Banned.ToString());
-        _db.CreateMemberInvite(null); // 待邀空席：无 mid，不该收到
+        var seatA = AdmitSeat(3001, "甲");
+        var seatB = AdmitSeat(3002, "乙");
+        var seatC = AdmitSeat(3003, "丙");
+        _db.SetMemberStatus(seatC, MemberStatus.Banned);
+        _db.CreateMemberInvite(null); // 待邀空席：不该收到
 
         var sent = _db.BroadcastToActive("announce", "全站通知", "今晚守站值班");
 
         Assert.Equal(2, sent);
-        Assert.Equal("全站通知", _db.ListMessages(3001)[0].Title);
-        Assert.Equal("announce", _db.ListMessages(3002)[0].Kind);
+        Assert.Equal("全站通知", _db.ListMessages(seatA)[0].Title);
+        Assert.Equal("announce", _db.ListMessages(seatB)[0].Kind);
         // 3003 进站时有欢迎信，但封禁后不该收到公告
-        Assert.DoesNotContain(_db.ListMessages(3003), m => m.Kind == "announce");
+        Assert.DoesNotContain(_db.ListMessages(seatC), m => m.Kind == "announce");
     }
 
     [Fact]
     public void Welcome_SentOnce_OnFirstAdmit_WithStationName()
     {
         _db.SetSetting("station-name", "破烂小站");
-        AdmitActive(4001, "首客");
+        var seat = AdmitSeat(4001, "首客");
 
-        var inbox = _db.ListMessages(4001);
-        var welcome = Assert.Single(inbox, m => m.Kind == "welcome");
+        var welcome = Assert.Single(_db.ListMessages(seat), m => m.Kind == "welcome");
         Assert.Equal("欢迎来到小破分站", welcome.Title);
         Assert.Contains("破烂小站", welcome.Body);
         Assert.Equal("/me", welcome.Link);
 
         // 重登（老席位再扫码）不重发欢迎信。
         MemberEndpoints.AdmitMember(_db, _gate, Identity(4001, "首客"), null, "SESSDATA=b");
-        Assert.Single(_db.ListMessages(4001), m => m.Kind == "welcome");
+        Assert.Single(_db.ListMessages(seat), m => m.Kind == "welcome");
     }
 
     [Fact]
     public void Welcome_FallsBackToDefaultName_WhenSettingBlank()
     {
-        AdmitActive(4002, "无名客");
-        Assert.Contains("小破分站", Assert.Single(_db.ListMessages(4002), m => m.Kind == "welcome").Body);
+        var seat = AdmitSeat(4002, "无名客");
+        Assert.Contains("小破分站", Assert.Single(_db.ListMessages(seat), m => m.Kind == "welcome").Body);
     }
 
     [Fact]
@@ -162,7 +157,7 @@ public sealed class StationMessageTests : IDisposable
         Assert.Empty(_db.ListMessages(5001)); // 无归属行静默跳过
 
         var videoId = SeedVideo("BV1me", "我的投稿");
-        _db.SetVideoSubmitter(videoId, 5001);
+        _db.SetVideoSubmitterMember(videoId, 5001);
         MemberMail.NotifyVideoArrived(_db, null, videoId);
 
         var receipt = Assert.Single(_db.ListMessages(5001));
@@ -176,7 +171,7 @@ public sealed class StationMessageTests : IDisposable
     public void Arrival_Receipt_FallsBackToBvid_WhenTitleMissing()
     {
         var videoId = SeedVideo("BVnoname");
-        _db.SetVideoSubmitter(videoId, 5002);
+        _db.SetVideoSubmitterMember(videoId, 5002);
         MemberMail.NotifyVideoArrived(_db, null, videoId);
         Assert.Contains("BVnoname", Assert.Single(_db.ListMessages(5002)).Body);
     }
@@ -185,7 +180,7 @@ public sealed class StationMessageTests : IDisposable
     public void Failure_Receipt_CarriesFirstLineOfError()
     {
         var videoId = SeedVideo("BVfail", "翻车库");
-        _db.SetVideoSubmitter(videoId, 5003);
+        _db.SetVideoSubmitterMember(videoId, 5003);
         MemberMail.NotifyVideoFailed(_db, null, videoId, "解析挂了：链接失效\n堆栈第2行\n堆栈第3行");
 
         var receipt = Assert.Single(_db.ListMessages(5003));
@@ -210,7 +205,13 @@ public sealed class StationMessageTests : IDisposable
         // 送信员对坏对象（不存在的视频 id）也必须安静——热路径不许把异常漏给 worker。
         MemberMail.NotifyVideoArrived(_db, null, 999999);
         MemberMail.NotifyVideoFailed(_db, null, 999999, "查无此行");
-        MemberMail.NotifyWelcome(_db, null, 7777); // mid 没有席位也照落（信箱不验收件人存在性）
+        MemberMail.NotifyWelcome(_db, null, 7777); // 席位不存在也照落（信箱不验收件人存在性）
         Assert.Single(_db.ListMessages(7777));
+    }
+
+    private long SeedVideo(string bvid, string? title = null)
+    {
+        var outcome = _db.AddVideosBulk(new[] { new NewVideo($"https://www.bilibili.com/video/{bvid}", bvid, title) });
+        return Assert.Single(outcome.InsertedIds);
     }
 }

@@ -16,15 +16,15 @@ public static class MemberMessageEndpoints
     {
         app.MapGet("/api/member/messages", (string? unreadOnly, int? limit, StationDb db, HttpContext http) =>
         {
-            // Mid 为 null 的是还没绑定的待邀席位，没有信箱可言，一律按未登录打发。
-            if (MemberGate.Current(http)?.Mid is not long mid)
+            // M5.4：信箱挂在席位 id 上——素净席位无 mid 也有自己的信箱。
+            if (MemberGate.Current(http) is not { } me)
             {
                 return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
             var wantUnread = string.Equals(unreadOnly, "true", StringComparison.OrdinalIgnoreCase)
                              || unreadOnly == "1";
-            var items = db.ListMessages(mid, limit ?? 50, wantUnread)
+            var items = db.ListMessages(me.Id, limit ?? 50, wantUnread)
                 .Select(m => new
                 {
                     id = m.Id,
@@ -37,29 +37,29 @@ public static class MemberMessageEndpoints
                     createdAtUtc = m.CreatedAtUtc,
                     readAtUtc = m.ReadAtUtc,
                 });
-            return Results.Ok(new { items, unread = db.CountUnread(mid) });
+            return Results.Ok(new { items, unread = db.CountUnread(me.Id) });
         });
 
         app.MapPost("/api/member/messages/{id:long}/read", (long id, StationDb db, HttpContext http) =>
         {
-            if (MemberGate.Current(http)?.Mid is not long mid)
+            if (MemberGate.Current(http) is not { } me)
             {
                 return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            // MarkRead 自带 to_mid 条件：递别人的信号等于空手而归，且幂等不报错。
-            db.MarkRead(id, mid);
+            // MarkRead 自带 to_member_id 条件：递别人的信号等于空手而归，且幂等不报错。
+            db.MarkRead(id, me.Id);
             return Results.Ok(new { message = "已阅" });
         });
 
         app.MapPost("/api/member/messages/read-all", (StationDb db, HttpContext http) =>
         {
-            if (MemberGate.Current(http)?.Mid is not long mid)
+            if (MemberGate.Current(http) is not { } me)
             {
                 return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            var read = db.MarkAllRead(mid);
+            var read = db.MarkAllRead(me.Id);
             return Results.Ok(new { message = $"已阅 {read} 封", read });
         });
 
@@ -78,7 +78,7 @@ public static class MemberMessageEndpoints
             var sent = db.BroadcastToActive(MemberMail.KindAnnounce, title, body);
             events.RecordWithPayload(EventActors.Admin, MemberGate.Current(http)?.Mid, EventNames.AdminAnnounce,
                 "message", "broadcast", new { title, sent },
-                ip: http.Connection.RemoteIpAddress?.ToString());
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: MemberGate.Current(http)?.Id);
             return Results.Ok(new { sent, message = $"已送达 {sent} 席" });
         });
     }

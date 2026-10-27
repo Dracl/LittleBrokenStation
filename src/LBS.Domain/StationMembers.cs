@@ -14,7 +14,9 @@ public sealed record StationMember(
     string Role,
     string CreatedAtUtc,
     string? BoundAtUtc,
-    string? LastLoginAtUtc);
+    string? LastLoginAtUtc,
+    // M5.4：站内账户才是真身份——无 B 站号的素净席位也有名有姓。
+    string? Username = null);
 
 /// <summary>成员账号池一行（不含 cookie；cookie 只走凭证形内部取用）。</summary>
 public sealed record MemberAccount(
@@ -32,7 +34,7 @@ public sealed record MemberAccount(
 public sealed record MemberAccountCredential(long Id, long MemberId, long AccountMid, string Cookie);
 
 /// <summary>某成员的入站概览（站长室与未来 AI 都吃这口）。</summary>
-public sealed record MemberIngestStats(long SubmitterMid, int VideoCount, long TotalBytes);
+public sealed record MemberIngestStats(long SubmitterMemberId, int VideoCount, long TotalBytes);
 
 /// <summary>成员状态三字经。</summary>
 public static class MemberStatus

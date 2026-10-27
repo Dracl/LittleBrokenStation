@@ -237,8 +237,9 @@ public sealed class DownloadWorker(
 
             // 投稿人自己的号优先：成员池有活号就用他的 cookie 跑提交链（playurl/视频信息全挂他的登录态），
             // 出池（没号/全失效）回落站级主备槽；归属台账仍按主/副轮转，不动存量机制。
-            var memberCred = db.GetVideoSubmitter(videoId) is long submitterMid
-                ? db.PickMemberAccountForDownload(submitterMid)
+            // M5.4：取的是站内席位 id（旧代码这里误把 submitter_mid 当 memberId 传，换列顺手正了）。
+            var memberCred = db.GetVideoSubmitterMember(videoId) is long submitterMemberId
+                ? db.PickMemberAccountForDownload(submitterMemberId)
                 : null;
             var result = memberCred is null
                 ? await router.RunAsAsync(owner, () => submission.SubmitAsync(candidate.Url, options, stoppingToken))

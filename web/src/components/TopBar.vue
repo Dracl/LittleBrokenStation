@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginDialog from './LoginDialog.vue'
 import CrownBadge from './CrownBadge.vue'
@@ -55,6 +55,19 @@ async function doLogout() {
 
 function onVisible() {
   if (document.visibilityState === 'visible') refreshUnread()
+}
+
+// M5.4 素净席位：没扫过 B 站就没有昵称，落 @站名；mid 也不再人人都有
+const displayName = computed(() => {
+  const m = member.value
+  if (!m) return ''
+  return m.nickname || (m.username ? `@${m.username}` : '旅人')
+})
+
+function identityLine(m) {
+  const role = m.role === 'owner' ? '站长' : '分站成员'
+  if (m.mid) return `${role} · UID ${m.mid}`
+  return `${role} · ${m.username ? `@${m.username}` : '素净席位'}`
 }
 
 let unreadTimer = null
@@ -141,9 +154,18 @@ function goMessages() {
 
         <!-- 总门小头像：不分访客/成员都是这个圆——访客点开扫码窗，成员点开下拉菜单 -->
         <div class="relative">
+          <!-- 访客多一个入口：不想扫码就注册个席位 -->
+          <RouterLink
+            v-if="!member"
+            to="/register"
+            class="hidden shrink-0 rounded-full border border-lineSoft px-3 py-1 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink sm:block"
+            title="用站名密码注册个席位"
+          >
+            注册
+          </RouterLink>
           <button
             class="block h-8 w-8 shrink-0 overflow-visible rounded-full transition"
-            :title="member ? (member.role === 'owner' ? `站长「${member.nickname}」` : `「${member.nickname}」`) : '扫码进站'"
+            :title="member ? (member.role === 'owner' ? `站长「${displayName}」` : `「${displayName}」`) : '登录 / 注册'"
             @click="onAvatarClick"
           >
             <span class="relative block h-full w-full">
@@ -194,8 +216,8 @@ function goMessages() {
                   />
                 </span>
                 <span class="min-w-0">
-                  <span class="block truncate text-[13px] font-medium text-inkMain">{{ member.nickname }}</span>
-                  <span class="block text-[11px] text-inkFaint">{{ member.role === 'owner' ? '站长' : '分站成员' }} · UID {{ member.mid }}</span>
+                  <span class="block truncate text-[13px] font-medium text-inkMain">{{ displayName }}</span>
+                  <span class="block text-[11px] text-inkFaint">{{ identityLine(member) }}</span>
                 </span>
               </div>
 

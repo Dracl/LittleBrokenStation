@@ -20,7 +20,7 @@ public static class AdminMemberEndpoints
     {
         app.MapGet("/api/admin/members", (StationDb db) =>
         {
-            var statsByMid = db.ListMemberIngestStats().ToDictionary(s => s.SubmitterMid);
+            var statsByMember = db.ListMemberIngestStats().ToDictionary(s => s.SubmitterMemberId);
             var accountsByMember = db.ListMemberAccounts().GroupBy(a => a.MemberId)
                 .ToDictionary(g => g.Key, g => g.ToList());
             var ownerMid = db.ListMembers().SingleOrDefault(m => m.Role == MemberRoles.Owner)?.Mid;
@@ -29,6 +29,7 @@ public static class AdminMemberEndpoints
             {
                 id = m.Id,
                 mid = m.Mid,
+                username = m.Username,
                 nickname = m.Nickname,
                 faceUrl = m.FaceUrl,
                 note = m.Note,
@@ -48,8 +49,8 @@ public static class AdminMemberEndpoints
                         expired = a.Expired,
                         lastSeenUtc = a.LastSeenUtc,
                     }),
-                submitted = m.Mid is long mid ? statsByMid.GetValueOrDefault(mid)?.VideoCount ?? 0 : 0,
-                bytes = m.Mid is long mid2 ? statsByMid.GetValueOrDefault(mid2)?.TotalBytes ?? 0 : 0,
+                submitted = statsByMember.GetValueOrDefault(m.Id)?.VideoCount ?? 0,
+                bytes = statsByMember.GetValueOrDefault(m.Id)?.TotalBytes ?? 0,
             }));
         });
 
@@ -68,7 +69,8 @@ public static class AdminMemberEndpoints
         {
             var (id, code) = db.CreateMemberInvite(string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim());
             events.RecordWithPayload(EventActors.Admin, OwnerMid(db), EventNames.MemberInvite, "member", id.ToString(),
-                new { note = request.Note }, ip: http.Connection.RemoteIpAddress?.ToString());
+                new { note = request.Note }, ip: http.Connection.RemoteIpAddress?.ToString(),
+                actorMemberId: MemberGate.Current(http)?.Id);
             return Results.Ok(new { id, code, message = $"邀请码 {code} 已生成，一次性、7 天内有效" });
         });
 
@@ -97,7 +99,7 @@ public static class AdminMemberEndpoints
             db.DeleteMember(request.Id);
             events.RecordWithPayload(EventActors.Admin, OwnerMid(db), EventNames.MemberDelete, "member",
                 request.Id.ToString(), new { mid = member.Mid, nickname = member.Nickname },
-                ip: http.Connection.RemoteIpAddress?.ToString());
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: OwnerMemberId(db));
             return Results.Ok(new { message = $"「{member.Nickname ?? "该席位"}」已从分站除名（历史事件与投稿归属保留）" });
         });
 
@@ -107,7 +109,7 @@ public static class AdminMemberEndpoints
         {
             db.DeleteMemberAccount(request.Id);
             events.Record(EventActors.Admin, OwnerMid(db), EventNames.AdminAction, "account", request.Id.ToString(),
-                "{\"action\":\"delete\"}", http.Connection.RemoteIpAddress?.ToString());
+                "{\"action\":\"delete\"}", http.Connection.RemoteIpAddress?.ToString(), OwnerMemberId(db));
             return Results.Ok(new { message = "账号已从池中移除" });
         });
     }
@@ -129,10 +131,13 @@ public static class AdminMemberEndpoints
         events.RecordWithPayload(EventActors.Admin, OwnerMid(db),
             banned ? EventNames.MemberBan : EventNames.MemberUnban, "member", id.ToString(),
             new { mid = member.Mid, nickname = member.Nickname },
-            ip: http.Connection.RemoteIpAddress?.ToString());
+            ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: OwnerMemberId(db));
         return Results.Ok(new { message = banned ? "已封禁：即刻请出分站，再扫码也不收" : "已解禁：欢迎回来" });
     }
 
     private static long? OwnerMid(StationDb db)
         => db.ListMembers().SingleOrDefault(m => m.Role == MemberRoles.Owner)?.Mid;
+
+    private static long? OwnerMemberId(StationDb db)
+        => db.ListMembers().SingleOrDefault(m => m.Role == MemberRoles.Owner)?.Id;
 }

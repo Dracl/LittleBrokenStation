@@ -67,7 +67,7 @@ public static class DynamicEndpoints
             var added = db.AddDynamicTarget(mid.Value);
             events.RecordWithPayload(EventActors.Admin, MemberGate.Current(http)?.Mid, EventNames.AdminAction,
                 "dynamics", mid.Value.ToString(), new { op = "addTarget", added },
-                ip: http.Connection.RemoteIpAddress?.ToString());
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: MemberGate.Current(http)?.Id);
             return Results.Ok(new { added, message = added ? $"盯上 UP {mid.Value}，下轮巡视见" : "这位早就在盯了" });
         });
 
@@ -77,7 +77,7 @@ public static class DynamicEndpoints
             var removed = db.RemoveDynamicTarget(mid);
             events.RecordWithPayload(EventActors.Admin, MemberGate.Current(http)?.Mid, EventNames.AdminAction,
                 "dynamics", mid.ToString(), new { op = "removeTarget", removed },
-                ip: http.Connection.RemoteIpAddress?.ToString());
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: MemberGate.Current(http)?.Id);
             return Results.Ok(new { removed, message = removed > 0 ? "撤了这尊佛，已抓的动态留在橱窗" : "名单里没这号人" });
         });
 

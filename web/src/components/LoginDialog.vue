@@ -8,14 +8,21 @@ import qrcodeScriptUrl from '../libs/qrcode.min.js?url'
 
 const props = defineProps({
   // 本实例只认领「全局模式与自己一致」的那次唤起：
-  // 同页可能挂两个实例（顶栏 admit + 控制室 bind），各亮各的，不叠罗汉。
+  // 同页可能挂两个实例（顶栏默认登录窗 + 控制室 bind），各亮各的，不叠罗汉。
+  // 登录与平台绑定彻底分离（M5.4 修正）：admit 实例 = 账密登录单屏，不再亮扫码；
+  // 扫码链路只留给 bind 实例（/me 绑外部平台号），扫码代码整段留在文件里。
   instanceMode: { type: String, default: 'admit' },
 })
 const emit = defineEmits(['bind-success'])
 
-const visible = computed(() => loginDialogOpen.value && loginDialogMode.value === props.instanceMode)
+const visible = computed(() =>
+  loginDialogOpen.value
+  && (props.instanceMode === 'admit'
+    ? loginDialogMode.value === 'admit' || loginDialogMode.value === 'login'
+    : loginDialogMode.value === props.instanceMode),
+)
 
-const activeMode = ref('admit')
+const activeMode = ref('login') // login=账密登录（默认实例唯一形态）| bind=往账号池加号；admit 扫码形态已退役，相关代码休眠备用
 const hasOwner = ref(true)
 const invite = ref('')
 const step = ref('idle') // idle | loading | qr | expired | done
@@ -23,6 +30,9 @@ const pollPhase = ref('waiting') // waiting | scanned（success 直接进 done �
 const notice = ref(null) // { kind, text }
 const qrBox = ref(null)
 const qrKey = ref('')
+// 账密登录表单
+const loginForm = ref({ username: '', password: '' })
+const loggingIn = ref(false)
 let pollTimer = null
 let closeTimer = null
 
@@ -82,6 +92,17 @@ function onKeydown(event) {
   if (event.key === 'Escape') close()
 }
 
+const modeTitle = computed(() => ({
+  bind: '绑定 B 站账号',
+  login: '登录分站',
+  admit: '扫码进站',
+}[activeMode.value]))
+const modeSubtitle = computed(() => ({
+  bind: '再绑一个号进账号池，分站替两号轮流出力',
+  login: '分站自己的门钥匙；外部平台号进站后在控制室绑定',
+  admit: '手机 B 站扫一扫，分站就认识你了',
+}[activeMode.value]))
+
 function close() {
   loginDialogOpen.value = false
 }
@@ -92,13 +113,14 @@ function reset() {
     clearTimeout(closeTimer)
     closeTimer = null
   }
-  activeMode.value = loginDialogMode.value
+  activeMode.value = props.instanceMode === 'bind' ? 'bind' : 'login'
   invite.value = ''
   step.value = 'idle'
   pollPhase.value = 'waiting'
   notice.value = null
   qrKey.value = ''
-  loadStatus()
+  loginForm.value = { username: '', password: '' }
+  loggingIn.value = false
 }
 
 watch(visible, (open) => {
@@ -197,6 +219,42 @@ onUnmounted(() => {
   if (closeTimer) clearTimeout(closeTimer)
   window.removeEventListener('keydown', onKeydown)
 })
+
+// 账密登录：后端 401/403/429 的 message 原样递到脸上，不自编拒词
+async function submitPasswordLogin() {
+  if (loggingIn.value) return
+  const username = loginForm.value.username.trim()
+  const password = loginForm.value.password
+  if (!username || !password) {
+    notice.value = { kind: 'err', text: '站名和密码都得填上' }
+    return
+  }
+  loggingIn.value = true
+  notice.value = null
+  try {
+    const res = await fetch('/api/member/login/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) {
+      notice.value = { kind: 'err', text: data?.message ?? '分站后端没有应答' }
+      return
+    }
+    notice.value = { kind: 'ok', text: data?.message ?? `欢迎回来，${username}` }
+    await loadMember()
+    close()
+  } catch {
+    notice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    loggingIn.value = false
+  }
+}
+
+function goRegister() {
+  close()
+}
 </script>
 
 <template>
@@ -210,18 +268,20 @@ onUnmounted(() => {
         <div class="flex items-center justify-between bg-gradient-to-r from-stationPink/10 via-stationPink/5 to-transparent px-6 pb-4 pt-5">
           <div class="flex items-center gap-3">
             <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-stationPink/10">
-              <svg viewBox="0 0 24 24" class="h-5 w-5 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8">
+              <svg v-if="activeMode === 'bind'" viewBox="0 0 24 24" class="h-5 w-5 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8">
                 <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
                 <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
                 <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
                 <path d="M13.5 13.5h3v3h-3zM18.5 18.5h2v2h-2z" fill="currentColor" stroke="none" />
               </svg>
+              <svg v-else viewBox="0 0 24 24" class="h-5 w-5 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8">
+                <circle cx="8.5" cy="8.5" r="4" />
+                <path d="M11.5 11.5 20 20M16.5 16.5l2-2M13.5 13.5l2.5-2.5" stroke-linecap="round" />
+              </svg>
             </span>
             <div>
-              <h3 class="text-[17px] font-semibold text-inkMain">{{ activeMode === 'bind' ? '绑定 B 站账号' : '扫码进站' }}</h3>
-              <p class="mt-0.5 text-xs text-inkFaint">
-                {{ activeMode === 'bind' ? '再绑一个号进账号池，分站替两号轮流出力' : '手机 B 站扫一扫，分站就认识你了' }}
-              </p>
+              <h3 class="text-[17px] font-semibold text-inkMain">{{ modeTitle }}</h3>
+              <p class="mt-0.5 text-xs text-inkFaint">{{ modeSubtitle }}</p>
             </div>
           </div>
           <button
@@ -235,7 +295,35 @@ onUnmounted(() => {
           </button>
         </div>
 
+        <!-- 默认态 = 账密登录单屏（登录与平台绑定分离）；扫码流程只在 bind 实例里渲染 -->
         <div class="px-6 py-5">
+          <template v-if="activeMode === 'login'">
+            <input
+              v-model="loginForm.username"
+              type="text"
+              autocomplete="username"
+              placeholder="站名（汉字/字母/数字/下划线）"
+              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+              :disabled="loggingIn"
+              @keyup.enter="submitPasswordLogin"
+            />
+            <input
+              v-model="loginForm.password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="密码"
+              class="mt-3 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+              :disabled="loggingIn"
+              @keyup.enter="submitPasswordLogin"
+            />
+            <p class="mt-3 text-xs leading-5">
+              还没有站籍？
+              <RouterLink to="/register" class="font-medium text-stationPink transition hover:underline" @click="goRegister">注册去 →</RouterLink>
+            </p>
+            <p class="mt-1 text-[11px] leading-4 text-inkFaint">忘记密码？找站长代重置；扫码绑外部平台号在控制室的「外部账号绑定」卡里。</p>
+          </template>
+
+          <template v-else>
           <p
             v-if="activeMode === 'admit' && hasOwner === false"
             class="mb-4 rounded-xl border border-amber-300/70 bg-amber-50 px-3.5 py-2.5 text-xs font-medium leading-5 text-amber-700"
@@ -270,6 +358,7 @@ onUnmounted(() => {
           <div v-else-if="step === 'expired'" class="flex flex-col items-center gap-2 py-3">
             <p class="text-sm text-inkSub">这张码作废了，右下角换一张再来。</p>
           </div>
+          </template>
 
           <p
             v-if="notice"
@@ -284,17 +373,28 @@ onUnmounted(() => {
           </p>
         </div>
 
-        <div class="flex justify-end gap-2 border-t border-lineSoft/70 bg-[#fafbfc] px-6 py-4">
-          <button class="rounded-lg px-4 py-2 text-sm text-inkSub transition hover:bg-black/5 hover:text-inkMain" @click="close">
-            {{ activeMode === 'bind' ? '先不绑了' : '先不进了' }}
-          </button>
-          <button
-            class="rounded-lg bg-gradient-to-r from-stationPink to-[#f994b6] px-5 py-2 text-sm font-medium text-white shadow-md shadow-stationPink/30 transition hover:-translate-y-px hover:shadow-lg hover:shadow-stationPink/40 active:translate-y-0 disabled:translate-y-0 disabled:opacity-50 disabled:shadow-none"
-            :disabled="step === 'loading' || step === 'qr' || step === 'done'"
-            @click="getQr"
-          >
-            {{ step === 'loading' ? '出码中…' : step === 'expired' ? '换一张二维码' : '获取二维码' }}
-          </button>
+        <div class="flex items-center justify-end gap-2 border-t border-lineSoft/70 bg-[#fafbfc] px-6 py-4">
+          <div class="flex gap-2">
+            <button class="rounded-lg px-4 py-2 text-sm text-inkSub transition hover:bg-black/5 hover:text-inkMain" @click="close">
+              {{ activeMode === 'bind' ? '先不绑了' : '先不登了' }}
+            </button>
+            <button
+              v-if="activeMode === 'login'"
+              class="rounded-lg bg-gradient-to-r from-stationPink to-[#f994b6] px-5 py-2 text-sm font-medium text-white shadow-md shadow-stationPink/30 transition hover:-translate-y-px hover:shadow-lg hover:shadow-stationPink/40 active:translate-y-0 disabled:translate-y-0 disabled:opacity-50 disabled:shadow-none"
+              :disabled="loggingIn"
+              @click="submitPasswordLogin"
+            >
+              {{ loggingIn ? '验钥中…' : '登录' }}
+            </button>
+            <button
+              v-else
+              class="rounded-lg bg-gradient-to-r from-stationPink to-[#f994b6] px-5 py-2 text-sm font-medium text-white shadow-md shadow-stationPink/30 transition hover:-translate-y-px hover:shadow-lg hover:shadow-stationPink/40 active:translate-y-0 disabled:translate-y-0 disabled:opacity-50 disabled:shadow-none"
+              :disabled="step === 'loading' || step === 'qr' || step === 'done'"
+              @click="getQr"
+            >
+              {{ step === 'loading' ? '出码中…' : step === 'expired' ? '换一张二维码' : '获取二维码' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
