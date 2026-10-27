@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { coverThumb } from '../utils/cover'
 import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
@@ -793,6 +794,37 @@ function fmtBackupTime(iso) {
   return iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '—'
 }
 
+// ─── 私信记录（管理员视野）：成员展开区拉与我的往来；「发私信」跳信箱预开会话 ───
+const router = useRouter()
+const dmLogMember = ref(null) // 展开私信记录的成员 id
+const dmLog = ref(null)
+const dmLogBusy = ref(false)
+
+async function toggleDmLog(m) {
+  if (dmLogMember.value === m.id) {
+    dmLogMember.value = null
+    dmLog.value = null
+    return
+  }
+  dmLogMember.value = m.id
+  dmLog.value = null
+  dmLogBusy.value = true
+  try {
+    const mine = member.value?.mid
+    const query = mine && m.mid ? `?peerA=${mine}&peerB=${m.mid}` : ''
+    const res = await fetch(`/api/admin/dm${query}`)
+    dmLog.value = res.ok ? (await res.json()).messages ?? [] : []
+  } catch {
+    dmLog.value = []
+  } finally {
+    dmLogBusy.value = false
+  }
+}
+
+function openDmWith(m) {
+  router.push({ path: '/messages', query: { dm: String(m.mid) } })
+}
+
 // ─── 全站公告：向 active 席位播送站内信（两段式防手滑，后端 message 原样展示）───
 const announceTitle = ref('')
 const announceBody = ref('')
@@ -1294,6 +1326,36 @@ onUnmounted(() => {
               </li>
               <li v-if="!m.accounts?.length" class="py-1 text-[11px] text-white/25">这席还没绑任何 B 站账号。</li>
             </ul>
+            <div v-if="expandedMember === m.id" class="border-t border-white/5 px-3 pb-2 pt-1.5">
+              <div class="flex items-center gap-2">
+                <button
+                  class="rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/45 transition hover:border-adminAccent/50 hover:text-adminAccent"
+                  @click="toggleDmLog(m)"
+                >
+                  私信记录 {{ dmLogMember === m.id ? '▴' : '▾' }}
+                </button>
+                <button
+                  v-if="m.status === 'active' && m.mid && m.mid !== member?.mid"
+                  class="rounded-md border border-stationPink/40 px-2 py-0.5 text-[11px] text-stationPink/80 transition hover:bg-stationPink/10"
+                  @click="openDmWith(m)"
+                >
+                  发私信 →
+                </button>
+              </div>
+              <div v-if="dmLogMember === m.id" class="mt-1.5">
+                <p v-if="dmLogBusy" class="py-1 text-[11px] text-white/25">正在拉往来…</p>
+                <p v-else-if="!dmLog?.length" class="py-1 text-[11px] text-white/25">你俩还没说过话。</p>
+                <ul v-else class="max-h-44 space-y-1 overflow-y-auto pr-1">
+                  <li v-for="row in dmLog" :key="row.id" class="flex items-start gap-2 rounded-lg bg-white/5 px-2 py-1.5">
+                    <span class="shrink-0 font-mono text-[10px] text-white/30">{{ friendlyTime(row.createdAtUtc) }}</span>
+                    <span class="min-w-0 flex-1 break-words text-[11px] text-white/70">
+                      <b class="font-normal text-white/45">{{ row.fromMid === member?.mid ? '我' : (row.fromName || `UID ${row.fromMid}`) }} → {{ row.toMid === member?.mid ? '我' : (row.toName || `UID ${row.toMid}`) }}：</b>{{ row.body }}
+                    </span>
+                    <span class="shrink-0 text-[10px]" :class="row.readAtUtc ? 'text-white/20' : 'text-adminAccent/60'">{{ row.readAtUtc ? '已读' : '未读' }}</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
           </li>
         </ul>
       </section>

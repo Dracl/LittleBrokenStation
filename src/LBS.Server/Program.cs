@@ -323,6 +323,8 @@ app.MapAdminMemberEndpoints();
 // 前端行为上报：播放心跳、停留、页面浏览——白名单内客户端才能写，身份由服务端盖章。
 app.MapEventIngestEndpoints();
 app.MapMemberMessageEndpoints();
+app.MapDmEndpoints();
+app.MapAdminDmEndpoints();
 
 // 数据交换：导出打包/档案柜/导入暂存与换库（全在 /api/admin/** 站长门下）。
 app.MapDataExchangeApi();

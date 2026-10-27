@@ -207,6 +207,25 @@ public sealed partial class StationDb
             messages.ExecuteNonQuery();
         }
 
+        // M5.3 用户间私信：往来说一行一发，会话在查询时按 peer 聚合；
+        // 双索引各管一头：收信方扫未读走 (to_mid, read_at_utc)，会话拉取走 (from_mid, to_mid)。
+        using (var dm = connection.CreateCommand())
+        {
+            dm.CommandText = """
+                CREATE TABLE IF NOT EXISTS dm_messages (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_mid       INTEGER NOT NULL,
+                    to_mid         INTEGER NOT NULL,
+                    body           TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    read_at_utc    TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_dm_to_read ON dm_messages (to_mid, read_at_utc);
+                CREATE INDEX IF NOT EXISTS idx_dm_from_to ON dm_messages (from_mid, to_mid);
+                """;
+            dm.ExecuteNonQuery();
+        }
+
         // 成员角色（owner/member）：头名即站长。建表语句自带头，早期无 role 列的开发库在这里补上。
         EnsureColumn(connection, "members", "role", "TEXT NOT NULL DEFAULT 'member'");
 

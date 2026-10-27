@@ -1,15 +1,22 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
-import { member, loaded, unread, loginDialogOpen, loginDialogMode, load as loadMember } from '../memberStore'
+import { member, loaded, unread, dmUnread, loginDialogOpen, loginDialogMode, load as loadMember, refreshUnread } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 
+const route = useRoute()
+
+// ─── 页签 ───
+const activeTab = ref('inbox') // inbox | dm
+
+// ─── 信箱（M5.2 原样）───
 const items = ref([])
 const loading = ref(true)
+const inboxUnread = ref(0)
 const expandedId = ref(null)
 const notice = ref(null)
 
-// kind 徽标：welcome 粉 / complete 绿 / fail 红 / announce 金，未知 kind 落灰底保底
 const kindMeta = {
   welcome: { label: '欢迎', cls: 'bg-stationPink/10 text-stationPink' },
   complete: { label: '入档', cls: 'bg-emerald-500/10 text-emerald-600' },
@@ -24,6 +31,7 @@ function meta(kind) {
 async function loadInbox() {
   if (!member.value) {
     items.value = []
+    inboxUnread.value = 0
     loading.value = false
     return
   }
@@ -33,7 +41,8 @@ async function loadInbox() {
     if (res.ok) {
       const data = await res.json()
       items.value = data.items ?? []
-      unread.value = Number(data.unread) || 0
+      inboxUnread.value = Number(data.unread) || 0
+      refreshUnread() // 合流数交给 store 统一算，这里只留页签自己的小账
     } else if (res.status === 401) {
       member.value = null
     }
@@ -44,17 +53,11 @@ async function loadInbox() {
   }
 }
 
-onMounted(async () => {
-  if (!loaded.value) await loadMember()
-  await loadInbox()
-})
-
-function openLogin() {
-  loginDialogMode.value = 'admit'
-  loginDialogOpen.value = true
+function flashNotice(text) {
+  notice.value = text
+  setTimeout(() => { notice.value = null }, 2500)
 }
 
-// 点开即读：展开正文的顺手替主人把信拆了、标上已读
 async function toggle(item) {
   expandedId.value = expandedId.value === item.id ? null : item.id
   if (expandedId.value !== item.id || item.readAtUtc) return
@@ -62,6 +65,7 @@ async function toggle(item) {
     const res = await fetch(`/api/member/messages/${item.id}/read`, { method: 'POST' })
     if (res.ok) {
       item.readAtUtc = new Date().toISOString()
+      if (inboxUnread.value > 0) inboxUnread.value -= 1
       if (unread.value > 0) unread.value -= 1
     }
   } catch {
@@ -76,95 +80,458 @@ async function markAll() {
     if (res.ok) {
       const now = new Date().toISOString()
       items.value.forEach((m) => { if (!m.readAtUtc) m.readAtUtc = now })
-      unread.value = 0
+      inboxUnread.value = 0
       const data = await res.json().catch(() => null)
-      notice.value = data?.message ?? '都标已读了'
-      setTimeout(() => { notice.value = null }, 2500)
+      flashNotice(data?.message ?? '都标已读了')
+      refreshUnread()
     }
   } catch {
-    notice.value = '全部已读没递上去'
-    setTimeout(() => { notice.value = null }, 2500)
+    flashNotice('全部已读没递上去')
   }
 }
+
+// ─── 私信（M5.3）───
+const threads = ref(null) // null=还没拉
+const activePeer = ref(null) // {mid, nickname, faceUrl}
+const conversation = ref([])
+const convoLoading = ref(false)
+const directoryOpen = ref(false)
+const directory = ref(null)
+const draft = ref('')
+const sending = ref(false)
+const dmToast = ref(null)
+const scrollAnchor = ref(null)
+let dmPollTimer = null
+
+function flashDm(text) {
+  dmToast.value = text
+  setTimeout(() => { dmToast.value = null }, 2600)
+}
+
+async function loadThreads() {
+  if (!member.value) return
+  try {
+    const res = await fetch('/api/dm/threads')
+    threads.value = res.ok ? (await res.json()).threads ?? [] : []
+  } catch {
+    threads.value = []
+  }
+}
+
+async function openThread(peerMid, peerHint = null) {
+  if (!member.value) return
+  convoLoading.value = true
+  activePeer.value = peerHint ? { ...peerHint } : activePeer.value ?? { mid: peerMid }
+  directoryOpen.value = false
+  try {
+    const res = await fetch(`/api/dm/thread/${peerMid}`)
+    if (res.ok) {
+      const data = await res.json()
+      activePeer.value = data.peer ?? { mid: peerMid }
+      conversation.value = data.messages ?? []
+      // 后端拉取即标读：本地两本账跟着清
+      dmUnread.value = Math.max(0, dmUnread.value - conversation.value.filter((m) => m.toMid === member.value?.mid && !m.readAtUtc).length)
+      const t = threads.value?.find((x) => x.peerMid === peerMid)
+      if (t) t.unread = 0
+      await nextTick()
+      scrollAnchor.value?.scrollIntoView({ block: 'end' })
+    } else {
+      const data = await res.json().catch(() => null)
+      flashDm(data?.message ?? '这条会话没拉开')
+      activePeer.value = null
+    }
+  } catch {
+    flashDm('分站后端没有应答')
+  } finally {
+    convoLoading.value = false
+    restartDmPoll()
+  }
+}
+
+function closeThread() {
+  activePeer.value = null
+  conversation.value = []
+  stopDmPoll()
+  loadThreads()
+}
+
+async function refreshConversation(silent = true) {
+  if (!activePeer.value || !member.value) return
+  try {
+    const res = await fetch(`/api/dm/thread/${activePeer.value.mid}`)
+    if (res.ok) {
+      const data = await res.json()
+      conversation.value = data.messages ?? []
+      const t = threads.value?.find((x) => x.peerMid === activePeer.value.mid)
+      if (t) t.unread = 0
+      await nextTick()
+      scrollAnchor.value?.scrollIntoView({ block: 'end' })
+    } else if (!silent) {
+      const data = await res.json().catch(() => null)
+      flashDm(data?.message ?? '刷新没成')
+    }
+  } catch {
+    /* 轮询断一下不吭声 */
+  }
+}
+
+function stopDmPoll() {
+  if (dmPollTimer) {
+    clearInterval(dmPollTimer)
+    dmPollTimer = null
+  }
+}
+
+function restartDmPoll() {
+  stopDmPoll()
+  // 面板开着才 10s 拉一次；离开（关会话/切页签/卸载）即停
+  if (activePeer.value && activeTab.value === 'dm') {
+    dmPollTimer = setInterval(() => refreshConversation(), 10000)
+  }
+}
+
+async function openDirectory() {
+  directoryOpen.value = true
+  try {
+    const res = await fetch('/api/dm/directory')
+    directory.value = res.ok ? (await res.json()).people ?? [] : []
+  } catch {
+    directory.value = []
+  }
+}
+
+async function sendDm() {
+  const body = draft.value.trim()
+  if (!body || !activePeer.value || sending.value) return
+  sending.value = true
+  try {
+    const res = await fetch('/api/dm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toMid: activePeer.value.mid, body }),
+    })
+    const data = await res.json().catch(() => null)
+    if (res.ok) {
+      conversation.value.push({
+        id: data?.id ?? Date.now(),
+        fromMid: member.value.mid,
+        toMid: activePeer.value.mid,
+        body,
+        createdAtUtc: new Date().toISOString(),
+        readAtUtc: null,
+      })
+      draft.value = ''
+      const t = threads.value?.find((x) => x.peerMid === activePeer.value.mid)
+      if (t) {
+        t.lastBody = body
+        t.lastAtUtc = new Date().toISOString()
+      }
+      await nextTick()
+      scrollAnchor.value?.scrollIntoView({ block: 'end' })
+    } else {
+      flashDm(data?.message ?? '私信没发出去')
+    }
+  } catch {
+    flashDm('分站后端没有应答')
+  } finally {
+    sending.value = false
+  }
+}
+
+function onDraftKeydown(e) {
+  // Enter 发送，Shift+Enter 换行
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    sendDm()
+  }
+}
+
+function switchTab(tab) {
+  if (activeTab.value === tab) return
+  activeTab.value = tab
+  if (tab === 'dm') {
+    loadThreads()
+    refreshUnread()
+    restartDmPoll()
+  } else {
+    stopDmPoll()
+  }
+}
+
+onMounted(async () => {
+  if (!loaded.value) await loadMember()
+  await loadInbox()
+  // 站长室「发私信」跳转：/messages?dm={mid} 预开会话
+  const dmPeer = typeof route.query.dm === 'string' ? Number(route.query.dm) : null
+  if (dmPeer && Number.isFinite(dmPeer)) {
+    switchTab('dm')
+    openThread(dmPeer)
+  }
+})
+
+onUnmounted(() => {
+  stopDmPoll()
+})
+
+const peerMid = computed(() => activePeer.value?.mid ?? null)
 </script>
 
 <template>
   <div class="min-h-screen bg-pageBg">
     <TopBar />
-    <main class="mx-auto max-w-[860px] px-6 py-6">
-      <h1 class="mb-4 text-lg font-medium text-inkMain">站内信箱</h1>
+    <main class="mx-auto max-w-[960px] px-6 py-6">
+      <h1 class="mb-3 text-lg font-medium text-inkMain">站内信箱</h1>
 
-      <!-- 访客：信箱是成员待遇，指路扫码 -->
+      <!-- 访客：信箱与私信都是成员待遇，指路扫码 -->
       <section v-if="loaded && !member" class="rounded-2xl border border-lineSoft bg-cardBg px-6 py-14 text-center">
         <svg viewBox="0 0 64 48" class="mx-auto mb-4 h-14 w-16 text-lineSoft" fill="none" stroke="currentColor" stroke-width="2.4">
           <rect x="3" y="5" width="58" height="38" rx="6" />
           <path d="M5 9 32 29 59 9" stroke-linejoin="round" />
         </svg>
-        <p class="text-sm text-inkSub">信箱是分站成员的待遇——扫码进站，第一封欢迎信就在等你。</p>
+        <p class="text-sm text-inkSub">信箱和私信是分站成员的待遇——扫码进站，第一封欢迎信就在等你。</p>
         <button
           class="mt-5 rounded-full bg-stationPink px-6 py-2 text-sm text-white transition hover:bg-stationPink/90"
-          @click="openLogin"
+          @click="loginDialogMode = 'admit'; loginDialogOpen = true"
         >
           扫码进站
         </button>
       </section>
 
-      <template v-else>
-        <section class="overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
-          <div class="flex items-center justify-between border-b border-lineSoft px-5 py-3">
-            <span class="text-[13px] text-inkSub">
-              {{ items.length ? `${items.length} 封信 · ${unread} 封未读` : '信笺都在这' }}
-            </span>
-            <button
-              v-if="unread > 0"
-              class="rounded-full border border-lineSoft px-3 py-1 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink"
-              @click="markAll"
-            >
-              全部已读
-            </button>
-          </div>
+      <template v-else-if="member">
+        <!-- 双页签：朴素下划线式，激活站粉 -->
+        <div class="mb-4 flex items-center gap-6 border-b border-lineSoft">
+          <button
+            class="-mb-px border-b-2 pb-2 text-sm transition"
+            :class="activeTab === 'inbox' ? 'border-stationPink font-medium text-stationPink' : 'border-transparent text-inkSub hover:text-inkMain'"
+            @click="switchTab('inbox')"
+          >
+            信箱<span v-if="inboxUnread > 0" class="ml-1 text-[11px] text-stationPink">({{ inboxUnread }})</span>
+          </button>
+          <button
+            class="relative -mb-px border-b-2 pb-2 text-sm transition"
+            :class="activeTab === 'dm' ? 'border-stationPink font-medium text-stationPink' : 'border-transparent text-inkSub hover:text-inkMain'"
+            @click="switchTab('dm')"
+          >
+            私信
+            <span
+              v-if="dmUnread > 0"
+              class="absolute -right-3 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-stationPink px-1 text-[10px] font-medium leading-none text-white"
+            >{{ dmUnread > 99 ? '99+' : dmUnread }}</span>
+          </button>
+        </div>
 
-          <p v-if="loading" class="px-5 py-10 text-center text-sm text-inkFaint">正在翻信箱…</p>
-
-          <!-- 空态：邮箱空空，岁月静好 -->
-          <div v-else-if="!items.length" class="px-6 py-14 text-center">
-            <svg viewBox="0 0 64 48" class="mx-auto mb-4 h-14 w-16 text-lineSoft" fill="none" stroke="currentColor" stroke-width="2.4">
-              <rect x="3" y="5" width="58" height="38" rx="6" />
-              <path d="M5 9 32 29 59 9" stroke-linejoin="round" />
-              <path d="M44 34c2.5-3 6-3.4 9-1" stroke-linecap="round" opacity="0.55" />
-            </svg>
-            <p class="text-sm text-inkFaint">邮箱空空，岁月静好。投的稿子入档时，这里会亮起来。</p>
-          </div>
-
-          <ul v-else>
-            <li v-for="item in items" :key="item.id" class="border-b border-lineSoft/60 last:border-b-0">
-              <button class="flex w-full items-center gap-3 px-5 py-3.5 text-left transition hover:bg-stationPink/5" @click="toggle(item)">
-                <span class="shrink-0 rounded-md px-1.5 py-0.5 text-[11px]" :class="meta(item.kind).cls">{{ meta(item.kind).label }}</span>
-                <span class="min-w-0 flex-1">
-                  <span class="block truncate text-[13px]" :class="item.readAtUtc ? 'text-inkSub' : 'font-medium text-inkMain'">
-                    {{ item.title }}
-                  </span>
-                  <span v-if="item.fromName" class="block truncate text-[11px] text-inkFaint">来自 {{ item.fromName }}</span>
-                </span>
-                <span class="shrink-0 text-[11px] text-inkFaint">{{ friendlyTime(item.createdAtUtc) }}</span>
-                <span v-if="!item.readAtUtc" class="h-2 w-2 shrink-0 rounded-full bg-stationPink" title="未读"></span>
+        <!-- ═══ 信箱页签 ═══ -->
+        <template v-if="activeTab === 'inbox'">
+          <section class="overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
+            <div class="flex items-center justify-between border-b border-lineSoft px-5 py-3">
+              <span class="text-[13px] text-inkSub">
+                {{ items.length ? `${items.length} 封信 · ${inboxUnread} 封未读` : '信笺都在这' }}
+              </span>
+              <button
+                v-if="inboxUnread > 0"
+                class="rounded-full border border-lineSoft px-3 py-1 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink"
+                @click="markAll"
+              >
+                全部已读
               </button>
+            </div>
 
-              <div v-if="expandedId === item.id" class="px-5 pb-4">
-                <div class="rounded-xl bg-[#f6f7f8] px-4 py-3">
-                  <p class="whitespace-pre-wrap text-[13px] leading-relaxed text-inkMain">{{ item.body }}</p>
-                  <RouterLink
-                    v-if="item.link"
-                    :to="item.link"
-                    class="mt-2.5 inline-block text-xs text-stationPink transition hover:underline"
-                  >去看 →</RouterLink>
+            <p v-if="loading" class="px-5 py-10 text-center text-sm text-inkFaint">正在翻信箱…</p>
+
+            <div v-else-if="!items.length" class="px-6 py-14 text-center">
+              <svg viewBox="0 0 64 48" class="mx-auto mb-4 h-14 w-16 text-lineSoft" fill="none" stroke="currentColor" stroke-width="2.4">
+                <rect x="3" y="5" width="58" height="38" rx="6" />
+                <path d="M5 9 32 29 59 9" stroke-linejoin="round" />
+                <path d="M44 34c2.5-3 6-3.4 9-1" stroke-linecap="round" opacity="0.55" />
+              </svg>
+              <p class="text-sm text-inkFaint">邮箱空空，岁月静好。投的稿子入档时，这里会亮起来。</p>
+            </div>
+
+            <ul v-else>
+              <li v-for="item in items" :key="item.id" class="border-b border-lineSoft/60 last:border-b-0">
+                <button class="flex w-full items-center gap-3 px-5 py-3.5 text-left transition hover:bg-stationPink/5" @click="toggle(item)">
+                  <span class="shrink-0 rounded-md px-1.5 py-0.5 text-[11px]" :class="meta(item.kind).cls">{{ meta(item.kind).label }}</span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-[13px]" :class="item.readAtUtc ? 'text-inkSub' : 'font-medium text-inkMain'">
+                      {{ item.title }}
+                    </span>
+                    <span v-if="item.fromName" class="block truncate text-[11px] text-inkFaint">来自 {{ item.fromName }}</span>
+                  </span>
+                  <span class="shrink-0 text-[11px] text-inkFaint">{{ friendlyTime(item.createdAtUtc) }}</span>
+                  <span v-if="!item.readAtUtc" class="h-2 w-2 shrink-0 rounded-full bg-stationPink" title="未读"></span>
+                </button>
+
+                <div v-if="expandedId === item.id" class="px-5 pb-4">
+                  <div class="rounded-xl bg-[#f6f7f8] px-4 py-3">
+                    <p class="whitespace-pre-wrap text-[13px] leading-relaxed text-inkMain">{{ item.body }}</p>
+                    <RouterLink
+                      v-if="item.link"
+                      :to="item.link"
+                      class="mt-2.5 inline-block text-xs text-stationPink transition hover:underline"
+                    >去看 →</RouterLink>
+                  </div>
                 </div>
-              </div>
-            </li>
-          </ul>
-        </section>
+              </li>
+            </ul>
+          </section>
 
-        <p v-if="notice" class="mt-3 text-center text-xs text-inkFaint">{{ notice }}</p>
+          <p v-if="notice" class="mt-3 text-center text-xs text-inkFaint">{{ notice }}</p>
+        </template>
+
+        <!-- ═══ 私信页签 ═══ -->
+        <template v-else>
+          <div class="flex gap-4">
+            <!-- 左：会话列表 -->
+            <section class="w-[290px] shrink-0 overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
+              <div class="flex items-center justify-between border-b border-lineSoft px-4 py-3">
+                <span class="text-[13px] text-inkSub">会话</span>
+                <button
+                  class="rounded-full border border-lineSoft px-2.5 py-0.5 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink"
+                  @click="openDirectory"
+                >
+                  ＋ 发起私聊
+                </button>
+              </div>
+
+              <p v-if="threads === null" class="px-4 py-8 text-center text-sm text-inkFaint">正在翻记录…</p>
+              <div v-else-if="!threads.length" class="px-4 py-10 text-center">
+                <p class="text-sm text-inkFaint">还没有人来敲门。<br />点「发起私聊」找位分站伙伴聊聊。</p>
+              </div>
+              <ul v-else>
+                <li v-for="t in threads" :key="t.peerMid">
+                  <button
+                    class="flex w-full items-center gap-2.5 border-b border-lineSoft/60 px-4 py-3 text-left transition hover:bg-stationPink/5"
+                    :class="peerMid === t.peerMid ? 'bg-stationPink/5' : ''"
+                    @click="openThread(t.peerMid, { mid: t.peerMid, nickname: t.peerName, faceUrl: t.peerFace })"
+                  >
+                    <img
+                      v-if="t.peerFace"
+                      :src="t.peerFace"
+                      :alt="t.peerName || ''"
+                      referrerpolicy="no-referrer"
+                      class="h-10 w-10 shrink-0 rounded-full object-cover"
+                    />
+                    <span v-else class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-lineSoft text-inkFaint">
+                      <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
+                        <circle cx="12" cy="8.5" r="3.5" />
+                        <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
+                      </svg>
+                    </span>
+                    <span class="min-w-0 flex-1">
+                      <span class="block truncate text-[13px] font-medium text-inkMain">{{ t.peerName || `UID ${t.peerMid}` }}</span>
+                      <span class="block truncate text-[12px] text-inkSub">{{ t.lastBody }}</span>
+                    </span>
+                    <span class="flex shrink-0 flex-col items-end gap-1">
+                      <span class="text-[10px] text-inkFaint">{{ friendlyTime(t.lastAtUtc) }}</span>
+                      <span
+                        v-if="t.unread > 0"
+                        class="flex h-4 min-w-4 items-center justify-center rounded-full bg-stationPink px-1 text-[10px] leading-none text-white"
+                      >{{ t.unread > 99 ? '99+' : t.unread }}</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </section>
+
+            <!-- 右：聊天面板 -->
+            <section class="flex min-h-[420px] min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
+              <template v-if="activePeer">
+                <div class="flex items-center justify-between border-b border-lineSoft px-4 py-3">
+                  <span class="flex items-center gap-2 text-[13px] font-medium text-inkMain">
+                    {{ activePeer.nickname || `UID ${activePeer.mid}` }}
+                    <span class="text-[11px] font-normal text-inkFaint">UID {{ activePeer.mid }}</span>
+                  </span>
+                  <button class="text-xs text-inkFaint transition hover:text-stationPink" @click="closeThread">收起</button>
+                </div>
+
+                <div class="flex-1 space-y-2.5 overflow-y-auto bg-[#f8f9fa] px-4 py-4" style="max-height: 480px">
+                  <p v-if="convoLoading && !conversation.length" class="py-8 text-center text-sm text-inkFaint">正在翻记录…</p>
+                  <p v-else-if="!conversation.length" class="py-8 text-center text-sm text-inkFaint">还没说过话，第一句由你来。</p>
+                  <div
+                    v-for="m in conversation"
+                    :key="m.id"
+                    class="flex"
+                    :class="m.fromMid === member.mid ? 'justify-end' : 'justify-start'"
+                  >
+                    <span
+                      class="max-w-[72%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed"
+                      :class="m.fromMid === member.mid
+                        ? 'rounded-br-md bg-stationPink text-white'
+                        : 'rounded-bl-md bg-lineSoft text-inkMain'"
+                    >{{ m.body }}</span>
+                  </div>
+                  <div ref="scrollAnchor"></div>
+                </div>
+
+                <div class="border-t border-lineSoft p-3">
+                  <div class="flex items-end gap-2">
+                    <textarea
+                      v-model="draft"
+                      rows="2"
+                      maxlength="2000"
+                      class="min-h-[52px] flex-1 resize-none rounded-xl border border-lineSoft bg-pageBg px-3 py-2 text-[13px] outline-none transition placeholder:text-inkFaint focus:border-stationPink/60"
+                      placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"
+                      @keydown="onDraftKeydown"
+                    ></textarea>
+                    <button
+                      class="h-[52px] shrink-0 rounded-xl bg-stationPink px-5 text-sm text-white transition hover:bg-stationPink/90 disabled:cursor-not-allowed disabled:opacity-50"
+                      :disabled="sending || !draft.trim()"
+                      @click="sendDm"
+                    >
+                      {{ sending ? '发送中…' : '发送' }}
+                    </button>
+                  </div>
+                </div>
+              </template>
+
+              <div v-else class="flex flex-1 items-center justify-center px-6 text-center">
+                <p class="text-sm text-inkFaint">左边挑个会话，或「＋ 发起私聊」认识位分站伙伴。</p>
+              </div>
+            </section>
+          </div>
+
+          <p v-if="dmToast" class="mt-3 rounded-lg bg-stationPink/10 px-3 py-1.5 text-center text-xs text-stationPink">{{ dmToast }}</p>
+
+          <!-- 选人弹层 -->
+          <template v-if="directoryOpen">
+            <div class="fixed inset-0 z-30 bg-black/30" @click="directoryOpen = false"></div>
+            <div class="fixed left-1/2 top-1/2 z-40 w-[340px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-lineSoft bg-cardBg shadow-[0_20px_60px_-12px_rgba(0,0,0,0.35)]">
+              <div class="flex items-center justify-between border-b border-lineSoft px-4 py-3">
+                <span class="text-sm font-medium text-inkMain">发起私聊</span>
+                <button class="text-inkFaint transition hover:text-inkMain" @click="directoryOpen = false">✕</button>
+              </div>
+              <p v-if="directory === null" class="px-4 py-8 text-center text-sm text-inkFaint">在点名…</p>
+              <div v-else-if="!directory.length" class="px-4 py-8 text-center text-sm text-inkFaint">站上没别人可聊。</div>
+              <ul v-else class="max-h-[320px] overflow-y-auto p-1.5">
+                <li v-for="p in directory" :key="p.mid">
+                  <button
+                    class="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-stationPink/10"
+                    @click="openThread(p.mid, { mid: p.mid, nickname: p.nickname, faceUrl: p.faceUrl })"
+                  >
+                    <img
+                      v-if="p.faceUrl"
+                      :src="p.faceUrl"
+                      :alt="p.nickname || ''"
+                      referrerpolicy="no-referrer"
+                      class="h-9 w-9 shrink-0 rounded-full object-cover"
+                    />
+                    <span v-else class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-lineSoft text-inkFaint">
+                      <svg viewBox="0 0 24 24" class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="1.8">
+                        <circle cx="12" cy="8.5" r="3.5" />
+                        <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
+                      </svg>
+                    </span>
+                    <span class="min-w-0 flex-1">
+                      <span class="block truncate text-[13px] text-inkMain">{{ p.nickname || `UID ${p.mid}` }}</span>
+                      <span class="block text-[11px] text-inkFaint">UID {{ p.mid }}</span>
+                    </span>
+                    <span class="shrink-0 rounded-full bg-stationPink/10 px-2.5 py-1 text-[11px] text-stationPink">开聊</span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </template>
+        </template>
       </template>
     </main>
   </div>

@@ -8,7 +8,8 @@ export const member = ref(null)
 export const loaded = ref(false) // 首次 load 是否落定（区分「还没查」与「查过是访客」）
 export const loginDialogOpen = ref(false)
 export const loginDialogMode = ref('admit') // admit=扫码进站 | bind=往账号池加号
-export const unread = ref(0) // 站内信箱未读数：铃铛角标只认这个数
+export const unread = ref(0) // 顶栏铃铛角标：信箱未读 + 私信未读的合流数
+export const dmUnread = ref(0) // 私信未读单值（私信页签小红点用）
 
 export async function load() {
   try {
@@ -24,15 +25,22 @@ export async function load() {
   refreshUnread()
 }
 
-/// 未读数顺手拉：借 unreadOnly 列表接口带回的 unread 字段，失败不叫（角标小差不差人命）。
+/// 未读合流：信箱与私信两本账并行拉，铃铛总数 = 两者之和；失败不叫（角标小差不差人命）。
 export async function refreshUnread() {
   if (!member.value) {
     unread.value = 0
+    dmUnread.value = 0
     return
   }
   try {
-    const res = await fetch('/api/member/messages?unreadOnly=true&limit=1')
-    unread.value = res.ok ? Number((await res.json())?.unread) || 0 : 0
+    const [inboxRes, dmRes] = await Promise.all([
+      fetch('/api/member/messages?unreadOnly=true&limit=1'),
+      fetch('/api/dm/unread'),
+    ])
+    const inbox = inboxRes.ok ? Number((await inboxRes.json())?.unread) || 0 : 0
+    const dm = dmRes.ok ? Number((await dmRes.json())?.unread) || 0 : 0
+    unread.value = inbox + dm
+    dmUnread.value = dm
   } catch {
     /* 断网时角标维持原样 */
   }
@@ -46,4 +54,5 @@ export async function logout() {
   }
   member.value = null
   unread.value = 0 // 登出即刻摘铃铛，不等下一轮心跳
+  dmUnread.value = 0
 }
