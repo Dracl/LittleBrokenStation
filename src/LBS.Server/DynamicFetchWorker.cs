@@ -110,7 +110,8 @@ public sealed class DynamicFetchWorker(
                             parsed.DynamicId, target.Mid, parsed.AuthorMid, parsed.AuthorName,
                             parsed.Type, parsed.Text,
                             parsed.Pics.Count > 0 ? System.Text.Json.JsonSerializer.Serialize(parsed.Pics) : null,
-                            parsed.Bvid, parsed.PublishedAtUtc)),
+                            parsed.Bvid, parsed.PublishedAtUtc,
+                            parsed.AuthorFaceUrl, parsed.ArchiveTitle, parsed.ArchiveCover, parsed.ArchiveDuration)),
                         cancellationToken));
                     if (outcome.Ok)
                     {

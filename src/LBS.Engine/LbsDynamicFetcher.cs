@@ -15,7 +15,12 @@ public sealed record ParsedDynamic(
     string? Text,
     IReadOnlyList<string> Pics,
     string? Bvid,
-    string? PublishedAtUtc);
+    string? PublishedAtUtc,
+    // 卡面原料随抓取定格：作者头像、档案三件套（未入站视频卡靠它们不剃光头）。
+    string? AuthorFaceUrl = null,
+    string? ArchiveTitle = null,
+    string? ArchiveCover = null,
+    string? ArchiveDuration = null);
 
 public enum FeedParseStatus
 {
@@ -240,12 +245,14 @@ public sealed class LbsDynamicFetcher(
         var orig = Path(item, "orig");
         var src = isForward && orig is not null ? orig.Value : item;
 
-        // 作者与时间：FORWARD 用 orig 的 module_author（更贴原文），无 orig 或字段缺则回落顶层。
+        // 作者与时间：卡头代表「发帖的人」。FORWARD 时顶层是转发人、顶层 pub_ts 是转发时刻——与 B 站卡同款；
+        // 原文正文、图与视频信息仍从 orig 里挖，灰块里的原作者名由「转发自 XX：」行携带。
         var srcAuthor = Path(src, "modules", "module_author");
         var topAuthor = Path(item, "modules", "module_author");
-        var authorMid = Num(srcAuthor ?? topAuthor, "mid") ?? Num(topAuthor, "mid");
-        var authorName = Str(Path(srcAuthor ?? topAuthor, "name")) ?? Str(Path(topAuthor, "name"));
-        var pubTs = Num(srcAuthor, "pub_ts") ?? Num(topAuthor, "pub_ts");
+        var authorMid = Num(topAuthor, "mid") ?? Num(srcAuthor, "mid");
+        var authorName = Str(Path(topAuthor, "name")) ?? Str(Path(srcAuthor, "name"));
+        var authorFace = Str(Path(topAuthor, "face")) ?? Str(Path(srcAuthor, "face"));
+        var pubTs = Num(topAuthor, "pub_ts") ?? Num(srcAuthor, "pub_ts");
         // 发榜时间拿不到就 null：页面宁可显「—」，也好过给老动态盖个「抓取此刻」的戳穿越给人看。
         string? published = pubTs is > 0
             ? DateTimeOffset.FromUnixTimeSeconds(pubTs.Value).ToString("O")
@@ -263,7 +270,11 @@ public sealed class LbsDynamicFetcher(
 
         if (isForward)
         {
-            parts.Add($"转发自 {(string.IsNullOrWhiteSpace(authorName) ? "他人" : authorName)}：");
+            // 「转发自」认的是原作者（src=orig），不是卡头上的转发人——否则就成了自己转发自自己。
+            var origName = Str(Path(srcAuthor, "name"));
+            var fwdFrom = !string.IsNullOrWhiteSpace(origName) ? origName
+                : !string.IsNullOrWhiteSpace(authorName) ? authorName : "他人";
+            parts.Add($"转发自 {fwdFrom}：");
         }
 
         if (!string.IsNullOrWhiteSpace(srcDesc) && (parts.Count == 0 || parts[^1] != srcDesc.Trim()))
@@ -276,13 +287,24 @@ public sealed class LbsDynamicFetcher(
             parts.Add(srcOpus.Trim());
         }
 
+        // 开播提醒卡：把直播题接进正文，页面直播卡有料可显。
+        var liveTitle = Str(Path(src, "modules", "module_dynamic", "major", "live", "title"));
+        if (!string.IsNullOrWhiteSpace(liveTitle) && (parts.Count == 0 || parts[^1] != liveTitle.Trim()))
+        {
+            parts.Add(liveTitle.Trim());
+        }
+
         var text = parts.Count == 0 ? null : string.Join("\n\n", parts);
 
         // 图片三套路径依次兜底（图文 opus / 旧相簿 draw / 专栏 article），FORWARD 全从 orig 里取。
         var pics = CollectPics(src);
         var bvid = Str(Path(src, "modules", "module_dynamic", "major", "archive", "bvid"));
+        var archiveTitle = Str(Path(src, "modules", "module_dynamic", "major", "archive", "title"));
+        var archiveCover = Str(Path(src, "modules", "module_dynamic", "major", "archive", "cover"));
+        var archiveDuration = Str(Path(src, "modules", "module_dynamic", "major", "archive", "duration_text"));
 
-        return new ParsedDynamic(dynamicId, type, authorMid, authorName, text, pics, bvid, published);
+        return new ParsedDynamic(dynamicId, type, authorMid, authorName, text, pics, bvid, published,
+            authorFace, archiveTitle, archiveCover, archiveDuration);
     }
 
     private static IReadOnlyList<string> CollectPics(JsonElement src)

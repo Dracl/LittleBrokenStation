@@ -134,9 +134,9 @@ public sealed class DynamicCacheTests : IDisposable
 
         var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
         Assert.Equal("8880004", parsed.DynamicId); // 缓存键是转发条自己
-        Assert.Equal(111, parsed.AuthorMid); // 名片与时间认原作者
-        Assert.Equal("原作者", parsed.AuthorName);
-        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1700000200).ToString("O"), parsed.PublishedAtUtc);
+        Assert.Equal(222, parsed.AuthorMid); // B 站同款：卡头是转发人，时间认转发时刻
+        Assert.Equal("转发君", parsed.AuthorName);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1700000300).ToString("O"), parsed.PublishedAtUtc);
         Assert.Equal("BVorig00001", parsed.Bvid); // bvid 从 orig 挖
         Assert.StartsWith("我也说两句", parsed.Text);
         Assert.Contains("转发自 原作者", parsed.Text);

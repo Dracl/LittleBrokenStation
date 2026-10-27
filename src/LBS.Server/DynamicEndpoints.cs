@@ -35,6 +35,12 @@ public static class DynamicEndpoints
                 bvid = r.Bvid,
                 publishedAtUtc = r.PublishedAtUtc,
                 inStation = r.InStation,
+                authorFaceUrl = r.AuthorFaceUrl,
+                // 卡面取材：馆藏有货优先，没入站的吃抓取定格的 B 站档案。
+                title = r.StationTitle ?? r.ArchiveTitle,
+                cover = r.StationCover ?? r.ArchiveCover,
+                duration = r.StationDuration ?? r.ArchiveDuration,
+                viewCount = r.StatView,
             });
             return Results.Ok(new { items, hasMore });
         });

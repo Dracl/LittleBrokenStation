@@ -252,13 +252,23 @@ public sealed partial class StationDb
                     pics_json        TEXT,
                     bvid             TEXT,
                     published_at_utc TEXT,
-                    cached_at_utc    TEXT NOT NULL
+                    cached_at_utc    TEXT NOT NULL,
+                    author_face_url  TEXT,
+                    archive_title    TEXT,
+                    archive_cover    TEXT,
+                    archive_duration TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_dynamics_target ON dynamics (target_mid, published_at_utc);
                 CREATE INDEX IF NOT EXISTS idx_dynamics_published ON dynamics (published_at_utc);
                 """;
             dynamics.ExecuteNonQuery();
         }
+
+        // 动态卡面四件料（头像缓存 + 档案三件套）：早期无列的开发库在这里补上。
+        EnsureColumn(connection, "dynamics", "author_face_url", "TEXT");
+        EnsureColumn(connection, "dynamics", "archive_title", "TEXT");
+        EnsureColumn(connection, "dynamics", "archive_cover", "TEXT");
+        EnsureColumn(connection, "dynamics", "archive_duration", "TEXT");
 
         // 成员角色（owner/member）：头名即站长。建表语句自带头，早期无 role 列的开发库在这里补上。
         EnsureColumn(connection, "members", "role", "TEXT NOT NULL DEFAULT 'member'");
