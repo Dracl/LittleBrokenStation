@@ -264,6 +264,72 @@ public sealed class StationDbTests : IDisposable
         Assert.Empty(_db.GetCodecVersions(id));
     }
 
+    /// <summary>造一条到站视频：OutputBasePath 由调用方摆到指定根（无扩展基名，供 FinalizeArtifacts 扫盘），封面链可指定。</summary>
+    private long 已到站扫盘(string bvid, string? coverUrl, string outputBasePath)
+    {
+        var id = _db.AddVideo("https://www.bilibili.com/video/" + bvid, bvid).VideoId;
+        _db.MarkSubmitted(id, new[] { "task-" + bvid }, bvid, coverUrl);
+        _db.SaveSubmissionMetadata(
+            id,
+            new VideoMetaDraft(null, null, null, null, null, null),
+            new[] { new PageDraft("task-" + bvid, 1, bvid, 1, "04:13", outputBasePath) });
+        _db.MarkArrived(id);
+        return id;
+    }
+
+    [Fact]
+    public void 列表行_带出本地封面路径()
+    {
+        // 归档出 .Cover.jpg 的行给 /media/ 前缀（与观看页同形）；没归档封面的行留 null，前端热链兑底。
+        var root = Path.Combine(_tempDir, "cv");
+        Directory.CreateDirectory(root);
+        var withCover = 已到站扫盘("BVCover00001", null, Path.Combine(root, "BVCover00001"));
+        var noCover = 已到站扫盘("BVCover00002", null, Path.Combine(root, "BVCover00002"));
+        File.WriteAllText(Path.Combine(root, "BVCover00001.mp4"), "v");
+        File.WriteAllText(Path.Combine(root, "BVCover00001.Cover.jpg"), "c");
+        File.WriteAllText(Path.Combine(root, "BVCover00002.mp4"), "v");
+        _db.FinalizeArtifacts(withCover, root);
+        _db.FinalizeArtifacts(noCover, root);
+
+        Assert.Equal("/media/BVCover00001.Cover.jpg", Assert.Single(_db.ListVideos(), v => v.Bvid == "BVCover00001").LocalCover);
+        Assert.Null(Assert.Single(_db.ListVideos(), v => v.Bvid == "BVCover00002").LocalCover);
+        // 搜索同源同形（ReadEntries 共用，不给搜索页留第二条腿）。
+        Assert.Equal("/media/BVCover00001.Cover.jpg", Assert.Single(_db.SearchVideos("BVCover00001", null), v => v.Bvid == "BVCover00001").LocalCover);
+    }
+
+    [Fact]
+    public void 封面补员名单_只点没封面的到站货()
+    {
+        var root = Path.Combine(_tempDir, "cv2");
+        Directory.CreateDirectory(root);
+
+        // 欠账：有正片行没封面行 → 入列，BaseRel 认正片行供推基名。
+        var debt = 已到站扫盘("BVDebt00001", "https://i0.hdslb.com/c.jpg", Path.Combine(root, "BVDebt00001"));
+        File.WriteAllText(Path.Combine(root, "BVDebt00001.mp4"), "v");
+        _db.FinalizeArtifacts(debt, root);
+        // 已齐：封面行在 → 不入列。
+        var settled = 已到站扫盘("BVFull00001", "https://i0.hdslb.com/c.jpg", Path.Combine(root, "BVFull00001"));
+        File.WriteAllText(Path.Combine(root, "BVFull00001.mp4"), "v");
+        File.WriteAllText(Path.Combine(root, "BVFull00001.Cover.jpg"), "c");
+        _db.FinalizeArtifacts(settled, root);
+        // 没封面链 → 不入列；完全无产物行（没处落盘）→ 不入列。
+        var noUrl = 已到站扫盘("BVNoUrl0001", null, Path.Combine(root, "BVNoUrl0001"));
+        File.WriteAllText(Path.Combine(root, "BVNoUrl0001.mp4"), "v");
+        _db.FinalizeArtifacts(noUrl, root);
+        已到站扫盘("BVHomeless1", "https://i0.hdslb.com/c.jpg", Path.Combine(root, "BVHomeless1"));
+        // 没到站的欠着也不算。
+        _db.AddVideosBulk(new[] { new NewVideo("u", "BVPending001", "排队货", "https://i0.hdslb.com/c.jpg") });
+
+        var candidate = Assert.Single(_db.ListVideosMissingCover());
+        Assert.Equal(debt, candidate.VideoId);
+        Assert.Equal("BVDebt00001.mp4", candidate.BaseRel);
+
+        // 补员登记后退出名单；同名行幂等不重。
+        _db.RegisterCoverArtifact(debt, "BVDebt00001.Cover.jpg");
+        _db.RegisterCoverArtifact(debt, "BVDebt00001.Cover.jpg");
+        Assert.Empty(_db.ListVideosMissingCover());
+    }
+
     public void Dispose()
     {
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();

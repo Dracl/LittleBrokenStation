@@ -47,6 +47,8 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<SubscriptionCrawle
 builder.Services.AddSingleton<LBS.Engine.LbsDynamicFetcher>();
 builder.Services.AddSingleton<DynamicFetchWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DynamicFetchWorker>());
+// 封面补员：到站时没勾封面的视频，每小时一轮从 cover_url 补下封面原图（每轮封顶 40、条间 300ms，先文件后 artifacts 行）。
+builder.Services.AddHostedService<CoverBackfillWorker>();
 // 崩溃遗留的僵尸下载：StatusSyncWorker 负责发现（停滞销案），Reviver 负责救活（手动端点 + 启动自愈共用）。
 builder.Services.AddSingleton<LbsTaskReviver>();
 builder.Services.AddHostedService<StartupReviverWorker>();

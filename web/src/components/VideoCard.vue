@@ -33,6 +33,9 @@ function highlight(text) {
 const titleHtml = computed(() => highlight(props.video.title || props.video.bvid))
 const upHtml = computed(() => (props.video.upName ? highlight(props.video.upName) : ''))
 
+// 封面取图：本地原图优先（后端已拼好 /media/…），没归档的才吃热链 CDN 缩图；两边都没有给空串走 BV 占位。
+const coverSrc = computed(() => props.video.localCover || (props.video.coverUrl ? coverThumb(props.video.coverUrl, 480) : ''))
+
 // 弹幕条数按 B 站口径：过万折成「1.2万」，整万去小数尾
 function fmtCount(n) {
   if (n == null) return null
@@ -92,11 +95,11 @@ onMounted(() => {
 <template>
   <div class="cv-auto">
     <div class="relative aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3]">
-      <div v-if="video.coverUrl && !coverReady" class="cover-shimmer absolute inset-0" aria-hidden="true"></div>
+      <div v-if="coverSrc && !coverReady" class="cover-shimmer absolute inset-0" aria-hidden="true"></div>
       <img
-        v-if="video.coverUrl"
+        v-if="coverSrc"
         ref="coverEl"
-        :src="coverThumb(video.coverUrl, 480)"
+        :src="coverSrc"
         :alt="video.title || video.bvid"
         loading="lazy"
         decoding="async"

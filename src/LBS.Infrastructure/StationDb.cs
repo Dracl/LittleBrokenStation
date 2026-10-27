@@ -537,7 +537,8 @@ public sealed partial class StationDb
         command.CommandText = """
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
-                   (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku')
+                   (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
+                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1)
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -584,7 +585,8 @@ public sealed partial class StationDb
         command.CommandText = $"""
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
-                   (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku')
+                   (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
+                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1)
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -644,7 +646,9 @@ public sealed partial class StationDb
                 reader.IsDBNull(11) ? null : reader.GetString(11),
                 dmFiles > 0 ? 0 : null, // 占位，后面真数 Dialogue 行
                 reader.IsDBNull(12) ? null : reader.GetString(12),
-                reader.IsDBNull(13) ? null : reader.GetString(13)));
+                reader.IsDBNull(13) ? null : reader.GetString(13),
+                // 本地封面与观看页同形（/media/ + rel）；没 kind='cover' 行留 null，前端热链兑底。
+                reader.IsDBNull(15) ? null : "/media/" + reader.GetString(15)));
             if (dmFiles > 0)
             {
                 danmakuFiles.Add((list[^1].Id, dmFiles));
@@ -1822,7 +1826,8 @@ public sealed partial class StationDb
         command.CommandText = """
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
-                   (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku')
+                   (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
+                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1)
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -1887,6 +1892,59 @@ public sealed partial class StationDb
         command.Parameters.AddWithValue("$id", videoId);
         command.Parameters.AddWithValue("$kind", kind);
         return command.ExecuteScalar() as string;
+    }
+
+    /// <summary>封面补员候选：到站、有 cover_url、却没 kind='cover' 产物行的视频，老货优先限量取。
+    /// BaseRel 带同视频任一产物行的 rel（正片行优先）供推导封面目录与基名；完全无产物行的没处落盘，不入列。</summary>
+    public sealed record CoverBackfillCandidate(long VideoId, string Bvid, string CoverUrl, string BaseRel);
+
+    public IReadOnlyList<CoverBackfillCandidate> ListVideosMissingCover(int limit = 40)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT v.id, v.bvid, v.cover_url,
+                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id
+                    ORDER BY (a.kind = 'video') DESC, a.id LIMIT 1)
+            FROM videos v
+            WHERE v.status = $status
+              AND v.cover_url IS NOT NULL AND v.cover_url <> ''
+              AND NOT EXISTS (SELECT 1 FROM artifacts c WHERE c.video_id = v.id AND c.kind = 'cover')
+              AND EXISTS (SELECT 1 FROM artifacts a WHERE a.video_id = v.id)
+            ORDER BY v.id
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$status", VideoStatus.Arrived.ToString());
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 200));
+
+        var list = new List<CoverBackfillCandidate>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new CoverBackfillCandidate(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        }
+
+        return list;
+    }
+
+    /// <summary>登记补下的封面（先文件后行：缺件回炉 MissingMediaReconciler 拿 artifacts 行验盘，先插行会把「有行无件」误判回炉）。同名行不重。</summary>
+    public void RegisterCoverArtifact(long videoId, string relPath)
+    {
+        using var connection = Open(_dbPath);
+        using var exists = connection.CreateCommand();
+        exists.CommandText = "SELECT COUNT(1) FROM artifacts WHERE video_id = $id AND rel_path = $rel;";
+        exists.Parameters.AddWithValue("$id", videoId);
+        exists.Parameters.AddWithValue("$rel", relPath);
+        if (Convert.ToInt64(exists.ExecuteScalar()) > 0)
+        {
+            return;
+        }
+
+        using var insert = connection.CreateCommand();
+        insert.CommandText = "INSERT INTO artifacts (video_id, page_idx, kind, rel_path) VALUES ($id, NULL, 'cover', $rel);";
+        insert.Parameters.AddWithValue("$id", videoId);
+        insert.Parameters.AddWithValue("$rel", relPath);
+        insert.ExecuteNonQuery();
     }
 
     /// <summary>第一个分 P 的输出基准路径，评论快照文件就落在它旁边。</summary>

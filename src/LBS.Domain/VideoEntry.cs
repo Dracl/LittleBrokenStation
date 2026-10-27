@@ -52,4 +52,6 @@ public sealed record VideoEntry(
     // 真正的 B 站投稿时间（导入源自带 pubdate/created），首页卡阵展示它而非入站时间；
     // 没抽到时的兜底是 video_meta.publish_text（到站归档的发布文本）。
     string? PublishedAtUtc = null,
-    string? PublishText = null);
+    string? PublishText = null,
+    // 本地封面（与观看页同形：/media/ + artifacts 相对路径）；没归档封面的行留 null，前端热链兑底。
+    string? LocalCover = null);
