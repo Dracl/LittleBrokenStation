@@ -27,7 +27,11 @@ public sealed record ParsedDynamic(
     long? StatLike = null,
     long? OrigAuthorMid = null,
     string? OrigAuthorName = null,
-    string? OrigAuthorFace = null);
+    string? OrigAuthorFace = null,
+    // 评论区寻址坐标：B 站自己把评论区挂在 basic.comment_type/comment_id_str 上——
+    // 视频卡挂视频评论区（type=1+aid）、图文卡挂相簿（type=11+rid）、纯文/转发卡才是 type=17+动态 id。
+    long? CommentType = null,
+    string? CommentOid = null);
 
 /// <summary>一条动态评论（root=0 一级楼；子回复 root/parent 挂父楼）。</summary>
 public sealed record ParsedComment(
@@ -63,7 +67,9 @@ public sealed record CommentFetchOutcome(
     bool Ok,
     bool RiskControlled,
     IReadOnlyList<ParsedComment> Comments,
-    string? Error);
+    string? Error,
+    // 一级评论总数（B 站 page.count）：动态流不带 stat，底栏评论数就靠巡捕回执回住。
+    int TotalCount = 0);
 
 /// <summary>一个 target 这一轮的拉取战报。Offset=null 表示历史见底/取齐，下轮从头开始。</summary>
 public sealed record DynamicFetchOutcome(
@@ -88,7 +94,7 @@ public sealed class LbsDynamicFetcher(
     ILogger<LbsDynamicFetcher> logger)
 {
     private const string FeedPath = "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space";
-    private const string ReplyMainPath = "https://api.bilibili.com/x/v2/reply/main";
+    private const string ReplyOldPath = "https://api.bilibili.com/x/v2/reply"; // 一级热评走这家：新 main 接口不返 page，总数只在老口的 page.count
     private const string ReplySubPath = "https://api.bilibili.com/x/v2/reply/reply";
     private const int TypeDynamicReply = 17; // B 站评论区对动态的编号
     private const int MaxTopComments = 20;
@@ -211,14 +217,17 @@ public sealed class LbsDynamicFetcher(
     /// 拉一条动态的评论：热评前 20 条 + 前 3 个带子回复的楼各挖 20 条子回复。
     /// 风控与动态流同规矩：一旦现形立即弃单，剩下的楼不追，欠账由 worker 下轮补。
     /// </summary>
-    public async Task<CommentFetchOutcome> FetchCommentsAsync(string dynamicId, CancellationToken cancellationToken)
+    public async Task<CommentFetchOutcome> FetchCommentsAsync(string dynamicId, long? commentType, string? commentOid, CancellationToken cancellationToken)
     {
+        var replyType = commentType is > 0 ? commentType.Value : TypeDynamicReply;
+        var replyOid = string.IsNullOrWhiteSpace(commentOid) ? dynamicId : commentOid;
         var collected = new List<ParsedComment>();
-        var (mainStatus, topComments, subRoots, reason) = await FetchRepliesAsync(
-            ReplyMainPath, dynamicId, rootRpid: 0, extra: new Dictionary<string, object?>
+        var (mainStatus, topComments, subRoots, totalCount, reason) = await FetchRepliesAsync(
+            ReplyOldPath, dynamicId, replyType, replyOid, rootRpid: 0, extra: new Dictionary<string, object?>
             {
-                ["mode"] = 3,
-                ["next"] = 0,
+                ["sort"] = 2, // 热度序，与新 main 的 mode=3 同源；而且只有老口肯给 page.count 总评数
+                ["pn"] = 1,
+                ["ps"] = MaxTopComments,
             },
             MaxTopComments,
             collectRoots: true,
@@ -231,11 +240,11 @@ public sealed class LbsDynamicFetcher(
         collected.AddRange(topComments);
         foreach (var root in subRoots.Take(MaxSubThreads))
         {
-            var (subStatus, subComments, _, subReason) = await FetchRepliesAsync(
-                ReplySubPath, dynamicId, rootRpid: root, extra: new Dictionary<string, object?>
+            var (subStatus, subComments, _, _, subReason) = await FetchRepliesAsync(
+                ReplySubPath, dynamicId, replyType, replyOid, rootRpid: root, extra: new Dictionary<string, object?>
                 {
+                    ["pn"] = 1, // 楼中楼翻页认 pn/ps（同归档器 FetchSubsAsync）
                     ["ps"] = MaxSubPerThread,
-                    ["sort"] = 2,
                 },
                 MaxSubPerThread,
                 collectRoots: false,
@@ -243,22 +252,22 @@ public sealed class LbsDynamicFetcher(
             if (subStatus == FeedParseStatus.RiskControlled)
             {
                 // 子楼里撞风控：一级热评已经到手，就此收兵，剩余子楼留下轮。
-                return new CommentFetchOutcome(false, true, collected, subReason);
+                return new CommentFetchOutcome(false, true, collected, subReason, totalCount);
             }
 
             collected.AddRange(subComments);
         }
 
-        return new CommentFetchOutcome(true, false, collected, null);
+        return new CommentFetchOutcome(true, false, collected, null, totalCount);
     }
 
-    private async Task<(FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, string? Reason)> FetchRepliesAsync(
-        string path, string dynamicId, long rootRpid, Dictionary<string, object?> extra, int max, bool collectRoots, CancellationToken cancellationToken)
+    private async Task<(FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, int TotalCount, string? Reason)> FetchRepliesAsync(
+        string path, string dynamicId, long replyType, string replyOid, long rootRpid, Dictionary<string, object?> extra, int max, bool collectRoots, CancellationToken cancellationToken)
     {
         var paras = new Dictionary<string, object?>
         {
-            ["type"] = TypeDynamicReply,
-            ["oid"] = dynamicId,
+            ["type"] = replyType,
+            ["oid"] = replyOid,
         };
         foreach (var (key, value) in extra)
         {
@@ -284,15 +293,15 @@ public sealed class LbsDynamicFetcher(
                 }
                 catch (HttpRequestException ex)
                 {
-                    return (FeedParseStatus.RiskControlled, (IReadOnlyList<ParsedComment>)[], (IReadOnlyList<long>)[], $"HTTP 层拒了：{ex.Message}");
+                    return (FeedParseStatus.RiskControlled, (IReadOnlyList<ParsedComment>)[], (IReadOnlyList<long>)[], 0, $"HTTP 层拒了：{ex.Message}");
                 }
             },
             timeProvider,
             cancellationToken);
     }
 
-    /// <summary>评论页纯解析：与 ParseFeed 同一张嘴认 code/v_voucher，replies[] 按形状剥平。测试直喂 JSON。</summary>
-    public static (FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, string? Reason) ParseReplies(
+    /// <summary>评论页纯解析：与 ParseFeed 同一张嘴认 code/v_voucher，replies[] 按形状剥平；顺手拿 page.count 当一级评论总数。测试直喂 JSON。</summary>
+    public static (FeedParseStatus Status, IReadOnlyList<ParsedComment> Replies, IReadOnlyList<long> Roots, int TotalCount, string? Reason) ParseReplies(
         string json, long rootRpid, int max, bool collectRoots)
     {
         JsonDocument doc;
@@ -302,7 +311,7 @@ public sealed class LbsDynamicFetcher(
         }
         catch (JsonException)
         {
-            return (FeedParseStatus.Failed, [], [], "B 站回的不是 JSON");
+            return (FeedParseStatus.Failed, [], [], 0, "B 站回的不是 JSON");
         }
 
         using (doc)
@@ -313,22 +322,35 @@ public sealed class LbsDynamicFetcher(
                 : -1;
             if (code == -352)
             {
-                return (FeedParseStatus.RiskControlled, [], [], "code=-352 风控校验失败");
+                return (FeedParseStatus.RiskControlled, [], [], 0, "code=-352 风控校验失败");
             }
 
             if (code != 0)
             {
-                return (FeedParseStatus.Failed, [], [], $"B 站返回 code={code}");
+                // -404 = 这个评论区地址本家没开评论（如开播提醒卡、被销号的作品）：当空评论页交差，免它永世欠账。
+                if (code == -404)
+                {
+                    return (FeedParseStatus.Ok, [], [], 0, null);
+                }
+
+                return (FeedParseStatus.Failed, [], [], 0, $"B 站返回 code={code}");
             }
 
             if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
             {
-                return (FeedParseStatus.Failed, [], [], "data 没影");
+                return (FeedParseStatus.Failed, [], [], 0, "data 没影");
             }
 
             if (data.TryGetProperty("v_voucher", out var voucher) && voucher.ValueKind != JsonValueKind.Null)
             {
-                return (FeedParseStatus.RiskControlled, [], [], "data.v_voucher 现形");
+                return (FeedParseStatus.RiskControlled, [], [], 0, "data.v_voucher 现形");
+            }
+
+            // page.count = 一级评论总数（不管抽了几条），拿回住底栏评论数。
+            var totalCount = 0;
+            if (data.TryGetProperty("page", out var page) && page.ValueKind == JsonValueKind.Object)
+            {
+                totalCount = (int)(Num(page, "count") ?? 0);
             }
 
             var replies = new List<ParsedComment>();
@@ -368,7 +390,7 @@ public sealed class LbsDynamicFetcher(
                 }
             }
 
-            return (FeedParseStatus.Ok, replies, roots, null);
+            return (FeedParseStatus.Ok, replies, roots, totalCount, null);
         }
     }
 
@@ -500,7 +522,12 @@ public sealed class LbsDynamicFetcher(
         var archiveCover = Str(Path(src, "modules", "module_dynamic", "major", "archive", "cover"));
         var archiveDuration = Str(Path(src, "modules", "module_dynamic", "major", "archive", "duration_text"));
 
+        // 评论区寻址：B 站自己的坐标优先（视频卡→视频评论区，图文卡→相簿）；老卡没带就退回动态本家 17+id。
+        var commentType = Num(Path(item, "basic"), "comment_type");
+        var commentOid = Str(Path(item, "basic", "comment_id_str"));
+
         // 底栏三计数：顶层 stat 是整卡口径（FORWARD 的评论/赞也算在转发卡上），与 B 站卡底同源。
+        // 实测 space feed 不带 stat（B 站只给关注页 feed 发），拿不到就留 null，底栏评论数由巡捕回执补写。
         var stat = Path(item, "modules", "module_dynamic", "stat");
         var statComment = Num(Path(stat, "comment"), "count");
         var statForward = Num(Path(stat, "forward"), "count");
@@ -519,7 +546,8 @@ public sealed class LbsDynamicFetcher(
 
         return new ParsedDynamic(dynamicId, type, authorMid, authorName, text, pics, bvid, published,
             authorFace, archiveTitle, archiveCover, archiveDuration,
-            statComment, statForward, statLike, origAuthorMid, origAuthorName, origAuthorFace);
+            statComment, statForward, statLike, origAuthorMid, origAuthorName, origAuthorFace,
+            commentType, commentOid);
     }
 
     private static IReadOnlyList<string> CollectPics(JsonElement src)

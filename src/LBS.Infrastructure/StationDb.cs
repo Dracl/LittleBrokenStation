@@ -263,6 +263,8 @@ public sealed partial class StationDb
                     orig_author_mid  INTEGER,
                     orig_author_name TEXT,
                     orig_author_face TEXT,
+                    comment_type     INTEGER,
+                    comment_oid      TEXT,
                     comments_fetched_at_utc TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_dynamics_target ON dynamics (target_mid, published_at_utc);
@@ -301,6 +303,9 @@ public sealed partial class StationDb
         EnsureColumn(connection, "dynamics", "orig_author_name", "TEXT");
         EnsureColumn(connection, "dynamics", "orig_author_face", "TEXT");
         EnsureColumn(connection, "dynamics", "comments_fetched_at_utc", "TEXT");
+        // 评论区寻址坐标：B 站把评论区挂在 basic.comment_type/comment_id_str 上（视频卡→视频评论区、图文卡→相簿），巡捕抓评论靠它。
+        EnsureColumn(connection, "dynamics", "comment_type", "INTEGER");
+        EnsureColumn(connection, "dynamics", "comment_oid", "TEXT");
 
         // M6+ 私信变厚：支持「分享动态」卡，msg_type 分文本/动态，dyn_json 存分享那刻定格的卡面快照
         // （B 站删动态不连累分站留档，会话渲染也不回头查表）。

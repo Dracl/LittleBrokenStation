@@ -81,7 +81,8 @@ public sealed partial class StationDb
         string type, string? text, string? picsJson, string? bvid, string? publishedAtUtc,
         string? authorFaceUrl = null, string? archiveTitle = null, string? archiveCover = null, string? archiveDuration = null,
         long? statComment = null, long? statForward = null, long? statLike = null,
-        long? origAuthorMid = null, string? origAuthorName = null, string? origAuthorFace = null)
+        long? origAuthorMid = null, string? origAuthorName = null, string? origAuthorFace = null,
+        long? commentType = null, string? commentOid = null)
     {
         using var connection = Open(_dbPath);
         using var insert = connection.CreateCommand();
@@ -89,10 +90,12 @@ public sealed partial class StationDb
             INSERT OR IGNORE INTO dynamics
                 (dynamic_id, target_mid, author_mid, author_name, type, text, pics_json, bvid, published_at_utc, cached_at_utc,
                  author_face_url, archive_title, archive_cover, archive_duration,
-                 stat_comment, stat_forward, stat_like, orig_author_mid, orig_author_name, orig_author_face)
+                 stat_comment, stat_forward, stat_like, orig_author_mid, orig_author_name, orig_author_face,
+                 comment_type, comment_oid)
             VALUES ($did, $target, $author, $authorName, $type, $text, $pics, $bvid, $published, $cached,
                  $authorFace, $archTitle, $archCover, $archDur,
-                 $statCmt, $statFwd, $statLike, $origMid, $origName, $origFace);
+                 $statCmt, $statFwd, $statLike, $origMid, $origName, $origFace,
+                 $cmtType, $cmtOid);
             """;
         insert.Parameters.AddWithValue("$did", dynamicId);
         insert.Parameters.AddWithValue("$target", targetMid);
@@ -113,8 +116,24 @@ public sealed partial class StationDb
         insert.Parameters.AddWithValue("$origMid", (object?)origAuthorMid ?? DBNull.Value);
         insert.Parameters.AddWithValue("$origName", (object?)origAuthorName ?? DBNull.Value);
         insert.Parameters.AddWithValue("$origFace", (object?)origAuthorFace ?? DBNull.Value);
+        insert.Parameters.AddWithValue("$cmtType", (object?)commentType ?? DBNull.Value);
+        insert.Parameters.AddWithValue("$cmtOid", (object?)commentOid ?? DBNull.Value);
         insert.Parameters.AddWithValue("$cached", DateTimeOffset.UtcNow.ToString("O"));
         var fresh = insert.ExecuteNonQuery() > 0;
+
+        // 旧行没评论区坐标的，重巡扫到时补一笔（坐标只补空位，B 站不给改坐标）。
+        if (!fresh && commentType is > 0 && !string.IsNullOrWhiteSpace(commentOid))
+        {
+            using var coordFill = connection.CreateCommand();
+            coordFill.CommandText = """
+                UPDATE dynamics SET comment_type = $cmtType, comment_oid = $cmtOid
+                WHERE dynamic_id = $did AND comment_type IS NULL;
+                """;
+            coordFill.Parameters.AddWithValue("$cmtType", commentType.Value);
+            coordFill.Parameters.AddWithValue("$cmtOid", commentOid);
+            coordFill.Parameters.AddWithValue("$did", dynamicId);
+            coordFill.ExecuteNonQuery();
+        }
 
         if (fresh && !string.IsNullOrWhiteSpace(authorName))
         {
@@ -253,34 +272,60 @@ public sealed partial class StationDb
         return fresh;
     }
 
-    /// <summary>评论完工碑：盖了章的下轮不再补抓（零评论的动态也算办完，免得天天空跑）。</summary>
-    public void MarkCommentsFetched(string dynamicId)
-    {
-        using var connection = Open(_dbPath);
-        using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE dynamics SET comments_fetched_at_utc = $now WHERE dynamic_id = $did;";
-        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
-        command.Parameters.AddWithValue("$did", dynamicId);
-        command.ExecuteNonQuery();
-    }
-
-    /// <summary>评论欠账名单：没盖章的动态新→旧限量补抓（存量靠巡捕逐轮摊平，不打爆 B 站）。</summary>
-    public IReadOnlyList<string> ListPendingCommentDynamics(int limit = 5)
+    /// <summary>评论完工碑：盖了章的下轮不再补抓（零评论的动态也算办完，免得天天空跑）；
+    /// 顺手把 B 站报的一级评论总数回写底栏（动态流不带 stat，这是唯一可靠来源）。</summary>
+    public void MarkCommentsFetched(string dynamicId, int? totalCount = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT dynamic_id FROM dynamics WHERE comments_fetched_at_utc IS NULL ORDER BY id DESC LIMIT $limit;
+            UPDATE dynamics SET comments_fetched_at_utc = $now,
+                stat_comment = COALESCE($count, stat_comment)
+            WHERE dynamic_id = $did;
+            """;
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$count", (object?)totalCount ?? DBNull.Value);
+        command.Parameters.AddWithValue("$did", dynamicId);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>待抓评论的一条动态：id + B 站给的评论区坐标（缺了巡捕退回 type=17+id）。</summary>
+    public sealed record PendingCommentRow(string DynamicId, long? CommentType, string? CommentOid);
+
+    /// <summary>评论欠账名单：没盖章且已知坐标的动态新→旧限量补抓。
+    /// 没坐标 = feed 还没重巡到它，不急着拿兑底坐标误盖章（等巡捕补完再办）。</summary>
+    public IReadOnlyList<PendingCommentRow> ListPendingCommentDynamics(int limit = 5)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT dynamic_id, comment_type, comment_oid FROM dynamics
+            WHERE comments_fetched_at_utc IS NULL AND comment_type IS NOT NULL
+            ORDER BY id DESC LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 50));
-        var list = new List<string>();
+        var list = new List<PendingCommentRow>();
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            list.Add(reader.GetString(0));
+            list.Add(new PendingCommentRow(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2)));
         }
 
         return list;
+    }
+
+    /// <summary>底栏评论数（巡捕盖章时从 page.count 回写的原值）；没盖章前没数。</summary>
+    public long? GetStatComment(string dynamicId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT stat_comment FROM dynamics WHERE dynamic_id = $did LIMIT 1;";
+        command.Parameters.AddWithValue("$did", dynamicId);
+        var value = command.ExecuteScalar();
+        return value is long count ? count : null;
     }
 
     /// <summary>一条动态的评论树原料：一级楼与子回复按抓取序（热评序）拉平，端点层负责嵌套。</summary>

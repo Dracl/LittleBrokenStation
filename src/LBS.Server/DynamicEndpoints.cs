@@ -1,5 +1,6 @@
 using System.Text.Json;
 using LBS.Domain;
+using LBS.Engine;
 using LBS.Infrastructure;
 
 namespace LBS.Server;
@@ -79,7 +80,8 @@ public static class DynamicEndpoints
             }).ToList();
             return Results.Ok(new
             {
-                total = rows.Count,
+                // 总数优先拿巡捕盖章的 page.count（本地只存热评前 20，数条数会低估）。
+                total = db.GetStatComment(dynamicId) ?? rows.Count,
                 fetched = db.GetCommentsFetchedAt(dynamicId) is not null,
                 items,
             });

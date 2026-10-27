@@ -94,7 +94,7 @@ public sealed class DynamicFetchWorker(
         await roundGate.WaitAsync(cancellationToken);
         try
         {
-            var freshIds = new List<string>();
+            var freshIds = new List<(string DynamicId, long? CommentType, string? CommentOid)>();
             foreach (var target in db.ListDynamicTargets())
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -116,10 +116,11 @@ public sealed class DynamicFetchWorker(
                                 parsed.Bvid, parsed.PublishedAtUtc,
                                 parsed.AuthorFaceUrl, parsed.ArchiveTitle, parsed.ArchiveCover, parsed.ArchiveDuration,
                                 parsed.StatComment, parsed.StatForward, parsed.StatLike,
-                                parsed.OrigAuthorMid, parsed.OrigAuthorName, parsed.OrigAuthorFace);
+                                parsed.OrigAuthorMid, parsed.OrigAuthorName, parsed.OrigAuthorFace,
+                                parsed.CommentType, parsed.CommentOid);
                             if (fresh)
                             {
-                                freshIds.Add(parsed.DynamicId);
+                                freshIds.Add((parsed.DynamicId, parsed.CommentType, parsed.CommentOid));
                             }
 
                             return Task.FromResult(fresh);
@@ -157,9 +158,14 @@ public sealed class DynamicFetchWorker(
     /// 评论段：先给本轮新收的动态收评论，再摄 5 条存量欠账（新→旧，逐轮摊平不打爆 B 站）。
     /// 条间 350ms 节流；一旦风控信号现形，剩下的一律留下轮——评论没盖碑的欠账自会重逢。
     /// </summary>
-    private async Task RunCommentRoundAsync(List<string> freshIds, CancellationToken cancellationToken)
+    private async Task RunCommentRoundAsync(List<(string DynamicId, long? CommentType, string? CommentOid)> freshIds, CancellationToken cancellationToken)
     {
-        var queue = freshIds.Concat(db.ListPendingCommentDynamics(5).Where(id => !freshIds.Contains(id))).ToList();
+        // 新货带完整坐标直接办；存量欠账从库里拿坐标（没坐标的行等重巡补完再办，不拿兑底误盖章）。
+        var pending = db.ListPendingCommentDynamics(60)
+            .Where(row => !freshIds.Any(f => f.DynamicId == row.DynamicId))
+            .Select(row => (row.DynamicId, row.CommentType, row.CommentOid))
+            .ToList();
+        var queue = freshIds.Concat(pending).ToList();
         if (queue.Count == 0)
         {
             return;
@@ -167,12 +173,12 @@ public sealed class DynamicFetchWorker(
 
         var totalComments = 0;
         var finished = 0;
-        foreach (var dynamicId in queue)
+        foreach (var (dynamicId, commentType, commentOid) in queue)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                var outcome = await policy.RunForActivityAsync(() => fetcher.FetchCommentsAsync(dynamicId, cancellationToken));
+                var outcome = await policy.RunForActivityAsync(() => fetcher.FetchCommentsAsync(dynamicId, commentType, commentOid, cancellationToken));
                 if (!outcome.Ok && !outcome.RiskControlled)
                 {
                     logger.LogWarning("动态评论：{DynamicId} 没取成（{Error}），欠账留下轮", dynamicId, outcome.Error);
@@ -184,7 +190,8 @@ public sealed class DynamicFetchWorker(
                     .ToList());
                 if (outcome.Ok)
                 {
-                    db.MarkCommentsFetched(dynamicId);
+                    // 盖章时顺手把 B 站报的一级评论总数回住底栏（动态流不带 stat，这是唯一可靠来源）。
+                    db.MarkCommentsFetched(dynamicId, outcome.TotalCount > 0 ? outcome.TotalCount : null);
                     finished++;
                 }
 

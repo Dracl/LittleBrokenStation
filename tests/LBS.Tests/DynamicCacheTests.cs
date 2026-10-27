@@ -148,6 +148,37 @@ public sealed class DynamicCacheTests : IDisposable
     }
 
     [Fact]
+    public void ParseFeed_Basic_CarriesCommentCoordinates()
+    {
+        // B 站把评论区挂在 basic 上：图文卡→相簿（type=11+rid）、视频卡→视频评论区（type=1+aid），与动态 id 不同源。
+        var item = """
+            {"id_str":"8880010","type":"DYNAMIC_TYPE_DRAW",
+              "basic":{"comment_type":11,"comment_id_str":"413420393"},
+              "modules":{"module_author":{"mid":119,"name":"图透君","pub_ts":1700001000},
+              "module_dynamic":{"desc":{"text":"看风景"},"major":null}}}
+            """;
+
+        var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
+        Assert.Equal(11, parsed.CommentType);
+        Assert.Equal("413420393", parsed.CommentOid);
+    }
+
+    [Fact]
+    public void ParseFeed_Basic_MissingCoordinates_StaysNull()
+    {
+        // 老卡型可能不带 basic：坐标留 null，巡捕自己退回 type=17+动态 id。
+        var item = """
+            {"id_str":"8880011","type":"DYNAMIC_TYPE_WORD","modules":{
+              "module_author":{"mid":119,"name":"纯文君","pub_ts":1700001100},
+              "module_dynamic":{"desc":{"text":"裸卡"},"major":null}}}
+            """;
+
+        var parsed = Assert.Single(LbsDynamicFetcher.ParseFeed(Feed(item)).Items);
+        Assert.Null(parsed.CommentType);
+        Assert.Null(parsed.CommentOid);
+    }
+
+    [Fact]
     public void ParseFeed_StatCounts_CapturedFromTopLevel()
     {
         var item = """
@@ -168,7 +199,7 @@ public sealed class DynamicCacheTests : IDisposable
     public void ParseReplies_Main_ParsesTopCommentsAndSubRoots()
     {
         var json = """
-            {"code":0,"data":{"replies":[
+            {"code":0,"data":{"page":{"count":128},"replies":[
               {"rpid":111,"ctime":1700000000,"like":42,"rcount":3,
                "content":{"message":"热评一号"},"member":{"mid":9001,"uname":"月光","face":"https://i0.hdslb.com/f/1.jpg"}},
               {"rpid":112,"content":{"message":"   "},"member":{"mid":1}},
@@ -176,6 +207,8 @@ public sealed class DynamicCacheTests : IDisposable
             """;
 
         var result = LbsDynamicFetcher.ParseReplies(json, rootRpid: 0, max: 20, collectRoots: true);
+        Assert.Equal(FeedParseStatus.Ok, result.Status);
+        Assert.Equal(128, result.TotalCount); // 底栏评论数认 page.count，不认抽了几条
         Assert.Equal(FeedParseStatus.Ok, result.Status);
         var top = Assert.Single(result.Replies); // 空正文与没楼号的行开不了楼
         Assert.Equal(111, top.Rpid);
@@ -215,6 +248,19 @@ public sealed class DynamicCacheTests : IDisposable
         Assert.Empty(result.Replies);
         Assert.Empty(result.Roots);
         Assert.Contains("-352", result.Reason);
+    }
+
+    [Fact]
+    public void ParseReplies_NoCommentSection_GracefulEmpty()
+    {
+        // 开播提醒等卡型没开评论区，B 站回 -404：当空页交差，不留永久欠账。
+        var json = """
+            {"code":-404,"message":"啥都木有"}
+            """;
+        var result = LbsDynamicFetcher.ParseReplies(json, 0, 20, true);
+        Assert.Equal(FeedParseStatus.Ok, result.Status);
+        Assert.Empty(result.Replies);
+        Assert.Null(result.Reason);
     }
 
     [Fact]
@@ -383,5 +429,28 @@ public sealed class DynamicCacheTests : IDisposable
         // 已有名片不覆盖
         _db.UpsertDynamic("d2", 5001, 5001, "改名了", "DYNAMIC_TYPE_WORD", "t2", null, null, "2026-01-01T00:00:00+00:00");
         Assert.Equal("阿婆主", Assert.Single(_db.ListDynamicTargets()).Nickname);
+    }
+
+    [Fact]
+    public void CommentCatchup_PendingCarriesCoordinates_AndSealWritesBackCount()
+    {
+        // 图文卡的评论区挂在相簿（type=11+rid）：坐标随入库落库，欠账名单带着它走。
+        _db.UpsertDynamic("cd1", 7001, 7001, "图文君", "DYNAMIC_TYPE_DRAW", "图", null, null, "2026-01-01T00:00:00+00:00",
+            commentType: 11, commentOid: "413420393");
+
+        var pending = Assert.Single(_db.ListPendingCommentDynamics());
+        Assert.Equal("cd1", pending.DynamicId);
+        Assert.Equal(11, pending.CommentType);
+        Assert.Equal("413420393", pending.CommentOid);
+
+        Assert.Equal(1, _db.UpsertComments("cd1",
+            [new StationDb.DynamicCommentRow(501, 0, 0, 9, "楼", "https://i0.hdslb.com/f/9.jpg", "一楼", 3, null)]));
+        _db.MarkCommentsFetched("cd1", 57);
+
+        // 盖章后退出欠账名单；底栏评论数从 page.count 回写（动态流不带 stat，巡捕回执是唯一来源）。
+        Assert.Empty(_db.ListPendingCommentDynamics());
+        var row = Assert.Single(_db.ListDynamics(7001));
+        Assert.Equal(57, row.StatComment);
+        Assert.NotNull(row.CommentsFetchedAtUtc);
     }
 }
