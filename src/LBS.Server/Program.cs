@@ -221,7 +221,7 @@ app.Use(async (context, next) =>
                 .Record(EventActors.Guest, null, EventNames.WatchBlocked, "path", path,
                     ip: context.Connection.RemoteIpAddress?.ToString());
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            await context.Response.WriteAsJsonAsync(new { error = "member-required", message = "扫码登录后才能看视频、弹幕与评论区" });
+            await context.Response.WriteAsJsonAsync(new { error = "member-required", message = "用站名密码登录后才能看视频、弹幕与评论区" });
             return;
         }
     }

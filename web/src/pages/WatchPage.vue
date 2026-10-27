@@ -10,11 +10,14 @@ import PageList from '../components/PageList.vue'
 import VideoActions from '../components/VideoActions.vue'
 import DanmakuList from '../components/DanmakuList.vue'
 import UpNextList from '../components/UpNextList.vue'
+import EmptyTv from '../components/EmptyTv.vue'
+import { member, loginDialogOpen } from '../memberStore'
+import { submitDialogOpen } from '../submitStore'
 
 const route = useRoute()
 const router = useRouter()
 const data = ref(null)
-const loadFailed = ref(false)
+const gateState = ref(null) // null=正常 | 'login'=访客挡在放映厅门外 | 'missing'=馆藏确无此片
 const loading = ref(true)
 const activeIndex = ref(0)
 
@@ -37,7 +40,7 @@ function playNextPage() {
 async function loadWatch(silent = false) {
   if (!silent) {
     loading.value = true
-    loadFailed.value = false
+    gateState.value = null
   }
   try {
     const res = await fetch(`/api/watch/${route.params.bvid}`)
@@ -56,12 +59,13 @@ async function loadWatch(silent = false) {
       }
     } else if (!silent) {
       data.value = null
-      loadFailed.value = true
+      // 门禁与查无此片是两回事：401=还没站籍，别拿「不存在」糊弄门外的客人
+      gateState.value = res.status === 401 ? 'login' : 'missing'
     }
   } catch {
     if (!silent) {
       data.value = null
-      loadFailed.value = true
+      gateState.value = 'missing'
     }
   } finally {
     if (!silent) loading.value = false
@@ -270,7 +274,47 @@ const playerShellW = ref(0)
 
     <main class="mx-auto max-w-[1600px] px-6 py-5">
       <p v-if="loading" class="py-20 text-center text-sm text-inkSub">正在打开馆藏……</p>
-      <p v-else-if="loadFailed" class="py-20 text-center text-sm text-inkSub">馆藏里没有这个 BV 号，或者已经被删了</p>
+
+      <!-- 访客吃门禁：B 站式迷路小电视，指路去站籍 -->
+      <EmptyTv
+        v-else-if="gateState === 'login'"
+        title="啊叻？想看视频？"
+        subtitle="看片、弹幕、评论区都是分站成员的待遇——花两秒领个席位，或直接把门钥匙输进来"
+      >
+        <button
+          class="rounded-lg bg-gradient-to-r from-stationPink to-[#f994b6] px-6 py-2 text-sm font-medium text-white shadow-md shadow-stationPink/30 transition hover:-translate-y-px hover:shadow-lg hover:shadow-stationPink/40 active:translate-y-0"
+          @click="loginDialogOpen = true"
+        >
+          快速登录
+        </button>
+        <RouterLink
+          to="/register"
+          class="rounded-lg border border-lineSoft px-6 py-2 text-sm text-inkSub transition hover:border-stationPink hover:text-stationPink"
+        >
+          注册个站籍
+        </RouterLink>
+      </EmptyTv>
+
+      <!-- 馆藏确无此片：同款小电视，给出路与投稿两条路 -->
+      <EmptyTv
+        v-else-if="gateState === 'missing'"
+        title="啊叻？找不到这部视频"
+        subtitle="馆藏里没有这个 BV 号，或者已经被删了"
+      >
+        <button
+          class="rounded-lg bg-gradient-to-r from-stationPink to-[#f994b6] px-6 py-2 text-sm font-medium text-white shadow-md shadow-stationPink/30 transition hover:-translate-y-px hover:shadow-lg hover:shadow-stationPink/40 active:translate-y-0"
+          @click="router.push('/')"
+        >
+          回分站大厅
+        </button>
+        <button
+          v-if="member"
+          class="rounded-lg border border-lineSoft px-6 py-2 text-sm text-inkSub transition hover:border-stationPink hover:text-stationPink"
+          @click="submitDialogOpen = true"
+        >
+          投稿这条视频
+        </button>
+      </EmptyTv>
 
       <template v-else-if="data">
         <!-- B 站宽屏模式同款：播放器单独通栏，其下才分两栏 -->
