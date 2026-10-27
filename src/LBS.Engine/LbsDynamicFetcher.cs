@@ -148,7 +148,15 @@ public sealed class LbsDynamicFetcher(
                     var raw = await client.GetStringAsync(
                         new BilibiliHttpRequest($"{FeedPath}?{query}", $"https://space.bilibili.com/{mid}/"),
                         cancellationToken);
-                    return ParseFeed(raw);
+                    var parsed = ParseFeed(raw);
+                    // 空手而归最迷惑人：留一段原货供断案（code 正常却零条，多半是身份/参数问题而非真无动态）。
+                    if (parsed.Status == FeedParseStatus.Ok && parsed.Items.Count == 0)
+                    {
+                        logger.LogWarning("动态取数：mid {Mid} 空手而归，原货首 {Snippet}", mid,
+                            raw.Length > 400 ? raw[..400] : raw);
+                    }
+
+                    return parsed;
                 }
                 catch (HttpRequestException ex)
                 {
