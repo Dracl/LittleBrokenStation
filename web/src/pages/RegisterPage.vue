@@ -54,7 +54,7 @@ async function submit() {
       notice.value = { kind: 'err', text: data?.message ?? '分站后端没有应答' }
       return
     }
-    // 注册即已登录（后端发了同款会话 cookie）：拉齐身份直奔控制室
+    // 注册即已登录（后端发了同款会话 cookie）：拉齐身份直奔个人空间
     await loadMember()
     notice.value = { kind: 'ok', text: data?.message ?? '站籍落定' }
     setTimeout(() => router.push('/me'), 800)
@@ -74,7 +74,7 @@ async function submit() {
         <div class="bg-gradient-to-r from-stationPink/10 via-stationPink/5 to-transparent px-6 pb-5 pt-6">
           <h1 class="text-lg font-semibold text-inkMain">落个站籍</h1>
           <p class="mt-1 text-xs leading-5 text-inkFaint">
-            站名密码是分站自己的门钥匙；B 站号是可选挂件，进站后随时能在控制室扫码挂上。
+            站名密码是分站自己的门钥匙；B 站号是可选挂件，进站后随时能在个人空间扫码挂上。
           </p>
         </div>
 

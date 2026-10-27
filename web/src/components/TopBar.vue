@@ -61,12 +61,12 @@ function onVisible() {
 const displayName = computed(() => {
   const m = member.value
   if (!m) return ''
-  return m.nickname || (m.username ? `@${m.username}` : '旅人')
+  return m.nickname || m.username || '旅人'
 })
 
 function identityLine(m) {
   const role = m.role === 'owner' ? '站长' : '分站成员'
-  return `${role} · UID #${m.memberId}${m.username ? ` · @${m.username}` : ''}`
+  return `${role} · UID #${m.memberId}`
 }
 
 let unreadTimer = null
@@ -220,7 +220,7 @@ function goMessages() {
                     <circle cx="12" cy="8.5" r="3.5" />
                     <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
                   </svg>
-                  用户控制室
+                  个人空间
                 </button>
                 <button
                   v-if="member.role === 'owner'"
@@ -248,6 +248,6 @@ function goMessages() {
       </div>
     </div>
   </header>
-  <!-- admit 实例：全站顶栏页共用的扫码进站窗（bind 实例由用户控制室自己挂） -->
+  <!-- admit 实例：全站顶栏页共用的扫码进站窗（bind 实例由个人空间自己挂） -->
   <LoginDialog />
 </template>

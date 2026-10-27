@@ -8,7 +8,7 @@ import qrcodeScriptUrl from '../libs/qrcode.min.js?url'
 
 const props = defineProps({
   // 本实例只认领「全局模式与自己一致」的那次唤起：
-  // 同页可能挂两个实例（顶栏默认登录窗 + 控制室 bind），各亮各的，不叠罗汉。
+  // 同页可能挂两个实例（顶栏默认登录窗 + 个人空间 bind），各亮各的，不叠罗汉。
   // 登录与平台绑定彻底分离（M5.4 修正）：admit 实例 = 账密登录单屏，不再亮扫码；
   // 扫码链路只留给 bind 实例（/me 绑外部平台号），扫码代码整段留在文件里。
   instanceMode: { type: String, default: 'admit' },
@@ -99,7 +99,7 @@ const modeTitle = computed(() => ({
 }[activeMode.value]))
 const modeSubtitle = computed(() => ({
   bind: '再绑一个号进账号池，分站替两号轮流出力',
-  login: '分站自己的门钥匙；外部平台号进站后在控制室绑定',
+  login: '分站自己的门钥匙；外部平台号进站后在个人空间绑定',
   admit: '手机 B 站扫一扫，分站就认识你了',
 }[activeMode.value]))
 
@@ -320,7 +320,7 @@ function goRegister() {
               还没有站籍？
               <RouterLink to="/register" class="font-medium text-stationPink transition hover:underline" @click="goRegister">注册去 →</RouterLink>
             </p>
-            <p class="mt-1 text-[11px] leading-4 text-inkFaint">忘记密码？找站长代重置；扫码绑外部平台号在控制室的「外部账号绑定」卡里。</p>
+            <p class="mt-1 text-[11px] leading-4 text-inkFaint">忘记密码？找站长代重置；扫码绑外部平台号在个人空间的「外部账号绑定」卡里。</p>
           </template>
 
           <template v-else>

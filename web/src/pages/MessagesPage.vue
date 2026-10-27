@@ -302,7 +302,7 @@ const peerId = computed(() => activePeer.value?.memberId ?? null)
 // 对人的展示名：昵称 → @站名 → 席位号，素净席位不再叫 UID 0
 function peerLabel(p) {
   if (!p) return ''
-  return p.displayName || p.nickname || p.peerName || p.peerDisplayName || (p.username ? `@${p.username}` : `席位 ${p.memberId ?? p.peerMemberId ?? ''}`)
+  return p.displayName || p.nickname || p.peerName || p.peerDisplayName || (p.username ? p.username : `席位 ${p.memberId ?? p.peerMemberId ?? ''}`)
 }
 </script>
 
@@ -471,7 +471,7 @@ function peerLabel(p) {
                   <span class="flex items-center gap-2 text-[13px] font-medium text-inkMain">
                     {{ peerLabel(activePeer) }}
                     <span class="text-[11px] font-normal text-inkFaint">
-                      <template v-if="activePeer.username">@{{ activePeer.username }} · </template>UID #{{ activePeer.memberId }}
+                      <template v-if="activePeer.username">{{ activePeer.username }} · </template>UID #{{ activePeer.memberId }}
                     </span>
                   </span>
                   <button class="text-xs text-inkFaint transition hover:text-stationPink" @click="closeThread">收起</button>
@@ -557,7 +557,7 @@ function peerLabel(p) {
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-[13px] text-inkMain">{{ peerLabel(p) }}</span>
                       <span class="block text-[11px] text-inkFaint">
-                        <template v-if="p.username">@{{ p.username }} · </template>UID #{{ p.peerMemberId ?? p.memberId }}
+                        <template v-if="p.username">{{ p.username }} · </template>UID #{{ p.peerMemberId ?? p.memberId }}
                       </span>
                     </span>
                     <span class="shrink-0 rounded-full bg-stationPink/10 px-2.5 py-1 text-[11px] text-stationPink">开聊</span>

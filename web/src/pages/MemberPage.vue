@@ -12,7 +12,7 @@ const notice = ref(null) // { kind, text }
 const displayName = computed(() => {
   const m = member.value
   if (!m) return ''
-  return m.nickname || (m.username ? `@${m.username}` : '旅人')
+  return m.nickname || m.username || '旅人'
 })
 
 // 改密表单：首设（扫码客从未设过）免旧密码，验旧与否后端说了算，前端只递参数
@@ -136,7 +136,7 @@ async function doLogout() {
         </span>
         <h2 class="mt-5 text-lg font-semibold text-inkMain">分站还不认识你</h2>
         <p class="mx-auto mt-2 max-w-[360px] text-sm leading-6 text-inkSub">
-          注册个站籍就能进门：逛分站、看片、发私信都认这个身份；B 站号只是可选挂件，进站后在控制室扫码绑上。
+          注册个站籍就能进门：逛分站、看片、发私信都认这个身份；B 站号只是可选挂件，进站后在个人空间扫码绑上。
         </p>
         <RouterLink
           to="/register"
@@ -187,8 +187,7 @@ async function doLogout() {
                 </span>
               </div>
               <p class="mt-1.5 font-mono text-xs text-inkFaint">
-                UID #{{ member.memberId }}<template v-if="member.username"> · @{{ member.username }}</template>
-                <template v-else>站内席位 #{{ member.memberId }}</template>
+                UID #{{ member.memberId }}
                 · 上次登录 {{ friendlyTime(member.lastLoginAtUtc) }}
                 <template v-if="member.note"> · 站长备注：{{ member.note }}</template>
               </p>
@@ -238,7 +237,7 @@ async function doLogout() {
             <div class="rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3">
               <dt class="text-[11px] text-inkFaint">站名（账密登录用）</dt>
               <dd class="mt-1 truncate text-sm text-inkMain">
-                <template v-if="member.username">@{{ member.username }}</template>
+                <template v-if="member.username">{{ member.username }}</template>
                 <template v-else>
                   <span class="text-inkFaint">未设——这是个纯扫码席位</span>
                   <p class="mt-1 text-[11px] leading-4 text-inkFaint">在下方补设密码，就能用密码开门（需先登录着）。</p>

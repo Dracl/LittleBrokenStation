@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 
-/// 全站共享的成员登录态：TopBar、用户控制室、站长室都读这份，LoginDialog 统一唤起。
+/// 全站共享的成员登录态：TopBar、个人空间、站长室都读这份，LoginDialog 统一唤起。
 /// 参照 submitStore 的写法：无 Pinia，模块级 ref 即 store。
 /// member 为 /api/member/me 的回包；null = 访客。
 

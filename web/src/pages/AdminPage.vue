@@ -631,7 +631,7 @@ async function dlCancelOne(id) {
   }
 }
 
-// ─── 身份门：会员会话说了算（401=访客请扫码，403=普通成员送客去用户控制室）───
+// ─── 身份门：会员会话说了算（401=访客请扫码，403=普通成员送客去个人空间）───
 const adminAuth = ref('loading') // loading | ok | needOwner | member
 
 function openLogin(mode) {
@@ -872,7 +872,7 @@ async function confirmReset(m) {
 
 // 席位对人的展示名：昵称 → @站名 → 席位号（素净席位不再叫 UID null）
 function seatLabel(m) {
-  return m.nickname || (m.username ? `@${m.username}` : `席位 ${m.id}`)
+  return m.nickname || m.username || `席位 ${m.id}`
 }
 function seatIdLine(m) {
   return `UID #${m.id}`
@@ -1226,7 +1226,7 @@ function watchRestart() {
 }
 
 async function bootAdmin() {
-  // 先拿站长专属端点探身份：401=访客（请扫码），403=普通成员（送客去用户控制室）。
+  // 先拿站长专属端点探身份：401=访客（请扫码），403=普通成员（送客去个人空间）。
   adminAuth.value = 'loading'
   try {
     const probe = await fetch('/api/admin/stats')
@@ -1288,7 +1288,7 @@ onUnmounted(() => {
 
 <template>
   <div class="min-h-screen bg-adminBg text-white">
-    <!-- 身份门：会员会话说了算，访客挡在门外，普通成员送客去用户控制室 -->
+    <!-- 身份门：会员会话说了算，访客挡在门外，普通成员送客去个人空间 -->
     <div v-if="adminAuth !== 'ok'" class="flex min-h-screen items-center justify-center px-6">
       <div class="lbs-card w-full max-w-[400px] p-8 text-center">
         <template v-if="adminAuth === 'needOwner'">
@@ -1307,9 +1307,9 @@ onUnmounted(() => {
             <span class="text-sm tracking-widest text-white/90">这里是站长室</span>
           </div>
           <p class="mb-5 text-xs leading-5 text-white/35">
-            你已是分站成员，这里是站长室——普通成员请进用户控制室。
+            你已是分站成员，这里是站长室——普通成员请进个人空间。
           </p>
-          <RouterLink to="/me" class="lbs-btn inline-block w-full">进用户控制室</RouterLink>
+          <RouterLink to="/me" class="lbs-btn inline-block w-full">进个人空间</RouterLink>
         </template>
         <p v-else class="py-4 text-xs text-white/30">正在核对手牌……</p>
       </div>
@@ -1396,7 +1396,7 @@ onUnmounted(() => {
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-1.5 text-xs text-white/85">
                   <span class="truncate">{{ seatLabel(m) }}</span>
-                  <span v-if="m.username && m.nickname" class="shrink-0 rounded-full border border-white/10 bg-white/5 px-1.5 py-px text-[10px] text-white/40">@{{ m.username }}</span>
+                  <span v-if="m.username && m.nickname" class="shrink-0 rounded-full border border-white/10 bg-white/5 px-1.5 py-px text-[10px] text-white/40">{{ m.username }}</span>
                   <span v-if="!m.mid && !m.username" class="shrink-0 rounded-full border border-white/10 bg-white/5 px-1.5 py-px text-[10px] text-white/40">素净</span>
                   <span v-if="m.role === 'owner'" class="shrink-0 rounded-full border border-amber-400/50 bg-amber-400/10 px-1.5 py-px text-[10px] text-amber-300">♛ 站长</span>
                   <span v-else class="flex shrink-0 items-center gap-1 rounded-full border border-slate-400/40 bg-slate-400/10 px-1.5 py-px text-[10px] text-slate-300">
