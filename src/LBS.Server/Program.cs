@@ -69,6 +69,7 @@ builder.Services.AddSingleton<ExportJobBoard>();
 // 缺件回炉闸门：先建档（默认关），开机换库真换了才拨闩——builder.Build() 之后集合只读，不能再 AddSingleton。
 builder.Services.AddSingleton<MediaReconcileGate>();
 builder.Services.AddHostedService<LedgerBackupWorker>();
+builder.Services.AddHostedService<WeeklyReportWorker>(); // 周报发报员：周一 09:00（UTC+8）后给全站播一条周报公告
 // 分站海马体：业务侧 Record 一下就走，抄录员后台攒批落 events 表，供站长与未来 AI 分析。
 builder.Services.AddSingleton<EventRecorder>();
 builder.Services.AddHostedService<EventRecorderWorker>();
@@ -405,6 +406,8 @@ app.MapAdminDmEndpoints();
 // 站内弹幕举报（最小闭环）：会员对站内弹幕一键举报，站长在站长室删或忽略；不预隐藏，只此一口（B 站弹幕不管）。
 app.MapDanmakuReportEndpoints();
 app.MapAdminDanmakuReportEndpoints();
+app.MapWeeklyReportEndpoints(); // 分站周报：成员登录后 /api/weekly 看本周战报（/weekly 页）
+app.MapWatchHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
 
 // 数据交换：导出打包/档案柜/导入暂存与换库（全在 /api/admin/** 站长门下）。
 app.MapDataExchangeApi();

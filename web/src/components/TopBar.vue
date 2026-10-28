@@ -106,6 +106,8 @@ function goMessages() {
 
       <nav class="flex items-center gap-4 text-[13px] text-inkMain">
         <RouterLink to="/dynamics" class="transition hover:text-stationPink" :class="route.path.startsWith('/dynamics') ? 'text-stationPink' : ''">动态</RouterLink>
+        <!-- 周报入口：成员登录后才亮（周报数据本身就是成员待遇，访客点了也吃 401，干脆不递钥匙） -->
+        <RouterLink v-if="member" to="/weekly" class="transition hover:text-stationPink" :class="route.path.startsWith('/weekly') ? 'text-stationPink' : ''">周报</RouterLink>
         <span class="cursor-not-allowed text-inkFaint" title="M2 到站">番剧</span>
         <span class="cursor-not-allowed text-inkFaint" title="M2 到站">直播</span>
         <span class="cursor-not-allowed text-inkFaint" title="M2 到站">合集</span>
