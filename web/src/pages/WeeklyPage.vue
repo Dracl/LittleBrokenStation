@@ -104,7 +104,7 @@ function goNext() {
 
       <!-- 加载中 / 拉胯了 -->
       <div v-if="loading" class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div v-for="i in 3" :key="i" class="h-24 animate-pulse rounded-2xl bg-[#f1f2f3]"></div>
+        <div v-for="i in 3" :key="i" class="h-24 animate-pulse rounded-2xl bg-[#f1f2f3] dark:bg-[#23262e]"></div>
       </div>
       <div v-else-if="error" class="rounded-2xl border border-dashed border-lineSoft bg-cardBg px-6 py-14 text-center">
         <p class="text-sm text-inkSub">{{ error }}</p>
@@ -157,7 +157,7 @@ function goNext() {
                 :to="`/watch/${item.bvid}`"
                 class="group w-44 shrink-0"
               >
-                <div class="relative aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3]">
+                <div class="relative aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3] dark:bg-[#23262e]">
                   <img
                     v-if="coverSrc(item.coverUrl)"
                     :src="coverSrc(item.coverUrl)"
@@ -191,7 +191,7 @@ function goNext() {
                     class="w-7 shrink-0 text-center text-[15px] font-semibold"
                     :class="i < 3 ? 'text-stationPink' : 'text-inkFaint'"
                   >{{ i + 1 }}</span>
-                  <div class="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-[#f1f2f3]">
+                  <div class="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]">
                     <img
                       v-if="coverSrc(h.coverUrl)"
                       :src="coverSrc(h.coverUrl)"

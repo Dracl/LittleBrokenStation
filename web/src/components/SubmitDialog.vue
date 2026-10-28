@@ -164,7 +164,7 @@ async function submitFavFile(event) {
               v-model="videoUrl"
               type="text"
               placeholder="https://www.bilibili.com/video/BV…"
-              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
               :disabled="busy"
               @keyup.enter="submitVideo"
             />
@@ -175,7 +175,7 @@ async function submitFavFile(event) {
               v-model="favUrl"
               type="text"
               placeholder="space.bilibili.com/…/favlist?fid=… 或直接填收藏夹 ID"
-              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
               :disabled="busy"
               @keyup.enter="submitFavUrl"
             />
@@ -187,7 +187,7 @@ async function submitFavFile(event) {
               v-model="upUrl"
               type="text"
               placeholder="space.bilibili.com/… 空间链接，或直接填 UP 主 MID"
-              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
               :disabled="busy"
               @keyup.enter="submitUpUrl"
             />
@@ -195,7 +195,7 @@ async function submitFavFile(event) {
           </template>
 
           <template v-else>
-            <label class="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-lineSoft bg-[#f6f7f8] py-10 transition hover:border-stationPink/60 hover:bg-stationPink/5">
+            <label class="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-lineSoft bg-[#f6f7f8] py-10 transition hover:border-stationPink/60 hover:bg-stationPink/5 dark:bg-[#23262e] dark:hover:bg-stationPink/10">
               <span class="flex h-11 w-11 items-center justify-center rounded-full bg-stationPink/10">
                 <svg viewBox="0 0 24 24" class="h-5 w-5 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8">
                   <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke-linecap="round" stroke-linejoin="round" />
@@ -221,7 +221,7 @@ async function submitFavFile(event) {
           </p>
         </div>
 
-        <div v-if="activeTab !== 'favfile'" class="flex justify-end gap-2 border-t border-lineSoft/70 bg-[#fafbfc] px-6 py-4">
+        <div v-if="activeTab !== 'favfile'" class="flex justify-end gap-2 border-t border-lineSoft/70 bg-[#fafbfc] dark:bg-white/5 px-6 py-4">
           <button class="rounded-lg px-4 py-2 text-sm text-inkSub transition hover:bg-black/5 hover:text-inkMain" @click="close">
             先不投了
           </button>

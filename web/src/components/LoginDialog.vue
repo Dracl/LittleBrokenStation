@@ -303,7 +303,7 @@ function goRegister() {
               type="text"
               autocomplete="username"
               placeholder="站名（汉字/字母/数字/下划线）"
-              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+              class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
               :disabled="loggingIn"
               @keyup.enter="submitPasswordLogin"
             />
@@ -312,7 +312,7 @@ function goRegister() {
               type="password"
               autocomplete="current-password"
               placeholder="密码"
-              class="mt-3 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+              class="mt-3 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
               :disabled="loggingIn"
               @keyup.enter="submitPasswordLogin"
             />
@@ -326,7 +326,7 @@ function goRegister() {
           <template v-else>
           <p
             v-if="activeMode === 'admit' && hasOwner === false"
-            class="mb-4 rounded-xl border border-amber-300/70 bg-amber-50 px-3.5 py-2.5 text-xs font-medium leading-5 text-amber-700"
+            class="mb-4 rounded-xl border border-amber-300/70 bg-amber-50 px-3.5 py-2.5 text-xs font-medium leading-5 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
           >
             本站尚无主：第一位扫码者继位站长，免邀请码
           </p>
@@ -337,7 +337,7 @@ function goRegister() {
                 v-model="invite"
                 type="text"
                 placeholder="一次性邀请码（老席位留空直接扫）"
-                class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+                class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
                 :disabled="step === 'loading'"
                 @keyup.enter="getQr"
               />
@@ -373,7 +373,7 @@ function goRegister() {
           </p>
         </div>
 
-        <div class="flex items-center justify-end gap-2 border-t border-lineSoft/70 bg-[#fafbfc] px-6 py-4">
+        <div class="flex items-center justify-end gap-2 border-t border-lineSoft/70 bg-[#fafbfc] dark:bg-white/5 px-6 py-4">
           <div class="flex gap-2">
             <button class="rounded-lg px-4 py-2 text-sm text-inkSub transition hover:bg-black/5 hover:text-inkMain" @click="close">
               {{ activeMode === 'bind' ? '先不绑了' : '先不登了' }}

@@ -36,7 +36,7 @@ function go(bvid) {
         自动连播
         <span
           class="relative inline-block h-[18px] w-[34px] rounded-full transition"
-          :class="autoplay ? 'bg-stationPink' : 'bg-[#dcdee0]'"
+          :class="autoplay ? 'bg-stationPink' : 'bg-[#dcdee0] dark:bg-white/10'"
         >
           <span
             class="absolute top-[2px] h-[14px] w-[14px] rounded-full bg-white shadow transition-all"
@@ -48,7 +48,7 @@ function go(bvid) {
     <ul class="space-y-1">
       <li v-for="v in items" :key="v.id">
         <button class="flex w-full gap-2.5 rounded-lg p-1.5 text-left transition hover:bg-white/5" @click="go(v.bvid)">
-          <span class="relative block h-[76px] w-[124px] shrink-0 overflow-hidden rounded-md bg-[#f1f2f3]">
+          <span class="relative block h-[76px] w-[124px] shrink-0 overflow-hidden rounded-md bg-[#f1f2f3] dark:bg-[#23262e]">
             <img
               v-if="v.coverUrl"
               :src="v.coverUrl"

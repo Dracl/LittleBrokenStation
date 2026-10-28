@@ -3,6 +3,34 @@
 @tailwind utilities;
 
 @layer base {
+  /* 日夜双套色板：六位令牌住在变量里，html.dark 一翻全站跟夜（B 站夜色同款深灰蓝）。
+     开关住 theme.js：选中存 localStorage，没选过就跟系统 prefers-color-scheme；
+     index.html 里还有一段同口径的前置脚本，防刷新闪白。 */
+  :root {
+    --page-bg: 255 255 255;
+    --card-bg: 255 255 255;
+    --ink-main: 24 25 28;
+    --ink-sub: 97 102 109;
+    --ink-faint: 148 153 160;
+    --line-soft: 227 229 231;
+  }
+  html.dark {
+    --page-bg: 24 26 31;
+    --card-bg: 31 33 41;
+    --ink-main: 236 237 240;
+    --ink-sub: 158 164 174;
+    --ink-faint: 122 129 140;
+    --line-soft: 48 52 62;
+  }
+  /* 站长室是永久暗房，永不跟夜：室内把六位令牌钉回白昼值，夜不夜它都一个样。 */
+  html.dark .admin-root {
+    --page-bg: 255 255 255;
+    --card-bg: 255 255 255;
+    --ink-main: 24 25 28;
+    --ink-sub: 97 102 109;
+    --ink-faint: 148 153 160;
+    --line-soft: 227 229 231;
+  }
   body {
     @apply bg-pageBg text-inkMain font-sans antialiased;
   }

@@ -114,7 +114,7 @@ function goMessages() {
         <RouterLink to="/collections" class="transition hover:text-stationPink" :class="route.path.startsWith('/collection') ? 'text-stationPink' : ''">合集</RouterLink>
       </nav>
 
-      <div class="mx-auto flex h-8 w-full max-w-[420px] items-center gap-2 rounded-full bg-[#f1f2f3] px-3.5 transition focus-within:ring-2 focus-within:ring-stationPink/40">
+      <div class="mx-auto flex h-8 w-full max-w-[420px] items-center gap-2 rounded-full bg-[#f1f2f3] dark:bg-[#23262e] px-3.5 transition focus-within:ring-2 focus-within:ring-stationPink/40">
         <button class="shrink-0 text-inkFaint transition hover:text-stationPink" title="搜索" @click="doSearch">
           <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="7" />
@@ -232,7 +232,7 @@ function goMessages() {
 
               <div class="border-t border-lineSoft/70 p-1.5">
                 <button
-                  class="w-full rounded-lg bg-[#f1f2f3] px-2.5 py-2 text-center text-xs text-inkSub transition hover:bg-lineSoft hover:text-inkMain"
+                  class="w-full rounded-lg bg-[#f1f2f3] dark:bg-[#23262e] px-2.5 py-2 text-center text-xs text-inkSub transition hover:bg-lineSoft hover:text-inkMain"
                   @click="doLogout"
                 >
                   退出登录

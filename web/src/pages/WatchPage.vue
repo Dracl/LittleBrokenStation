@@ -633,14 +633,14 @@ const playerShellW = ref(0)
               </div>
 
               <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」；右侧访客下载 -->
-              <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 py-2">
+              <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 dark:border-white/10 py-2">
                 <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" />
                 <div class="relative flex shrink-0 items-center gap-2">
                   <!-- 加入合集：成员就地收纳，抽屉不够当场建一个 -->
                   <div v-if="member" class="relative">
                     <button
                       class="flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs transition"
-                      :class="collectionsOpen ? 'border-stationPink text-stationPink' : 'border-black/10 text-inkSub hover:border-stationPink hover:text-stationPink'"
+                      :class="collectionsOpen ? 'border-stationPink text-stationPink' : 'border-black/10 dark:border-white/10 text-inkSub hover:border-stationPink hover:text-stationPink'"
                       title="把这部收进我的合集"
                       @click="toggleCollections"
                     >
@@ -650,7 +650,7 @@ const playerShellW = ref(0)
                       </svg>
                       合集
                     </button>
-                    <div v-if="collectionsOpen" class="absolute right-0 top-11 z-30 w-64 rounded-xl border border-black/10 bg-white p-3 shadow-xl">
+                    <div v-if="collectionsOpen" class="absolute right-0 top-11 z-30 w-64 rounded-xl border border-black/10 dark:border-white/10 bg-cardBg p-3 shadow-xl">
                       <p v-if="collBusy && !myCollections?.length" class="py-4 text-center text-[12px] text-inkFaint">正在翻你的抽屉……</p>
                       <p v-else-if="!myCollections?.length" class="py-4 text-center text-[12px] text-inkFaint">你还没有抽屉，下面建一个</p>
                       <label
@@ -662,10 +662,10 @@ const playerShellW = ref(0)
                         <span class="min-w-0 flex-1 truncate">{{ c.name }}</span>
                         <span class="font-mono text-[10px] text-inkFaint">{{ c.itemCount }}</span>
                       </label>
-                      <div class="mt-2 flex items-center gap-1.5 border-t border-black/5 pt-2">
+                      <div class="mt-2 flex items-center gap-1.5 border-t border-black/5 dark:border-white/10 pt-2">
                         <input
                           v-model="newCollName"
-                          class="min-w-0 flex-1 rounded-lg border border-black/15 px-2 py-1.5 text-[12px] outline-none focus:border-stationPink"
+                          class="min-w-0 flex-1 rounded-lg border border-black/15 dark:border-white/10 px-2 py-1.5 text-[12px] outline-none focus:border-stationPink"
                           placeholder="新抽屉名字（30 字内）"
                           maxlength="30"
                           @keyup.enter="createAndAdd"
@@ -678,7 +678,7 @@ const playerShellW = ref(0)
                   <!-- 投稿人自管两钮（下载胶囊左侧）：白底描边，hover 才上色，不抢下载胶囊的风头 -->
                   <template v-if="data.canManage">
                     <button
-                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 text-inkSub transition hover:border-stationBlue hover:text-stationBlue disabled:cursor-not-allowed disabled:opacity-40"
+                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 dark:border-white/10 text-inkSub transition hover:border-stationBlue hover:text-stationBlue disabled:cursor-not-allowed disabled:opacity-40"
                       :disabled="manageBusy"
                       title="重新采集评论区快照与 B 站弹幕（分站朋友发的站内弹幕不受影响）"
                       @click="refreshSnapshots"
@@ -691,7 +691,7 @@ const playerShellW = ref(0)
                       </svg>
                     </button>
                     <button
-                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 text-inkSub transition hover:border-rose-500 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
+                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 dark:border-white/10 text-inkSub transition hover:border-rose-500 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
                       :disabled="removing"
                       title="删掉这个馆藏（含本地文件），仅投稿人本人与站长可删"
                       @click="removeSubmission"
@@ -702,7 +702,7 @@ const playerShellW = ref(0)
                     </button>
                   </template>
                   <button
-                    class="flex shrink-0 items-center gap-1.5 rounded-full border border-stationPink px-4 py-1.5 text-sm text-stationPink transition hover:bg-stationPink hover:text-white disabled:cursor-not-allowed disabled:border-black/10 disabled:text-inkFaint disabled:hover:bg-transparent"
+                    class="flex shrink-0 items-center gap-1.5 rounded-full border border-stationPink px-4 py-1.5 text-sm text-stationPink transition hover:bg-stationPink hover:text-white disabled:cursor-not-allowed disabled:border-black/10 dark:disabled:border-white/10 disabled:text-inkFaint disabled:hover:bg-transparent"
                     :disabled="!currentPage?.videoUrl || !downloadInfo"
                     :title="downloadInfo ? `把正在看的版本（${(downloadInfo.codec ?? '主版本').toUpperCase()}）存到本地` : '这一 P 还没下载，没东西可拿'"
                     @click="downloadCurrent"
@@ -724,7 +724,7 @@ const playerShellW = ref(0)
                 <span v-html="mentionHtml(data.description)"></span>
               </p>
 
-              <CommentSection :key="commentsRev" class="mt-5 border-t border-black/5 pt-5" :src="data.commentsUrl" :video-id="data.id" :up-mid="data.upMid" />
+              <CommentSection :key="commentsRev" class="mt-5 border-t border-black/5 dark:border-white/10 pt-5" :src="data.commentsUrl" :video-id="data.id" :up-mid="data.upMid" />
             </div>
 
             <!-- 右栏（不吸顶，随页滚动）：UP 卡、弹幕列表、分 P 列表、接下来播放 -->

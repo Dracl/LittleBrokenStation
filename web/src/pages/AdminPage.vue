@@ -1582,7 +1582,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-adminBg text-white">
+  <div class="admin-root min-h-screen bg-adminBg text-white">
     <!-- 身份门：会员会话说了算，访客挡在门外，普通成员送客去个人空间 -->
     <div v-if="adminAuth !== 'ok'" class="flex min-h-screen items-center justify-center px-6">
       <div class="lbs-card w-full max-w-[400px] p-8 text-center">

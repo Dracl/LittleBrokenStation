@@ -326,11 +326,11 @@ async function doLogout() {
                 <h2 class="text-lg font-semibold text-inkMain">{{ displayName }}</h2>
                 <span
                   v-if="member.role === 'owner'"
-                  class="rounded-full border border-amber-400/60 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-600"
+                  class="rounded-full border border-amber-400/60 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
                 >
                   ♛ 站长
                 </span>
-                <span v-else class="flex items-center gap-1 rounded-full border border-slate-300/70 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-500">
+                <span v-else class="flex items-center gap-1 rounded-full border border-slate-300/70 bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-400 px-2 py-0.5 text-[11px] text-slate-500">
                   <CrownBadge tier="member" class="h-3 w-3" />
                   成员
                 </span>
@@ -346,7 +346,7 @@ async function doLogout() {
               <RouterLink
                 v-if="member.role === 'owner'"
                 to="/admin"
-                class="rounded-full border border-amber-400/60 bg-amber-50 px-4 py-1.5 text-xs text-amber-700 transition hover:bg-amber-100"
+                class="rounded-full border border-amber-400/60 bg-amber-50 px-4 py-1.5 text-xs text-amber-700 transition hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
               >
                 ♛ 进站长室
               </RouterLink>
@@ -401,7 +401,7 @@ async function doLogout() {
             <li
               v-for="item in history"
               :key="item.videoId"
-              class="flex items-start gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3"
+              class="flex items-start gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
             >
               <RouterLink :to="`/watch/${item.bvid}`" class="group flex min-w-0 flex-1 items-start gap-3 no-underline">
                 <span class="relative block h-[76px] w-[124px] shrink-0 overflow-hidden rounded-lg bg-black/[0.06]">
@@ -481,9 +481,9 @@ async function doLogout() {
           </ul>
           <p v-else-if="myCollections === null" class="py-6 text-center text-sm text-inkFaint">{{ collBusy ? '正在翻你的抽屉……' : '抽屉清单没拉回来' }}</p>
           <p v-else class="py-6 text-center text-sm text-inkFaint">还没建过抽屉，下面起个头？</p>
-          <div class="mt-3 flex items-center gap-2 border-t border-black/5 pt-3">
-            <input v-model="newColl.name" class="w-40 min-w-0 rounded-lg border border-black/15 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-stationPink" placeholder="抽屉名（30 字内）" maxlength="30" @keyup.enter="createCollection" />
-            <input v-model="newColl.intro" class="min-w-0 flex-1 rounded-lg border border-black/15 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-stationPink" placeholder="简介，可留空" maxlength="60" @keyup.enter="createCollection" />
+          <div class="mt-3 flex items-center gap-2 border-t border-black/5 dark:border-white/10 pt-3">
+            <input v-model="newColl.name" class="w-40 min-w-0 rounded-lg border border-black/15 dark:border-white/10 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-stationPink" placeholder="抽屉名（30 字内）" maxlength="30" @keyup.enter="createCollection" />
+            <input v-model="newColl.intro" class="min-w-0 flex-1 rounded-lg border border-black/15 dark:border-white/10 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-stationPink" placeholder="简介，可留空" maxlength="60" @keyup.enter="createCollection" />
             <button class="shrink-0 rounded-lg bg-stationPink px-3 py-1.5 text-[12.5px] text-white transition hover:opacity-90 disabled:opacity-50" :disabled="collBusy || !newColl.name.trim()" @click="createCollection">建一个</button>
           </div>
           <p v-if="collNotice" class="mt-2 text-[12px]" :class="collNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">{{ collNotice.text }}</p>
@@ -500,7 +500,7 @@ async function doLogout() {
           <h3 class="mb-4 text-sm font-semibold text-inkMain">登录方式</h3>
 
           <dl class="grid gap-3 sm:grid-cols-2">
-            <div class="rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3">
+            <div class="rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
               <dt class="text-[11px] text-inkFaint">站名（账密登录用）</dt>
               <dd class="mt-1 truncate text-sm text-inkMain">
                 <template v-if="member.username">{{ member.username }}</template>
@@ -510,7 +510,7 @@ async function doLogout() {
                 </template>
               </dd>
             </div>
-            <div class="rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3">
+            <div class="rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
               <dt class="text-[11px] text-inkFaint">B 站绑定</dt>
               <dd class="mt-1 flex flex-wrap items-center gap-2 text-sm text-inkMain">
                 <template v-if="member.hasBilibili">
@@ -540,7 +540,7 @@ async function doLogout() {
                 type="password"
                 autocomplete="current-password"
                 placeholder="旧密码"
-                class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-3.5 py-2 text-[13px] text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20 sm:w-40"
+                class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-3.5 py-2 text-[13px] text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20 sm:w-40"
                 :disabled="pwdBusy"
               />
               <input
@@ -548,7 +548,7 @@ async function doLogout() {
                 type="password"
                 autocomplete="new-password"
                 placeholder="新密码（至少 8 位）"
-                class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-3.5 py-2 text-[13px] text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20 sm:w-44"
+                class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-3.5 py-2 text-[13px] text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20 sm:w-44"
                 :disabled="pwdBusy"
               />
               <input
@@ -556,7 +556,7 @@ async function doLogout() {
                 type="password"
                 autocomplete="new-password"
                 placeholder="再验一遍"
-                class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-3.5 py-2 text-[13px] text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20 sm:w-40"
+                class="w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-3.5 py-2 text-[13px] text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20 sm:w-40"
                 :disabled="pwdBusy"
                 @keyup.enter="submitPasswordChange"
               />
@@ -605,7 +605,7 @@ async function doLogout() {
             <li
               v-for="acc in member.accounts"
               :key="acc.accountMid"
-              class="flex flex-wrap items-center gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3"
+              class="flex flex-wrap items-center gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
             >
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-2 text-sm text-inkMain">

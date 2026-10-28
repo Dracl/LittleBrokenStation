@@ -10,7 +10,7 @@ defineProps({
 })
 
 const clampStyle = 'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden'
-const shell = 'block overflow-hidden rounded-md bg-[#f6f7f8] no-underline transition hover:shadow-md'
+const shell = 'block overflow-hidden rounded-md bg-[#f6f7f8] dark:bg-[#23262e] no-underline transition hover:shadow-md'
 
 function coverSrc(d) {
   // 容器实宽 ~576px，480w 拉上来必糊；热链兑底按 1280w 要图（webp 也才几十 KB）。
@@ -20,7 +20,7 @@ function coverSrc(d) {
 
 <template>
   <RouterLink v-if="d.inStation" :to="`/watch/${d.bvid}`" :class="shell">
-    <div class="relative aspect-video bg-[#eef0f2]">
+    <div class="relative aspect-video bg-[#eef0f2] dark:bg-white/5">
       <img
         v-if="d.cover || d.coverLocal"
         :src="coverSrc(d)"
@@ -45,7 +45,7 @@ function coverSrc(d) {
     rel="noopener noreferrer"
     :class="shell"
   >
-    <div class="relative aspect-video bg-[#eef0f2]">
+    <div class="relative aspect-video bg-[#eef0f2] dark:bg-white/5">
       <img
         v-if="d.cover || d.coverLocal"
         :src="coverSrc(d)"

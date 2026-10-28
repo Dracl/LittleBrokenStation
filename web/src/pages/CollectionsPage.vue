@@ -44,7 +44,7 @@ onMounted(load)
         :to="`/collection/${c.id}`"
         class="group block"
       >
-        <div class="relative aspect-[16/10] overflow-hidden rounded-xl bg-[#f1f2f3]">
+        <div class="relative aspect-[16/10] overflow-hidden rounded-xl bg-[#f1f2f3] dark:bg-[#23262e]">
           <img
             v-if="c.cover"
             :src="c.cover"

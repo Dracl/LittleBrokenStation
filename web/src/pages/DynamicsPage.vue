@@ -126,7 +126,7 @@ function singlePicStyle(pic) {
   if (w > 0 && h > 0) {
     return { width: `${Math.min(340, w)}px`, maxWidth: '100%', aspectRatio: `${w} / ${h}` }
   }
-  return { maxWidth: '340px', maxHeight: '450px', objectFit: 'contain', background: '#f1f2f3' }
+  return { maxWidth: '340px', maxHeight: '450px', objectFit: 'contain', background: 'rgb(var(--line-soft))' }
 }
 
 // 九宫格取图：端点吐 pics 对象数组 [{url,width,height}] + picsLocal 同序本地数组（单图失败为 null）。
@@ -363,7 +363,7 @@ onMounted(async () => {
               class="shrink-0 rounded-md px-2 py-0.5 text-xs"
               :class="d.inStation
                 ? 'border border-stationPink/50 bg-stationPink/5 text-stationPink'
-                : 'border border-lineSoft bg-[#f6f7f8] text-inkSub'"
+                : 'border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] text-inkSub'"
             >{{ d.inStation ? '站内可看' : '去 B 站看 ↗' }}</span>
           </header>
 
@@ -386,7 +386,7 @@ onMounted(async () => {
           <!-- 转发条：评语 + 灰块内嵌原文（B 站同款）；灰块头挂原作者的小脸 -->
           <template v-else-if="isForward(d)">
             <CollapsibleRichText v-if="splitForward(d.text).comment" :text="splitForward(d.text).comment" :emotes="d.bodyEmotes" content-class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" />
-            <div class="rounded-md bg-[#f6f7f8] p-3">
+            <div class="rounded-md bg-[#f6f7f8] dark:bg-[#23262e] p-3">
               <div v-if="d.origAuthorName || splitForward(d.text).fromName" class="mb-2 flex items-center gap-1.5">
                 <img
                   :src="d.origAuthorFace || defaultAvatar"
@@ -501,7 +501,7 @@ onMounted(async () => {
                   <div v-if="top.replies?.length" class="mt-2 space-y-2.5 border-l-2 border-lineSoft/80 pl-3">
                     <template v-for="(sub, si) in top.replies" :key="sub.rpid">
                       <div v-if="top.replies.length <= 3 || cmtState(d).expanded[top.rpid] || si < 3" class="flex gap-2">
-                        <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="h-5 w-5 shrink-0 rounded-full object-cover bg-[#f1f2f3] text-[9px] text-inkFaint" />
+                        <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="h-5 w-5 shrink-0 rounded-full object-cover bg-[#f1f2f3] dark:bg-white/10 text-[9px] text-inkFaint" />
                         <div class="min-w-0 flex-1">
                           <span class="text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
                           <LevelBadge :level="sub.level" :size="9.5" />

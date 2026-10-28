@@ -88,7 +88,7 @@ onMounted(loadPeople)
       </div>
 
       <!-- 要安利的内容缩略：动态看作者+摘要，片子看馆藏封面+标题 -->
-      <div v-if="isVideo" class="mx-4 mt-3 flex items-center gap-2.5 rounded-xl bg-[#f6f7f8] px-3 py-2.5">
+      <div v-if="isVideo" class="mx-4 mt-3 flex items-center gap-2.5 rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-3 py-2.5">
         <img
           v-if="target.cover"
           :src="target.cover"
@@ -103,7 +103,7 @@ onMounted(loadPeople)
           <span class="block truncate text-[12px] text-inkSub">{{ target.upName || '站内放映厅' }} · /watch/{{ target.bvid }}</span>
         </span>
       </div>
-      <div v-else class="mx-4 mt-3 flex items-center gap-2.5 rounded-xl bg-[#f6f7f8] px-3 py-2.5">
+      <div v-else class="mx-4 mt-3 flex items-center gap-2.5 rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-3 py-2.5">
         <img
           :src="target.authorFaceUrl || defaultAvatar"
           referrerpolicy="no-referrer"
@@ -144,7 +144,7 @@ onMounted(loadPeople)
           v-model="note"
           rows="2"
           maxlength="500"
-          class="w-full resize-none rounded-xl border border-lineSoft bg-[#f6f7f8] px-3.5 py-2 text-[13px] text-inkMain outline-none transition placeholder:text-inkFaint focus:border-stationPink focus:bg-white focus:ring-2 focus:ring-stationPink/20"
+          class="w-full resize-none rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-3.5 py-2 text-[13px] text-inkMain outline-none transition placeholder:text-inkFaint focus:border-stationPink focus:bg-white focus:ring-2 focus:ring-stationPink/20"
           placeholder="附一句安利语（可不写）"
         ></textarea>
         <p v-if="error" class="mt-2 text-[12px] text-stationPink">{{ error }}</p>

@@ -5,6 +5,18 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>分站首页 - 小破分站</title>
+    <script>
+      // 防闪白：首帧 paints 前就把日夜归属钉在 <html> 上，口径与 src/theme.js 一致。
+      ;(function () {
+        try {
+          var saved = localStorage.getItem('lbs-theme')
+          var dark = saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) document.documentElement.classList.add('dark')
+        } catch (e) {
+          /* 没存过也没得存：跟白昼，不拦开业 */
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

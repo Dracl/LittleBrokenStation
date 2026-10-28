@@ -95,7 +95,7 @@ onMounted(load)
         </div>
         <button
           v-if="canManage"
-          class="shrink-0 rounded-lg border border-rose-300 px-3 py-1.5 text-[12px] text-rose-500 transition hover:bg-rose-50 disabled:opacity-40"
+          class="shrink-0 rounded-lg border border-rose-300 px-3 py-1.5 text-[12px] text-rose-500 transition hover:bg-rose-50 disabled:opacity-40 dark:border-rose-500/40 dark:text-rose-400 dark:hover:bg-rose-500/10"
           :disabled="busy"
           @click="dissolve"
         >拆除抽屉</button>

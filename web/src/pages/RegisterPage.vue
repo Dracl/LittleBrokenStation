@@ -81,7 +81,7 @@ async function submit() {
         <div class="px-6 py-5">
           <p
             v-if="hasOwner === false"
-            class="mb-4 rounded-xl border border-amber-300/70 bg-amber-50 px-3.5 py-2.5 text-xs font-medium leading-5 text-amber-700"
+            class="mb-4 rounded-xl border border-amber-300/70 bg-amber-50 px-3.5 py-2.5 text-xs font-medium leading-5 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
           >
             本站尚无主：第一位注册者继位站长，免邀请码
           </p>
@@ -92,7 +92,7 @@ async function submit() {
             type="text"
             autocomplete="username"
             placeholder="2–24 个汉字、字母、数字或下划线"
-            class="mt-1.5 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+            class="mt-1.5 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
             :disabled="submitting"
             @keyup.enter="submit"
           />
@@ -103,7 +103,7 @@ async function submit() {
             type="password"
             autocomplete="new-password"
             placeholder="至少 8 位"
-            class="mt-1.5 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+            class="mt-1.5 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
             :disabled="submitting"
             @keyup.enter="submit"
           />
@@ -114,7 +114,7 @@ async function submit() {
             type="password"
             autocomplete="new-password"
             placeholder="同一个密码敲两遍"
-            class="mt-1.5 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+            class="mt-1.5 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
             :disabled="submitting"
             @keyup.enter="submit"
           />
@@ -125,7 +125,7 @@ async function submit() {
               v-model="form.code"
               type="text"
               placeholder="站长发的一次性邀请码"
-              class="mt-1.5 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+              class="mt-1.5 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-4 py-3 text-sm text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
               :disabled="submitting"
               @keyup.enter="submit"
             />
@@ -135,7 +135,7 @@ async function submit() {
           <p
             v-if="notice"
             class="mt-4 rounded-xl px-3.5 py-2.5 text-xs leading-5"
-            :class="notice.kind === 'ok' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'"
+            :class="notice.kind === 'ok' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-300'"
           >
             {{ notice.text }}
           </p>

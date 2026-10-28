@@ -198,7 +198,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="cv-auto" @mouseenter="onPreviewEnter" @mouseleave="onPreviewLeave">
-    <div class="relative aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3]">
+    <div class="relative aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3] dark:bg-[#23262e]">
       <div v-if="coverSrc && !coverReady" class="cover-shimmer absolute inset-0" aria-hidden="true"></div>
       <img
         v-if="coverSrc"
@@ -297,6 +297,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: #f1f2f3;
 }
+html.dark .cover-shimmer {
+  background: #23262e;
+}
 .cover-shimmer::after {
   content: '';
   position: absolute;
@@ -304,6 +307,9 @@ onBeforeUnmount(() => {
   transform: translateX(-100%);
   background: linear-gradient(100deg, transparent 25%, rgba(0, 0, 0, 0.05) 50%, transparent 75%);
   animation: cover-shimmer 1.2s ease infinite;
+}
+html.dark .cover-shimmer::after {
+  background: linear-gradient(100deg, transparent 25%, rgba(255, 255, 255, 0.06) 50%, transparent 75%);
 }
 @keyframes cover-shimmer {
   to {

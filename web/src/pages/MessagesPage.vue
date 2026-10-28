@@ -431,7 +431,7 @@ function peerLabel(p) {
                 </button>
 
                 <div v-if="expandedId === item.id" class="px-5 pb-4">
-                  <div class="rounded-xl bg-[#f6f7f8] px-4 py-3">
+                  <div class="rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
                     <p class="whitespace-pre-wrap text-[13px] leading-relaxed text-inkMain">{{ item.body }}</p>
                     <RouterLink
                       v-if="item.link"
@@ -510,7 +510,7 @@ function peerLabel(p) {
                   <button class="text-xs text-inkFaint transition hover:text-stationPink" @click="closeThread">收起</button>
                 </div>
 
-                <div class="flex-1 space-y-2.5 overflow-y-auto bg-[#f8f9fa] px-4 py-4" style="max-height: 480px">
+                <div class="flex-1 space-y-2.5 overflow-y-auto bg-[#f8f9fa] dark:bg-[#23262e] px-4 py-4" style="max-height: 480px">
                   <p v-if="convoLoading && !conversation.length" class="py-8 text-center text-sm text-inkFaint">正在翻记录…</p>
                   <div v-else-if="!conversation.length" class="flex flex-col items-center justify-center gap-2.5 py-12 text-center">
                     <span class="flex h-11 w-11 items-center justify-center rounded-full bg-stationPink/10">
@@ -554,7 +554,7 @@ function peerLabel(p) {
                           <span class="shrink-0 rounded bg-stationPink/10 px-1.5 py-0.5 text-[10px] text-stationPink">动态</span>
                         </div>
                         <div class="mt-2 flex gap-2">
-                          <span v-if="m.dyn.cover" class="relative block h-[46px] w-[68px] shrink-0 overflow-hidden rounded-md bg-[#eef0f2]">
+                          <span v-if="m.dyn.cover" class="relative block h-[46px] w-[68px] shrink-0 overflow-hidden rounded-md bg-[#eef0f2] dark:bg-[#23262e]">
                             <img :src="m.dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
                           </span>
                           <p class="min-w-0 flex-1 text-[12.5px] leading-relaxed text-inkSub" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ sharedSummary(m.dyn) }}</p>
@@ -576,7 +576,7 @@ function peerLabel(p) {
                         @click="gotoSharedVideo(m.dyn)"
                       >
                         <div class="flex gap-2">
-                          <span v-if="m.dyn.cover" class="relative block h-[46px] w-[68px] shrink-0 overflow-hidden rounded-md bg-[#eef0f2]">
+                          <span v-if="m.dyn.cover" class="relative block h-[46px] w-[68px] shrink-0 overflow-hidden rounded-md bg-[#eef0f2] dark:bg-[#23262e]">
                             <img :src="m.dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
                           </span>
                           <span class="min-w-0 flex-1">
@@ -599,13 +599,13 @@ function peerLabel(p) {
                   <div ref="scrollAnchor"></div>
                 </div>
 
-                <div class="border-t border-lineSoft bg-[#fafbfc] p-3">
+                <div class="border-t border-lineSoft bg-[#fafbfc] dark:bg-white/5 p-3">
                   <div class="flex items-end gap-2">
                     <textarea
                       v-model="draft"
                       rows="2"
                       maxlength="2000"
-                      class="min-h-[52px] flex-1 resize-none rounded-xl border border-lineSoft bg-[#f6f7f8] px-3.5 py-2 text-[13px] text-inkMain outline-none transition placeholder:text-inkFaint focus:border-stationPink focus:bg-white focus:ring-2 focus:ring-stationPink/20"
+                      class="min-h-[52px] flex-1 resize-none rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] dark:focus:bg-[#23262e] px-3.5 py-2 text-[13px] text-inkMain outline-none transition placeholder:text-inkFaint focus:border-stationPink focus:bg-white focus:ring-2 focus:ring-stationPink/20"
                       placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"
                       @keydown="onDraftKeydown"
                     ></textarea>

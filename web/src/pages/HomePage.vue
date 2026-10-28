@@ -5,6 +5,15 @@ import AdminVideoCell from '../components/AdminVideoCell.vue'
 import { coverThumb } from '../utils/cover'
 import { previewHovering } from '../utils/previewHover'
 import { submitDialogOpen } from '../submitStore'
+import { isDark, toggleTheme } from '../theme'
+
+// ─── 日夜开关：坐在首页右下角换一批钮上方，同款黑玻离圆钮。
+// 只管把 html.dark 掰上掰下（真活在 style.css 的变量里），图标跟着当前昼夜换脸。
+const nightMode = ref(isDark())
+function flipDayNight() {
+  toggleTheme()
+  nightMode.value = isDark()
+}
 
 // 两百多件馆藏每 5 秒整数组替换，深响应式代理是白付的税；shallowRef 只在整组换新的时候通知视图。
 const videos = shallowRef([])
@@ -403,6 +412,22 @@ watch(sentinelEl, (el) => {
         </div>
       </div>
     </main>
+
+    <!-- 日夜开关：压在换一批正上方，白昼见月、夜里见日 -->
+    <button
+      class="fixed bottom-[5.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
+      :title="nightMode ? '切回白昼' : '切进黑夜'"
+      :aria-label="nightMode ? '切回白昼' : '切进黑夜'"
+      @click="flipDayNight"
+    >
+      <svg v-if="nightMode" viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <circle cx="12" cy="12" r="4.2" />
+        <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6" />
+      </svg>
+      <svg v-else viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20.8 13.4A8.6 8.6 0 1 1 10.6 3.2a6.8 6.8 0 0 0 10.2 10.2z" />
+      </svg>
+    </button>
 
     <!-- 换一批：重抽种子重洗卡阵与大幕，轮询期间顺序锁定 -->
     <button

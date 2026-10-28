@@ -103,7 +103,7 @@ onMounted(loadZones)
         class="rounded-lg border px-3.5 py-2 text-[13px] transition"
         :class="activeZone === z.name
           ? 'border-stationPink/60 bg-stationPink/10 text-stationPink'
-          : 'border-black/10 bg-white text-inkMain hover:border-stationPink/40'"
+          : 'border-black/10 dark:border-white/10 bg-cardBg text-inkMain hover:border-stationPink/40'"
         @click="pickZone(z.name)"
       >
         {{ z.name }}
@@ -132,10 +132,10 @@ onMounted(loadZones)
         </button>
 
         <!-- 改派小抽屉：贴在卡上就地办，不弹窗打断扫卡 -->
-        <div v-if="editing?.id === video.id" class="absolute inset-x-0 top-9 z-20 rounded-lg border border-black/10 bg-white p-2.5 shadow-xl">
+        <div v-if="editing?.id === video.id" class="absolute inset-x-0 top-9 z-20 rounded-lg border border-black/10 dark:border-white/10 bg-cardBg p-2.5 shadow-xl">
           <input
             v-model="editing.value"
-            class="w-full rounded border border-black/15 px-2 py-1.5 text-[12px] text-inkMain outline-none focus:border-stationPink"
+            class="w-full rounded border border-black/15 dark:border-white/10 px-2 py-1.5 text-[12px] text-inkMain outline-none focus:border-stationPink"
             placeholder="父>子，如 音乐>翻唱；留空回继承"
             @keyup.enter="applyEdit"
             @keyup.esc="clearEdit"

@@ -224,9 +224,9 @@ function likeCount(item) {
 
     <div v-else class="space-y-5">
       <!-- 置顶：浅灰底块 -->
-      <div v-if="topReply" class="rounded-xl bg-[#f6f7f8] p-4">
+      <div v-if="topReply" class="rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] p-4">
         <div class="flex gap-3">
-          <AvatarImg :face="topReply.face" :face-local="topReply.faceLocal" :name="topReply.name" class="h-11 w-11 shrink-0 rounded-full object-cover bg-white text-sm text-inkFaint" />
+          <AvatarImg :face="topReply.face" :face-local="topReply.faceLocal" :name="topReply.name" class="h-11 w-11 shrink-0 rounded-full object-cover bg-white dark:bg-white/10 text-sm text-inkFaint" />
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-1.5">
               <span class="text-[15px] text-inkMain">{{ topReply.name }}</span>
@@ -257,7 +257,7 @@ function likeCount(item) {
               </button>
             </div>
             <div v-if="topReply.upLiked" class="mt-1.5">
-              <span class="inline-block rounded-md bg-[#f4f5f6] px-2 py-[3px] text-xs text-inkSub">UP主觉得很赞</span>
+              <span class="inline-block rounded-md bg-[#f4f5f6] dark:bg-white/5 px-2 py-[3px] text-xs text-inkSub">UP主觉得很赞</span>
             </div>
           </div>
         </div>
@@ -270,7 +270,7 @@ function likeCount(item) {
         class="flex gap-3"
         :class="ri > 0 || topReply ? 'border-t border-lineSoft pt-5' : ''"
       >
-        <AvatarImg :face="reply.face" :face-local="reply.faceLocal" :name="reply.name" class="h-11 w-11 shrink-0 rounded-full object-cover bg-[#f1f2f3] text-sm text-inkFaint" />
+        <AvatarImg :face="reply.face" :face-local="reply.faceLocal" :name="reply.name" class="h-11 w-11 shrink-0 rounded-full object-cover bg-[#f1f2f3] dark:bg-white/10 text-sm text-inkFaint" />
 
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-1.5">
@@ -298,13 +298,13 @@ function likeCount(item) {
             </button>
           </div>
           <div v-if="reply.upLiked" class="mt-1.5">
-            <span class="inline-block rounded-md bg-[#f4f5f6] px-2 py-[3px] text-xs text-inkSub">UP主觉得很赞</span>
+            <span class="inline-block rounded-md bg-[#f4f5f6] dark:bg-white/5 px-2 py-[3px] text-xs text-inkSub">UP主觉得很赞</span>
           </div>
 
           <!-- 楼中楼 -->
           <div v-if="replyCountOf(reply) > 0" class="mt-3 space-y-3">
             <div v-for="sub in visibleSubs(reply)" :key="sub.rpid" class="flex gap-2.5">
-              <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover bg-[#f1f2f3] text-[10px] text-inkFaint" />
+              <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover bg-[#f1f2f3] dark:bg-white/10 text-[10px] text-inkFaint" />
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-1.5">
                   <span class="text-[13px]" :class="isUp(sub) ? 'text-inkMain' : 'text-stationPink'">{{ sub.name }}</span>
@@ -328,7 +328,7 @@ function likeCount(item) {
                   </button>
                 </div>
                 <div v-if="sub.upLiked" class="mt-1">
-                  <span class="inline-block rounded-md bg-[#f4f5f6] px-1.5 py-[2px] text-[11px] text-inkSub">UP主觉得很赞</span>
+                  <span class="inline-block rounded-md bg-[#f4f5f6] dark:bg-white/5 px-1.5 py-[2px] text-[11px] text-inkSub">UP主觉得很赞</span>
                 </div>
               </div>
             </div>

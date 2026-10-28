@@ -73,7 +73,7 @@ watch(() => props.src, () => (lines.value = null))
         <path d="m3.5 6 4.5 4.5L12.5 6" />
       </svg>
     </button>
-    <div v-if="open" class="max-h-72 overflow-y-auto border-t border-black/5 px-4 py-2">
+    <div v-if="open" class="max-h-72 overflow-y-auto border-t border-black/5 dark:border-white/10 px-4 py-2">
       <p v-if="loading" class="py-3 text-center text-xs text-inkFaint">展开弹幕中……</p>
       <p v-else-if="lines && lines.length === 0" class="py-3 text-center text-xs text-inkFaint">这份弹幕归档是空的</p>
       <ul v-else class="space-y-1">
