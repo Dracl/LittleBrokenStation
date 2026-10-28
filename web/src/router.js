@@ -7,6 +7,8 @@ import WatchPage from './pages/WatchPage.vue'
 import SearchPage from './pages/SearchPage.vue'
 import DynamicsPage from './pages/DynamicsPage.vue'
 import ZonePage from './pages/ZonePage.vue'
+import CollectionsPage from './pages/CollectionsPage.vue'
+import CollectionDetailPage from './pages/CollectionDetailPage.vue'
 import WeeklyPage from './pages/WeeklyPage.vue'
 import RegisterPage from './pages/RegisterPage.vue'
 
@@ -18,6 +20,8 @@ const router = createRouter({
     { path: '/search', name: 'search', component: SearchPage, meta: { title: '站内搜索 - 小破分站' } },
     { path: '/dynamics', name: 'dynamics', component: DynamicsPage, meta: { title: 'UP 主动态 - 小破分站' } },
     { path: '/zones', name: 'zones', component: ZonePage, meta: { title: '分区 - 小破分站' } },
+    { path: '/collections', name: 'collections', component: CollectionsPage, meta: { title: '合集名录 - 小破分站' } },
+    { path: '/collection/:id', name: 'collection', component: CollectionDetailPage, meta: { title: '合集 - 小破分站' } },
     { path: '/weekly', name: 'weekly', component: WeeklyPage, meta: { title: '分站周报 - 小破分站' } },
     { path: '/admin', name: 'admin', component: AdminPage, meta: { title: '站长室 - 小破分站' } },
     { path: '/me', name: 'me', component: MemberPage, meta: { title: '个人空间 - 小破分站' } },

@@ -197,6 +197,31 @@ public sealed partial class StationDb
             history.ExecuteNonQuery();
         }
 
+        // 站内合集：会员自己攒的片单。集只存名、简介与东家；item 只存 (collection_id, video_id) 这一对，
+        // 片名封面一律读时 JOIN videos 现取（片被删了这条 item 就自然看不见，不留死行，与观看历史同一哲学）。
+        // 一人可开几个集，同片在同集只占一坑（主键挡重，重复入集幂等）。
+        using (var collections = connection.CreateCommand())
+        {
+            collections.CommandText = """
+                CREATE TABLE IF NOT EXISTS collections (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name            TEXT NOT NULL,
+                    intro           TEXT,
+                    owner_member_id INTEGER NOT NULL,
+                    created_at_utc  TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS collection_items (
+                    collection_id INTEGER NOT NULL,
+                    video_id      INTEGER NOT NULL,
+                    added_at_utc  TEXT NOT NULL,
+                    PRIMARY KEY (collection_id, video_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_collection_owner ON collections (owner_member_id, created_at_utc);
+                CREATE INDEX IF NOT EXISTS idx_collection_items ON collection_items (collection_id, added_at_utc);
+                """;
+            collections.ExecuteNonQuery();
+        }
+
         // 逐件生成耗时（秒，ffmpeg 从起跑到交件的墙钟时间）：站长室「单件耗时」只吃这一列的真数，
         // 绝拿 seconds（产物时长）冒充。早先建的库没这列，缺就补。
         EnsureColumn(connection, "previews", "cost_seconds", "REAL");

@@ -99,6 +99,67 @@ const displayName = computed(() => {
   return m.nickname || m.username || '旅人'
 })
 
+// ─── 我的合集：成员自管的抽屉。这里能建、能拆、能跳去正面看货；
+// 往抽屉里装片去放映厅（WatchPage）的「合集」钮，那才是装卸口。
+const myCollections = ref(null) // null = 没拉到；[] = 确实没建过
+const collBusy = ref(false)
+const collNotice = ref(null)
+const newColl = ref({ name: '', intro: '' })
+
+async function loadMyCollections() {
+  collBusy.value = true
+  try {
+    const res = await fetch('/api/member/collections')
+    const d = res.ok ? await res.json().catch(() => null) : null
+    myCollections.value = Array.isArray(d?.collections) ? d.collections : []
+  } catch {
+    myCollections.value = null // 401/500 都当「没拿到」，不拿空数组冒充「没建过」
+  } finally {
+    collBusy.value = false
+  }
+}
+
+async function createCollection() {
+  const name = newColl.value.name.trim()
+  if (!name || collBusy.value) return
+  collBusy.value = true
+  collNotice.value = null
+  try {
+    const res = await fetch('/api/member/collections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, intro: newColl.value.intro.trim() || null }),
+    })
+    const d = await res.json().catch(() => null)
+    collNotice.value = { kind: res.ok ? 'ok' : 'err', text: d?.message ?? (res.ok ? '抽屉建好，去片里装货吧' : '建不起来') }
+    if (res.ok) {
+      newColl.value = { name: '', intro: '' }
+      await loadMyCollections()
+    }
+  } catch {
+    collNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    collBusy.value = false
+  }
+}
+
+async function removeCollection(c) {
+  if (collBusy.value) return
+  if (!window.confirm(`拆除抽屉「${c.name}」？里面的货回货架，不受损伤。`)) return
+  collBusy.value = true
+  collNotice.value = null
+  try {
+    const res = await fetch(`/api/member/collections/${c.id}`, { method: 'DELETE' })
+    const d = await res.json().catch(() => null)
+    collNotice.value = { kind: res.ok ? 'ok' : 'err', text: d?.message ?? (res.ok ? '已拆除' : '拆不掉') }
+    if (res.ok) await loadMyCollections()
+  } catch {
+    collNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    collBusy.value = false
+  }
+}
+
 // 改密表单：首设（扫码客从未设过）免旧密码，验旧与否后端说了算，前端只递参数
 const pwdForm = ref({ oldPassword: '', newPassword: '', confirm: '' })
 const pwdBusy = ref(false)
@@ -144,8 +205,11 @@ async function submitPasswordChange() {
 async function loadMe() {
   await loadMember()
   // 只有认得人才问历史：访客那一发必吃 401，白敲一下后端。
-  if (member.value) await loadHistory()
-  else history.value = null
+  if (member.value) await Promise.all([loadHistory(), loadMyCollections()])
+  else {
+    history.value = null
+    myCollections.value = null
+  }
 }
 
 onMounted(() => {
@@ -396,6 +460,33 @@ async function doLogout() {
           <p v-else class="mt-3 text-[11px] leading-4 text-inkFaint">
             历史按席位存，一人一片只占一行；看到 95% 以上算看完，自动从这份名单里退场。
           </p>
+        </section>
+
+        <!-- 我的合集：成员自管的抽屉（建/拆在这，装货去放映厅的「合集」钮） -->
+        <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+          <div class="mb-3 flex items-center justify-between gap-4">
+            <h2 class="text-[15px] font-semibold text-inkMain">我的合集</h2>
+            <RouterLink to="/collections" class="text-[12px] text-stationPink transition hover:opacity-80">逛全站的抽屉</RouterLink>
+          </div>
+          <ul v-if="myCollections?.length" class="space-y-2">
+            <li v-for="c in myCollections" :key="c.id" class="flex items-center gap-3 rounded-xl border border-lineSoft px-3.5 py-2.5">
+              <RouterLink :to="`/collection/${c.id}`" class="min-w-0 flex-1">
+                <p class="truncate text-[13.5px] font-medium text-inkMain transition hover:text-stationPink">{{ c.name }}</p>
+                <p class="mt-0.5 truncate text-[11.5px] text-inkFaint">
+                  {{ c.itemCount }} 件 · {{ friendlyTime(c.createdAtUtc) }}建{{ c.intro ? ` · ${c.intro}` : '' }}
+                </p>
+              </RouterLink>
+              <button class="shrink-0 text-[12px] text-inkFaint transition hover:text-rose-500 disabled:opacity-40" :disabled="collBusy" @click="removeCollection(c)">拆除</button>
+            </li>
+          </ul>
+          <p v-else-if="myCollections === null" class="py-6 text-center text-sm text-inkFaint">{{ collBusy ? '正在翻你的抽屉……' : '抽屉清单没拉回来' }}</p>
+          <p v-else class="py-6 text-center text-sm text-inkFaint">还没建过抽屉，下面起个头？</p>
+          <div class="mt-3 flex items-center gap-2 border-t border-black/5 pt-3">
+            <input v-model="newColl.name" class="w-40 min-w-0 rounded-lg border border-black/15 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-stationPink" placeholder="抽屉名（30 字内）" maxlength="30" @keyup.enter="createCollection" />
+            <input v-model="newColl.intro" class="min-w-0 flex-1 rounded-lg border border-black/15 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-stationPink" placeholder="简介，可留空" maxlength="60" @keyup.enter="createCollection" />
+            <button class="shrink-0 rounded-lg bg-stationPink px-3 py-1.5 text-[12.5px] text-white transition hover:opacity-90 disabled:opacity-50" :disabled="collBusy || !newColl.name.trim()" @click="createCollection">建一个</button>
+          </div>
+          <p v-if="collNotice" class="mt-2 text-[12px]" :class="collNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">{{ collNotice.text }}</p>
         </section>
 
         <!-- 登录方式：分站自己的门钥匙（M5.4）——站名、密码照面；防锁死警示条钉在卡顶 -->

@@ -79,6 +79,11 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/zones", false, false)]
     [InlineData("GET", "/api/zones/videos", false, false)]
     [InlineData("POST", "/api/admin/zones/set", true, false)]
+    // 合集：清单与详情与首页同级公开；开集/销集/加减片子挂在 /api/member/collections 下，
+    // 这个前缀不在两张门视野里（两端都 false），端点自己查 MemberGate.Current 回 401（与 /api/member/history 同一防法）。
+    [InlineData("GET", "/api/collections", false, false)]
+    [InlineData("GET", "/api/member/collections", false, false)]
+    [InlineData("POST", "/api/member/collections", false, false)]
     public void 两张门的归属矩阵(string method, string path, bool expectAdmin, bool expectMember)
     {
         var request = Request(method, path);

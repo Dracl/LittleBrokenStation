@@ -111,7 +111,7 @@ function goMessages() {
         <RouterLink v-if="member" to="/weekly" class="transition hover:text-stationPink" :class="route.path.startsWith('/weekly') ? 'text-stationPink' : ''">周报</RouterLink>
         <span class="cursor-not-allowed text-inkFaint" title="M2 到站">番剧</span>
         <span class="cursor-not-allowed text-inkFaint" title="M2 到站">直播</span>
-        <span class="cursor-not-allowed text-inkFaint" title="M2 到站">合集</span>
+        <RouterLink to="/collections" class="transition hover:text-stationPink" :class="route.path.startsWith('/collection') ? 'text-stationPink' : ''">合集</RouterLink>
       </nav>
 
       <div class="mx-auto flex h-8 w-full max-w-[420px] items-center gap-2 rounded-full bg-[#f1f2f3] px-3.5 transition focus-within:ring-2 focus-within:ring-stationPink/40">

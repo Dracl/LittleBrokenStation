@@ -131,6 +131,93 @@ function clockOf(sec) {
   return h > 0 ? `${h}:${pad(Math.floor((n % 3600) / 60))}:${pad(n % 60)}` : `${pad(Math.floor(n / 60))}:${pad(n % 60)}`
 }
 
+// ─── 加入合集：成员待遇。面板里勾一勾就进出抽屉；没抽屉当场建。
+// 后端 /api/member/collections?bvid= 回我的抽屉并带 contains 标记，勾选即反向操作。
+const collectionsOpen = ref(false)
+const myCollections = ref(null) // null = 没拉到（在飞）；[] = 确实没建过
+const collBusy = ref(false)
+const collNotice = ref(null)
+const newCollName = ref('')
+
+async function toggleCollections() {
+  collectionsOpen.value = !collectionsOpen.value
+  if (collectionsOpen.value && myCollections.value === null) await loadMyCollections()
+}
+
+async function loadMyCollections() {
+  collBusy.value = true
+  try {
+    const bvid = encodeURIComponent(data.value?.bvid || '')
+    const res = await fetch(`/api/member/collections?bvid=${bvid}`)
+    const d = res.ok ? await res.json().catch(() => null) : null
+    myCollections.value = Array.isArray(d?.collections) ? d.collections : []
+  } catch {
+    myCollections.value = []
+  } finally {
+    collBusy.value = false
+  }
+}
+
+async function toggleCollection(c) {
+  if (collBusy.value || !data.value?.bvid) return
+  collBusy.value = true
+  collNotice.value = null
+  try {
+    const bvid = encodeURIComponent(data.value.bvid)
+    let res
+    if (c.contains) {
+      res = await fetch(`/api/member/collections/${c.id}/items/${bvid}`, { method: 'DELETE' })
+    } else {
+      res = await fetch(`/api/member/collections/${c.id}/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bvid: data.value.bvid }),
+      })
+    }
+    const d = await res.json().catch(() => null)
+    if (!res.ok) collNotice.value = { kind: 'err', text: d?.message || '抽屉没应' }
+    await loadMyCollections()
+  } catch {
+    collNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    collBusy.value = false
+  }
+}
+
+async function createAndAdd() {
+  const name = newCollName.value.trim()
+  if (!name || collBusy.value || !data.value?.bvid) return
+  collBusy.value = true
+  collNotice.value = null
+  try {
+    const res = await fetch('/api/member/collections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    const d = await res.json().catch(() => null)
+    if (!res.ok) {
+      collNotice.value = { kind: 'err', text: d?.message || '抽屉建不起来' }
+      return
+    }
+    newCollName.value = ''
+    const add = await fetch(`/api/member/collections/${d.id}/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bvid: data.value.bvid }),
+    })
+    if (!add.ok) {
+      const ad = await add.json().catch(() => null)
+      collNotice.value = { kind: 'err', text: ad?.message || '抽屉建好了，但这部没进去' }
+    }
+    await loadMyCollections()
+  } catch {
+    collNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    collBusy.value = false
+  }
+}
+
 // ─── 访客下载：播放器报什么编码就下什么编码，主版本缺省 ───
 const playerCodec = ref(null)
 
@@ -548,7 +635,46 @@ const playerShellW = ref(0)
               <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」；右侧访客下载 -->
               <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 py-2">
                 <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" />
-                <div class="flex shrink-0 items-center gap-2">
+                <div class="relative flex shrink-0 items-center gap-2">
+                  <!-- 加入合集：成员就地收纳，抽屉不够当场建一个 -->
+                  <div v-if="member" class="relative">
+                    <button
+                      class="flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs transition"
+                      :class="collectionsOpen ? 'border-stationPink text-stationPink' : 'border-black/10 text-inkSub hover:border-stationPink hover:text-stationPink'"
+                      title="把这部收进我的合集"
+                      @click="toggleCollections"
+                    >
+                      <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M4 6h16M4 12h10M4 18h10" />
+                        <path d="M17 14v6M14 17h6" />
+                      </svg>
+                      合集
+                    </button>
+                    <div v-if="collectionsOpen" class="absolute right-0 top-11 z-30 w-64 rounded-xl border border-black/10 bg-white p-3 shadow-xl">
+                      <p v-if="collBusy && !myCollections?.length" class="py-4 text-center text-[12px] text-inkFaint">正在翻你的抽屉……</p>
+                      <p v-else-if="!myCollections?.length" class="py-4 text-center text-[12px] text-inkFaint">你还没有抽屉，下面建一个</p>
+                      <label
+                        v-for="c in myCollections"
+                        :key="c.id"
+                        class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] text-inkMain transition hover:bg-stationPink/5"
+                      >
+                        <input type="checkbox" :checked="c.contains" :disabled="collBusy" class="accent-[#fb7299]" @change="toggleCollection(c)" />
+                        <span class="min-w-0 flex-1 truncate">{{ c.name }}</span>
+                        <span class="font-mono text-[10px] text-inkFaint">{{ c.itemCount }}</span>
+                      </label>
+                      <div class="mt-2 flex items-center gap-1.5 border-t border-black/5 pt-2">
+                        <input
+                          v-model="newCollName"
+                          class="min-w-0 flex-1 rounded-lg border border-black/15 px-2 py-1.5 text-[12px] outline-none focus:border-stationPink"
+                          placeholder="新抽屉名字（30 字内）"
+                          maxlength="30"
+                          @keyup.enter="createAndAdd"
+                        />
+                        <button class="shrink-0 rounded-lg bg-stationPink px-2.5 py-1.5 text-[12px] text-white transition hover:opacity-90 disabled:opacity-50" :disabled="collBusy" @click="createAndAdd">建</button>
+                      </div>
+                      <p v-if="collNotice" :class="collNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'" class="mt-1.5 text-[11px]">{{ collNotice.text }}</p>
+                    </div>
+                  </div>
                   <!-- 投稿人自管两钮（下载胶囊左侧）：白底描边，hover 才上色，不抢下载胶囊的风头 -->
                   <template v-if="data.canManage">
                     <button
