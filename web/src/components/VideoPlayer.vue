@@ -28,6 +28,8 @@ const playing = ref(false)
 const waiting = ref(false)
 // 卡顿自愈：waiting 持续不推进先自动重播一次；再不行看缓冲余量——缓冲区里有货却不走才算真死，
 // 货还没到货就继续转圈（首载/大 seek 的慢缓冲不冤枉），几轮救不回才弹手动恢复钮。
+// 关键：lastTickTime 是「卡住起点冻结的坐标」，只在 onMediaWait / manualUnstick 落笔，绝不在 timeupdate 刷；
+// 否则正常播放时它被逐帧贴着当前进度、推进检测永远测到 ≈0，会把在放的视频也误判成停滞。
 const stuckRecover = ref(false)
 let stuckTimer = 0
 let lastTickTime = 0
@@ -70,6 +72,8 @@ function recheckStuck(roundsLeft) {
 function onMediaWait() {
   const v = video.value
   if (v) logEvent(`缓冲 rs=${v.readyState} ns=${v.networkState} seek=${v.seeking ? 1 : 0} t=${v.currentTime.toFixed(1)}`)
+  // 冻结卡住基准点：往后所有「有没有推进」的判据都拿实时 currentTime 减这个点，真放了就会显著变大。
+  if (v) lastTickTime = v.currentTime
   waiting.value = true
   stuckRecover.value = false
   clearTimeout(stuckTimer)
@@ -100,6 +104,8 @@ function onMediaPause() {
 function manualUnstick() {
   const v = video.value
   if (!v) return
+  // 手动重试也重置基准点到「点击这一刻」，之后看有没有从这个点往前走。
+  lastTickTime = v.currentTime
   stuckRecover.value = false
   waiting.value = true
   logEvent('手动恢复：尝试播放')
@@ -1192,7 +1198,7 @@ const STROKE_ITEMS = [
       class="h-full w-full"
       @click="togglePlay"
       @dblclick="toggleFullscreen"
-      @timeupdate="currentTime = video.currentTime; lastTickTime = video.currentTime; bufferedEnd = video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0"
+      @timeupdate="currentTime = video.currentTime; bufferedEnd = video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0"
       @loadedmetadata="onLoadedMetadata"
       @play="playing = true; wakeControls()"
       @playing="waiting = false; stuckRecover = false; playing = true"
