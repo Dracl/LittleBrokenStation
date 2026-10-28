@@ -1270,10 +1270,10 @@ const STROKE_ITEMS = [
       缓冲停滞，点击恢复播放
     </button>
 
-    <!-- 底部控制条 -->
+    <!-- 底部控制条：淡背与续播气泡同源，opacity 缓进缓出 500ms（v-show 只能 display 硬切不淡，改 pointer-events-none 兼管隐藏时不挡点）-->
     <div
-      v-show="showControls"
-      class="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/35 to-transparent px-3 pb-1.5 pt-10"
+      class="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/35 to-transparent px-3 pb-1.5 pt-10 transition-opacity duration-500"
+      :class="showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'"
       @click.stop
       @dblclick.stop
       @mousemove="wakeControls"
