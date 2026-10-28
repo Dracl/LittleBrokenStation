@@ -76,6 +76,8 @@ function onMediaWait() {
   if (v) lastTickTime = v.currentTime
   waiting.value = true
   stuckRecover.value = false
+  // 素圈住在控制条里，条自隐会把圈一起藏走：真缓冲先来唤醒控制条，圈随条淡入。
+  wakeControls()
   clearTimeout(stuckTimer)
   stuckTimer = setTimeout(tryUnstick, 4000)
 }
@@ -1034,7 +1036,8 @@ function wakeControls() {
   showControls.value = true
   clearTimeout(hideTimer)
   hideTimer = setTimeout(() => {
-    if (playing.value && !rateMenu.value && !qualityMenu.value && !gearPanel.value && !playPanel.value && !statsOpen.value && !ctx.visible) showControls.value = false
+    // 真缓冲（waiting）期间不落帘：素圈住在条里，条隐圈灭会让用户以为片子死了；缓冲一到货自恢复 5 秒落帘节奏。
+    if (playing.value && !waiting.value && !rateMenu.value && !qualityMenu.value && !gearPanel.value && !playPanel.value && !statsOpen.value && !ctx.visible) showControls.value = false
   }, 5000) // 站长口径：与续播小泡同步驻留五秒，鼠标一碰重新计时
 }
 
@@ -1262,10 +1265,7 @@ const STROKE_ITEMS = [
       <BIcon :meta="biPlay" class="ml-1 h-8 w-8" />
     </button>
 
-    <!-- 缓冲圈 -->
-    <div v-if="waiting && playing && !stuckRecover" class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-      <div class="h-10 w-10 animate-spin rounded-full border-2 border-white/25 border-t-white"></div>
-    </div>
+    <!-- 缓冲转圈已搬进控制条（时间戳身后 14px 素圈，站长定稿）；正中不再挂大圈 -->
 
     <!-- 自动重试也没救回来时的手动恢复钮：站长口径摆播放器左上角，不再堵画面正中（加速提示在右上，不碰面） -->
     <button
@@ -1318,6 +1318,13 @@ const STROKE_ITEMS = [
         </button>
 
         <span class="mx-1.5 text-xs tabular-nums text-white/90">{{ fmt(currentTime) }} / {{ fmt(duration) }}</span>
+
+        <!-- 缓冲素圈：14px 贴时间戳身后 5px，无底无框透出控制条渐变（从正中 40px 大圈搬来，站长定稿） -->
+        <span
+          v-if="waiting && playing && !stuckRecover"
+          class="ml-[5px] h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white"
+          title="缓冲中"
+        ></span>
 
         <span class="flex-1"></span>
 
