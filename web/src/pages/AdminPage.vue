@@ -1567,6 +1567,7 @@ const ADMIN_GROUPS = [
 ]
 const activeGroup = ref('overview')
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
+const engOpen = ref(false) // 下载设置同样默认收起：字段密、又极少改，展开率低的卡不该占首屏
 const dlWaiting = computed(() => (dlQueue.value?.pending?.length ?? 0) + (dlQueue.value?.downloading?.length ?? 0))
 const adminNav = computed(() => [
   { ...ADMIN_GROUPS[0], n: (pv.value?.pending ?? 0) > 0 ? pv.value.pending : null, tone: 'warn' },
@@ -2416,10 +2417,23 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-if="eng && engDraft" class="lbs-card md:col-span-2 order-[22]">
+      <!-- 下载设置：字段密又极少改，默认收成一条；展开后才摆引擎、画质、并发这些 -->
+      <button
+        v-if="eng && engDraft && !engOpen"
+        type="button"
+        class="order-[22] md:col-span-2 flex items-center gap-2.5 rounded-2xl border border-white/8 bg-white/[0.015] px-5 py-3 text-left text-xs text-white/45 transition hover:border-adminAccent/35 hover:text-white/75"
+        @click="engOpen = true"
+      >
+        <span class="h-3 w-[3px] rounded-full bg-white/20"></span>
+        下载设置
+        <span class="ml-2 font-mono text-[11px] text-white/22">引擎 · 画质 · 并发与限速 · 一年改不了几回</span>
+        <span class="ml-auto font-mono text-[11px] text-white/25">点开展开</span>
+      </button>
+      <section v-else-if="eng && engDraft" class="lbs-card md:col-span-2 order-[22]">
         <div class="mb-4 flex items-center justify-between">
           <h3 class="lbs-title !mb-0">下载设置</h3>
           <div class="flex items-center gap-2">
+            <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="engOpen = false">收起</button>
             <button
               class="lbs-btn-ghost"
               :disabled="engBusy"
