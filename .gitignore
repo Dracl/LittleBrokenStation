@@ -27,3 +27,7 @@ Thumbs.db
 docs/baseline-shots/
 
 data-e2e/
+
+# 手稿与草稿区（写方案、贴临时脚本用，不进库）
+# 曾经被 git add -A 一并扫进过提交，后来才用 git rm -r --cached 摘出来；这里直接堵在门口。
+OH-Works/
