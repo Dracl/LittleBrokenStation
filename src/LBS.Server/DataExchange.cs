@@ -90,10 +90,8 @@ public static class DataExchangeLayout
 
     public static string PreImportDir(DataPaths paths, string stamp) => Path.Combine(paths.Root, "pre-import", stamp);
 
-    public static string AltLoginFile(DataPaths paths) => Path.Combine(paths.Cookies, "alt-login.json");
-
-    /// <summary>站长/引擎登录态（downkyicore 的 LoginHelper 消费，DOWNKYI_DATA_DIR 定在 paths.Downkyi）。</summary>
-    public static string DownkyiLoginFile(DataPaths paths) => Path.Combine(paths.Downkyi, "Config", "Login");
+    // （原 AltLoginFile / DownkyiLoginFile 两个路径随站级主备号一起退役：分站不再存任何
+    // 站级 B 站登录态，成员号池的 cookie 本就在台账件 member_accounts 里，跟着 station.db 一起备份与换库。）
 }
 
 /// <summary>导出打包员：LedgerBackup 拍快照 → 快照洗白 → 流式 zip 进档案柜。</summary>
@@ -138,20 +136,9 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
             using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
             {
                 AddFile(zip, snapshot, "station.db", files);
-                if (options.WithCreds)
-                {
-                    var alt = DataExchangeLayout.AltLoginFile(paths);
-                    if (File.Exists(alt))
-                    {
-                        AddFile(zip, alt, "cookies/alt-login.json", files);
-                    }
-
-                    var ownerLogin = DataExchangeLayout.DownkyiLoginFile(paths);
-                    if (File.Exists(ownerLogin))
-                    {
-                        AddFile(zip, ownerLogin, "login/downkyi-login.json", files);
-                    }
-                }
+                // 登录态不再入包：分站已无站级 B 站 cookie，成员号池（member_accounts）跟着台账件走，
+                // 出包前已被洗成 revoked-on-export，不存在「一份 cookie 跟着包满天飞」的老风险。
+                // options.WithCreds 这个开关就此失去意义（前端勾选项已拆），留着只为老导入包认得这个字段。
 
                 if (options.WithMedia)
                 {
@@ -555,15 +542,13 @@ public static class ImportApplier
         // ① 换库前先给现站拍一张自救快照，炸了还能回档
         backup.Run();
 
-        // ② 现站保底：台账（连同 -wal/-shm）与两份登录态文件整体移进 pre-import，不搞丢
+        // ② 现站保底：台账（连同 -wal/-shm）整体移进 pre-import，不搞丢
         var keep = DataExchangeLayout.PreImportDir(paths, DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss"));
         Directory.CreateDirectory(keep);
         SqliteConnection.ClearAllPools(); // 尽量松开连接池扣着的句柄再搬（同卷移动，开着的句柄也拦不住重命名）
         MoveForKeep(paths.DatabaseFile, Path.Combine(keep, "station.db"));
         MoveForKeep(paths.DatabaseFile + "-wal", Path.Combine(keep, "station.db-wal"));
         MoveForKeep(paths.DatabaseFile + "-shm", Path.Combine(keep, "station.db-shm"));
-        MoveForKeep(DataExchangeLayout.AltLoginFile(paths), Path.Combine(keep, "alt-login.json"));
-        MoveForKeep(DataExchangeLayout.DownkyiLoginFile(paths), Path.Combine(keep, "Login"));
 
         // ③ 落换库标记，等开机消费
         File.WriteAllText(DataExchangeLayout.PendingFile(paths), JsonSerializer.Serialize(new PendingMarker(staging), MarkerJson));
@@ -621,9 +606,7 @@ public static class PendingImportSwapper
                 }
             }
 
-            // ② 登录态回写（包里有才写回，没有就保持「未登录」——现站那份已在 pre-import 保底）
-            SwapFileInto(Path.Combine(staging, "cookies", "alt-login.json"), DataExchangeLayout.AltLoginFile(paths));
-            SwapFileInto(Path.Combine(staging, "login", "downkyi-login.json"), DataExchangeLayout.DownkyiLoginFile(paths));
+            // ② 登录态不再回写：分站已不存站级 B 站 cookie，成员号池跟着台账一起换芯（见 member_accounts）。
 
             // ③ 媒体与缓存合并解盘（覆盖同名，不碰包里没带的存量）；预览成片同属派生物，跟着一起回座
             CopyMerge(Path.Combine(staging, "media"), paths.Videos);

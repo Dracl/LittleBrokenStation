@@ -15,7 +15,7 @@ public sealed class DynamicFetchWorker(
     LbsDynamicFetcher fetcher,
     LbsCommentArchiver assetCache,
     LbsUpInfoFetcher upInfo,
-    LbsOwnerPolicy policy,
+    LbsCollectPolicy policy,
     ILogger<DynamicFetchWorker> logger) : BackgroundService
 {
     private readonly SemaphoreSlim roundGate = new(1, 1);
@@ -100,6 +100,13 @@ public sealed class DynamicFetchWorker(
         await roundGate.WaitAsync(cancellationToken);
         try
         {
+            // 没号不开工：动态、评论这些采集全挂在采集号上，空着出去只能挨 -101，还白耗一轮节流窗口。
+            if (!policy.HasAccount())
+            {
+                logger.LogInformation("动态巡捕本轮歇脚：站里没有可用的 B 站号（成员号池空了或全被判失效）");
+                return;
+            }
+
             var freshIds = new List<(string DynamicId, long? CommentType, string? CommentOid)>();
             var freshDynamics = new List<ParsedDynamic>();
             foreach (var target in db.ListDynamicTargets())

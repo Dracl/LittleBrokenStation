@@ -30,7 +30,6 @@ builder.Services.AddSingleton<DownloadQueue>();
 builder.Services.AddSingleton<LbsApiThrottle>();
 builder.Services.AddSingleton<LbsCommentArchiver>();
 builder.Services.AddSingleton<LbsUpInfoFetcher>();
-builder.Services.AddSingleton<LbsAltLoginManager>();
 builder.Services.AddSingleton<LbsAccountRouter>();
 // 分流 cookie 供给必须赶在 AddLbsDownloadEngine 之前占位，让上游的 TryAddSingleton 自动让位：
 // 从此引擎内所有经 IBilibiliApiClient 的请求（含 playurl/view info）都按视频归属号现取 cookie。
@@ -38,7 +37,7 @@ builder.Services.AddSingleton<DownKyi.Application.Bilibili.IBilibiliCookieProvid
 builder.Services.AddSingleton<LbsQueryClient>();
 builder.Services.AddSingleton<CommentArchiveService>();
 builder.Services.AddSingleton<DanmakuArchiveService>();
-builder.Services.AddSingleton<LbsOwnerPolicy>();
+builder.Services.AddSingleton<LbsCollectPolicy>();
 builder.Services.AddHostedService<DownloadWorker>();
 builder.Services.AddHostedService<StatusSyncWorker>();
 // 订阅爬工：单例注册以便站长室手动触发拿到同一个实例（串行闸在它手里）。
@@ -413,7 +412,7 @@ app.MapAdminDynamicEndpoints();
 System.Collections.Concurrent.ConcurrentDictionary<long, byte> upCardInFlight = new();
 System.Collections.Concurrent.ConcurrentDictionary<long, byte> statInFlight = new();
 
-app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory, HttpContext http) =>
+app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, HttpContext http) =>
 {
     // BV 号是大小写敏感的 base62，先原样精确查，再补一记大写化兜底（照顾手打习惯）。
     var input = bvid.Trim();
@@ -451,7 +450,7 @@ app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db) =>
 
 // 头像值不能只判非空：早年那一代把 up_face 写成 /avatars/up-{mid}.jpg，命名换 sha1 后盘上文件已经没了，
 // 留着就是 UpCard 的 img 永远 404 到「粉底首字」占位。改走 NeedsRefetch 验货（空串仍是失败销账，不回头扰 B 站）。
-void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory, DataPaths paths, WatchData data)
+void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, DataPaths paths, WatchData data)
 {
     if (data.UpMid is not { } mid || !LbsUpInfoFetcher.NeedsRefetch(data.UpFace, paths.Avatars))
     {
@@ -487,7 +486,7 @@ void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy
 }
 
 // 互动数据（点赞/投币/收藏/分享）的后补：未销账且没采过时，开页异步采一次；成败都销账，不反复扰 B 站。
-void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory, WatchData data)
+void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, WatchData data)
 {
     if (data.Bvid is null || !db.ShouldBackfillStat(data.Id))
     {
@@ -1031,7 +1030,7 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
     });
 });
 
-app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest request, LbsFavoritesImport favorites, LbsOwnerPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
+app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest request, LbsFavoritesImport favorites, LbsCollectPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
     EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
 {
     // 整架导入是批量动作，冷却期直接挡回，不等它耐心到天荒地老。
@@ -1087,7 +1086,7 @@ app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest reques
 
 app.MapPost("/api/up/import", async (UpImportRequest request,
     LbsQueryClient client, IWbiKeyProvider wbiKeys, TimeProvider timeProvider,
-    LbsOwnerPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
+    LbsCollectPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
     EventRecorder events, HttpContext http,
     CancellationToken cancellationToken) =>
 {
@@ -1114,7 +1113,7 @@ app.MapPost("/api/up/import", async (UpImportRequest request,
         var page = await policy.RunForActivityAsync(() => WbiRequestExecutor.ExecuteAsync(
             wbiKeys,
             async (keys, wts) => await client.GetPublicationPageAsync(
-                keys, wts, mid.Value, pn: pn, ps: pageSize, LoginHelper.HasSavedLoginInfo,
+                keys, wts, mid.Value, pn: pn, ps: pageSize, policy.HasAccount(),
                 order: PublicationOrder.PUBDATE, cancellationToken: cancellationToken),
             timeProvider,
             cancellationToken));
@@ -1253,76 +1252,27 @@ app.MapGet("/api/station/throttle", (LbsApiThrottle throttle) => Results.Ok(new
     remainingSeconds = throttle.CooldownRemaining is { } left ? Math.Ceiling(left.TotalSeconds) : (double?)null,
 }));
 
-app.MapGet("/api/login/status", async (LbsLoginManager login, StationDb db, CancellationToken cancellationToken) =>
-{
-    var state = await login.GetStateAsync(cancellationToken);
-    if (state is { IsLogin: true, Face: { Length: > 0 } })
-    {
-        // 嗂到 KV 兜一份：nav 是实时接口不宜被弹幕层频扰，站长头像给 /api/station/profile 吃这份缓存。
-        db.SetSetting("station-profile", JsonSerializer.Serialize(new { name = state.Name, face = state.Face }));
-    }
+// 站长公开名片：昵称+头像（B 站 CDN 链，本就公网可见），没站长席位回 null。
+// 这份数以前由 /api/login/status 顺手从 B 站 nav 嗂进 KV 缓存；站级登录态退役后直接吃站长席位台账，
+// 少一层缓存也少一处「站长换了脸、分站还顶着旧头像」的 stale。
+app.MapGet("/api/station/profile", (StationDb db) => Results.Ok(db.GetOwnerSeatCard()));
 
+// 采集号情报（站长门内）：站里的活——评论/弹幕归档、UP 名片、动态、编码加档——此刻在用谁的号。
+// 分站已无站级号，这份号从成员池里取（站长席位的活号优先），所以要说清是「站长自己的号」还是
+// 「借了哪位成员的号」，并把停摆多久一并报给柜台标灰。
+app.MapGet("/api/stats/collect", (LbsCollectPolicy collect, StationDb db) =>
+{
+    var account = collect.CurrentAccount();
+    var ownerSeat = db.OwnerSeatMemberId();
     return Results.Ok(new
     {
-        isLogin = state.IsLogin,
-        name = state.Name,
-        mid = state.Mid,
-        vipStatus = state.VipStatus,
-        hasSavedCookies = state.HasSavedCookies,
-        face = state.Face,
+        hasAccount = account is not null,
+        mid = account?.AccountMid,
+        name = account?.AccountName,
+        face = account?.FaceUrl,
+        isOwnerSeat = account is not null && ownerSeat is long seat && account.MemberId == seat,
+        stoppedSinceUtc = collect.LastNoAccountUtc,
     });
-});
-
-// 站长公开名片：昵称+头像（B 站 CDN 链，本就公网可见），没登录过回 null。
-app.MapGet("/api/station/profile", (StationDb db) =>
-{
-    var json = db.GetSetting("station-profile");    
-    return string.IsNullOrWhiteSpace(json) ? Results.Ok(null) : Results.Ok(JsonSerializer.Deserialize<JsonElement>(json));
-});
-
-app.MapPost("/api/login/cookie", async (LoginCookieRequest request, LbsLoginManager login, CancellationToken cancellationToken) =>
-{
-    // 红线：cookie 只进不出，这里不记录也不回显任何 cookie 内容。
-    var outcome = await login.LoginWithCookieAsync(request.Cookie, cancellationToken);
-    return outcome.Success
-        ? Results.Ok(new { message = $"站长「{outcome.Name}」已进站", name = outcome.Name, mid = outcome.Mid })
-        : Results.BadRequest(new { message = outcome.Error });
-});
-
-app.MapPost("/api/login/logout", (LbsLoginManager login) =>
-{
-    var outcome = login.Logout();
-    return outcome.Success
-        ? Results.Ok(new { message = "站长已离站，登录 cookie 清空" })
-        : Results.BadRequest(new { message = outcome.Error });
-});
-
-// 副登录（查询分流）：cookie 同样只进不出，回显只有昵称/mid/vip。
-app.MapGet("/api/login/alt", (LbsAltLoginManager alt) =>
-{
-    var state = alt.GetState();
-    return Results.Ok(new
-    {
-        isAlt = state is not null,
-        name = state?.Name,
-        mid = state?.Mid,
-        vipStatus = state?.VipStatus,
-        savedAtUtc = state?.SavedAtUtc,
-    });
-});
-
-app.MapPost("/api/login/alt", async (LoginCookieRequest request, LbsAltLoginManager alt, CancellationToken cancellationToken) =>
-{
-    var (ok, error, state) = await alt.SetAsync(request.Cookie, cancellationToken);
-    return ok
-        ? Results.Ok(new { message = $"副号「{state!.Name}」已就位，新视频将两号轮转下载", name = state.Name, mid = state.Mid })
-        : Results.BadRequest(new { message = error });
-});
-
-app.MapDelete("/api/login/alt", (LbsAltLoginManager alt) =>
-{
-    alt.Clear();
-    return Results.Ok(new { message = "副号已移除，查询流量回到主号" });
 });
 
 // 站长室页头总览：台账聚合 + 磁盘体积（一次加载扫一遍，不轮询）。
@@ -1391,7 +1341,8 @@ static List<SubscriptionItem> ReadSubscriptions(StationDb db) =>
 
 // ─── 危险区：一键清空分站 ────────────────────────────────────────────────────
 // 删视频库 + 缓存图 + 台账 + 引擎任务表，站子回到空仓；
-// 保留：主/副登录（cookies 盘）、采集偏好与下载设置（settings KV + 引擎 json）。
+// 保留：成员席位与各自的 B 站账号池（member_accounts）、下载设置（settings KV + 引擎 json）。
+// （旧注释里的「主/副登录（cookies 盘）」已随站级登录态摘除，data/cookies 不再存任何站级 cookie。）
 app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, CancellationToken cancellationToken) =>
 {
     if (!request.Confirm)
@@ -1495,22 +1446,6 @@ app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataP
     }
 });
 
-// 采集偏好：mixed 跟随视频归属号；main/alt 强制单号（副号未配自动回落主号）。存分站库，重启不丢。
-app.MapGet("/api/settings/collect", (StationDb db) =>
-    Results.Ok(new { mode = db.GetSetting("collect.mode") ?? "mixed" }));
-
-app.MapPost("/api/settings/collect", (CollectModeRequest request, StationDb db, LbsAccountRouter router) =>
-{
-    if (!Enum.TryParse<LbsCollectMode>(request.Mode, ignoreCase: true, out var mode))
-    {
-        return Results.BadRequest(new { message = "采集模式只认 mixed / main / alt" });
-    }
-
-    db.SetSetting("collect.mode", mode.ToString().ToLowerInvariant());
-    router.CollectMode = mode;
-    return Results.Ok(new { message = "采集偏好已更新", mode = mode.ToString().ToLowerInvariant() });
-});
-
 app.MapGet("/api/settings", (DataPaths paths) => Results.Ok(new
 {
     dataDir = paths.Root,
@@ -1524,13 +1459,6 @@ if (File.Exists(Path.Combine(webRoot, "index.html")))
 
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("LBS");
 
-// 采集偏好回填：上次站长室选的模式跟着进程复活。
-var stationRouter = app.Services.GetRequiredService<LbsAccountRouter>();
-if (Enum.TryParse<LbsCollectMode>(app.Services.GetRequiredService<StationDb>().GetSetting("collect.mode") ?? "Mixed", ignoreCase: true, out var collectMode))
-{
-    stationRouter.CollectMode = collectMode;
-}
-
 logger.LogInformation("小破分站开站：{Urls}，数据目录 {DataDir}，前端 {WebRoot}", urls, dataPaths.Root, webRoot);
 app.Run();
 
@@ -1543,8 +1471,6 @@ internal sealed record CancelDownloadsRequest(IReadOnlyList<long>? VideoIds);
 internal sealed record SetDownloadIntervalRequest(int Seconds);
 internal sealed record GateRequest(string? Password);
 internal sealed record BackupConfigRequest(int? IntervalHours, int? Keep);
-internal sealed record LoginCookieRequest(string Cookie);
-internal sealed record CollectModeRequest(string Mode);
 internal sealed record PurgeRequest(bool Confirm);
 internal sealed record SubscriptionItem(string Kind, string Target, string AddedAtUtc);
 internal sealed record SubscriptionRequest(string Kind, string Target);

@@ -23,7 +23,8 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
         "/api/admin/",
         "/api/settings",
         "/api/downloads/",
-        "/api/login/",
+        // /api/login/ 随站级登录态一起拆了：分站不再存任何站级 B 站 cookie，
+        // 成员配自己的号走 /api/member/accounts/*（那里按席位归属自管）。
         "/api/subscriptions",
         "/api/backups",
         "/api/preview/",
@@ -35,6 +36,8 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
         "/api/station/throttle",
         // 预览总览会报站内囤了多少预览、谁转挂了，也是站长情报，一并收进门里。
         "/api/stats/preview",
+        // 采集号报的是「此刻在用谁的 B 站号、借的是哪位成员的号」，属于站长情报，不对外露。
+        "/api/stats/collect",
     ];
 
     private readonly object pad = new();

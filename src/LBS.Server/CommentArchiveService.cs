@@ -15,7 +15,7 @@ public sealed class CommentArchiveService(
     StationDb db,
     DataPaths paths,
     LbsCommentArchiver archiver,
-    LbsOwnerPolicy policy,
+    LbsCollectPolicy policy,
     ILogger<CommentArchiveService> logger)
 {
     public async Task<CommentArchiveOutcome> TryArchiveAsync(long videoId, bool force, CancellationToken cancellationToken)

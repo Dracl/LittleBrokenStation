@@ -26,7 +26,7 @@ public sealed class DanmakuArchiveService(
     StationDb db,
     DataPaths paths,
     LbsQueryClient client,
-    LbsOwnerPolicy policy,
+    LbsCollectPolicy policy,
     ISettingsStore settings,
     ILogger<DanmakuArchiveService> logger)
 {

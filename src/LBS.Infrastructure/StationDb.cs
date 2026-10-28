@@ -154,8 +154,6 @@ public sealed partial class StationDb
         EnsureColumn(connection, "videos", "cover_url", "TEXT");
         // B 站投稿时间（ISO）：导入源（UP 投稿列表 created / 收藏夹 pubtime）入库时就存，首页卡阵展示用。
         EnsureColumn(connection, "videos", "published_at_utc", "TEXT");
-        // 视频归属号（0=主 1=副，NULL=未分配）：提交时轮转定档，加档/采集跟随同一个号。
-        EnsureColumn(connection, "videos", "owner", "INTEGER");
         // 投稿人（B 站 UID，与 events.actor_mid 同口径，NULL=站长或史前）：下载提交时据此走投稿人的账号池。
         EnsureColumn(connection, "videos", "submitter_mid", "INTEGER");
         // 主版本编码实测缓存（'avc'/'hevc'/'av1'）：首次看片时 ffprobe 实测回填，之后不再探。
@@ -484,7 +482,7 @@ public sealed partial class StationDb
         var downloading = 0;
         var pending = 0;
         var failed = 0;
-        var altOwned = 0;
+        var liveAccounts = 0;
         using (var command = connection.CreateCommand())
         {
             command.CommandText = """
@@ -492,8 +490,7 @@ public sealed partial class StationDb
                        COALESCE(SUM(status = 'Arrived'), 0),
                        COALESCE(SUM(status = 'Downloading'), 0),
                        COALESCE(SUM(status = 'Pending'), 0),
-                       COALESCE(SUM(status = 'Failed'), 0),
-                       COALESCE(SUM(owner = 1), 0)
+                       COALESCE(SUM(status = 'Failed'), 0)
                 FROM videos;
                 """;
             using var reader = command.ExecuteReader();
@@ -504,8 +501,20 @@ public sealed partial class StationDb
                 downloading = reader.GetInt32(2);
                 pending = reader.GetInt32(3);
                 failed = reader.GetInt32(4);
-                altOwned = reader.GetInt32(5);
             }
+        }
+
+        // 采集号的家底：成员号池里还有几支活号（站里的活——评论/弹幕归档、UP 名片、动态、加档——全指着它们，
+        // 一支不剩则采集停摆；以前这个位置报的是「副号定档」多少条，副号随站级登录态一起退役了）。
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM member_accounts a
+                JOIN members m ON m.id = a.member_id
+                WHERE a.expired = 0 AND m.status = 'active';
+                """;
+            liveAccounts = (int)(long)(command.ExecuteScalar() ?? 0L);
         }
 
         long viewTotal = 0;
@@ -560,7 +569,7 @@ public sealed partial class StationDb
             // 目录不可读则体积不给数（前端显破折号）
         }
 
-        return new AdminStats(total, arrived, downloading, pending, failed, altOwned, totalBytes, viewTotal, likeTotal, coinTotal, favTotal, shareTotal, replyTotal, upCount);
+        return new AdminStats(total, arrived, downloading, pending, failed, liveAccounts, totalBytes, viewTotal, likeTotal, coinTotal, favTotal, shareTotal, replyTotal, upCount);
     }
 
     public IReadOnlyList<VideoEntry> ListVideos()
@@ -857,29 +866,7 @@ public sealed partial class StationDb
         return new SubmissionCandidate(id, reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
     }
 
-    /// <summary>视频归属号（0=主 1=副）；NULL=尚未分配（未提交过或老数据）。</summary>
-    public int? GetVideoOwner(long id)
-    {
-        using var connection = Open(_dbPath);
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT owner FROM videos WHERE id = $id;";
-        command.Parameters.AddWithValue("$id", id);
-        using var reader = command.ExecuteReader();
-        return reader.Read() && !reader.IsDBNull(0) ? (int)reader.GetInt64(0) : null;
-    }
-
-    /// <summary>定档/改判视频归属号（副号提交失败回退主号时也会改判）。</summary>
-    public void SetVideoOwner(long id, int owner)
-    {
-        using var connection = Open(_dbPath);
-        using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE videos SET owner = $owner WHERE id = $id;";
-        command.Parameters.AddWithValue("$owner", owner);
-        command.Parameters.AddWithValue("$id", id);
-        command.ExecuteNonQuery();
-    }
-
-    /// <summary>分站自有设置 KV（采集偏好等进站配置），与引擎设置分开。</summary>
+    /// <summary>分站自有设置 KV（进站配置等），与引擎设置分开。</summary>
     public string? GetSetting(string key)
     {
         using var connection = Open(_dbPath);
@@ -2253,7 +2240,8 @@ public sealed record AdminStats(
     int Downloading,
     int Pending,
     int Failed,
-    int AltOwned,
+    /// <summary>成员号池里的活号数（采与加档全靠它们；零支 = 采集已停摆）。</summary>
+    int LiveAccounts,
     long TotalBytes,
     long ViewTotal,
     long LikeTotal,

@@ -47,6 +47,7 @@ public sealed class DownloadWorker(
     ISettingsStore settingsStore,
     HeadlessSubmissionService submission,
     LbsAccountRouter router,
+    LbsCollectPolicy collect,
     DownloadPauseBoard board,
     MediaReconcileGate mediaGate,
     ILogger<DownloadWorker> logger) : BackgroundService
@@ -141,25 +142,11 @@ public sealed class DownloadWorker(
                 FileNameParts = [.. settings.Video.FileNameParts, FileNamePart.Hyphen, FileNamePart.Blank, FileNamePart.VideoCodec],
             };
 
-            // 加档跟随主版本的归属号；副号失败同样有主号重跑兑底。
-            var codecOwner = db.GetVideoOwner(videoId) is { } storedOwner ? (LbsOwner)storedOwner : LbsOwner.Main;
-            var result = await router.RunAsAsync(codecOwner, () => submission.SubmitAsync(
+            // 加档是站里的活（成员重下不需要重投）：吃采集号，不再按视频分主副号。
+            var result = await collect.RunForVideoAsync(videoId, () => submission.SubmitAsync(
                 $"https://www.bilibili.com/video/{brief.Value.Bvid}",
                 options,
                 stoppingToken));
-            if (codecOwner == LbsOwner.Alt && IsFailure(result))
-            {
-                logger.LogWarning("副号加档失败 videoId={VideoId} codec={Codec}（{Reasons}），改主号重跑一次", videoId, codec, JoinReasons(result));
-                var retry = await router.RunAsAsync(LbsOwner.Main, () => submission.SubmitAsync(
-                    $"https://www.bilibili.com/video/{brief.Value.Bvid}",
-                    options,
-                    stoppingToken));
-                if (!IsFailure(retry))
-                {
-                    db.SetVideoOwner(videoId, (int)LbsOwner.Main);
-                    result = retry;
-                }
-            }
 
             if (result.Status != HeadlessSubmissionStatus.Enqueued)
             {
@@ -193,6 +180,12 @@ public sealed class DownloadWorker(
         {
             throw;
         }
+        catch (LbsNoAccountException ex)
+        {
+            // 没号不是事故：写明原因挂在那一行，成员绑好号点重试就能接着跑。
+            FailCodecRows(videoId, codec, ex.Message);
+            logger.LogWarning("编码加档判无号 videoId={VideoId} codec={Codec}", videoId, codec);
+        }
         catch (Exception ex)
         {
             FailCodecRows(videoId, codec, ex.Message);
@@ -223,45 +216,30 @@ public sealed class DownloadWorker(
         logger.LogInformation("提交进站任务 videoId={VideoId} url={Url}", videoId, candidate.Url);
         try
         {
-            // 按视频分号：首次提交轮转定档（主、副、主、副……），重提交沿档；无副号恒主。
-            // 提交链同步 await 到底，环境号顺着调用链流进上游客户端，playurl/view info 都挂归属号的 cookie。
-            var assigned = db.GetVideoOwner(videoId);
-            var owner = assigned is { } stored ? (LbsOwner)stored : router.AssignNext();
-            if (assigned is null)
-            {
-                db.SetVideoOwner(videoId, (int)owner);
-            }
-
-            logger.LogInformation("提交进站 videoId={VideoId} 归属 {Owner}", videoId, owner);
             var options = LbsSubmissionProfile.ForStation(paths, settingsStore.Current);
 
-            // 投稿人自己的号优先：成员池有活号就用他的 cookie 跑提交链（playurl/视频信息全挂他的登录态），
-            // 出池（没号/全失效）回落站级主备槽；归属台账仍按主/副轮转，不动存量机制。
-            // M5.4：取的是站内席位 id（旧代码这里误把 submitter_mid 当 memberId 传，换列顺手正了）。
-            var memberCred = db.GetVideoSubmitterMember(videoId) is long submitterMemberId
-                ? db.PickMemberAccountForDownload(submitterMemberId)
+            // 谁的稿谁出号：投稿人自己的活号是唯一来源，分站已无站级兑底登录态。
+            // 投稿口那道闸门（SubmissionGate）已经挡过一次「素净席位」，这里兑的是
+            // 「过了闸门之后号被 B 站踢下线」这种中途失效，以及无主史前稿的重试。
+            var submitterMemberId = db.GetVideoSubmitterMember(videoId);
+            var memberCred = submitterMemberId is long submitterId
+                ? db.PickMemberAccountForDownload(submitterId)
                 : null;
-            var result = memberCred is null
-                ? await router.RunAsAsync(owner, () => submission.SubmitAsync(candidate.Url, options, stoppingToken))
-                : await router.RunAsMemberAsync(memberCred.Cookie,
-                    () => router.RunAsAsync(owner, () => submission.SubmitAsync(candidate.Url, options, stoppingToken)));
-            if (memberCred is not null)
+            if (memberCred is null)
             {
-                // cookie 只进不出：日志只报号码，不报内容。
-                logger.LogInformation("提交进站 videoId={VideoId} 走投稿人自有号 mid={Mid}", videoId, memberCred.AccountMid);
+                var why = submitterMemberId is null
+                    ? "这条稿子没有投稿人席位，也就没有可借的 B 站号；请成员重新投稿，或由站长给这稿补上归属"
+                    : "投稿人的 B 站号全失效了：请他到「何处？用户控制室」重新扫码，再点重试";
+                db.MarkFailed(videoId, why);
+                MemberMail.NotifyVideoFailed(db, logger, videoId, why);
+                logger.LogWarning("提交进站 videoId={VideoId} 判无号：{Why}", videoId, why);
+                return;
             }
 
-            // 副号提交失败（风控/画质权限等单号问题）：主号重跑一次，成功则改判归主，下载不断档。
-            if (owner == LbsOwner.Alt && IsFailure(result))
-            {
-                logger.LogWarning("副号提交失败 videoId={VideoId}（{Reasons}），改主号重跑一次", videoId, JoinReasons(result));
-                var retry = await router.RunAsAsync(LbsOwner.Main, () => submission.SubmitAsync(candidate.Url, options, stoppingToken));
-                if (!IsFailure(retry))
-                {
-                    db.SetVideoOwner(videoId, (int)LbsOwner.Main);
-                    result = retry;
-                }
-            }
+            // cookie 只进这条调用链：日志只报号码，不报内容。
+            logger.LogInformation("提交进站 videoId={VideoId} 走投稿人自有号 mid={Mid}", videoId, memberCred.AccountMid);
+            var result = await router.RunAsMemberAsync(memberCred.Cookie, memberCred.AccountMid,
+                () => submission.SubmitAsync(candidate.Url, options, stoppingToken));
             switch (result.Status)
             {
                 case HeadlessSubmissionStatus.Enqueued:

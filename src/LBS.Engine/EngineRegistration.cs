@@ -48,7 +48,6 @@ public static class EngineRegistration
         services.AddDownloadModule();
 
         services.TryAddSingleton<LbsFavoritesImport>();
-        services.TryAddSingleton<LbsLoginManager>();
         services.AddHostedService<EngineBootstrap>();
         return services;
     }

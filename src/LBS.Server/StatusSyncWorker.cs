@@ -19,7 +19,7 @@ public sealed class StatusSyncWorker(
     DataPaths paths,
     CommentArchiveService commentArchive,
     LbsUpInfoFetcher upInfo,
-    LbsOwnerPolicy policy,
+    LbsCollectPolicy policy,
     DownloadPauseBoard board,
     ILogger<StatusSyncWorker> logger) : BackgroundService
 {
@@ -299,7 +299,15 @@ public sealed class StatusSyncWorker(
             return;
         }
 
-        // 同趟的名片+互动数据共用一个归属号的上下文（mixed 下跟视频定档的号）。
+        // 站里没号就不出门：UP 名片与互动数据全指着采集号，空着出去只会被 B 站 -101 打回，
+        // 还会把设备的指纹拖进风控。柜台那块采集号状态会标灰，站长看得到原因。
+        if (!policy.HasAccount())
+        {
+            logger.LogDebug("UP 名片本轮跳过 videoId={VideoId}：站里没有可用的采集号", videoId);
+            return;
+        }
+
+        // 同趟的名片+互动数据共用一个采集号的上下文（分站已不按视频分主副号）。
         using var _owner = policy.BeginForVideo(videoId);
         var profile = await upInfo.FetchAsync(mid.Value, CancellationToken.None);
         if (profile is null)

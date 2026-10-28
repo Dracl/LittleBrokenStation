@@ -376,6 +376,10 @@ async function doLogout() {
             还没绑任何外部平台号——绑个 B 站，分站替你把活分摊到号上；不绑也能逛、能看、能私信（就是不能投稿）。
           </p>
 
+          <p class="mt-3 text-[11px] leading-4 text-inkFaint">
+            投稿、采集这些活得用你自己的 B 站号出力；哪个号哪天显示「登录已失效」，就点右上角「绑定 B 站」重新扫一次码补回来。
+          </p>
+
           <p
             v-if="notice"
             class="mt-3 text-xs leading-5"

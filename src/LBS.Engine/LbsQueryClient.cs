@@ -3,20 +3,20 @@ using DownKyi.Application.Bilibili;
 namespace LBS.Engine;
 
 /// <summary>
-/// 带分号分流的查询客户端（装饰器，实现 IBilibiliApiClient）：LBS 采集器（UP 名片、view 统计、
-/// 评论、收藏夹导入）显式注入本类——cookie 跟着调用链的环境号走（提交链内天然在视频归属号上，
-/// API 入口用 RunAsAsync 显式进入），副号未配则回落站长主号的上游客户端。
+/// 带出号能力的查询客户端（实现 IBilibiliApiClient）：LBS 采集器（UP 名片、view 统计、
+/// 评论、收藏夹导入、动态）显式注入本类——cookie 跟着调用链的环境号走（提交链内天然在投稿人号上，
+/// 采集入口由 LbsCollectPolicy 显式钉在采集号上）。链上没号就当场判无号，不再拿匿名请求冒充数据。
 /// 实现接口是为了上游 VideoInfo/FavoritesResource 那些扩展方法在本实例上照常可用（内部走到分流后的 GET）。
 /// </summary>
-public sealed class LbsQueryClient(
-    IBilibiliApiClient main,
-    LbsAltLoginManager alt,
-    LbsAccountRouter router,
-    LbsApiThrottle throttle) : IBilibiliApiClient
+public sealed class LbsQueryClient(LbsAccountRouter router, LbsApiThrottle throttle) : IBilibiliApiClient
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
 
-    private string? CurrentCookie() => alt.ForOwner(router.Effective(router.Current));
+    private string? CurrentCookie() => router.CurrentCookie;
+
+    /// <summary>没号就别把请求发出去：匿名打 B 站接口只会被 -101/-352 打回，还可能把 cookie 拖进风控。</summary>
+    private string RequireCookie() => CurrentCookie() ?? throw new LbsNoAccountException(
+        "采集这条请求没有可用账号：站里的活吃采集号（站长席位的活号优先），请先在「何处？用户控制室」绑一个未过期的 B 站号。");
 
     private static Uri GetUri(BilibiliHttpRequest request) => new(request.RequestAddress, UriKind.Absolute);
 
@@ -24,15 +24,7 @@ public sealed class LbsQueryClient(
     {
         var uri = GetUri(request);
         await throttle.EnterAsync(uri, cancellationToken);
-        var cookie = CurrentCookie();
-        if (cookie is null)
-        {
-            var body = await main.GetStringAsync(request, cancellationToken);
-            // 主号回落链拿不到 HTTP 状态码，靠 body 认 -352（B 站风控多数仍回 200 + body 报错）。
-            throttle.ReportResult(uri, body, null);
-            return body;
-        }
-
+        var cookie = RequireCookie();
         using var res = await SendAsync(request, cookie, cancellationToken);
         var text = await res.Content.ReadAsStringAsync(cancellationToken);
         throttle.ReportResult(uri, text, (int)res.StatusCode);
@@ -42,11 +34,7 @@ public sealed class LbsQueryClient(
     public async Task<Stream> OpenReadAsync(BilibiliHttpRequest request, CancellationToken cancellationToken)
     {
         await throttle.EnterAsync(GetUri(request), cancellationToken);
-        var cookie = CurrentCookie();
-        if (cookie is null)
-        {
-            return await main.OpenReadAsync(request, cancellationToken);
-        }
+        var cookie = RequireCookie();
 
         // 流式返回：HttpResponseMessage 随流一起释放，调用方 dispose 本流即断开连接。
         var res = await SendAsync(request, cookie, cancellationToken, HttpCompletionOption.ResponseHeadersRead);
@@ -56,13 +44,7 @@ public sealed class LbsQueryClient(
     public async Task DownloadFileAsync(BilibiliHttpRequest request, string destinationPath, CancellationToken cancellationToken)
     {
         await throttle.EnterAsync(GetUri(request), cancellationToken);
-        var cookie = CurrentCookie();
-        if (cookie is null)
-        {
-            await main.DownloadFileAsync(request, destinationPath, cancellationToken);
-            return;
-        }
-
+        var cookie = RequireCookie();
         using var res = await SendAsync(request, cookie, cancellationToken);
         await using var fs = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
         await res.Content.CopyToAsync(fs, cancellationToken);

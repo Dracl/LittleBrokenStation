@@ -71,8 +71,9 @@ public sealed class DataExchangeTests : IDisposable
         File.WriteAllText(Path.Combine(_paths.CmtImg, "cmt.png"), "png-bytes");
         File.WriteAllText(Path.Combine(_paths.Avatars, "a.jpg"), "av");
         Directory.CreateDirectory(Path.Combine(_paths.Downkyi, "Config"));
-        File.WriteAllText(DataExchangeLayout.DownkyiLoginFile(_paths), """{"cookies":"owner"}""");
-        File.WriteAllText(DataExchangeLayout.AltLoginFile(_paths), """{"Cookie":"alt"}""");
+        // 旧时代的站级登录件（站级主备号已退役）：故意留在盘上，出包不该再收它们。
+        File.WriteAllText(Path.Combine(_paths.Downkyi, "Config", "Login"), """{"cookies":"owner"}""");
+        File.WriteAllText(Path.Combine(_paths.Cookies, "alt-login.json"), """{"Cookie":"alt"}""");
     }
 
     private string ZipPath(string name) => Path.Combine(_root, "exports", name);
@@ -145,8 +146,9 @@ public sealed class DataExchangeTests : IDisposable
             var names = zip.Entries.Select(e => e.FullName).ToHashSet();
             Assert.Contains("station.db", names);
             Assert.Contains("manifest.json", names);
-            Assert.Contains("cookies/alt-login.json", names);
-            Assert.Contains("login/downkyi-login.json", names);
+            // 站级登录件已随站级主备号退役：就算盘上还躺着老文件也不得入包（成员 cookie 只走台账）。
+            Assert.DoesNotContain("cookies/alt-login.json", names);
+            Assert.DoesNotContain("login/downkyi-login.json", names);
             Assert.Contains("media/BV1EXPORT01_Export Item/p1.mp4", names);
             Assert.Contains("cmtimg/cmt.png", names);
             Assert.Contains("caches/avatars/a.jpg", names);
@@ -197,8 +199,9 @@ public sealed class DataExchangeTests : IDisposable
         var zipPath = ZipPath(result.Name);
         using (var zip = ZipFile.OpenRead(zipPath))
         {
-            Assert.NotNull(zip.GetEntry("cookies/alt-login.json"));
-            Assert.NotNull(zip.GetEntry("login/downkyi-login.json"));
+            // 带凭证出包也不再多带站级登录件：成员号池的 cookie 本就在台账件里（下面 QueryStrings 验那条）。
+            Assert.Null(zip.GetEntry("cookies/alt-login.json"));
+            Assert.Null(zip.GetEntry("login/downkyi-login.json"));
         }
 
         var packDb = ExtractPackedDb(zipPath);
@@ -314,8 +317,8 @@ public sealed class DataExchangeTests : IDisposable
         Assert.True(staged.Ok, staged.Error);
         // 暂存区里该有的件先点名（解包环节自证）
         Assert.True(File.Exists(Path.Combine(_root, "imports", "20261027-120000", "station.db")), "staged station.db");
-        Assert.True(File.Exists(Path.Combine(_root, "imports", "20261027-120000", "cookies", "alt-login.json")), "staged alt-login");
-        Assert.True(File.Exists(Path.Combine(_root, "imports", "20261027-120000", "login", "downkyi-login.json")), "staged downkyi-login");
+        Assert.False(File.Exists(Path.Combine(_root, "imports", "20261027-120000", "cookies", "alt-login.json")), "站级登录件不再入包");
+        Assert.False(File.Exists(Path.Combine(_root, "imports", "20261027-120000", "login", "downkyi-login.json")), "站级登录件不再入包");
 
         // 非法回执拒应用
         var (badOk, _) = ImportApplier.Apply("../20261027-120000", _paths, _backup);
@@ -323,13 +326,14 @@ public sealed class DataExchangeTests : IDisposable
 
         var (ok, error) = ImportApplier.Apply("20261027-120000", _paths, _backup);
         Assert.True(ok, error);
-        // 标记已落、现站台账与登录态已移入 pre-import 保底
+        // 标记已落、现站台账已移入 pre-import 保底（站级登录件已不存在，不再有这一步）
         Assert.True(File.Exists(DataExchangeLayout.PendingFile(_paths)));
         Assert.False(File.Exists(_paths.DatabaseFile));
-        Assert.False(File.Exists(DataExchangeLayout.AltLoginFile(_paths)));
+        // 站级登录件不再参与换库：既不进暂存包，也不被搬进 pre-import 保底（盘上的老文件就让它待着）。
+        Assert.Empty(Directory.GetFiles(Path.Combine(_root, "pre-import"), "alt-login.json", SearchOption.AllDirectories));
         Assert.NotEmpty(Directory.GetFiles(Path.Combine(_root, "pre-import"), "*", SearchOption.AllDirectories));
 
-        // 开机换库：台账换芯、登录态回位、标记与暂存清空
+        // 开机换库：台账换芯、标记与暂存清空（不再回写任何站级登录件）
         PendingImportSwapper.ApplyIfNeeded(_paths, NullLogger.Instance);
 
         var errFile = DataExchangeLayout.LastErrorFile(_paths);
@@ -337,8 +341,7 @@ public sealed class DataExchangeTests : IDisposable
 
         Assert.False(File.Exists(DataExchangeLayout.PendingFile(_paths)));
         Assert.True(File.Exists(_paths.DatabaseFile));
-        Assert.True(File.Exists(DataExchangeLayout.AltLoginFile(_paths)));
-        Assert.True(File.Exists(DataExchangeLayout.DownkyiLoginFile(_paths)));
+        // （旧版本这两行断言「登录态回位」；站级登录件已退役，换库不碰它们，不再断言。）
         Assert.False(Directory.Exists(Path.Combine(_root, "imports", "20261027-120000")));
         Assert.Equal(1, QueryCount(_paths.DatabaseFile, "SELECT COUNT(*) FROM videos;"));
     }

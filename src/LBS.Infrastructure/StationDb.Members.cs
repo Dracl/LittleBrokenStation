@@ -274,6 +274,39 @@ public sealed partial class StationDb
         return command.ExecuteScalar() as string;
     }
 
+    /// <summary>
+    /// 站长公开名片（昵称+头像）：只认站长席位（role='owner' 且 active）的头一名。
+    /// 站级登录态退役后，顶栏那块名片不再从 B 站 nav 拉，改成吃席位台账，一个身份只一个口。
+    /// </summary>
+    public StationProfileCard? GetOwnerSeatCard()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT nickname, face_url FROM members
+            WHERE role = 'owner' AND status = 'active'
+            ORDER BY id LIMIT 1;
+            """;
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new StationProfileCard(
+            reader.IsDBNull(0) ? null : reader.GetString(0),
+            reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
+    /// <summary>站长席位 id（无站长返回 null）：用来判「采集号是站长自己的还是借了成员的」。</summary>
+    public long? OwnerSeatMemberId()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id FROM members WHERE role = 'owner' AND status = 'active' ORDER BY id LIMIT 1;";
+        return command.ExecuteScalar() is long id ? id : null;
+    }
+
     /// <summary>老席位重登：刷新登录时刻，昵称头像顺手换新。</summary>
     public void TouchMemberLogin(long mid, string? nickname, string? faceUrl)
     {
@@ -425,6 +458,39 @@ public sealed partial class StationDb
 
         return new MemberAccountCredential(
             reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetString(3));
+    }
+
+    /// <summary>
+    /// 采集/加档取号（全站唯一一处「不是自己的号办自己的事」）：站长席位（members.role='owner'）
+    /// 的活号优先，其次任一支活跳席位的活号（主力优先）。分站已不设站级登录态，
+    /// 采集这类站里的活必须有个号顶上去，就拿站长自己的号先扛（他是唯一必然有号且跑不了的人）。
+    /// 号池空了返回 null，由调用方判本轮无号，不拿匿名请求顶数。
+    /// </summary>
+    public CollectAccountCredential? PickAccountForCollect()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT a.id, a.member_id, a.account_mid, a.account_name, a.face_url, a.cookie
+            FROM member_accounts a
+            JOIN members m ON m.id = a.member_id
+            WHERE a.expired = 0 AND m.status = 'active'
+            ORDER BY CASE WHEN m.role = 'owner' THEN 0 ELSE 1 END, a.is_primary DESC, a.id
+            LIMIT 1;
+            """;
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new CollectAccountCredential(
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            reader.GetInt64(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.GetString(5));
     }
 
     /// <summary>标/解账号失效（nav 探测 -101 或下载败北时打旗；重新扫码自动摘旗）。</summary>

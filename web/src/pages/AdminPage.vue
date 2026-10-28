@@ -11,26 +11,10 @@ import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 
 const health = ref(null)
 const settings = ref(null)
-const loginState = ref(null)
-const cookieDraft = ref('')
-const loginBusy = ref(false)
-const loginNotice = ref(null) // { kind, text }
-const altState = ref(null) // { isAlt, name, mid, vipStatus }
-const altDraft = ref('')
-const altBusy = ref(false)
-const altNotice = ref(null) // { kind, text }
-const collectMode = ref('mixed')
-const collectBusy = ref(false)
 const purgeArmed = ref(false)
 const purgeBusy = ref(false)
 const purgeNotice = ref(null) // { kind, text }
 let purgeTimer = null
-
-function notify(kind, text) {
-  loginNotice.value = { kind, text }
-}
-
-const notice = ref(null)
 
 // ─── 下载设置（站长室面板）───────────────────────────────────────────
 const eng = ref(null)
@@ -178,90 +162,6 @@ async function saveEngine() {
   }
 }
 
-async function loadLoginState() {
-  try {
-    loginState.value = await fetch('/api/login/status').then((r) => r.json())
-  } catch {
-    loginState.value = null
-  }
-}
-
-async function saveCookie() {
-  const cookie = cookieDraft.value.trim()
-  if (!cookie || loginBusy.value) return
-  loginBusy.value = true
-  try {
-    const res = await fetch('/api/login/cookie', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cookie }),
-    })
-    const data = await res.json().catch(() => null)
-    if (res.ok) {
-      cookieDraft.value = ''
-      notify('ok', data?.message ?? '登录态已更新')
-    } else {
-      notify('err', data?.message ?? '登录失败')
-    }
-  } catch {
-    notify('err', '分站后端没有应答')
-  } finally {
-    loginBusy.value = false
-    loadLoginState()
-  }
-}
-
-async function logout() {
-  if (loginBusy.value) return
-  loginBusy.value = true
-  try {
-    const res = await fetch('/api/login/logout', { method: 'POST' })
-    const data = await res.json().catch(() => null)
-    notify(res.ok ? 'ok' : 'err', data?.message ?? (res.ok ? '已离站' : '登出失败'))
-  } catch {
-    notify('err', '分站后端没有应答')
-  } finally {
-    loginBusy.value = false
-    loadLoginState()
-  }
-}
-
-async function loadAlt() {
-  try {
-    altState.value = await fetch('/api/login/alt').then((r) => r.json())
-  } catch {
-    altState.value = null
-  }
-}
-
-async function loadCollectMode() {
-  try {
-    const data = await fetch('/api/settings/collect').then((r) => r.json())
-    collectMode.value = data?.mode ?? 'mixed'
-  } catch {
-    collectMode.value = 'mixed'
-  }
-}
-
-async function saveCollectMode() {
-  collectBusy.value = true
-  try {
-    const res = await fetch('/api/settings/collect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: collectMode.value }),
-    })
-    if (!res.ok) {
-      const data = await res.json().catch(() => null)
-      altNotice.value = { kind: 'err', text: data?.message ?? '采集偏好保存失败' }
-    }
-  } catch {
-    altNotice.value = { kind: 'err', text: '分站后端没有应答' }
-  } finally {
-    collectBusy.value = false
-  }
-}
-
 // 一键清空分站：两击确认，第一击后 5 秒内不点第二击就自行解除，防误触。
 function armPurge() {
   if (purgeArmed.value || purgeBusy.value) return
@@ -295,47 +195,17 @@ async function purgeStation() {
   }
 }
 
-async function saveAlt() {
-  const cookie = altDraft.value.trim()
-  if (!cookie || altBusy.value) return
-  altBusy.value = true
-  try {
-    const res = await fetch('/api/login/alt', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cookie }),
-    })
-    const data = await res.json().catch(() => null)
-    if (res.ok) {
-      altDraft.value = ''
-      altNotice.value = { kind: 'ok', text: data?.message ?? '副号已就位' }
-    } else {
-      altNotice.value = { kind: 'err', text: data?.message ?? '副号保存失败' }
-    }
-  } catch {
-    altNotice.value = { kind: 'err', text: '分站后端没有应答' }
-  } finally {
-    altBusy.value = false
-    loadAlt()
-  }
-}
-
-async function removeAlt() {
-  if (altBusy.value) return
-  altBusy.value = true
-  try {
-    const res = await fetch('/api/login/alt', { method: 'DELETE' })
-    const data = await res.json().catch(() => null)
-    altNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '副号已移除' : '移除失败') }
-  } catch {
-    altNotice.value = { kind: 'err', text: '分站后端没有应答' }
-  } finally {
-    altBusy.value = false
-    loadAlt()
-  }
-}
-
 const stats = ref(null) // 页头总览：/api/admin/stats
+const collectState = ref(null) // 采集号情报：/api/stats/collect 原样（号从成员账号池来，站级号已取消）
+
+// 站里的活（评论/弹幕归档、UP 名片、动态、编码加档）此刻在用谁的 B 站号：开机加载一次，打盹就空着不报。
+async function loadCollectState() {
+  try {
+    collectState.value = await fetch('/api/stats/collect').then((r) => r.json())
+  } catch {
+    collectState.value = null
+  }
+}
 
 const subscriptions = ref(null) // 订阅台账：/api/subscriptions
 const subKind = ref('fav')
@@ -1298,7 +1168,7 @@ async function dynRefreshRound() {
 
 // ─── 数据交换：勾选式导出打包 + 导入换库（档案柜 data/exports/，暂存 data/imports/）───
 const expStats = ref(null) // {videos, cmtImg, avatars, emotes, cache, dbBytes}
-const expPick = ref({ withCreds: false, withMedia: false, withCmtImg: false, withCaches: false })
+const expPick = ref({ withMedia: false, withCmtImg: false, withCaches: false })
 const expBusy = ref(false)
 const expText = ref('')
 const exportList = ref([])
@@ -1537,9 +1407,7 @@ async function bootAdmin() {
     .catch(() => {})
   loadSubscriptions()
   loadCrawlStatus()
-  loadLoginState()
-  loadAlt()
-  loadCollectMode()
+  loadCollectState()
   loadEngine()
   loadDlQueue()
   loadBackups()
@@ -1553,17 +1421,17 @@ async function bootAdmin() {
   if (!pvTimer) pvTimer = setInterval(pvBeat, 1000)
 }
 
-// ─── 站长室排版：六组 + 顶部定位条（正文仍一屏到底，不切标签）───
-// 十六张卡是同一个 grid 的孩子，分组靠 order 排座、靠 md:col-span-2 定整行还是半格：
+// ─── 站长室排版：五组 + 顶部定位条（正文仍一屏到底，不切标签）───
+// 十四张卡是同一个 grid 的孩子，分组靠 order 排座、靠 md:col-span-2 定整行还是半格：
 // 这样分组只动 class，不必把卡块在文件里搬来搬去（搬一次就多一次丢代码的机会）。
 const ADMIN_GROUPS = [
   // 组名走仓库比喻（柜台/进货口/观众席……）：胶囊是拿来跳位的，有点火气反而好记；
   // 但卡题里的「危险区」「一键清空分站」保持大白话，破坏性操作那一步不玩括令。
+  // 原先还有一组「钥匙串」（放站级 B 站号的两张卡）：分站已不收站级号，采集号情报已搬到柜台的分站统计里，这组就此撑空、一并撤了。
   { id: 'overview', title: '柜台', hint: '家底与健康度，扫一眼', order: 10 },
   { id: 'harvest', title: '进货口', hint: '下载 · 订阅 · 动态关注', order: 20 },
   { id: 'people', title: '观众席', hint: '成员席位与全站公告', order: 30 },
-  { id: 'accounts', title: '钥匙串', hint: '站长登录与采集号', order: 40 },
-  { id: 'data', title: '库房', hint: '备份 · 搬家 · 捐回', order: 50 },
+  { id: 'data', title: '库房', hint: '备份 · 搬家 · 捞回', order: 50 },
 ]
 const activeGroup = ref('overview')
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
@@ -1574,7 +1442,6 @@ const adminNav = computed(() => [
   { ...ADMIN_GROUPS[1], n: dlWaiting.value > 0 ? dlWaiting.value : null, tone: 'hot' },
   { ...ADMIN_GROUPS[2], n: null, tone: '' },
   { ...ADMIN_GROUPS[3], n: null, tone: '' },
-  { ...ADMIN_GROUPS[4], n: null, tone: '' },
 ])
 
 async function gotoGroup(id) {
@@ -1725,7 +1592,20 @@ onUnmounted(() => {
           <div class="lbs-stat-lg"><b>{{ stats ? fmtCount(stats.shareTotal) : '—' }}</b><span>总转发</span></div>
           <div class="lbs-stat-lg"><b>{{ stats ? fmtCount(stats.replyTotal) : '—' }}</b><span>总评论</span></div>
           <div class="lbs-stat-lg"><b>{{ stats ? stats.upCount : '—' }}</b><span>UP 主</span></div>
-          <div class="lbs-stat-lg"><b>{{ stats ? stats.altOwned : '—' }}</b><span>副号定档</span></div>
+          <div class="lbs-stat-lg"><b>{{ stats ? stats.liveAccounts : '—' }}</b><span>成员活号</span></div>
+        </div>
+
+        <!-- 采集号：站里的活此刻在吃谁家的 B 站号。号从成员账号池来，站长席位的活号优先，借了别人的要说清 -->
+        <div v-if="collectState" class="mt-4 flex flex-wrap items-baseline gap-x-2 gap-y-1 border-t border-adminLine pt-3 text-xs">
+          <span class="text-white/40">采集号</span>
+          <template v-if="collectState.hasAccount">
+            <span class="font-mono text-white/80">{{ collectState.name || `B站账号 ${collectState.mid}` }}（mid {{ collectState.mid }}）</span>
+            <span v-if="!collectState.isOwnerSeat" class="text-amber-200/75">（借自成员席位，风控消耗落在 Ta 头上）</span>
+          </template>
+          <span v-else class="text-white/30">
+            采集已停摆：站里没有可用 B 站号，请到个人空间绑定或重新扫码
+            <span v-if="collectState.stoppedSinceUtc">（{{ friendlyTime(collectState.stoppedSinceUtc) }}）</span>
+          </span>
         </div>
       </section>
 
@@ -2310,111 +2190,9 @@ onUnmounted(() => {
             <dd class="truncate text-right">{{ settings?.dataDir ?? '—' }}</dd>
           </div>
           <p class="text-xs leading-5 text-white/30">
-            视频库、SQLite、cookies、缓存都在这个目录里。容器内请挂载为 /data volume，并保持落在 NAS 本地盘。
+            视频库、SQLite 台账、各类缓存都在这个目录里（B 站号也存在台账的 member_accounts 表，不另存明文 cookie 件）。容器内请挂载为 /data volume，并保持落在 NAS 本地盘。
           </p>
         </dl>
-      </section>
-
-      <section class="lbs-card order-[41]">
-        <h3 class="lbs-title">站长登录</h3>
-        <div class="mb-4 flex items-center gap-2 text-sm">
-          <span class="lbs-dot" :class="loginState?.isLogin ? 'lbs-dot-on' : 'lbs-dot-off'"></span>
-          <span v-if="loginState?.isLogin" class="text-white/85">
-            {{ loginState.name }}
-            <span v-if="loginState.vipStatus > 0" class="ml-1 text-adminAccent/80">大会员</span>
-          </span>
-          <span v-else class="text-white/40">未登录（匿名态，画质上限 480P）</span>
-        </div>
-        <p class="mb-2 text-xs leading-5 text-white/30">
-          在浏览器登录 www.bilibili.com 后，从开发者工具的请求头里整行复制 Cookie 粘到这里。cookie 只进不出，不会出现在任何页面回显和日志里。
-        </p>
-        <textarea
-          v-model="cookieDraft"
-          rows="3"
-          placeholder="SESSDATA=…; bili_jct=…; DedeUserID=…"
-          class="lbs-input resize-none"
-          :disabled="loginBusy"
-        ></textarea>
-        <div class="mt-3 flex items-center gap-2">
-          <button
-            class="lbs-btn"
-            :disabled="loginBusy || !cookieDraft.trim()"
-            @click="saveCookie"
-          >
-            {{ loginBusy ? '验证中……' : '保存并进站' }}
-          </button>
-          <button
-            v-if="loginState?.hasSavedCookies"
-            class="lbs-btn-ghost"
-            :disabled="loginBusy"
-            @click="logout"
-          >
-            登出
-          </button>
-        </div>
-        <p
-          v-if="loginNotice"
-          class="mt-3 font-mono text-xs"
-          :class="loginNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'"
-        >
-          {{ loginNotice.text }}
-        </p>
-      </section>
-
-      <section class="lbs-card order-[42]">
-        <h3 class="lbs-title">副登录 · 按视频分号</h3>
-        <div class="mb-4 flex items-center gap-2 text-sm">
-          <span class="lbs-dot" :class="altState?.isAlt ? 'lbs-dot-on' : 'lbs-dot-off'"></span>
-          <span v-if="altState?.isAlt" class="text-white/85">
-            {{ altState.name }}
-            <span v-if="altState.vipStatus > 0" class="ml-1 text-adminAccent/80">大会员</span>
-            <span class="ml-2 text-xs text-white/30">两号已按视频分流</span>
-          </span>
-          <span v-else class="text-white/40">未配置（下载与采集全走主号）</span>
-        </div>
-        <p class="mb-2 text-xs leading-5 text-white/30">
-          配了副号后，新视频按提交顺序两号轮转定档（视频1主、视频2副……）：提交、playurl、采集全跟归属号走，两号各扛一路分散风控；没副号时一切回主号。注意画质上限看下载那个号的权益（副号非大会员时付费内容会自动回主号重下）。cookie 只进不出。
-        </p>
-        <textarea
-          v-model="altDraft"
-          rows="3"
-          placeholder="SESSDATA=…; bili_jct=…; DedeUserID=…"
-          class="lbs-input resize-none"
-          :disabled="altBusy"
-        ></textarea>
-        <div class="mt-3 flex items-center gap-2">
-          <button
-            class="lbs-btn"
-            :disabled="altBusy || !altDraft.trim()"
-            @click="saveAlt"
-          >
-            {{ altBusy ? '验证中……' : '保存副号' }}
-          </button>
-          <button
-            v-if="altState?.isAlt"
-            class="lbs-btn-ghost"
-            :disabled="altBusy"
-            @click="removeAlt"
-          >
-            移除副号
-          </button>
-        </div>
-        <p v-if="altNotice" class="mt-3 font-mono text-xs" :class="altNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">
-          {{ altNotice.text }}
-        </p>
-        <div class="mt-4 border-t border-adminLine pt-3">
-          <label class="mb-1 block text-xs text-white/40">采集账号 <span class="text-white/25">UP 名片 · 互动统计 · 评论 · 收藏夹导入</span></label>
-          <select
-            v-model="collectMode"
-            class="eng-input w-auto cursor-pointer !text-sm"
-            :disabled="collectBusy"
-            @change="saveCollectMode"
-          >
-            <option value="mixed">混合（跟随视频归属号）</option>
-            <option value="main">只用主号</option>
-            <option value="alt">只用副号</option>
-          </select>
-        </div>
       </section>
 
       <!-- 下载设置：字段密又极少改，默认收成一条；展开后才摆引擎、画质、并发这些 -->
@@ -2451,7 +2229,7 @@ onUnmounted(() => {
           </div>
         </div>
         <p class="mb-4 text-xs leading-5 text-white/30">
-          这些参数直接写进下载引擎自己的设置：标注「即时」的改动对新下载立即生效，「新提交」的只影响之后投稿的视频，「重启」的要重启分站进程。保存目录、代理、cookie 不在这里：分站锁死 data/videos，不碰代理，cookie 在站长登录卡。
+          这些参数直接写进下载引擎自己的设置：标注「即时」的改动对新下载立即生效，「新提交」的只影响之后投稿的视频，「重启」的要重启分站进程。保存目录、代理、cookie 不在这里：分站锁死 data/videos，不碰代理，B 站号只从成员账号池来（个人空间扫码绑）。
         </p>
         <p
           v-if="engNotice"
@@ -2710,15 +2488,10 @@ onUnmounted(() => {
         <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
           <!-- 导出 -->
           <div class="rounded border border-white/5 p-4">
-            <h4 class="mb-3 text-xs tracking-widest text-white/50">导出打包 <span class="text-white/25">必含 station.db + manifest</span></h4>
-            <label class="mb-1.5 flex items-center gap-2 text-xs text-white/65">
-              <input v-model="expPick.withCreds" type="checkbox" class="accent-adminAccent" />
-              登录态（成员 cookie · 副号 · 站长登录）
-              <span class="ml-auto font-mono text-white/25">{{ fmtBytes(expStats?.dbBytes) }} + 凭证件</span>
-            </label>
-            <p v-if="expPick.withCreds" class="mb-1.5 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
-              ⚠ 包含 B 站凭证，请妥善保管
-            </p>
+            <h4 class="mb-3 flex items-center gap-2 text-xs tracking-widest text-white/50">
+              导出打包 <span class="text-white/25">必含 station.db + manifest</span>
+              <span class="ml-auto font-mono text-white/25">台账 {{ fmtBytes(expStats?.dbBytes) }}</span>
+            </h4>
             <label class="mb-1.5 flex items-center gap-2 text-xs text-white/65">
               <input v-model="expPick.withMedia" type="checkbox" class="accent-adminAccent" />
               视频媒体（data/videos 全量）
@@ -2836,7 +2609,7 @@ onUnmounted(() => {
           <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="dangerOpen = false">收起</button>
         </div>
         <p class="mb-3 text-xs leading-5 text-white/30">
-          把整座站拍回空仓：视频库（视频/弹幕/评论/封面）、头像表情评论图缓存、台账全部销账，引擎任务记录也一并清掉。站长登录、副登录、采集偏好、下载设置全部保留。不可撤销。
+          把整座站拍回空仓：视频库（视频/弹幕/评论/封面）、头像表情评论图缓存、台账全部销账，引擎任务记录也一并清掉。成员席位与各自的 B 站账号池、下载设置全部保留。不可撤销。
         </p>
         <p v-if="purgeNotice" class="mb-3 font-mono text-xs" :class="purgeNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">
           {{ purgeNotice.text }}

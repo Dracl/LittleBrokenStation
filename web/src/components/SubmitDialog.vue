@@ -179,7 +179,7 @@ async function submitFavFile(event) {
               :disabled="busy"
               @keyup.enter="submitFavUrl"
             />
-            <p class="mt-2 text-xs leading-5 text-inkFaint">整架搬回：按 BV 号去重，公开收藏夹免登录即可搬，加密的要等 cookie 到站。</p>
+            <p class="mt-2 text-xs leading-5 text-inkFaint">整架搬回：按 BV 号去重，公开收藏夹谁都能搬；加密收藏夹得等成员号池里有能读它的 B 站号（个人空间扫码绑一个）。</p>
           </template>
 
           <template v-else-if="activeTab === 'upurl'">

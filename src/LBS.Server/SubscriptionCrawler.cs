@@ -20,7 +20,7 @@ public sealed record SubscriptionCrawlReport(string RunAtUtc, IReadOnlyList<Subs
 /// 订阅爬工：每小时把订阅台账里的收藏夹与博主投稿各爬一遍，新 BV 走投稿路径入站。
 /// 去重靠馆藏台账（AddVideosBulk 对重复 bvid 静默计 Duplicated），所以爬工可以放心反复爬。
 /// 博主订阅只收最新 20 条，防大 UP 主一轮灌爆分站；收藏夹整架拉（本来就是站长攒的架）。
-/// 出号姿势与收藏导入端点同款：LbsOwnerPolicy.RunForActivityAsync 按采集偏好选主/副号。
+/// 出号姿势与收藏导入端点同款：LbsCollectPolicy.RunForActivityAsync 按采集偏好选主/副号。
 /// </summary>
 public sealed class SubscriptionCrawler(
     StationDb db,
@@ -29,7 +29,7 @@ public sealed class SubscriptionCrawler(
     LbsQueryClient client,
     IWbiKeyProvider wbiKeys,
     TimeProvider timeProvider,
-    LbsOwnerPolicy policy,
+    LbsCollectPolicy policy,
     LbsApiThrottle throttle,
     ILogger<SubscriptionCrawler> logger) : BackgroundService
 {
@@ -64,6 +64,14 @@ public sealed class SubscriptionCrawler(
             try
             {
                 await Task.Delay(nextRound, stoppingToken);
+                // 没号就不出门：订阅巡捕吃的也是采集号，空着出去整轮只会被 -101 打回，
+                // 还白耗节流窗口。柜台那块采集号状态会标灰，站长看得到原因。
+                if (!policy.HasAccount())
+                {
+                    logger.LogInformation("订阅巡视本轮歇脚：站里没有可用的 B 站号");
+                    continue;
+                }
+
                 await CrawlOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -154,7 +162,7 @@ public sealed class SubscriptionCrawler(
         var page = await policy.RunForActivityAsync(() => WbiRequestExecutor.ExecuteAsync(
             wbiKeys,
             async (keys, wts) => await client.GetPublicationPageAsync(
-                keys, wts, mid.Value, pn: 1, ps: UpPageKeep, LoginHelper.HasSavedLoginInfo,
+                keys, wts, mid.Value, pn: 1, ps: UpPageKeep, policy.HasAccount(),
                 order: PublicationOrder.PUBDATE, cancellationToken: cancellationToken),
             timeProvider,
             cancellationToken));
