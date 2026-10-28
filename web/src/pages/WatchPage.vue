@@ -111,13 +111,13 @@ async function loadResumePoint(videoId, pageIndex) {
     if (Number.isFinite(dur) && dur > 0 && sec >= dur * 0.95) return
     resumeSec.value = sec
     resumeTip.value = { sec }
-    // 十秒自 fade：先淡出去再从 DOM 里拿掉，不引新依赖。
+    // 五秒自 fade：先淡出去再从 DOM 里拿掉，不引新依赖。
     resumeTipFadeTimer = setTimeout(() => {
       resumeTipFading.value = true
-    }, 9500)
+    }, 4500)
     resumeTipGoneTimer = setTimeout(() => {
       clearResumeTip()
-    }, 10000)
+    }, 5000)
   } catch {
     /* 后端打盹：不弹不闹，从头播 */
   }
@@ -598,7 +598,7 @@ const playerShellW = ref(0)
 
           <!-- 续播小泡：站长亲手拖过定位（EditHere 反馈）：贴播放器壳左缘、进度条上方一格。
                横向锁在壳子而非外层容器：播放器限宽居中，窗口越宽容器与壳的左缘裂缝越大，锚容器会出框；
-               playerShellW 是 VideoPlayer 报来的实测壳宽，壳居中故其左缘在 50% - 壳宽/2。未报到前退 left-[15px]。10 秒自 fade，pointer-events-none 不挡点画面 -->
+               playerShellW 是 VideoPlayer 报来的实测壳宽，壳居中故其左缘在 50% - 壳宽/2。未报到前退 left-[15px]。10 秒嫌久、6 秒仍嫌久，现行 5 秒自 fade，pointer-events-none 不挡点画面 -->
           <div
             v-if="resumeTip"
             class="pointer-events-none absolute bottom-[122px] left-[15px] z-20 whitespace-nowrap rounded-full border border-white/15 bg-[#1b1d23]/95 px-3.5 py-1.5 text-xs text-white/85 shadow-lg backdrop-blur transition-opacity duration-500"
