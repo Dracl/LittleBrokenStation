@@ -75,6 +75,10 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/member/history", false, false)]
     [InlineData("POST", "/api/member/history/delete", false, false)]
     [InlineData("POST", "/api/member/history/clear", false, false)]
+    // 分区：只读两口（顶级清单/卡阵）与首页同级公开；改派挂 /api/admin/ 前缀，身份即钥匙（站长门管，会员门不管）。
+    [InlineData("GET", "/api/zones", false, false)]
+    [InlineData("GET", "/api/zones/videos", false, false)]
+    [InlineData("POST", "/api/admin/zones/set", true, false)]
     public void 两张门的归属矩阵(string method, string path, bool expectAdmin, bool expectMember)
     {
         var request = Request(method, path);

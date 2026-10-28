@@ -408,6 +408,7 @@ app.MapDanmakuReportEndpoints();
 app.MapAdminDanmakuReportEndpoints();
 app.MapWeeklyReportEndpoints(); // 分站周报：成员登录后 /api/weekly 看本周战报（/weekly 页）
 app.MapWatchHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
+app.MapZonesEndpoints(); // 站内分区：顶级清单与卡阵公开，改派在站长门内
 
 // 数据交换：导出打包/档案柜/导入暂存与换库（全在 /api/admin/** 站长门下）。
 app.MapDataExchangeApi();

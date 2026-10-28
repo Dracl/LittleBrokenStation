@@ -201,6 +201,10 @@ public sealed partial class StationDb
         // 绝拿 seconds（产物时长）冒充。早先建的库没这列，缺就补。
         EnsureColumn(connection, "previews", "cost_seconds", "REAL");
 
+        // 站内分区的站长改派槽：有效分区 = site_zone 优先，空则继承 B 站归档的 video_meta.zone（形如「音乐>翻唱」）。
+        // 分区页只认顶级段；未入站无档案又没改派的货没户口，不进分区页。
+        EnsureColumn(connection, "videos", "site_zone", "TEXT");
+
         // 旧库升级：M0 建的表没有引擎字段，缺列就补（SQLite ADD COLUMN 不锁表，小库无所谓）。
         EnsureColumn(connection, "videos", "engine_task_ids", "TEXT");
         EnsureColumn(connection, "videos", "last_error", "TEXT");
