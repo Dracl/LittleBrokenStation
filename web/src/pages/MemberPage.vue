@@ -5,10 +5,93 @@ import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
 import { member, loaded, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember } from '../memberStore'
 import { friendlyTime } from '../utils/time'
+import { coverThumb } from '../utils/cover'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 
 const busy = ref(false)
 const notice = ref(null) // { kind, text }
+
+// ─── 观看历史：只装「还没看完」的那批（看到 95% 以上服务端直接销行）───
+const history = ref(null) // null = 没拉到（在飞或后端没应答），[] = 确实没看过东西
+const historyBusy = ref(false)
+const historyNotice = ref(null) // { kind, text }
+
+async function loadHistory() {
+  if (historyBusy.value) return
+  historyBusy.value = true
+  try {
+    const res = await fetch('/api/member/history')
+    if (!res.ok) {
+      history.value = null // 401/500 都当「没拿到」，不拿空数组冒充「没看过」
+      return
+    }
+    const data = await res.json().catch(() => null)
+    history.value = Array.isArray(data?.items) ? data.items : []
+  } catch {
+    history.value = null
+  } finally {
+    historyBusy.value = false
+  }
+}
+
+// 进度百分比：时长不可信（0 / 非数）就给 0，不拿除零的 NaN 去撑进度条。
+function progressPct(item) {
+  const dur = Number(item?.durationSec)
+  const pos = Number(item?.positionSec)
+  if (!Number.isFinite(dur) || dur <= 0 || !Number.isFinite(pos)) return 0
+  return Math.max(0, Math.min(100, (pos / dur) * 100))
+}
+
+// 封面口径抄首页卡片：本地件优先，没归档才吃 B 站图床缩图。
+function historyCover(item) {
+  return item.localCover || (item.coverUrl ? coverThumb(item.coverUrl, 480) : '')
+}
+
+// 片内时间点：分:秒，过小时补时。
+function historyClock(sec) {
+  const n = Math.max(0, Math.floor(Number(sec) || 0))
+  const pad = (x) => String(x).padStart(2, '0')
+  const h = Math.floor(n / 3600)
+  return h > 0 ? `${h}:${pad(Math.floor((n % 3600) / 60))}:${pad(n % 60)}` : `${pad(Math.floor(n / 60))}:${pad(n % 60)}`
+}
+
+async function deleteHistory(item) {
+  if (historyBusy.value) return
+  historyBusy.value = true
+  historyNotice.value = null
+  try {
+    const res = await fetch('/api/member/history/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ videoId: item.videoId }),
+    })
+    const data = await res.json().catch(() => null)
+    historyNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '已抹掉' : '没抹成') }
+    if (res.ok) await loadHistory()
+  } catch {
+    historyNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    historyBusy.value = false
+  }
+}
+
+async function clearHistory() {
+  if (historyBusy.value) return
+  if (!history.value?.length) return
+  if (!window.confirm(`清空观看历史：${history.value.length} 部。\n清完再进片子就从从头放，确定？`)) return
+  historyBusy.value = true
+  historyNotice.value = null
+  try {
+    const res = await fetch('/api/member/history/clear', { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    historyNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '历史已清空' : '没清成') }
+    if (res.ok) await loadHistory()
+  } catch {
+    historyNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    historyBusy.value = false
+  }
+}
 
 const displayName = computed(() => {
   const m = member.value
@@ -60,6 +143,9 @@ async function submitPasswordChange() {
 
 async function loadMe() {
   await loadMember()
+  // 只有认得人才问历史：访客那一发必吃 401，白敲一下后端。
+  if (member.value) await loadHistory()
+  else history.value = null
 }
 
 onMounted(() => {
@@ -224,6 +310,92 @@ async function doLogout() {
               <span class="text-xs text-inkFaint">替你占的库存</span>
             </div>
           </div>
+        </section>
+
+        <!-- 观看历史：只装「还没看完」的那批（看到 95% 以上服务端直接销行），点行进放映厅接着放 -->
+        <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+          <div class="mb-4 flex items-center justify-between gap-3">
+            <h3 class="text-sm font-semibold text-inkMain">
+              观看历史
+              <span
+                v-if="history?.length"
+                class="ml-1.5 rounded-full border border-stationPink/30 bg-stationPink/5 px-2 py-0.5 text-[11px] font-normal text-stationPink"
+              >
+                {{ history.length }} 部没看完
+              </span>
+            </h3>
+            <button
+              class="rounded-full border border-lineSoft px-3.5 py-1.5 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="historyBusy || !history?.length"
+              @click="clearHistory"
+            >
+              清空
+            </button>
+          </div>
+
+          <ul v-if="history?.length" class="space-y-2">
+            <li
+              v-for="item in history"
+              :key="item.videoId"
+              class="flex items-start gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] px-4 py-3"
+            >
+              <RouterLink :to="`/watch/${item.bvid}`" class="group flex min-w-0 flex-1 items-start gap-3 no-underline">
+                <span class="relative block h-[76px] w-[124px] shrink-0 overflow-hidden rounded-lg bg-black/[0.06]">
+                  <img
+                    v-if="historyCover(item)"
+                    :src="historyCover(item)"
+                    :alt="item.title || item.bvid"
+                    loading="lazy"
+                    decoding="async"
+                    referrerpolicy="no-referrer"
+                    class="h-full w-full object-cover"
+                  />
+                  <span v-else class="flex h-full w-full select-none items-center justify-center font-mono text-sm text-inkFaint" aria-hidden="true">
+                    {{ (item.title || item.bvid || '?').slice(0, 1) }}
+                  </span>
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm text-inkMain transition group-hover:text-stationPink" :title="item.title || item.bvid">
+                    {{ item.title || item.bvid }}
+                  </span>
+                  <!-- 进度条：位置/时长的百分比（看完的早就不在这列里了）-->
+                  <span class="mt-2 block h-1 w-full overflow-hidden rounded-full bg-black/[0.08]">
+                    <span class="block h-full rounded-full bg-stationPink/70" :style="{ width: `${progressPct(item)}%` }"></span>
+                  </span>
+                  <span class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-inkFaint">
+                    <span>看到 {{ historyClock(item.positionSec) }}</span>
+                    <span>第 {{ item.pageIdx ?? 0 }} P</span>
+                    <span>{{ friendlyTime(item.updatedAtUtc) }}</span>
+                  </span>
+                </span>
+              </RouterLink>
+              <button
+                class="shrink-0 rounded-lg border border-lineSoft bg-cardBg px-3 py-1 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:opacity-40"
+                :disabled="historyBusy"
+                title="从历史里抹掉这部（下次从头放）"
+                @click="deleteHistory(item)"
+              >
+                删除
+              </button>
+            </li>
+          </ul>
+          <p v-else-if="history === null" class="py-8 text-center text-sm text-inkFaint">
+            {{ historyBusy ? '正在翻你的历史……' : '历史没打开：分站后端没有应答' }}
+          </p>
+          <p v-else class="py-8 text-center text-sm text-inkFaint">
+            还没有没看完的片子——去大厅抽一部，看到一半走了它会记得你的位子。
+          </p>
+
+          <p
+            v-if="historyNotice"
+            class="mt-3 text-xs leading-5"
+            :class="historyNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'"
+          >
+            {{ historyNotice.text }}
+          </p>
+          <p v-else class="mt-3 text-[11px] leading-4 text-inkFaint">
+            历史按席位存，一人一片只占一行；看到 95% 以上算看完，自动从这份名单里退场。
+          </p>
         </section>
 
         <!-- 登录方式：分站自己的门钥匙（M5.4）——站名、密码照面；防锁死警示条钉在卡顶 -->

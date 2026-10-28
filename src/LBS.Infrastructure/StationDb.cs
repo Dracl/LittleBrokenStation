@@ -177,6 +177,26 @@ public sealed partial class StationDb
             report.ExecuteNonQuery();
         }
 
+        // 观看历史：一人一片一行（位置随看随覆盖），只存「看到哪了」这四个数。
+        // 看完的不留行（95% 以上直接删行，不把看完的片子堆在历史里），行也不存片名与封面：
+        // 那些随馆藏走，读列表时 JOIN videos 现取（片被删了行就跟着看不见，不留死行）。
+        using (var history = connection.CreateCommand())
+        {
+            history.CommandText = """
+                CREATE TABLE IF NOT EXISTS watch_history (
+                    member_id    INTEGER NOT NULL,
+                    video_id     INTEGER NOT NULL,
+                    page_idx     INTEGER NOT NULL,
+                    position_sec REAL NOT NULL,
+                    duration_sec REAL NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    PRIMARY KEY (member_id, video_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_watchhistory_member ON watch_history (member_id, updated_at_utc);
+                """;
+            history.ExecuteNonQuery();
+        }
+
         // 逐件生成耗时（秒，ffmpeg 从起跑到交件的墙钟时间）：站长室「单件耗时」只吃这一列的真数，
         // 绝拿 seconds（产物时长）冒充。早先建的库没这列，缺就补。
         EnsureColumn(connection, "previews", "cost_seconds", "REAL");

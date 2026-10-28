@@ -56,6 +56,8 @@ async function loadWatch(silent = false) {
       if (!silent) {
         const firstPlayable = data.value.pages.find((p) => p.videoUrl) ?? data.value.pages[0]
         activeIndex.value = firstPlayable ? firstPlayable.index : 0
+        // 续播只在进页（含换 BV）这一刻问一次：静默刷新（编码轮询这些）不能把正在看的位子抓走。
+        loadResumePoint(data.value.id, activeIndex.value)
       }
     } else if (!silent) {
       data.value = null
@@ -75,6 +77,58 @@ async function loadWatch(silent = false) {
 function selectPage(index) {
   activeIndex.value = index
   // 换源后等 autoplay 无望，交给用户按播放；这里只把弹幕时间归零自然发生
+}
+
+// ─── 续播：进页问一次「上次看到哪」，够条件就把播放器丢过去并在播放器下缘浮一枚小泡 ───
+// 判据都在这一层：刚开头（≤10 秒）与接近片尾（≥95%）都不跳；位置不在落地那一分 P 上也不跳
+// （手动切选集是另一件事，不该被续播插一脚）。真正的 seek 由播放器在元数据就位后落。
+const resumeSec = ref(0)
+const resumeTip = ref(null) // { sec }：null = 不摆泡
+const resumeTipFading = ref(false)
+let resumeTipFadeTimer = 0
+let resumeTipGoneTimer = 0
+
+function clearResumeTip() {
+  if (resumeTipFadeTimer) clearTimeout(resumeTipFadeTimer)
+  if (resumeTipGoneTimer) clearTimeout(resumeTipGoneTimer)
+  resumeTipFadeTimer = 0
+  resumeTipGoneTimer = 0
+  resumeTip.value = null
+  resumeTipFading.value = false
+}
+
+async function loadResumePoint(videoId, pageIndex) {
+  resumeSec.value = 0
+  clearResumeTip()
+  try {
+    const res = await fetch(`/api/videos/${videoId}/progress`)
+    const p = res.ok ? await res.json() : null
+    if (!p) return // 没看过（或后端没应答）：从头播就是正确答案
+    if (Number(p.pageIdx) !== pageIndex) return
+    const sec = Number(p.positionSec)
+    const dur = Number(p.durationSec)
+    if (!Number.isFinite(sec) || sec <= 10) return
+    if (Number.isFinite(dur) && dur > 0 && sec >= dur * 0.95) return
+    resumeSec.value = sec
+    resumeTip.value = { sec }
+    // 三秒自 fade：先淡出去再从 DOM 里拿掉，不引新依赖。
+    resumeTipFadeTimer = setTimeout(() => {
+      resumeTipFading.value = true
+    }, 2600)
+    resumeTipGoneTimer = setTimeout(() => {
+      clearResumeTip()
+    }, 3100)
+  } catch {
+    /* 后端打盹：不弹不闹，从头播 */
+  }
+}
+
+// 泡上那个时间：分:秒，过小时补时（与播放器里的口径一致）。
+function clockOf(sec) {
+  const n = Math.max(0, Math.floor(Number(sec) || 0))
+  const pad = (x) => String(x).padStart(2, '0')
+  const h = Math.floor(n / 3600)
+  return h > 0 ? `${h}:${pad(Math.floor((n % 3600) / 60))}:${pad(n % 60)}` : `${pad(Math.floor(n / 60))}:${pad(n % 60)}`
 }
 
 // ─── 访客下载：播放器报什么编码就下什么编码，主版本缺省 ───
@@ -350,6 +404,7 @@ function onMediaPause() {
 
 onBeforeUnmount(() => {
   if (codecPoll) clearInterval(codecPoll)
+  clearResumeTip()
   document.removeEventListener('play', onMediaPlay, true)
   document.removeEventListener('pause', onMediaPause, true)
   if (heartTimer) {
@@ -427,14 +482,16 @@ const playerShellW = ref(0)
       </EmptyTv>
 
       <template v-else-if="data">
-        <!-- B 站宽屏模式同款：播放器单独通栏，其下才分两栏 -->
-        <div>
+        <!-- B 站宽屏模式同款：播放器单独通栏，其下才分两栏（relative 给续播小泡当定位基准）-->
+        <div class="relative">
           <VideoPlayer
             :page="currentPage"
             :status="data.status"
             :title="data.title"
             :bvid="data.bvid"
             :aid="data.aid"
+            :video-id="data.id"
+            :resume-sec="resumeSec"
             :danmaku-count="data.danmakuCount"
             :has-next-page="hasNextPage"
             :auto-related="autoRelated"
@@ -448,6 +505,15 @@ const playerShellW = ref(0)
             @delete-danmaku="onDeleteDanmaku"
             @report-danmaku="onReportDanmaku"
           />
+
+          <!-- 续播小泡：B 站式一枚胶囊贴在播放器下缘，淡背与弹幕气泡同源，3 秒自 fade（pointer-events-none：不挡点画面）-->
+          <div
+            v-if="resumeTip"
+            class="pointer-events-none absolute bottom-[84px] left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/15 bg-[#1b1d23]/95 px-3.5 py-1.5 text-xs text-white/85 shadow-lg backdrop-blur transition-opacity duration-500"
+            :class="resumeTipFading ? 'opacity-0' : 'opacity-100'"
+          >
+            上次看到 <span class="font-mono text-white/95">{{ clockOf(resumeTip.sec) }}</span>，已为你继续
+          </div>
 
           <div class="mt-[30px] flex justify-center">
             <div

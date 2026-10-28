@@ -11,6 +11,8 @@ const props = defineProps({
   title: { type: String, default: '' },
   bvid: { type: String, default: '' },
   aid: { type: Number, default: 0 },
+  videoId: { type: Number, default: 0 }, // 分站台账里的馆藏 id（进度上报的钥匙；没它就无处可报）
+  resumeSec: { type: Number, default: 0 }, // 观看页算好的续播点（只在进页那一份，手动切 P 不再打断）
   hasNextPage: { type: Boolean, default: false },
   autoRelated: { type: Boolean, default: false }, // 自动连播：本页最后一 P 播完跳接下来播放首条
   danmakuCount: { type: Number, default: null }, // 全站已归档弹幕总数（watch 顶层字段）
@@ -92,6 +94,7 @@ function onMediaPause() {
   stuckRecover.value = false
   clearTimeout(stuckTimer)
   showControls.value = true
+  reportProgress() // 一停就报：关页面前多半再没机会了，这一发最值当
 }
 
 function manualUnstick() {
@@ -231,6 +234,7 @@ function clickVersion(codec) {
 watch(() => props.page?.index, () => {
   activeCodec.value = null
   restorePlan = null
+  resumePending = 0 // 手动切选集就是从头看，不把上一集的续播点硬塞到新 P 上
 })
 
 watch(currentSrc, () => {
@@ -283,8 +287,52 @@ function sendDanmaku() {
 
 function onEnded() {
   playing.value = false
+  reportProgress() // 末尾那一发会把这条历史销掉（位置过 95% 服务端直接删行）
   if (play.autoNext && props.hasNextPage) emit('next')
   else if (props.autoRelated) emit('next-video')
+}
+
+// ─── 观看历史：位置随手报（进度全从 video 元素现取，不养影子状态）───
+// 心跳 15 秒一发（暂停与拖拽中跳发）；pause / ended 当场补一发；关页面前交给 sendBeacon——
+// 那时候 fetch 会被浏览器掉手，sendBeacon 才是它答应替你送完的那一程。
+const PROGRESS_BEAT_MS = 15000
+let progressBeat = 0
+
+function progressPayload() {
+  const v = video.value
+  if (!v || !props.videoId) return null
+  const durationSec = Number(v.duration)
+  const positionSec = Number(v.currentTime)
+  if (!Number.isFinite(durationSec) || durationSec <= 0) return null
+  if (!Number.isFinite(positionSec) || positionSec < 0) return null
+  return { pageIdx: props.page?.index ?? 0, positionSec, durationSec }
+}
+
+function reportProgress() {
+  const body = progressPayload()
+  if (!body) return
+  fetch(`/api/videos/${props.videoId}/progress`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch(() => {
+    /* 报不上就算了：下一轮心跳自然补上，不打扰看片 */
+  })
+}
+
+function reportProgressByBeacon() {
+  const body = progressPayload()
+  if (!body || typeof navigator.sendBeacon !== 'function') return
+  navigator.sendBeacon(
+    `/api/videos/${props.videoId}/progress`,
+    new Blob([JSON.stringify(body)], { type: 'application/json' }),
+  )
+}
+
+function onProgressBeat() {
+  const v = video.value
+  if (!v || v.paused || dragging) return // 暂停归 pause 报、拖拽归松手报，心跳只管正常播放那一段
+  reportProgress()
 }
 
 // 关灯：用 clipPath 在整屏黑幕上挖掉播放器区域，只关页面不关画面。
@@ -570,6 +618,27 @@ function onLoadedMetadata() {
   v.muted = muted.value
   const t = new URLSearchParams(window.location.search).get('t')
   if (t && Number.isFinite(Number(t))) seekTo(Number(t))
+  else flushResume() // 地址栏的 ?t= 才是硬指令，没它才轮到续播点
+}
+
+// ─── 续播：观看页算好了该从哪一秒起（位置地板、95% 上限都在它那里判）───
+// 元数据没就位时 seek 会被默默吃掉，所以这里存一发，等 loadedmetadata 再落（与编码切换的 restorePlan 同一套路）。
+let resumePending = 0
+
+watch(() => props.resumeSec, (v) => {
+  resumePending = Number.isFinite(v) && v > 0 ? v : 0
+  const el = video.value
+  if (resumePending && el && el.readyState >= 1) flushResume()
+}, { immediate: true })
+
+function flushResume() {
+  if (!resumePending) return
+  const v = video.value
+  if (!v || !Number.isFinite(v.duration) || v.duration <= 0) return
+  const target = Math.min(resumePending, v.duration - 0.05)
+  resumePending = 0
+  logEvent(`续播 seek→${target.toFixed(1)}s`)
+  seekTo(target)
 }
 
 function applyVolume(x) {
@@ -1063,6 +1132,8 @@ onMounted(() => {
   window.addEventListener('blur', endHoldGesture) // 切走窗口时按键释放收不到，直接归位
   document.addEventListener('fullscreenchange', onFsChange)
   document.addEventListener('click', closeCtx)
+  progressBeat = setInterval(onProgressBeat, PROGRESS_BEAT_MS) // 心跳只管正常播放那一段（函数里自己筛）
+  window.addEventListener('pagehide', reportProgressByBeacon) // 关页面/刷新：最后一发走信标
 })
 onBeforeUnmount(() => {
   clearTimeout(hideTimer)
@@ -1078,6 +1149,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', endHoldGesture)
   document.removeEventListener('fullscreenchange', onFsChange)
   document.removeEventListener('click', closeCtx)
+  clearInterval(progressBeat)
+  progressBeat = 0
+  window.removeEventListener('pagehide', reportProgressByBeacon)
 })
 
 const RATE_ITEMS = [0.5, 0.75, 1, 1.25, 1.5, 2]

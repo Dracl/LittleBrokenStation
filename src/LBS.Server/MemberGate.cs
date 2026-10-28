@@ -44,11 +44,12 @@ public sealed class MemberGate(StationDb db)
             }
         }
 
-        // 弹幕读写、相关推荐、直链：放映厅的配套设施
+        // 弹幕读写、相关推荐、直链、续播进度：放映厅的配套设施
         if (path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase)
             && (path.Contains("/danmaku", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/related", StringComparison.OrdinalIgnoreCase)
-                || path.EndsWith("/download", StringComparison.OrdinalIgnoreCase)))
+                || path.EndsWith("/download", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/progress", StringComparison.OrdinalIgnoreCase)))
         {
             return true;
         }

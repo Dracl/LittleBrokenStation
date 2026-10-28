@@ -68,6 +68,13 @@ public sealed class SubmitterManageTests : IDisposable
     // 举报清单与处置：整段挂在 /api/admin/ 前缀下，身份即钥匙（站长门管，会员门不管）
     [InlineData("GET", "/api/admin/danmaku-reports", true, false)]
     [InlineData("POST", "/api/admin/danmaku-reports/9/handle", true, false)]
+    // 观看历史：报进度的 /progress 归放映厅配套设施（吃会员门）；
+    // /api/member/history 那三条不在两张门视野里（两端都 false），端点自己查 MemberGate.Current 回 401。
+    [InlineData("POST", "/api/videos/9/progress", false, true)]
+    [InlineData("GET", "/api/videos/9/progress", false, true)]
+    [InlineData("GET", "/api/member/history", false, false)]
+    [InlineData("POST", "/api/member/history/delete", false, false)]
+    [InlineData("POST", "/api/member/history/clear", false, false)]
     public void 两张门的归属矩阵(string method, string path, bool expectAdmin, bool expectMember)
     {
         var request = Request(method, path);
