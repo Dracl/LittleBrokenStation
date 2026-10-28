@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using DownKyi.Application.Bilibili;
 using Microsoft.Extensions.Logging;
@@ -20,6 +21,48 @@ public sealed class LbsUpInfoFetcher(
     ILogger<LbsUpInfoFetcher> logger)
 {
     private const string Referer = "https://www.bilibili.com";
+
+    private const string AvatarsPrefix = "/avatars/";
+
+    /// <summary>
+    /// 该不该出去重采 UP 名片。三态分清：null 是没采过，要采；空串是上一趟失败销账，不重采（要重采把该行置回 NULL）；
+    /// 有值还要验货 —— 热链直接算能用，/avatars/xxx 这种本地得盘上真有文件。
+    /// 早年那一代把 up_face 写成 /avatars/up-{mid}.jpg，头像命名换 sha1 后这些文件已经不在了，
+    /// 只判非空会让 UpCard 的 img 永远 404 到「粉底首字」占位、且永不重采。
+    /// </summary>
+    public static bool NeedsRefetch(string? face, string avatarsDir)
+    {
+        if (face is null)
+        {
+            return true;
+        }
+
+        var value = face.Trim();
+        if (value.Length == 0)
+        {
+            return false;
+        }
+
+        if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!value.StartsWith(AvatarsPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var leaf = value[AvatarsPrefix.Length..]
+            .Replace('/', Path.DirectorySeparatorChar)
+            .Replace('\\', Path.DirectorySeparatorChar);
+        if (leaf.Length == 0 || leaf.Contains("..", StringComparison.Ordinal) || Path.IsPathRooted(leaf))
+        {
+            return true;
+        }
+
+        return !File.Exists(Path.Combine(avatarsDir, leaf));
+    }
 
     public async Task<UpProfile?> FetchAsync(long mid, CancellationToken cancellationToken)
     {

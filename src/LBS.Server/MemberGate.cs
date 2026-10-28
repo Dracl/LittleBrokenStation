@@ -53,7 +53,36 @@ public sealed class MemberGate(StationDb db)
             return true;
         }
 
+        // 投稿人自管（刷评论快照 / 删自己的稿）与楼中楼按需补采：从站长室摘出来后必须在这里补上门闩，
+        // 否则就成了匿名可调用。归属不是这里的事，端点自己拿 MemberGate.Current 再核一遗。
+        if (HttpMethods.IsDelete(request.Method) && IsVideoIdOnlyPath(path))
+        {
+            return true;
+        }
+
+        if (HttpMethods.IsPost(request.Method)
+            && path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase)
+            && (path.EndsWith("/comments", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/comments/subs", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/danmaku-refresh", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
         return false;
+    }
+
+    /// <summary>路径是不是 /api/videos/{纯数字 id}（投稿人自管删稿的形状；AdminGate 的豁免判据与它一字不差）。</summary>
+    internal static bool IsVideoIdOnlyPath(string path)
+    {
+        const string prefix = "/api/videos/";
+        if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var tail = path[prefix.Length..];
+        return tail.Length > 0 && tail.All(char.IsAsciiDigit);
     }
 
     /// <summary>发一张新会话：返回 (cookie 明文令牌, 落库哈希)。明文只在 Set-Cookie 里走一趟。</summary>

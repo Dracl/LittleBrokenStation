@@ -57,12 +57,40 @@ public sealed class CommentArchiveService(
 
             var target = basePath + ".comments.json";
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.WriteAllText(target, LbsCommentArchiver.Serialize(snapshot));
-            db.RegisterCommentsArtifact(videoId, ToRelative(target, paths.Videos));
 
             var count = snapshot.Replies.Count + (snapshot.Top is null ? 0 : 1);
+            var message = $"「{brief.Value.Bvid}」评论已归档：主楼 {count} 条";
+
+            // 只进不退：老快照里被 B 站撤掉的楼层继续养着，两边都有的取最新内容，
+            // 楼中楼也取并集（免得一次重拉把上次按需补采到的楼中楼洗掉）。
+            if (CommentSnapshotOps.Load(target) is { } archived)
+            {
+                if (snapshot.Replies.Count == 0 && archived.Replies.Count > 0)
+                {
+                    // B 站空手而归（风控、临时抽风、登录态抽风）：留档一个字都不动，
+                    // 也不能谎报成「B 站把这几百条都撤了」。
+                    logger.LogInformation("馆藏 {VideoId} 评论重拉空手而归，留档 {Count} 条原样保留", videoId, archived.Replies.Count);
+                    return new CommentArchiveOutcome(
+                        false,
+                        $"「{brief.Value.Bvid}」B 站这边空手而归（多半是风控，或这条真没评论），{archived.Replies.Count} 条评论留档原样保留",
+                        archived.Replies.Count);
+                }
+
+                var merge = CommentSnapshotOps.MergeArchive(archived, snapshot);
+                count = merge.Total;
+                message = $"「{brief.Value.Bvid}」评论已增量合并：新增 {merge.Added} 条、更新 {merge.Refreshed} 条，留档共 {merge.Total} 条"
+                    + (merge.KeptGone > 0 ? $"（B 站已撤 {merge.KeptGone} 条，档里继续留着）" : "");
+                File.WriteAllText(target, LbsCommentArchiver.Serialize(merge.Merged));
+            }
+            else
+            {
+                File.WriteAllText(target, LbsCommentArchiver.Serialize(snapshot));
+            }
+
+            db.RegisterCommentsArtifact(videoId, ToRelative(target, paths.Videos));
+
             logger.LogInformation("馆藏 {VideoId} 评论快照落盘：主楼 {Count} 条，B 站报总数 {Total}", videoId, count, snapshot.Total);
-            return new CommentArchiveOutcome(true, $"「{brief.Value.Bvid}」评论已归档：主楼 {count} 条", count);
+            return new CommentArchiveOutcome(true, message, count);
         }
         catch (OperationCanceledException)
         {

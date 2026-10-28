@@ -54,4 +54,9 @@ public sealed record VideoEntry(
     string? PublishedAtUtc = null,
     string? PublishText = null,
     // 本地封面（与观看页同形：/media/ + artifacts 相对路径）；没归档封面的行留 null，前端热链兑底。
-    string? LocalCover = null);
+    string? LocalCover = null,
+    // 卡阵那两枚自管钮（补采/删档）可不可见：服务端按「投稿人本人 ∥ 站长」算好，访客一律假。
+    bool CanManage = false,
+    // 首页卡片悬停预览（与封面同形：/previews/ + previews.rel_path，rel 相对 data/previews）；
+    // 没生成过预览的行留 null，前端不摆悬停。
+    string? PreviewUrl = null);

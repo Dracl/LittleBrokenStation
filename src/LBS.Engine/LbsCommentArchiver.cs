@@ -649,6 +649,60 @@ public static class CommentSnapshotOps
         File.WriteAllText(absolutePath, LbsCommentArchiver.Serialize(snapshot));
     }
 
+    /// <summary>增量归档的结果：Added 是新面孔，Refreshed 两边都有取最新，KeptGone 是 B 站已撤但留档继续养着的。</summary>
+    public sealed record ArchiveMerge(CommentSnapshot Merged, int Added, int Refreshed, int KeptGone, int Total);
+
+    /// <summary>
+    /// 重拉快照时的增量合并：只进不退。
+    /// 楼层按 rpid 并集——B 站那边被删、被锁、被作者自删的楼继续留在档里，两边都有的取最新内容（改了正文/改了庙）；
+    /// 楼中楼同规并集，免得一次重拉把上次按需补采到的楼中楼洗掉。留档站的「刷新」不该是覆盖。
+    /// </summary>
+    public static ArchiveMerge MergeArchive(CommentSnapshot oldSnapshot, CommentSnapshot fresh)
+    {
+        static List<CommentItem> MergeList(IReadOnlyList<CommentItem> older, IReadOnlyList<CommentItem> newer)
+        {
+            var merged = older.ToList();
+            var index = new Dictionary<long, int>();
+            for (var i = 0; i < merged.Count; i++)
+            {
+                index[merged[i].Rpid] = i;
+            }
+
+            foreach (var item in newer)
+            {
+                if (index.TryGetValue(item.Rpid, out var at))
+                {
+                    // 新内容覆盖旧内容，但楼中楼取两边并集（新档可能只带了前几楼）。
+                    merged[at] = item with { Sub = MergeList(merged[at].Sub ?? [], item.Sub ?? []) };
+                }
+                else
+                {
+                    index[item.Rpid] = merged.Count;
+                    merged.Add(item);
+                }
+            }
+
+            return merged;
+        }
+
+        var older = oldSnapshot.Replies;
+        var replies = MergeList(older, fresh.Replies);
+        var olderIds = older.Select(r => r.Rpid).ToHashSet();
+        var freshIds = fresh.Replies.Select(r => r.Rpid).ToHashSet();
+        var refreshed = olderIds.Count(freshIds.Contains);
+        var added = freshIds.Count(id => !olderIds.Contains(id));
+        var keptGone = olderIds.Count(id => !freshIds.Contains(id));
+
+        var merged = fresh with
+        {
+            Replies = replies,
+            Top = fresh.Top ?? oldSnapshot.Top,
+            Total = Math.Max(fresh.Total, replies.Count),
+            Emotes = fresh.Emotes is { Count: > 0 } ? fresh.Emotes : oldSnapshot.Emotes,
+        };
+        return new ArchiveMerge(merged, added, refreshed, keptGone, replies.Count);
+    }
+
     /// <summary>把一批楼中楼并到指定楼层；page==1 替换，否则去重追加。返回更新后的快照与命中标志。</summary>
     public static (CommentSnapshot Snapshot, bool Found) MergeSubs(
         CommentSnapshot snapshot,

@@ -34,7 +34,8 @@ public sealed class ExportJobBoard
 /// </summary>
 public static class DataExchangeEndpoints
 {
-    public sealed record ExportRequest(bool WithCreds, bool WithMedia, bool WithCmtImg, bool WithCaches);
+    /// <summary>导出勾选：withPreviews 不送则当 true（预览是派生物，旧前端没这一勾时默认随包走，与 ExportOptions 口径一致）。</summary>
+    public sealed record ExportRequest(bool WithCreds, bool WithMedia, bool WithCmtImg, bool WithCaches, bool? WithPreviews);
 
     public sealed record ImportApplyRequest(string? Receipt);
 
@@ -43,7 +44,7 @@ public static class DataExchangeEndpoints
         // ─── 导出：勾选打包（必含台账 + manifest），大包走 job ───
         app.MapPost("/api/admin/export", (ExportRequest request, StationExporter exporter, ExportJobBoard board, ILogger<StationExporter> logger) =>
         {
-            var options = new ExportOptions(request.WithCreds, request.WithMedia, request.WithCmtImg, request.WithCaches);
+            var options = new ExportOptions(request.WithCreds, request.WithMedia, request.WithCmtImg, request.WithCaches, request.WithPreviews ?? true);
             var jobId = board.Create();
             _ = Task.Run(() =>
             {

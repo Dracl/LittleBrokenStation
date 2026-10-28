@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { colonTime } from '../utils/time'
 import { coverThumb } from '../utils/cover'
+import { claimPreview, previewHoverEnter, previewHoverLeave, releasePreview } from '../utils/previewHover'
 
 // 纯展示视频卡：版式对齐 B 站首页卡（2026-10 基准）。
 // 封面 16:10 左下「▶播放 💬弹幕」无底描边字，右下时长大号描边字；标题中黑两行；
@@ -90,10 +91,113 @@ const coverReady = ref(false)
 onMounted(() => {
   if (coverEl.value?.complete) coverReady.value = true
 })
+
+// ─── 悬停预览：后端备好了约 1MB 的 360p 无声片段（video.previewUrl）才启用这一层 ───
+// 封面 img 全程不卸：预览没到位/加载失败时看到的就是封面，所以这层只有淡入，没有任何报错 UI。
+// 计时器照播放器音量条那套（volArmHide + volHideTimer）：CSS :hover 与「立即归零」都经不起鼠标在卡边上抖两下。
+const PREVIEW_ARM_MS = 350 // 鼠标停够 350ms 才起播，路过卡阵的手指不算想看
+const PREVIEW_RESET_MS = 200 // 离场 200ms 内回来就原地续播，不重新从 0 拉一遍流
+
+// 系统要求减少动效：尊重到底，悬停一律不起播，卡面停在封面原样。
+const reduceMotion = !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+const previewSrc = computed(() => props.video.previewUrl || '')
+const previewEl = ref(null)
+const previewShown = ref(false) // 首帧到位才淡入，避免黑帧裸切
+const previewGaveUp = ref(false) // 本卡彻底放弃：出错后连这层 <video> 都不再挂，绝不重试
+let previewArm = null
+let previewReset = null
+let hoverHeld = false
+
+function previewClearTimers() {
+  if (previewArm) {
+    clearTimeout(previewArm)
+    previewArm = null
+  }
+  if (previewReset) {
+    clearTimeout(previewReset)
+    previewReset = null
+  }
+}
+
+// 停车动作，同时充当全站单例的播放令牌：函数身份每张卡固定一个。
+function stopPreview(resetTime) {
+  const el = previewEl.value
+  if (!el) return
+  try {
+    el.pause()
+  } catch {
+    /* 本来就没在播 */
+  }
+  if (resetTime) {
+    try {
+      el.currentTime = 0
+    } catch {
+      /* 流还没 ready，归零没意义 */
+    }
+  }
+  previewShown.value = false
+}
+
+const stopForSingleton = () => stopPreview(true)
+
+function giveUpPreview() {
+  previewClearTimers()
+  releasePreview(stopForSingleton)
+  stopPreview(false)
+  previewGaveUp.value = true
+}
+
+function onPreviewEnter() {
+  if (previewSrc.value && !hoverHeld) {
+    hoverHeld = true
+    previewHoverEnter()
+  }
+  if (!previewSrc.value || previewGaveUp.value || reduceMotion) return
+  previewClearTimers()
+  previewArm = setTimeout(() => {
+    previewArm = null
+    const el = previewEl.value
+    if (!el) return
+    claimPreview(stopForSingleton) // 全站只许一路在播：先让上一路停车归零
+    el.muted = true // 属性之外再钉一次，免得 autoplay policy 卡住无声起播
+    const p = el.play()
+    if (p && typeof p.catch === 'function') p.catch(giveUpPreview)
+  }, PREVIEW_ARM_MS)
+}
+
+function onPreviewLeave() {
+  if (hoverHeld) {
+    hoverHeld = false
+    previewHoverLeave()
+  }
+  if (!previewSrc.value || previewGaveUp.value) return
+  if (previewArm) {
+    clearTimeout(previewArm)
+    previewArm = null
+  }
+  releasePreview(stopForSingleton)
+  stopPreview(false) // 立即按停（淡回封面）
+  if (previewReset) clearTimeout(previewReset)
+  previewReset = setTimeout(() => {
+    previewReset = null
+    const el = previewEl.value
+    if (el && el.currentTime) el.currentTime = 0
+  }, PREVIEW_RESET_MS)
+}
+
+onBeforeUnmount(() => {
+  previewClearTimers()
+  releasePreview(stopForSingleton)
+  if (hoverHeld) {
+    hoverHeld = false
+    previewHoverLeave()
+  }
+})
 </script>
 
 <template>
-  <div class="cv-auto">
+  <div class="cv-auto" @mouseenter="onPreviewEnter" @mouseleave="onPreviewLeave">
     <div class="relative aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3]">
       <div v-if="coverSrc && !coverReady" class="cover-shimmer absolute inset-0" aria-hidden="true"></div>
       <img
@@ -112,6 +216,26 @@ onMounted(() => {
       <div v-else class="flex h-full w-full items-center justify-center">
         <span class="text-xs tracking-widest text-inkFaint">{{ video.bvid }}</span>
       </div>
+      <!-- 悬停预览层：压在封面之上、数据区之下（DOM 顺序即层次），不吃点击也不抢焦点；
+           :key 绑源址，卡位复用时不会拿上一条的流接着播。preload=none——不悬停就一个字节都不拉。 -->
+      <video
+        v-if="previewSrc && !previewGaveUp"
+        :key="previewSrc"
+        ref="previewEl"
+        :src="previewSrc"
+        muted
+        loop
+        playsinline
+        preload="none"
+        disablepictureinpicture
+        tabindex="-1"
+        aria-hidden="true"
+        class="pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-200"
+        :class="previewShown ? 'opacity-100' : 'opacity-0'"
+        @loadeddata="previewShown = true"
+        @playing="previewShown = true"
+        @error="giveUpPreview"
+      ></video>
       <span
         v-if="admin && video.status !== 2"
         class="absolute left-2 top-2 rounded-md bg-black/75 px-2 py-0.5 text-[11px]"

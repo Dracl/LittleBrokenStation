@@ -1,9 +1,11 @@
 <script setup>
-import { richHtml } from '../utils/emote'
 import { computed, ref, watch } from 'vue'
 import ImageLightbox from './ImageLightbox.vue'
 import AvatarImg from './AvatarImg.vue'
 import LevelBadge from './LevelBadge.vue'
+import UpBadge from './UpBadge.vue'
+import MedalBadge from './MedalBadge.vue'
+import CollapsibleRichText from './CollapsibleRichText.vue'
 
 const props = defineProps({
   src: { type: String, default: null },
@@ -15,10 +17,7 @@ const snapshot = ref(null)
 const state = ref('idle') // idle | loading | ready | empty | failed
 const emoteMap = ref({}) // 转义符 → /emotes/xx.png（下载失败时为远程热链）
 
-// 正文渲染：转义→@高亮→[表情]换图，与动态评论区共用 utils/emote 同一根管线。
-function rich(text) {
-  return richHtml(text, emoteMap.value)
-}
+// 正文渲染交给 CollapsibleRichText（它内部走 utils/emote 同一根管线 + 超行折叠）。
 
 function picLocal(item, i) {
   return item.pictureLocals?.[i] || item.pictures?.[i] || ''
@@ -180,11 +179,6 @@ function isUp(item) {
   return props.upMid != null && item.mid != null && String(item.mid) === String(props.upMid)
 }
 
-function medalStyle(color) {
-  const hex = color && color.startsWith('#') ? color : `#${color || 'fb7299'}`
-  return { backgroundColor: hex }
-}
-
 function timeText(unix) {
   if (!unix) return ''
   const d = new Date(unix * 1000)
@@ -236,14 +230,19 @@ function likeCount(item) {
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-1.5">
               <span class="text-[15px] text-inkMain">{{ topReply.name }}</span>
-              <span v-for="(medal, mi) in topReply.medals ?? []" :key="mi" class="rounded-[3px] px-1 py-[2px] text-[10px] leading-none text-white" :style="medalStyle(medal.color)">{{ medal.level }} {{ medal.name }}</span>
+              <MedalBadge v-for="(medal, mi) in topReply.medals ?? []" :key="mi" :level="medal.level" :name="medal.name" :color="medal.color" :size="13.8" />
               <LevelBadge :level="topReply.level" />
-              <span v-if="isUp(topReply)" class="rounded-[3px] bg-[#fb7299] px-1 py-[2px] text-[10px] font-medium leading-none text-white">UP</span>
+              <UpBadge />
             </div>
-            <p class="mt-1.5 text-[15px] leading-7 text-inkMain">
-              <span class="mr-1.5 rounded border border-stationPink px-1 py-0.5 align-middle text-xs text-stationPink">置顶</span>
-              <span class="whitespace-pre-line" v-html="rich(topReply.content)"></span>
-            </p>
+            <CollapsibleRichText
+              :text="topReply.content"
+              :emotes="emoteMap"
+              content-class="mt-1.5 whitespace-pre-line text-[15px] leading-7 text-inkMain"
+            >
+              <template #prefix>
+                <span class="mr-1.5 inline-flex h-[18px] w-[30px] items-center justify-center rounded-[3px] border border-stationPink align-text-bottom text-[12px] leading-none text-stationPink">置顶</span>
+              </template>
+            </CollapsibleRichText>
             <div v-if="topReply.pictures?.length" class="mt-2 flex flex-wrap gap-1">
               <img v-for="(pic, pi) in topReply.pictures" :key="pi" :src="picLocal(topReply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(topReply, pi)" />
             </div>
@@ -276,12 +275,12 @@ function likeCount(item) {
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-1.5">
             <span class="text-[15px] text-inkMain">{{ reply.name }}</span>
-            <span v-for="(medal, mi) in reply.medals ?? []" :key="mi" class="rounded-[3px] px-1 py-[2px] text-[10px] leading-none text-white" :style="medalStyle(medal.color)">{{ medal.level }} {{ medal.name }}</span>
+            <MedalBadge v-for="(medal, mi) in reply.medals ?? []" :key="mi" :level="medal.level" :name="medal.name" :color="medal.color" :size="13.8" />
             <LevelBadge :level="reply.level" />
-            <span v-if="isUp(reply)" class="rounded-[3px] bg-[#fb7299] px-1 py-[2px] text-[10px] font-medium leading-none text-white">UP</span>
+            <UpBadge />
           </div>
 
-          <p class="mt-1 whitespace-pre-line text-[15px] leading-7 text-inkMain" v-html="rich(reply.content)"></p>
+          <CollapsibleRichText :text="reply.content" :emotes="emoteMap" content-class="mt-1 whitespace-pre-line text-[15px] leading-7 text-inkMain" />
 
           <div v-if="reply.pictures?.length" class="mt-2 flex flex-wrap gap-1">
             <img v-for="(pic, pi) in reply.pictures" :key="pi" :src="picLocal(reply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(reply, pi)" />
@@ -309,14 +308,15 @@ function likeCount(item) {
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-1.5">
                   <span class="text-[13px]" :class="isUp(sub) ? 'text-inkMain' : 'text-stationPink'">{{ sub.name }}</span>
-                  <span v-for="(medal, mi) in sub.medals ?? []" :key="mi" class="rounded-[3px] px-1 py-[1px] text-[9px] leading-none text-white" :style="medalStyle(medal.color)">{{ medal.level }} {{ medal.name }}</span>
-                  <LevelBadge :level="sub.level" class="h-3" />
-                  <span v-if="isUp(sub)" class="rounded-[3px] bg-[#fb7299] px-1 py-[1px] text-[9px] font-medium leading-none text-white">UP</span>
+                  <MedalBadge v-for="(medal, mi) in sub.medals ?? []" :key="mi" :level="medal.level" :name="medal.name" :color="medal.color" :size="12" />
+                  <LevelBadge :level="sub.level" :size="10.5" />
+                  <UpBadge :size="11.9" />
                 </div>
-                <p class="mt-0.5 whitespace-pre-line text-sm leading-6 text-inkMain">
-                  <template v-if="sub.parentName"><span class="text-inkMain">回复 </span><span class="text-stationBlue">@{{ sub.parentName }}</span><span class="text-inkMain">：</span></template>
-                  <span v-html="rich(sub.content)"></span>
-                </p>
+                <CollapsibleRichText :text="sub.content" :emotes="emoteMap" content-class="mt-0.5 whitespace-pre-line text-sm leading-6 text-inkMain">
+                  <template v-if="sub.parentName" #prefix>
+                    <span class="text-inkMain">回复 </span><span class="text-stationBlue">@{{ sub.parentName }}</span><span class="text-inkMain">：</span>
+                  </template>
+                </CollapsibleRichText>
                 <div class="mt-1 flex items-center gap-5 text-xs text-inkFaint">
                   <span>{{ timeText(sub.time) }}</span>
                   <span v-if="sub.ipLocation">IP属地：{{ sub.ipLocation }}</span>

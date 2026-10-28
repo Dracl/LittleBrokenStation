@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import { member, loaded, unread, dmUnread, loginDialogOpen, loginDialogMode, load as loadMember, refreshUnread } from '../memberStore'
 import { friendlyTime } from '../utils/time'
+import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -473,18 +474,12 @@ function peerLabel(p) {
                     @click="openThread(t.peerMemberId, { memberId: t.peerMemberId, nickname: t.peerName, faceUrl: t.peerFace })"
                   >
                     <img
-                      v-if="t.peerFace"
-                      :src="t.peerFace"
+                      :src="t.peerFace || defaultAvatar"
                       :alt="t.peerName || ''"
                       referrerpolicy="no-referrer"
                       class="h-10 w-10 shrink-0 rounded-full object-cover"
+                      @error="onAvatarError"
                     />
-                    <span v-else class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-lineSoft text-inkFaint">
-                      <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
-                        <circle cx="12" cy="8.5" r="3.5" />
-                        <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
-                      </svg>
-                    </span>
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-[13px] font-medium text-inkMain">{{ peerLabel(t) }}</span>
                       <span class="block truncate text-[12px] text-inkSub">{{ t.lastBody || (t.lastMsgType === 'dynamic' ? '📣 分享了一条动态' : t.lastMsgType === 'video' ? '📣 分享了一个片子' : '') }}</span>
@@ -506,10 +501,7 @@ function peerLabel(p) {
               <template v-if="activePeer">
                 <div class="flex items-center justify-between border-b border-lineSoft bg-gradient-to-r from-stationPink/10 via-stationPink/5 to-transparent px-4 py-3">
                   <span class="flex items-center gap-2 text-[13px] font-medium text-inkMain">
-                    <img v-if="activePeer.faceUrl" :src="activePeer.faceUrl" referrerpolicy="no-referrer" class="h-7 w-7 rounded-full object-cover" alt="" />
-                    <span v-else class="flex h-7 w-7 items-center justify-center rounded-full bg-stationPink/10">
-                      <svg viewBox="0 0 24 24" class="h-4 w-4 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8.5" r="3.5" /><path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" /></svg>
-                    </span>
+                    <img :src="activePeer.faceUrl || defaultAvatar" :alt="activePeer.nickname || ''" referrerpolicy="no-referrer" class="h-7 w-7 rounded-full object-cover" @error="onAvatarError" />
                     {{ peerLabel(activePeer) }}
                     <span class="text-[11px] font-normal text-inkFaint">
                       <template v-if="activePeer.username">{{ activePeer.username }} · </template>UID #{{ activePeer.memberId }}
@@ -549,14 +541,12 @@ function peerLabel(p) {
                       >
                         <div class="flex items-center gap-2">
                           <img
-                            v-if="m.dyn.authorFace"
-                            :src="m.dyn.authorFace"
+                            :src="m.dyn.authorFace || defaultAvatar"
                             referrerpolicy="no-referrer"
                             class="h-7 w-7 shrink-0 rounded-full object-cover"
                             alt=""
-                            @error="$event.target.style.display = 'none'"
+                            @error="onAvatarError"
                           />
-                          <span v-else class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-stationPink/10 text-[11px] text-stationPink">{{ (m.dyn.authorName || '?').slice(0, 1) }}</span>
                           <span class="min-w-0 flex-1">
                             <span class="block truncate text-[12.5px] font-medium text-inkMain">{{ m.dyn.authorName || 'B站作者' }}</span>
                             <span class="block text-[10.5px] text-inkFaint">{{ friendlyTime(m.dyn.publishedAtUtc) }}</span>
@@ -669,18 +659,12 @@ function peerLabel(p) {
                     @click="openThread(p.memberId, { memberId: p.memberId, nickname: p.nickname, username: p.username, displayName: p.displayName, faceUrl: p.faceUrl })"
                   >
                     <img
-                      v-if="p.faceUrl"
-                      :src="p.faceUrl"
+                      :src="p.faceUrl || defaultAvatar"
                       :alt="p.nickname || p.username || ''"
                       referrerpolicy="no-referrer"
                       class="h-9 w-9 shrink-0 rounded-full object-cover"
+                      @error="onAvatarError"
                     />
-                    <span v-else class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-lineSoft text-inkFaint">
-                      <svg viewBox="0 0 24 24" class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="1.8">
-                        <circle cx="12" cy="8.5" r="3.5" />
-                        <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
-                      </svg>
-                    </span>
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-[13px] text-inkMain">{{ peerLabel(p) }}</span>
                       <span class="block text-[11px] text-inkFaint">

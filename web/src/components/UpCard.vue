@@ -1,5 +1,6 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { defaultAvatar } from '../utils/avatar.js'
 
 const props = defineProps({
   upName: { type: String, default: null },
@@ -11,6 +12,13 @@ const props = defineProps({
 
 const faceFailed = ref(false)
 watch(() => props.upFace, () => (faceFailed.value = false))
+
+// 热链拉不到/根本没头像：顶全站默认小人，不再渲首字占位。
+const faceSrc = computed(() => (props.upFace && !faceFailed.value ? props.upFace : defaultAvatar))
+function onFaceError() {
+  if (!props.upFace || faceFailed.value) return // 已经在画默认图，不再来回折腾
+  faceFailed.value = true
+}
 
 function fmtFans(n) {
   if (n == null) return '—'
@@ -27,20 +35,13 @@ function fmtFans(n) {
   <div class="rounded-xl bg-cardBg p-4">
     <div class="flex gap-3.5">
       <img
-        v-if="upFace && !faceFailed"
-        :src="upFace"
+        :src="faceSrc"
         :alt="upName ?? 'UP 主头像'"
         loading="lazy"
         referrerpolicy="no-referrer"
         class="h-14 w-14 shrink-0 rounded-full bg-white/5 object-cover"
-        @error="faceFailed = true"
+        @error="onFaceError"
       />
-      <span
-        v-else
-        class="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-stationPink/20 text-xl font-semibold text-stationPink"
-      >
-        {{ (upName ?? '?').slice(0, 1) }}
-      </span>
       <div class="min-w-0 flex-1">
         <div class="flex items-center justify-between gap-2">
           <a

@@ -65,4 +65,6 @@ public sealed record WatchData(
     long? StatCoin = null,
     long? StatFavorite = null,
     long? StatShare = null,
-    long? StatReply = null);
+    long? StatReply = null,
+    // 能不能重拉快照/删档：服务端按「投稿人本人 ∥ 站长」算好下发，前端只认这个布尔。
+    bool CanManage = false);

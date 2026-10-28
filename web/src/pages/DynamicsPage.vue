@@ -9,8 +9,9 @@ import LevelBadge from '../components/LevelBadge.vue'
 import ShareDialog from '../components/ShareDialog.vue'
 import { member, loginDialogOpen } from '../memberStore'
 import { friendlyTime } from '../utils/time'
-import { richHtml } from '../utils/emote'
+import CollapsibleRichText from '../components/CollapsibleRichText.vue'
 import { normUrl, inferImageBadge } from '../utils/dynpic'
+import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 
 const route = useRoute()
 
@@ -302,8 +303,7 @@ onMounted(async () => {
           :title="`${t.nickname || t.mid} · ${t.count} 条`"
           @click="pickFilter(t.mid)"
         >
-          <img v-if="t.faceUrl" :src="t.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-5 w-5 rounded-full object-cover" alt="" />
-          <span v-else class="flex h-5 w-5 items-center justify-center rounded-full text-[10px] text-white" :class="avatarClass(t.mid)">{{ (t.nickname || String(t.mid)).slice(0, 1) }}</span>
+          <img :src="t.faceUrl || defaultAvatar" referrerpolicy="no-referrer" loading="lazy" class="h-5 w-5 rounded-full object-cover" alt="" @error="onAvatarError" />
           <span class="max-w-[110px] truncate">{{ t.nickname || `B站号 ${t.mid}` }}</span>
         </button>
       </div>
@@ -385,22 +385,20 @@ onMounted(async () => {
 
           <!-- 转发条：评语 + 灰块内嵌原文（B 站同款）；灰块头挂原作者的小脸 -->
           <template v-else-if="isForward(d)">
-            <p v-if="splitForward(d.text).comment" class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" v-html="richHtml(splitForward(d.text).comment, d.bodyEmotes)"></p>
+            <CollapsibleRichText v-if="splitForward(d.text).comment" :text="splitForward(d.text).comment" :emotes="d.bodyEmotes" content-class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" />
             <div class="rounded-md bg-[#f6f7f8] p-3">
               <div v-if="d.origAuthorName || splitForward(d.text).fromName" class="mb-2 flex items-center gap-1.5">
                 <img
-                  v-if="d.origAuthorFace"
-                  :src="d.origAuthorFace"
+                  :src="d.origAuthorFace || defaultAvatar"
                   referrerpolicy="no-referrer"
                   loading="lazy"
                   class="h-[18px] w-[18px] shrink-0 rounded-full object-cover"
                   alt=""
-                  @error="$event.target.style.display = 'none'"
+                  @error="onAvatarError"
                 />
-                <span v-else class="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-stationPink/15 text-[10px] text-stationPink">{{ (d.origAuthorName || splitForward(d.text).fromName || '?').slice(0, 1) }}</span>
                 <span class="text-xs text-inkSub">转发自 {{ d.origAuthorName || splitForward(d.text).fromName }}</span>
               </div>
-              <p class="whitespace-pre-wrap break-words text-sm leading-relaxed text-inkSub" v-html="richHtml(splitForward(d.text).orig || '原文已被删', d.bodyEmotes)"></p>
+              <CollapsibleRichText :text="splitForward(d.text).orig || '原文已被删'" :emotes="d.bodyEmotes" content-class="whitespace-pre-wrap break-words text-sm leading-relaxed text-inkSub" />
               <DynamicVideoCard v-if="d.bvid" :d="d" class="mt-2" />
               <div v-else-if="d.pics?.length" :class="['mt-2', picsLayout(d.pics.length)]">
                 <div v-for="(pic, i) in d.pics" :key="i" class="relative">
@@ -422,7 +420,7 @@ onMounted(async () => {
 
           <!-- 平常条：正文 → 图格 → 视频卡 -->
           <template v-else>
-            <p v-if="d.text" class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" v-html="richHtml(d.text, d.bodyEmotes)"></p>
+            <CollapsibleRichText v-if="d.text" :text="d.text" :emotes="d.bodyEmotes" content-class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" />
             <div v-if="d.pics?.length" :class="['mb-1', picsLayout(d.pics.length)]">
               <div v-for="(pic, i) in d.pics" :key="i" class="relative">
                 <img
@@ -477,10 +475,10 @@ onMounted(async () => {
                 <div class="min-w-0 flex-1">
                   <div class="flex items-baseline gap-2">
                     <span class="text-[12.5px] font-medium text-stationPink">{{ top.name || '无名网友' }}</span>
-                    <LevelBadge :level="top.level" />
+                    <LevelBadge :level="top.level" :size="10" />
                     <span class="text-[11px] text-inkFaint">{{ friendlyTime(top.ctimeUtc) }}</span>
                   </div>
-                  <p class="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain" v-html="richHtml(top.message, cmtState(d).emotes)"></p>
+                  <CollapsibleRichText :text="top.message" :emotes="cmtState(d).emotes" content-class="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain" />
                   <!-- 评论配图：端点已本地优先合并；单图 200px 宽、多图小方格（照视频侧 CommentSection 观感） -->
                   <div v-if="top.pictures?.length" class="mt-1 flex flex-wrap gap-1">
                     <img
@@ -506,9 +504,9 @@ onMounted(async () => {
                         <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="h-5 w-5 shrink-0 rounded-full object-cover bg-[#f1f2f3] text-[9px] text-inkFaint" />
                         <div class="min-w-0 flex-1">
                           <span class="text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
-                          <LevelBadge :level="sub.level" class="h-3" />
+                          <LevelBadge :level="sub.level" :size="9.5" />
                           <span class="ml-1.5 text-[10.5px] text-inkFaint">{{ friendlyTime(sub.ctimeUtc) }}</span>
-                          <p class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain" v-html="richHtml(sub.message, cmtState(d).emotes)"></p>
+                          <CollapsibleRichText :text="sub.message" :emotes="cmtState(d).emotes" content-class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain" />
                           <div v-if="sub.pictures?.length" class="mt-1 flex flex-wrap gap-1">
                             <img
                               v-for="(pic, pi) in sub.pictures"

@@ -260,6 +260,20 @@ public sealed partial class StationDb
         return command.ExecuteScalar() is not null;
     }
 
+    /// <summary>站长席位（头名 owner）的头像，没在席/没脸都返 null。
+    /// 给没记 member_id 的主人弹幕当脸：拿 lbs_owner 钥匙发的、身份体系之前的老行，都该认得出是站长。</summary>
+    public string? GetOwnerSeatFace()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT face_url FROM members
+            WHERE role = 'owner' AND status = 'active' AND face_url IS NOT NULL AND face_url <> ''
+            ORDER BY id LIMIT 1;
+            """;
+        return command.ExecuteScalar() as string;
+    }
+
     /// <summary>老席位重登：刷新登录时刻，昵称头像顺手换新。</summary>
     public void TouchMemberLogin(long mid, string? nickname, string? faceUrl)
     {
@@ -518,13 +532,14 @@ public sealed partial class StationDb
     // ── 入站统计（站长室成员卡 / 未来 AI） ──────────────────────────────────
 
     /// <summary>
-    /// 某成员的入站概览（M5.4 起锤 submitter_member_id）：投稿数与占用字节（与 AdminStats 同口径）。
+    /// 某成员的入站概览（M5.4 起锤 submitter_member_id）：投稿数、占用字节（与 AdminStats 同口径）、站内弹幕条数。
     /// 产物登记了但文件已蒸发的那份不计，宁缺毋假。
     /// </summary>
     public IReadOnlyList<MemberIngestStats> ListMemberIngestStats()
     {
         var counts = new Dictionary<long, int>();
         var bytes = new Dictionary<long, long>();
+        var danmaku = new Dictionary<long, int>();
         using var connection = Open(_dbPath);
 
         using (var command = connection.CreateCommand())
@@ -559,8 +574,20 @@ public sealed partial class StationDb
             }
         }
 
-        return counts
-            .Select(kv => new MemberIngestStats(kv.Key, kv.Value, bytes.GetValueOrDefault(kv.Key)))
+        // 弹幕算人头：没身份的行人（member_id 为空）不塑到任何席位头上。
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT member_id, COUNT(*) FROM danmaku_local WHERE member_id IS NOT NULL GROUP BY member_id;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                danmaku[reader.GetInt64(0)] = (int)reader.GetInt64(1);
+            }
+        }
+
+        // 两边键取并集：只发弹幕没投稿的人也得在表里，不然个人空间会把「说过 20 条」显示成 0。
+        return counts.Keys.Concat(danmaku.Keys).Distinct()
+            .Select(id => new MemberIngestStats(id, counts.GetValueOrDefault(id), bytes.GetValueOrDefault(id), danmaku.GetValueOrDefault(id)))
             .OrderBy(s => s.SubmitterMemberId)
             .ToList();
     }
@@ -584,5 +611,24 @@ public sealed partial class StationDb
         command.Parameters.AddWithValue("$id", videoId);
         using var reader = command.ExecuteReader();
         return reader.Read() && !reader.IsDBNull(0) ? reader.GetInt64(0) : null;
+    }
+
+    /// <summary>
+    /// 全站投稿归属速查：卡阵两百多行要算 canManage，逐行问库不划算，一次拿全表。
+    /// 爬虫代投、老数据反查失败的行留 NULL，调用方按「无归属 → 只有站长可操作」处置。
+    /// </summary>
+    public IReadOnlyDictionary<long, long?> GetVideoSubmitters()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT id, submitter_member_id FROM videos;";
+        var map = new Dictionary<long, long?>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            map[reader.GetInt64(0)] = reader.IsDBNull(1) ? null : reader.GetInt64(1);
+        }
+
+        return map;
     }
 }

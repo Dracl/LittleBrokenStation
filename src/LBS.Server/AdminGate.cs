@@ -26,12 +26,15 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
         "/api/login/",
         "/api/subscriptions",
         "/api/backups",
+        "/api/preview/",
     ];
 
     /// <summary>零散点名：/api/station/profile 是访客的站名牌，throttle 才是站长情报。</summary>
     private static readonly string[] AdminPaths =
     [
         "/api/station/throttle",
+        // 预览总览会报站内囤了多少预览、谁转挂了，也是站长情报，一并收进门里。
+        "/api/stats/preview",
     ];
 
     private readonly object pad = new();
@@ -67,9 +70,13 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
 
         // 卡阵的删档/续下/重新排队/采评/加档归站长；投稿（POST /api/videos 精确）与
         // 弹幕收发（含 /api/videos/danmaku 删除，自带本人/主人规则）留访客。
+        // 例外：投稿人自管三件事（刷评论快照 / 重拉弹幕 / 删自己的稿）从站长室摘出来，
+        // 改由 MemberGate 要求会员 + 端点内自己核归属（少了这一摘一补，要么投稿人进不来，要么匿名敞着）。
         if (path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase))
         {
-            if (HttpMethods.IsDelete(request.Method) && !path.StartsWith("/api/videos/danmaku/", StringComparison.OrdinalIgnoreCase))
+            if (HttpMethods.IsDelete(request.Method)
+                && !path.StartsWith("/api/videos/danmaku/", StringComparison.OrdinalIgnoreCase)
+                && !MemberGate.IsVideoIdOnlyPath(path))
             {
                 return true;
             }
@@ -78,7 +85,7 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
                 && (path.Contains("/revive", StringComparison.OrdinalIgnoreCase)
                     || path.Contains("/requeue", StringComparison.OrdinalIgnoreCase)
                     || path.Contains("/codecs", StringComparison.OrdinalIgnoreCase)
-                    || path.Contains("/comments", StringComparison.OrdinalIgnoreCase)))
+                    || (path.Contains("/comments", StringComparison.OrdinalIgnoreCase) && !IsSelfOwnedCommentsRefresh(path))))
             {
                 return true;
             }
@@ -86,6 +93,14 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
 
         return false;
     }
+
+    /// <summary>
+    /// POST …/comments 与 …/comments/subs：投稿人刷自己稿子的评论快照、会员点开楼中楼时的按需补采。
+    /// 后者从前只被 Contains("/comments") 连带罩住，普通会员点开就是 403。
+    /// </summary>
+    private static bool IsSelfOwnedCommentsRefresh(string path) =>
+        path.EndsWith("/comments", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith("/comments/subs", StringComparison.OrdinalIgnoreCase);
 
     public bool HasValidSession(HttpRequest request)
     {

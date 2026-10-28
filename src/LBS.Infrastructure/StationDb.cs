@@ -119,6 +119,35 @@ public sealed partial class StationDb
             archive.ExecuteNonQuery();
         }
 
+        // 悬停预览台账：紧跟 artifacts 之后另开一锤（幂等无迁移）。
+        // 预览成片只进这张表与 data/previews，绝不进 artifacts——否则缺件回炉（MissingMediaReconciler）
+        // 会拿预览行验盘，把它当缺产物、整片回炉重下。
+        using (var preview = connection.CreateCommand())
+        {
+            preview.CommandText = """
+                CREATE TABLE IF NOT EXISTS previews (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    video_id       INTEGER NOT NULL UNIQUE,
+                    page_idx       INTEGER,
+                    rel_path       TEXT NOT NULL,
+                    width          INTEGER,
+                    height         INTEGER,
+                    seconds        REAL,
+                    bytes          INTEGER,
+                    cost_seconds   REAL,
+                    status         TEXT NOT NULL,
+                    last_error     TEXT,
+                    attempts       INTEGER NOT NULL DEFAULT 0,
+                    created_at_utc TEXT NOT NULL
+                );
+                """;
+            preview.ExecuteNonQuery();
+        }
+
+        // 逐件生成耗时（秒，ffmpeg 从起跑到交件的墙钟时间）：站长室「单件耗时」只吃这一列的真数，
+        // 绝拿 seconds（产物时长）冒充。早先建的库没这列，缺就补。
+        EnsureColumn(connection, "previews", "cost_seconds", "REAL");
+
         // 旧库升级：M0 建的表没有引擎字段，缺列就补（SQLite ADD COLUMN 不锁表，小库无所谓）。
         EnsureColumn(connection, "videos", "engine_task_ids", "TEXT");
         EnsureColumn(connection, "videos", "last_error", "TEXT");
@@ -145,6 +174,8 @@ public sealed partial class StationDb
         // 站内弹幕的发送者匿名凭证（仅发送者本人可删，主人例外）。
         EnsureColumn(connection, "danmaku_local", "sender_dmid", "TEXT");
         EnsureColumn(connection, "danmaku_local", "sender_owner", "INTEGER DEFAULT 0");
+        // 发弹幕时带着席位会话就把人存下来：弹幕那颗小圆才有真容可画（头像只存 members 一处，不冗余 URL）。
+        EnsureColumn(connection, "danmaku_local", "member_id", "INTEGER");
 
         // M5 成员体系：席位（邀请制）、账号池（cookie 只进不出）、会话（落盘，重启不踢朋友）。
         using (var members = connection.CreateCommand())
@@ -540,7 +571,8 @@ public sealed partial class StationDb
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
-                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1)
+                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
+                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1)
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -588,7 +620,8 @@ public sealed partial class StationDb
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
-                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1)
+                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
+                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1)
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -625,7 +658,8 @@ public sealed partial class StationDb
         END
         """;
 
-    /// <summary>把列表查询的固定列形状读成 VideoEntry（ListVideos 与 SearchVideos 共用），并补扫弹幕条数。</summary>
+    /// <summary>把列表查询的固定列形状读成 VideoEntry（ListVideos / SearchVideos / 相关推荐共用），并补扫弹幕条数。
+    /// 列下标写死的：加一列要同步三处 SELECT，漏一处就是整页报锈。</summary>
     private List<VideoEntry> ReadEntries(SqliteDataReader reader)
     {
         var list = new List<VideoEntry>();
@@ -650,7 +684,10 @@ public sealed partial class StationDb
                 reader.IsDBNull(12) ? null : reader.GetString(12),
                 reader.IsDBNull(13) ? null : reader.GetString(13),
                 // 本地封面与观看页同形（/media/ + rel）；没 kind='cover' 行留 null，前端热链兑底。
-                reader.IsDBNull(15) ? null : "/media/" + reader.GetString(15)));
+                reader.IsDBNull(15) ? null : "/media/" + reader.GetString(15),
+                // 悬停预览与本地封面同形（/previews/ + rel，rel 相对 data/previews）；没 Arrived 行留 null，前端不摆预览。
+                // 具名传参：CanManage 由上层 TagManageable 后补，这里不占位。
+                PreviewUrl: reader.IsDBNull(16) ? null : "/previews/" + reader.GetString(16)));
             if (dmFiles > 0)
             {
                 danmakuFiles.Add((list[^1].Id, dmFiles));
@@ -877,13 +914,14 @@ public sealed partial class StationDb
     }
 
     /// <summary>站内弹幕入库（访客发的，B 站爬来的不走这里）：记下发在哪个分 P 的哪个时点、谁发的、发的时候是不是主人。</summary>
-    public long AddLocalDanmaku(long videoId, int pageIdx, double tSec, string text, string? senderDmid, bool senderOwner)
+    /// <summary>站内弹幕入库（分站朋友发的，B 站爬来的不走这里）：记下发在哪个分 P 的哪个时点、谁发的、发的时候是不是主人、是不是某个席位发的（member_id 只为挂头像，没登录就是 null）。</summary>
+    public long AddLocalDanmaku(long videoId, int pageIdx, double tSec, string text, string? senderDmid, bool senderOwner, long? memberId = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO danmaku_local (video_id, page_idx, t_sec, text, created_at_utc, sender_dmid, sender_owner)
-            VALUES ($v, $p, $t, $x, $now, $s, $o);
+            INSERT INTO danmaku_local (video_id, page_idx, t_sec, text, created_at_utc, sender_dmid, sender_owner, member_id)
+            VALUES ($v, $p, $t, $x, $now, $s, $o, $m);
             SELECT last_insert_rowid();
             """;
         command.Parameters.AddWithValue("$v", videoId);
@@ -893,22 +931,33 @@ public sealed partial class StationDb
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$s", (object?)senderDmid ?? DBNull.Value);
         command.Parameters.AddWithValue("$o", senderOwner ? 1 : 0);
+        command.Parameters.AddWithValue("$m", (object?)memberId ?? DBNull.Value);
         return (long)command.ExecuteScalar()!;
     }
 
     /// <summary>某视频全部站内弹幕（跨分 P，前端按 pageIdx 自筛）；发送者凭证由端点算 canDelete 不外泄，主人标记可外泄（就是给弹幕挂头像用的）。</summary>
-    public IReadOnlyList<(long Id, int PageIdx, double TSec, string Text, string? SenderDmid, bool SenderOwner)> ListLocalDanmaku(long videoId)
+    public IReadOnlyList<(long Id, int PageIdx, double TSec, string Text, string? SenderDmid, bool SenderOwner, long? MemberId, string? MemberFace)> ListLocalDanmaku(long videoId)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id, page_idx, t_sec, text, sender_dmid, COALESCE(sender_owner, 0) FROM danmaku_local WHERE video_id = $v ORDER BY id;";
+        // 席位头像按 member_id 现取：members.face_url 一处真值，朋友改头像不会把旧弹幕冻成两张脸。
+        // LEFT JOIN 而非 INNER：席位被删了弹幕照得见，只是没脸（画小圆兼底）。
+        command.CommandText = """
+            SELECT d.id, d.page_idx, d.t_sec, d.text, d.sender_dmid, COALESCE(d.sender_owner, 0), d.member_id, m.face_url
+            FROM danmaku_local d LEFT JOIN members m ON m.id = d.member_id
+            WHERE d.video_id = $v ORDER BY d.id;
+            """;
         command.Parameters.AddWithValue("$v", videoId);
 
         using var reader = command.ExecuteReader();
-        var list = new List<(long, int, double, string, string?, bool)>();
+        var list = new List<(long, int, double, string, string?, bool, long?, string?)>();
         while (reader.Read())
         {
-            list.Add((reader.GetInt64(0), reader.GetInt32(1), reader.GetDouble(2), reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5) == 1));
+            list.Add((
+                reader.GetInt64(0), reader.GetInt32(1), reader.GetDouble(2), reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5) == 1,
+                reader.IsDBNull(6) ? null : reader.GetInt64(6),
+                reader.IsDBNull(7) ? null : reader.GetString(7)));
         }
 
         return list;
@@ -940,7 +989,7 @@ public sealed partial class StationDb
         return command.ExecuteNonQuery() > 0;
     }
 
-    /// <summary>清空分站（危险区一键清空）：台账五表全销，只留 settings KV（登录态在 cookies 盘，不受影响）。</summary>
+    /// <summary>清空分站（危险区一键清空）：台账全销（含预览行：预览文件已随目录一起清掉，留行只会指向空气），只留 settings KV（登录态在 cookies 盘，不受影响）。</summary>
     public int PurgeAllLedger()
     {
         using var connection = Open(_dbPath);
@@ -948,6 +997,7 @@ public sealed partial class StationDb
         command.CommandText = """
             DELETE FROM video_codecs;
             DELETE FROM artifacts;
+            DELETE FROM previews;
             DELETE FROM pages;
             DELETE FROM video_meta;
             DELETE FROM danmaku_local;
@@ -1754,8 +1804,8 @@ public sealed partial class StationDb
         cmd.ExecuteNonQuery();
     }
 
-    /// <summary>名片采集前的台账检查：有 mid 且还没采过（up_face 为 NULL）才值得出去跑一趟。</summary>
-    public (long? Mid, bool Collected) GetUpCardState(long videoId)
+    /// <summary>名片采集前的台账检查：有 mid 且把 up_face 原样带回，坏没坏由调用方（LbsUpInfoFetcher.NeedsRefetch）验货 —— 读层不猜盘上有没有文件。</summary>
+    public (long? Mid, string? Face) GetUpCardState(long videoId)
     {
         using var connection = Open(_dbPath);
         using var cmd = connection.CreateCommand();
@@ -1764,11 +1814,11 @@ public sealed partial class StationDb
         using var reader = cmd.ExecuteReader();
         if (!reader.Read())
         {
-            return (null, true);
+            return (null, null);
         }
 
         var mid = reader.IsDBNull(0) ? (long?)null : reader.GetInt64(0);
-        return (mid, !reader.IsDBNull(1));
+        return (mid, reader.IsDBNull(1) ? null : reader.GetString(1));
     }
 
     /// <summary>互动数据登记：五维真数 + 销账标记；失败重试时覆盖式更新。</summary>
@@ -1829,7 +1879,8 @@ public sealed partial class StationDb
             SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
-                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1)
+                   (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
+                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1)
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -1957,6 +2008,31 @@ public sealed partial class StationDb
         command.CommandText = "SELECT base_path FROM pages WHERE video_id = $id ORDER BY idx LIMIT 1;";
         command.Parameters.AddWithValue("$id", videoId);
         return command.ExecuteScalar() as string;
+    }
+
+    /// <summary>
+    /// 重拉弹幕要用的一趟分 P：序号、cid、成片基准路径（绝对路径，就在 data/videos 下）。
+    /// cid 为 NULL 的分 P 拉不了（B 站拿 oid 取弹幕），调用方跳过它并回报。
+    /// </summary>
+    public IReadOnlyList<(int Idx, long? Cid, string BasePath)> GetDanmakuPageTargets(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT idx, cid, base_path FROM pages WHERE video_id = $id ORDER BY idx;";
+        command.Parameters.AddWithValue("$id", videoId);
+        var rows = new List<(int Idx, long? Cid, string BasePath)>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (reader.IsDBNull(2))
+            {
+                continue;
+            }
+
+            rows.Add((reader.GetInt32(0), reader.IsDBNull(1) ? null : reader.GetInt64(1), reader.GetString(2)));
+        }
+
+        return rows;
     }
 
     /// <summary>评论采集需要的台账摘要：bvid、状态与 aid（采到后回填）。</summary>
@@ -2129,7 +2205,7 @@ public sealed partial class StationDb
             p.Cid,
             p.Duration,
             p.VideoRel is null ? null : "/media/" + p.VideoRel,
-            extras.FirstOrDefault(e => e.Kind == "danmaku" && e.PageIdx == p.Index).Rel is { } dm ? "/media/" + dm : null,
+            DanmakuRel(extras, p.Index) is { } dm ? "/media/" + dm : null,
             extras.Where(e => e.Kind == "subtitle" && e.PageIdx == p.Index).Select(e => "/media/" + e.Rel).ToList(),
             codecRows.Where(c => c.PageIdx == p.Index).Select(c => new CodecVersion(
                 c.Codec,
@@ -2157,6 +2233,17 @@ public sealed partial class StationDb
             statShare,
             statReply);
     }
+
+    /// <summary>
+    /// 一个分 P 的弹幕指针：引擎常常 .ass/.xml 两行台账各写一份，而前端只会解 ass。
+    /// FirstOrDefault 撞上 xml 那行，重拉完看着就像「没生效」，所以按扩展名优取 ass。
+    /// </summary>
+    private static string? DanmakuRel(IReadOnlyList<(int? PageIdx, string Kind, string Rel)> extras, int pageIdx) =>
+        extras
+            .Where(e => e.Kind == "danmaku" && e.PageIdx == pageIdx)
+            .OrderByDescending(e => e.Rel.EndsWith(".ass", StringComparison.OrdinalIgnoreCase))
+            .Select(e => (string?)e.Rel)
+            .FirstOrDefault();
 }
 
 /// <summary>站长室页头总览快照：库存分布 + 磁盘体积 + 全站互动真数。</summary>

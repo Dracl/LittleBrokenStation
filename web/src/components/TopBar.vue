@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginDialog from './LoginDialog.vue'
 import CrownBadge from './CrownBadge.vue'
+import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 import { submitDialogOpen } from '../submitStore'
 import { member, unread, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember, refreshUnread } from '../memberStore'
 
@@ -160,27 +161,19 @@ function goMessages() {
           >
             <span class="relative block h-full w-full">
               <img
-                v-if="member?.faceUrl"
-                :src="member.faceUrl"
-                :alt="member.nickname"
+                :src="member?.faceUrl || defaultAvatar"
+                :alt="member ? member.nickname : '未登录'"
                 referrerpolicy="no-referrer"
                 class="h-full w-full rounded-full object-cover"
                 :class="menuOpen ? 'ring-2 ring-stationPink/60' : 'ring-1 ring-transparent hover:ring-stationPink/40'"
+                @error="onAvatarError"
               />
-              <span
-                v-else
-                class="flex h-full w-full items-center justify-center rounded-full bg-lineSoft text-inkFaint transition hover:bg-stationPink/20"
-              >
-                <svg viewBox="0 0 24 24" class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="1.8">
-                  <circle cx="12" cy="8.5" r="3.5" />
-                  <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
-                </svg>
-              </span>
-              <!-- 冠冕角标：站长金冠、成员银冠，同形不同色 -->
+              <!-- 冠冕角标：站长金冠、成员银冠，同形不同色；贴着一颗圆的弧走 -->
               <CrownBadge
                 v-if="member"
                 :tier="member.role"
-                class="absolute -right-1 -top-1 h-3.5 w-3.5"
+                mode="fit"
+                class="pointer-events-none absolute inset-0 h-full w-full"
               />
             </span>
           </button>
@@ -192,17 +185,17 @@ function goMessages() {
               <div class="flex items-center gap-2.5 px-3.5 pb-2 pt-3">
                 <span class="relative block h-10 w-10 shrink-0">
                   <img
-                    v-if="member.faceUrl"
-                    :src="member.faceUrl"
+                    :src="member.faceUrl || defaultAvatar"
                     :alt="member.nickname"
                     referrerpolicy="no-referrer"
                     class="h-full w-full rounded-full object-cover"
+                    @error="onAvatarError"
                   />
-                  <span v-else class="block h-full w-full rounded-full bg-lineSoft"></span>
                   <CrownBadge
                     v-if="member"
                     :tier="member.role"
-                    class="absolute -right-1 -top-1 h-4 w-4"
+                    mode="fit"
+                    class="pointer-events-none absolute inset-0 h-full w-full"
                   />
                 </span>
                 <span class="min-w-0">

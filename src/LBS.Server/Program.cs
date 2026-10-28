@@ -37,6 +37,7 @@ builder.Services.AddSingleton<LbsAccountRouter>();
 builder.Services.AddSingleton<DownKyi.Application.Bilibili.IBilibiliCookieProvider, LbsRoutedCookieProvider>();
 builder.Services.AddSingleton<LbsQueryClient>();
 builder.Services.AddSingleton<CommentArchiveService>();
+builder.Services.AddSingleton<DanmakuArchiveService>();
 builder.Services.AddSingleton<LbsOwnerPolicy>();
 builder.Services.AddHostedService<DownloadWorker>();
 builder.Services.AddHostedService<StatusSyncWorker>();
@@ -49,6 +50,11 @@ builder.Services.AddSingleton<DynamicFetchWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DynamicFetchWorker>());
 // 封面补员：到站时没勾封面的视频，每小时一轮从 cover_url 补下封面原图（每轮封顶 40、条间 300ms，先文件后 artifacts 行）。
 builder.Services.AddHostedService<CoverBackfillWorker>();
+// 悬停预览补员：ffmpeg 从本地成片转低码率无声短片到 data/previews（不进视频库、不进 artifacts）。
+// 设定全存 settings KV（preview-*），与引擎设置互不串门；补员员单例注册，站长室催一轮与总览拿的是同一个实例。
+builder.Services.AddSingleton<PreviewSettings>();
+builder.Services.AddSingleton<PreviewBackfillWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PreviewBackfillWorker>());
 // 崩溃遗留的僵尸下载：StatusSyncWorker 负责发现（停滞销案），Reviver 负责救活（手动端点 + 启动自愈共用）。
 builder.Services.AddSingleton<LbsTaskReviver>();
 builder.Services.AddHostedService<StartupReviverWorker>();
@@ -132,8 +138,10 @@ app.MapGet("/api/health", (DataPaths paths) => Results.Ok(new HealthInfo(
     ServerTimeUtc: DateTimeOffset.UtcNow)));
 
 app.MapEngineSettingsApi();
+app.MapAdminRecycleEndpoints();
+app.MapPreviewApi();
 
-app.MapGet("/api/videos", (StationDb db) => db.ListVideos());
+app.MapGet("/api/videos", (StationDb db, HttpContext http) => Results.Ok(TagManageable(db, db.ListVideos(), http)));
 
 // 站内搜索：只命中已到站视频，空格分词 AND；空查询给空结果让前端少一条错误分支。
 // 长度截断防滥用，排序白名单（plays / 缺省新到站）在 StationDb 里控制。
@@ -151,6 +159,8 @@ app.MapGet("/api/search", (string? q, string? sort, StationDb db, EventRecorder 
     }
 
     var hits = db.SearchVideos(trimmed, sort);
+    // 卡阵那两枚自钮（补采/删档）只在服务端算好的 canManage 为真时露面，与放映厅同一口径。
+    hits = TagManageable(db, hits, http);
     // 搜了什么、有没有搜到，服务端盖手记（不拿前端上报，不给伪造留门）。
     var member = MemberGate.Current(http);
     events.RecordWithPayload(member is null ? EventActors.Guest : EventActors.Member, member?.Mid,
@@ -166,6 +176,27 @@ mediaTypes.Mappings[".ass"] = "text/plain";
 mediaTypes.Mappings[".srt"] = "text/plain";
 mediaTypes.Mappings[".vtt"] = "text/vtt";
 mediaTypes.Mappings[".json"] = "application/json";
+
+// 中转半成品一律不许从静态区溜出去。实测（本轮）：往 data/videos 丢一个 probe.part，
+// GET /media/probe.part → 200 并能拿到整份字节；同位的 .hidden.mp4 倒是 404（中间件不答理点开头）。
+// 而这类件是真会出现在途时窗里的：封面补员在视频库内写 <名>.jpg.part（CoverBackfillWorker:80），
+// 弹幕刷新在原地摆 <名>.json.refreshing（DanmakuArchiveService:346），预览转码写 <bvid>.mp4.part。
+// 这一道闸摆在所有静态区之前（/media 的 UseStaticFiles 在后面，后面的闸拦不住它），各区的 OnPrepareResponse 作补保。
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path.Value ?? "";
+    var onStatic = path.StartsWith("/media/", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith("/previews/", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith("/cache/", StringComparison.OrdinalIgnoreCase);
+    if (onStatic && IsStaleTransientPath(path))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    await next();
+});
+
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(dataPaths.Videos),
@@ -173,6 +204,16 @@ app.UseStaticFiles(new StaticFileOptions
     ContentTypeProvider = mediaTypes,
     ServeUnknownFileTypes = true,
     DefaultContentType = "application/octet-stream",
+    // 正片/封面/弹幕的名字永远不会以 .part/.refreshing/.tmp 结尾，也不该有点开头的段：误伤面为零。
+    OnPrepareResponse = ctx =>
+    {
+        if (IsStaleTransientPath(ctx.Context.Request.Path.Value ?? ""))
+        {
+            ctx.Context.Response.StatusCode = StatusCodes.Status404NotFound;
+            ctx.Context.Response.ContentType = null;
+            ctx.Context.Response.Headers.ContentLength = null;
+        }
+    },
 });
 
 // 头像本地缓存区：评论归档时落盘，热链只作下载失败的兜底。
@@ -203,6 +244,35 @@ app.UseStaticFiles(new StaticFileOptions
     ServeUnknownFileTypes = true,
     DefaultContentType = "application/octet-stream",
 });
+
+// 悬停预览成片区：只摆 ffmpeg 转出来的低码率短片，与视频库分家（不污染 /media 与视频库体积）。
+// 半成品与隐藏件已在前面那道统一闸里 404 掉了，这里只作补保（两道都实测过：404 且 0 字节）。
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(dataPaths.Previews),
+    RequestPath = "/previews",
+    ContentTypeProvider = mediaTypes,
+    ServeUnknownFileTypes = true,
+    DefaultContentType = "application/octet-stream",
+    // 半成品与隐藏件不外泄：路径里含 /. 或以中转后缀结尾的一律 404。
+    OnPrepareResponse = ctx =>
+    {
+        if (IsStaleTransientPath(ctx.Context.Request.Path.Value ?? ""))
+        {
+            ctx.Context.Response.StatusCode = StatusCodes.Status404NotFound;
+            ctx.Context.Response.ContentType = null;
+            ctx.Context.Response.Headers.ContentLength = null;
+        }
+    },
+});
+
+// 静态区只认成品：在途中转件（.part/.refreshing/.tmp）与点开头的隐藏件都不算「本站有的东西」。
+// 正片、封面、弹幕 json、字幕、预览件的真名字永远不会长成这些样子（预览区只认 <bvid>.mp4），所以误伤面为零。
+static bool IsStaleTransientPath(string path) =>
+    path.Contains("/.", StringComparison.Ordinal)
+    || path.EndsWith(".part", StringComparison.OrdinalIgnoreCase)
+    || path.EndsWith(".refreshing", StringComparison.OrdinalIgnoreCase)
+    || path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
 
 // 成员门闸（先盖章后验门）：访客只逛橱窗（首页卡阵/搜索/封面），放映厅、弹幕、投稿一律要会员会话；
 // 被拦访客的欲看而不得记 watch.blocked 供 AI 分析。
@@ -343,20 +413,22 @@ app.MapAdminDynamicEndpoints();
 System.Collections.Concurrent.ConcurrentDictionary<long, byte> upCardInFlight = new();
 System.Collections.Concurrent.ConcurrentDictionary<long, byte> statInFlight = new();
 
-app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory) =>
+app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory, HttpContext http) =>
 {
     // BV 号是大小写敏感的 base62，先原样精确查，再补一记大写化兜底（照顾手打习惯）。
     var input = bvid.Trim();
     var data = db.GetWatchData(input) ?? db.GetWatchData(input.ToUpperInvariant());
     if (data is not null)
     {
-        BackfillUpCard(db, upInfo, policy, loggerFactory, data);
+        BackfillUpCard(db, upInfo, policy, loggerFactory, dataPaths, data);
         BackfillStat(db, upInfo, policy, loggerFactory, data);
     }
 
     return data is null
         ? Results.NotFound(new { message = "馆藏里没有这个 BV 号" })
-        : Results.Ok(data);
+        // 能不能重拉快照/删档，服务端算好一个布尔带下去（与站内弹幕 canDelete 同一范式：
+        // 前端拿不到投稿人身份，藏钮只是体验，端点里那一遭才是真门）。
+        : Results.Ok(data with { CanManage = CanManageVideo(http, db, data.Id) });
 });
 
 // 接下来播放：同 UP 主优先、新入站补齐，卡片形状与列表接口一致。
@@ -377,9 +449,11 @@ app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db) =>
     }).ToList());
 });
 
-void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory, WatchData data)
+// 头像值不能只判非空：早年那一代把 up_face 写成 /avatars/up-{mid}.jpg，命名换 sha1 后盘上文件已经没了，
+// 留着就是 UpCard 的 img 永远 404 到「粉底首字」占位。改走 NeedsRefetch 验货（空串仍是失败销账，不回头扰 B 站）。
+void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, ILoggerFactory loggerFactory, DataPaths paths, WatchData data)
 {
-    if (data.UpMid is not { } mid || data.UpFace is not null)
+    if (data.UpMid is not { } mid || !LbsUpInfoFetcher.NeedsRefetch(data.UpFace, paths.Avatars))
     {
         return;
     }
@@ -451,12 +525,19 @@ void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsOwnerPolicy policy, 
     });
 }
 
-app.MapDelete("/api/videos/{id:long}", async (long id, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, CancellationToken cancellationToken) =>
+app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, CancellationToken cancellationToken) =>
 {
     var row = db.GetVideoForDelete(id);
     if (row is null)
     {
         return Results.NotFound(new { message = "馆藏里没有这个编号" });
+    }
+
+    // 删档烧的是全站馆藏：从站长专属改为投稿人自管后，这道门得自己在手里核一遗。
+    // 先验存在再核归属，免得手快双击第二下时报「没钥匙」而不是「已经不在了」。
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
     }
 
     // 先安顿引擎侧：在途/排队任务要先取消并删除，否则删完站它们还会继续往硬盘写。
@@ -499,8 +580,27 @@ app.MapDelete("/api/videos/{id:long}", async (long id, StationDb db, DataPaths p
         }
     }
 
-    var deletedFiles = db.DeleteVideoCascade(id, paths.Videos);
-    return Results.Ok(new { message = $"「{row.Value.Bvid}」已从分站删除，带走 {deletedFiles} 个文件" });
+    // 不再就地焚毁：文件抖进 data/recycle，六张表的行连主键封进清单。
+    // 用户那边列表/搜索/相关推荐都查无此片，话语权留在站长的回收站卡片里。
+    var commentCount = 0;
+    if (db.GetArtifactRel(id, "comments") is { } commentsRel)
+    {
+        var snapshotPath = Path.Combine(paths.Videos, commentsRel.Replace('/', Path.DirectorySeparatorChar));
+        if (LBS.Engine.CommentSnapshotOps.Load(snapshotPath) is { } snapshot)
+        {
+            commentCount = snapshot.Replies.Count + (snapshot.Top is null ? 0 : 1);
+        }
+    }
+
+    var deleter = MemberGate.Current(http);
+    var recycled = db.MoveVideoToRecycle(id, paths.Videos, paths.Recycle, deleter?.Nickname ?? deleter?.Username ?? "站长", commentCount);
+    return recycled.Ok
+        ? Results.Ok(new
+        {
+            message = $"「{row.Value.Bvid}」已从分站删除，带走 {recycled.Files} 个文件（存进了回收站）",
+            binId = recycled.BinId,
+        })
+        : Results.Conflict(new { message = recycled.Message });
 });
 
 // 续下：救活硬重启遗留的卡死下载（引擎任务挂在途表里纹丝不动）。
@@ -536,19 +636,9 @@ app.MapPost("/api/videos/{id:long}/requeue", async (long id, StationDb db, Downl
 // 访客发的弹幕存分站自己的库（B 站爬的不掺进来）：刷新不丢，站内互见。
 // ─── 身份：匿名访客凭证 + 主人模式 ────────────────────────
 // 访客：首访发 lbs_dmid（HttpOnly，180 天），弹幕表存其值为发送者；防误删而非防恶。
-// 主人：data/owner.key 文件存在即启用，认得 key 的即主人；key 只在生成那一刻下发一次，
-// 任何 GET 端点都不送 key，重置必须带旧 key。主人进模式后发 lbs_owner cookie（HttpOnly）。
-static string? ReadOwnerKey(DataPaths paths)
-{
-    var file = Path.Combine(paths.Root, "owner.key");
-    if (!File.Exists(file))
-    {
-        return null;
-    }
-
-    var key = File.ReadAllText(file).Trim();
-    return key.Length > 0 ? key : null;
-}
+// 主人这一路以前另有一把 data/owner.key 钥匙（带上 lbs_owner cookie 就算主人），已摘除：
+// 站长室、卡阵自管钮、发弹幕挂金冠、删弹幕全都只认会员席位 role=owner 那张脸，
+// 两套「主人」并行只会让人猜不透哪把管用（旧库里残留的 data/owner.key 就此成了死件）。
 
 static string EnsureDmid(HttpContext http)
 {
@@ -568,72 +658,59 @@ static string EnsureDmid(HttpContext http)
     return dmid;
 }
 
-static bool IsOwner(HttpContext http, DataPaths paths)
+// 自管钥匙：这稿子的投稿人本人或站长。归属不明的行（爬工代投、老数据反查失败）
+// 只有站长握得住，与 MemberMail「无归属不发信」同一口径。比的是站内席位 id，不绕 mid。
+static bool CanManageVideo(HttpContext http, StationDb db, long videoId)
 {
-    var key = ReadOwnerKey(paths);
-    return key is not null
-        && http.Request.Cookies.TryGetValue("lbs_owner", out var held)
-        && held == key;
+    var member = MemberGate.Current(http);
+    if (member is null)
+    {
+        return false;
+    }
+
+    if (MemberGate.IsOwner(member))
+    {
+        return true;
+    }
+
+    return db.GetVideoSubmitterMember(videoId) is { } submitter && submitter == member.Id;
 }
 
-app.MapPost("/api/owner/key", (OwnerKeyRequest? request, DataPaths paths) =>
+// 卡阵/放映厅的自管钮共用的那一句拒绕（分站没注册认证服务，Results.Forbid() 会 500，以前提过）。
+static IResult NotYourSubmission() => Results.Json(
+    new { error = "not-your-submission", message = "这枚钥匙只有投稿人本人和站长握得住" },
+    statusCode: StatusCodes.Status403Forbidden);
+
+// 给卡阵行挂上 canManage：访客一律假，登录者按归属集合一次算完（不逐行问库）。
+static List<LBS.Domain.VideoEntry> TagManageable(StationDb db, IEnumerable<LBS.Domain.VideoEntry> entries, HttpContext http)
 {
-    var file = Path.Combine(paths.Root, "owner.key");
-    var wasConfigured = File.Exists(file);
-    if (wasConfigured)
+    var member = MemberGate.Current(http);
+    var list = entries.ToList();
+    if (member is null)
     {
-        // 换钥匙的唯一途径是交出旧钥匙：分站公开可达，没这道门主人形同虚设。
-        var old = ReadOwnerKey(paths);
-        if (old is null || string.IsNullOrWhiteSpace(request?.OldKey) || request.OldKey.Trim() != old)
-        {
-            return Results.Unauthorized();
-        }
+        return list;
     }
 
-    var fresh = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8));
-    File.WriteAllText(file, fresh);
-    return Results.Ok(new { key = fresh, message = wasConfigured ? "钥匙已换新，旧的作废" : "主人钥匙已生成，只显这一次，存好" });
-});
-
-app.MapPost("/api/owner/enter", (OwnerEnterRequest request, HttpContext http, DataPaths paths) =>
-{
-    var key = ReadOwnerKey(paths);
-    if (key is null)
+    var owner = MemberGate.IsOwner(member);
+    var submitters = db.GetVideoSubmitters();
+    return list.Select(v => v with
     {
-        return Results.BadRequest(new { message = "主人钥匙还没生成，去站长室开一把" });
-    }
+        CanManage = owner || (submitters.TryGetValue(v.Id, out var s) && s == member.Id),
+    }).ToList();
+}
 
-    if (request.Key.Trim() != key)
-    {
-        return Results.Unauthorized();
-    }
+// （原 /api/owner/key | enter | leave | state 四个端点随主人钥匙一起摘除：站内只认会员席位
+// role=owner 这一个身份，不再养第二把能让人当主人的钥匙。旧 data/owner.key 就此失效。）
 
-    http.Response.Cookies.Append("lbs_owner", key, new CookieOptions
-    {
-        HttpOnly = true,
-        SameSite = SameSiteMode.Lax,
-        Expires = DateTimeOffset.UtcNow.AddDays(30),
-        Path = "/",
-    });
-    return Results.Ok(new { message = "已进入主人模式" });
-});
-
-app.MapPost("/api/owner/leave", (HttpContext http) =>
-{
-    http.Response.Cookies.Delete("lbs_owner", new CookieOptions { Path = "/" });
-    return Results.Ok(new { message = "已退出主人模式" });
-});
-
-// 只报两个布尔：配了没、当前浏览器是不是主人。key 本身永不出门。
-app.MapGet("/api/owner/state", (HttpContext http, DataPaths paths) =>
-    Results.Ok(new { configured = ReadOwnerKey(paths) is not null, isOwner = IsOwner(http, paths) }));
-
-// 删除权：仅发送者本人（凭 lbs_dmid cookie）或主人（凭 lbs_owner cookie）；
-// canDelete 由服务端算好随列表下发，发送者身份不外泄。无主老弹幕只有主人能删。
-app.MapGet("/api/videos/{id:long}/danmaku", (long id, HttpContext http, StationDb db, DataPaths paths) =>
+// 删除权：仅发送者本人（凭 lbs_dmid cookie）或站长（会员席位 role=owner）；
+// canDelete 由服务端算好随列表下发，发送者身份不外泄。无主老弹幕只有站长删得掉。
+app.MapGet("/api/videos/{id:long}/danmaku", (long id, HttpContext http, StationDb db) =>
 {
     var dmid = EnsureDmid(http);
-    var owner = IsOwner(http, paths);
+    var owner = MemberGate.IsOwner(MemberGate.Current(http));
+    // 主人弹幕但当年没记席位（旧主人钥匙发的、或身份体系之前的老行）：拿站长席位那张脸兼底。
+    // 账上就坐着他的席位，不能因为发的时候没带席位会话就让他永远顶个粉小人。
+    var ownerSeatFace = db.GetOwnerSeatFace();
     return Results.Ok(db.ListLocalDanmaku(id).Select(d => new
     {
         id = d.Id,
@@ -641,12 +718,25 @@ app.MapGet("/api/videos/{id:long}/danmaku", (long id, HttpContext http, StationD
         t = d.TSec,
         text = d.Text,
         canDelete = owner || (d.SenderDmid is { Length: > 0 } s && s == dmid),
-        // 主人发的弹幕挂站长头像；身份体系之前的无主老行（无凭证）也当主人手笔，那阵子只有主人能发。
+        // 主人发的弹幕挂金冠；身份体系之前的无主老行（无凭证）也当主人手笔，那阵子只有主人能发。
         fromOwner = d.SenderOwner || d.SenderDmid is null,
+        // 席位真容：自己的脸优先；主人行没记席位就领站长席位那张脸；都没有就由前端画那颗白圆粉小人。
+        face = FaceOf(d, ownerSeatFace),
     }));
+
+    static string? FaceOf((long Id, int PageIdx, double TSec, string Text, string? SenderDmid, bool SenderOwner, long? MemberId, string? MemberFace) d, string? ownerSeatFace)
+    {
+        if (!string.IsNullOrWhiteSpace(d.MemberFace))
+        {
+            return d.MemberFace;
+        }
+
+        var fromOwner = d.SenderOwner || d.SenderDmid is null;
+        return fromOwner && !string.IsNullOrWhiteSpace(ownerSeatFace) ? ownerSeatFace : null;
+    }
 });
 
-app.MapPost("/api/videos/{id:long}/danmaku", (long id, LocalDanmakuRequest request, HttpContext http, StationDb db, DataPaths paths) =>
+app.MapPost("/api/videos/{id:long}/danmaku", (long id, LocalDanmakuRequest request, HttpContext http, StationDb db) =>
 {
     var text = request.Text.Trim();
     if (text.Length is 0 or > 100)
@@ -659,11 +749,23 @@ app.MapPost("/api/videos/{id:long}/danmaku", (long id, LocalDanmakuRequest reque
         return Results.NotFound(new { message = "馆藏里没这个视频" });
     }
 
-    var dmId = db.AddLocalDanmaku(id, Math.Max(0, request.PageIdx), Math.Max(0, request.T), text, EnsureDmid(http), IsOwner(http, paths));
-    return Results.Ok(new { id = dmId, message = "弹幕已存站" });
+    // 主人身份只认一个口：席位里头名那个站长（旧的 lbs_owner 钥匙已摘除，不必再进一次「主人模式」）。
+    var member = MemberGate.Current(http);
+    var owner = MemberGate.IsOwner(member);
+    var dmId = db.AddLocalDanmaku(id, Math.Max(0, request.PageIdx), Math.Max(0, request.T), text, EnsureDmid(http), owner, member?.Id);
+    // 把服务端算好的身份一并回过去，前端回显时脸与冠不用自己猜（也没 cookies 可猜）。
+    // 老的主人行当年没记席位，脸领站长席位那张。
+    var echoFace = string.IsNullOrWhiteSpace(member?.FaceUrl) ? (owner ? db.GetOwnerSeatFace() : null) : member.FaceUrl;
+    return Results.Ok(new
+    {
+        id = dmId,
+        message = "弹幕已存站",
+        fromOwner = owner,
+        face = string.IsNullOrWhiteSpace(echoFace) ? null : echoFace,
+    });
 });
 
-app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, StationDb db, DataPaths paths) =>
+app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, StationDb db) =>
 {
     var sender = db.GetLocalDanmakuSender(dmId);
     if (sender is null)
@@ -672,10 +774,12 @@ app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, S
     }
 
     var dmid = EnsureDmid(http);
-    if (!IsOwner(http, paths) && !(sender.Length > 0 && sender == dmid))
+    // 删除权两个口：发送者本人（凭自己的 lbs_dmid）与站长（会员席位 role=owner）。
+    // 无主老弹幕（sender 为空）从此归站长删——以前得另外进一次主人模式才删得动，不合理。
+    if (!MemberGate.IsOwner(MemberGate.Current(http)) && !(sender.Length > 0 && sender == dmid))
     {
         // 分站没注册认证服务，Results.Forbid() 会 500；显式状态码才稳。
-        return Results.Json(new { message = "这条弹幕不是你的，主人才能删" }, statusCode: 403);
+        return Results.Json(new { message = "这条弹幕不是你的，站长才能删" }, statusCode: 403);
     }
 
     return db.DeleteLocalDanmaku(dmId) ? Results.Ok(new { message = "弹幕已删" }) : Results.NotFound();
@@ -784,12 +888,35 @@ app.MapDelete("/api/videos/{id:long}/codecs/{pageIdx:int}/{codec}", (long id, in
     return Results.Ok(new { message = $"{codec.ToUpperInvariant()} 版本已清出站" });
 });
 
-// 补采评论：到站时自动采过一次，这条给站长手动刷新快照（老馆藏回填也靠它）。
-app.MapPost("/api/videos/{id:long}/comments", async (long id, CommentArchiveService service, CancellationToken cancellationToken) =>
+// 补采评论：到站时自动采过一次，这条给投稿人/站长手动刷新快照（老馆藏回填也靠它）。
+// 出号走引擎归属号（站长号），所以只开放给这稿子的投稿人本人与站长，端点里再核一遗。
+app.MapPost("/api/videos/{id:long}/comments", async (long id, HttpContext http, StationDb db, CommentArchiveService service, CancellationToken cancellationToken) =>
 {
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
+    }
+
     var outcome = await service.TryArchiveAsync(id, force: true, cancellationToken);
     return outcome.Ok
         ? Results.Ok(new { message = outcome.Message, count = outcome.Count })
+        : Results.BadRequest(new { message = outcome.Message });
+});
+
+// 重拉 B 站弹幕快照：只覆写分 P 旁边的 {base}.ass / {base}.xml 与 artifacts 台账，
+// 分站朋友发的站内弹幕住在 danmaku_local 表里，这条链路一个字节都不碰。
+// 新档比留档薄时默认不覆写（留档不会因为 B 站删弹幕而变薄）；确实要薄那就 ?force=1 表态。
+app.MapPost("/api/videos/{id:long}/danmaku-refresh", async (long id, HttpContext http, StationDb db, DanmakuArchiveService service, CancellationToken cancellationToken) =>
+{
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
+    }
+
+    // 没有 force 了：重拉是增量并集，只进不退，B 站抽风空手而归也不会把留档刷薄。
+    var outcome = await service.TryRefreshAsync(id, cancellationToken);
+    return outcome.Ok
+        ? Results.Ok(new { message = outcome.Message, added = outcome.Added, total = outcome.Total, pages = outcome.Pages })
         : Results.BadRequest(new { message = outcome.Message });
 });
 
@@ -1303,9 +1430,12 @@ app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataP
     // 3. 分站台账五表全销（settings KV 保留）。
     var ledgerRows = db.PurgeAllLedger();
 
-    // 4. 资源文件清盘：视频库 + 缓存小图区 + e2e 临时件。cookies 与引擎设置不碰。
+    // 3.5 回收站连带拍空：站都清了，留着封存封也无人能对号入座（恢复回去只会碰上空库）。
+    var recycledRows = db.PurgeAllRecycle(paths.Recycle);
+
+    // 4. 资源文件清盘：视频库 + 缓存小图区 + 预览成片区 + e2e 临时件。cookies 与引擎设置不碰。
     var (files, bytes, busy) = PurgeDirectoryTree(paths.Videos);
-    foreach (var dir in new[] { paths.Avatars, paths.Emotes, paths.CmtImg, paths.Cache })
+    foreach (var dir in new[] { paths.Avatars, paths.Emotes, paths.CmtImg, paths.Cache, paths.Previews })
     {
         var (f, b, z) = PurgeDirectoryTree(dir);
         files += f;
@@ -1313,7 +1443,8 @@ app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataP
         busy += z;
     }
 
-    var message = $"站已清空：取消 {cancelledTasks} 个引擎任务，销 {ledgerRows} 行台账、{engineRows} 行引擎历史，清掉 {files} 个文件（{(double)bytes / 1048576:F1} MB）";
+    var message = $"站已清空：取消 {cancelledTasks} 个引擎任务，销 {ledgerRows} 行台账、{engineRows} 行引擎历史，清掉 {files} 个文件（{(double)bytes / 1048576:F1} MB）"
+        + (recycledRows > 0 ? $"，回收站 {recycledRows} 件一并销毁" : "");
     if (busy > 0)
     {
         message += $"；{busy} 个文件被占用没舍得删，回头再按一次";
@@ -1418,7 +1549,5 @@ internal sealed record PurgeRequest(bool Confirm);
 internal sealed record SubscriptionItem(string Kind, string Target, string AddedAtUtc);
 internal sealed record SubscriptionRequest(string Kind, string Target);
 internal sealed record LocalDanmakuRequest(int PageIdx, double T, string Text);
-internal sealed record OwnerKeyRequest(string? OldKey, string? NewKey);
-internal sealed record OwnerEnterRequest(string Key);
 internal sealed record SubsRequest(long Rpid, int Page);
 internal sealed record CodecVersionRequest(string? Codec);

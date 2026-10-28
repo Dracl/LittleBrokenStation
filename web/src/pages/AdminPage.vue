@@ -1,11 +1,13 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { coverThumb } from '../utils/cover'
 import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
+import RecycleBinCard from '../components/RecycleBinCard.vue'
 import { member, loginDialogOpen, loginDialogMode } from '../memberStore'
 import { friendlyTime } from '../utils/time'
+import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 
 const health = ref(null)
 const settings = ref(null)
@@ -417,6 +419,363 @@ function fmtBytes(b) {
   return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
 }
 
+// ─── 悬停预览流水线：约 1MB 的 360p 无声片段，走 /data/previews，独立于 /media 与下载并发闸 ───
+// 预览体积只在本卡上露脸，不进「分站统计」的库存体积（两回事：一个是看片前的预告片，一个是正片家底）。
+const pv = ref(null) // /api/stats/preview 原样：{ enabled, workerState, roundDone, roundBatch, covered, pending, inflight, failed, nextRoundSeconds, lastRoundSeconds, previewBytes, avgBytes, res, seconds, batch, concurrency, yieldOnDownload, recent, failures }
+const pvText = ref(null) // { kind, text }：页脚那一行小字兼作提示位
+const pvBusy = ref(false) // 四枚动作钮共用
+const pvSaving = ref(false) // 参数 POST 单独一个闸，免得动作钮把保存堵掉
+const pvClearArmed = ref(false)
+let pvClearTimer = null
+let pvTimer = null
+let pvTick = 0
+let pvSaveTimer = null
+let pvDraftDirty = false
+
+// 回退用的单条基线常量表：以 30 秒片段为单（360/480 是这台机器 ffmpeg 8.0 实测，720 按 480p 外推、未实测）。
+// 后端给了 unit（最近成功件的实测均值）就不碰这张表——推算不能扮实测。
+const PV_UNIT = {
+  360: { sec: 2.2, mb: 1.13, src: '本机 ffmpeg 8.0 实测' },
+  480: { sec: 3.4, mb: 1.76, src: '本机 ffmpeg 8.0 实测' },
+  720: { sec: 6.1, mb: 3.1, src: '按 480p 外推，未实测' },
+}
+const PV_BATCH_OPTIONS = [20, 40, 60]
+// 回退基线的片段长度口径：常量按 30 秒量的，当前片段时长改了就线性缩放。
+const PV_UNIT_BASE_SECONDS = 30
+// 后端 unit 的样本量是「最近 20 条成功件」，样本数就是 min(covered, 20)。
+const PV_UNIT_SAMPLES = 20
+
+// 参数草稿：文本框走 700ms debounce，开关与下拉是明确动作、当场整包 POST。
+const pvDraft = ref({ enabled: true, yieldOnDownload: true, res: 360, seconds: 45, batch: 40, concurrency: 1 })
+// 每轮封顶的下拉：常用三档 + 库里的现值（万一是用 API 或旧版本设的不在这个表里，不能让下拉空选把值“吃”回去）。
+const pvBatchOptions = computed(() => [...new Set([...PV_BATCH_OPTIONS, Number(pvDraft.value.batch) || 40])].sort((a, b) => a - b))
+// 并发路数封顶 32（后端 ConcurrencyMax），日常建议 1～4：每一路 ffmpeg 吃一个核，NAS 上开高了
+// 会把下载、页面应答与转码三边一起拖慢；而且换闸在下一轮开头，当场不生效。给下拉不给输数框：免得当场改完对不上数。
+const PV_CONCURRENCY_OPTIONS = [1, 2, 4, 6, 8, 16, 32]
+
+function pvSay(kind, text) {
+  pvText.value = { kind, text }
+}
+
+async function loadPreviewStats() {
+  try {
+    const res = await fetch('/api/stats/preview')
+    if (!res.ok) throw new Error(String(res.status))
+    const data = await res.json()
+    pv.value = data
+    if (!pvDraftDirty) pvFillDraft(data) // 站长正在改的草稿不拿轮询结果盖掉
+  } catch {
+    pv.value = null // 404/5xx 一律显破折号，不让这张卡把站长室带走
+  }
+}
+
+function pvFillDraft(s) {
+  if (!s) return
+  pvDraft.value = {
+    enabled: !!s.enabled,
+    yieldOnDownload: !!s.yieldOnDownload,
+    res: Number(s.res) || 360,
+    seconds: s.seconds ?? 45,
+    batch: s.batch ?? 40,
+    concurrency: s.concurrency ?? 1,
+  }
+}
+
+function queuePvSave(immediate) {
+  pvDraftDirty = true
+  if (pvSaveTimer) {
+    clearTimeout(pvSaveTimer)
+    pvSaveTimer = null
+  }
+  if (immediate) {
+    savePvSettings()
+    return
+  }
+  pvSaveTimer = setTimeout(savePvSettings, 700)
+}
+
+async function savePvSettings() {
+  if (pvSaveTimer) {
+    clearTimeout(pvSaveTimer)
+    pvSaveTimer = null
+  }
+  if (pvSaving.value) {
+    // 上一发 POST 还在天上：把这一发续到稍后，不抹掉站长刚改的值
+    pvSaveTimer = setTimeout(savePvSettings, 400)
+    return
+  }
+  const d = pvDraft.value
+  pvSaving.value = true
+  try {
+    const res = await fetch('/api/preview/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enabled: !!d.enabled,
+        res: Number(d.res) || 360,
+        seconds: Number(d.seconds) || 45,
+        batch: Number(d.batch) || 40,
+        concurrency: Number(d.concurrency) || 1,
+        // 字段名必须与后端 PreviewSettingsRequest 一字不差：这里曾写成了 yield，
+        // 绑不上 YieldOnDownload → 永远当「没改」处理，开关就看上去拔不动。
+        yieldOnDownload: !!d.yieldOnDownload,
+      }),
+    })
+    const data = await res.json().catch(() => null)
+    pvSay(res.ok ? 'ok' : 'err', data?.message ?? (res.ok ? '参数已落库' : '参数没存上'))
+    if (res.ok) {
+      pvDraftDirty = false
+      await loadPreviewStats()
+    }
+  } catch {
+    pvSay('err', '分站后端没有应答')
+  } finally {
+    pvSaving.value = false
+  }
+}
+
+async function postPreview(url, body) {
+  const res = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { method: 'POST' })
+  const data = await res.json().catch(() => null)
+  return { ok: res.ok, message: data?.message }
+}
+
+async function pvBackfill() {
+  if (pvBusy.value) return
+  pvBusy.value = true
+  try {
+    const r = await postPreview('/api/preview/backfill')
+    pvSay(r.ok ? 'ok' : 'err', r.message ?? (r.ok ? '已加塞一轮补采' : '补采没排上'))
+    await loadPreviewStats()
+  } catch {
+    pvSay('err', '分站后端没有应答')
+  } finally {
+    pvBusy.value = false
+  }
+}
+
+// 重试：不带 bvid 是「把失败的都捣回来」，带 bvid 是逐条捣（流水里那枚重试钮走这条）。
+async function pvRetry(bvids) {
+  if (pvBusy.value) return
+  pvBusy.value = true
+  try {
+    const r = await postPreview('/api/preview/retry', bvids?.length ? { bvids } : undefined)
+    pvSay(r.ok ? 'ok' : 'err', r.message ?? (r.ok ? (bvids?.length ? `已把 ${bvids.length} 条捣回待生成` : '失败件已捣回待生成') : '重试没排上'))
+    await loadPreviewStats()
+  } catch {
+    pvSay('err', '分站后端没有应答')
+  } finally {
+    pvBusy.value = false
+  }
+}
+
+// 补今天新货：走 backfill 的 bvids 参数（强制把指定条目排进本轮）——retry 只重置 Failed 行，
+// 今天刚来、从来没生成过的条目根本没行，借它捐不动。捐动的名单走台账现拉，空名单不发 POST。
+async function pvRetryToday() {
+  if (pvBusy.value) return
+  pvBusy.value = true
+  try {
+    const list = await fetch('/api/videos')
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [])
+    if (!Array.isArray(list)) {
+      pvSay('err', '馆藏台账拿不到，补不了今天新货')
+      return
+    }
+    const day0 = new Date()
+    day0.setHours(0, 0, 0, 0)
+    const bvids = list
+      .filter((v) => v.status === 2 && !v.previewUrl && Number.isFinite(Date.parse(v.createdAtUtc)) && Date.parse(v.createdAtUtc) >= day0.getTime())
+      .map((v) => v.bvid)
+    if (!bvids.length) {
+      pvSay('ok', '今天到站的都已生成预览，没有欠账')
+      return
+    }
+    const r = await postPreview('/api/preview/backfill', { bvids })
+    pvSay(r.ok ? 'ok' : 'err', r.message ?? (r.ok ? `已把今天 ${bvids.length} 条新货排进本轮` : '补今天新货没排上'))
+    await loadPreviewStats()
+  } catch {
+    pvSay('err', '分站后端没有应答')
+  } finally {
+    pvBusy.value = false
+  }
+}
+
+// 清空预览：两击确认，第一击后 5 秒内不点第二击就自行解除（照一键清空分站那套）。
+function armPvClear() {
+  if (pvClearArmed.value || pvBusy.value) return
+  pvClearArmed.value = true
+  pvText.value = null
+  pvClearTimer = setTimeout(() => {
+    pvClearArmed.value = false
+  }, 5000)
+}
+
+async function pvClear() {
+  if (!pvClearArmed.value) {
+    armPvClear()
+    return
+  }
+  clearTimeout(pvClearTimer)
+  pvClearArmed.value = false
+  if (pvBusy.value) return
+  pvBusy.value = true
+  try {
+    const r = await postPreview('/api/preview/clear', { confirm: true })
+    pvSay(r.ok ? 'ok' : 'err', r.message ?? (r.ok ? '预览已全部清空，欠账重新记账' : '清空没成'))
+    await loadPreviewStats()
+  } catch {
+    pvSay('err', '分站后端没有应答')
+  } finally {
+    pvBusy.value = false
+  }
+}
+
+// 心跳：有件在生成时 2 秒一发，全站空闲降到 15 秒一发（照首页 pollTick 降拍思路）。
+function pvBeat() {
+  pvTick += 1
+  const busy = (pv.value?.inflight ?? 0) > 0
+  if (busy ? pvTick % 2 === 0 : pvTick % 15 === 0) loadPreviewStats()
+}
+
+const pvTotal = computed(() => (pv.value?.covered ?? 0) + (pv.value?.pending ?? 0) + (pv.value?.failed ?? 0))
+
+function pvWidth(n) {
+  if (!pv.value || !pvTotal.value) return '0%'
+  return `${Math.max(0, Math.min(100, ((n ?? 0) / pvTotal.value) * 100))}%`
+}
+
+const pvCoverText = computed(() => {
+  if (!pv.value || !pvTotal.value) return '—'
+  return `${Math.round(((pv.value.covered ?? 0) / pvTotal.value) * 1000) / 10}%`
+})
+
+// 在岗/生成中/让路中/停摆/已关闭：后端定为 running|idle|paused|disabled|fault 五个值，走显式映射。
+// 表外值一律按「在岗」，但把 workerState 原样带在文案里——不把未知说成坏了，也不把未知藏起来。
+const PV_STATE_META = {
+  running: { text: '生成中', tone: 'text-emerald-300', live: true },
+  idle: { text: '在岗', tone: 'text-emerald-300', live: false },
+  paused: { text: '让路中', tone: 'text-amber-300/85', live: false },
+  disabled: { text: '已关闭', tone: 'text-white/35', live: false },
+  fault: { text: '停摆', tone: 'text-rose-300/85', live: false },
+}
+
+const pvState = computed(() => {
+  const s = pv.value
+  if (!s) return { text: '未知', tone: 'text-white/30', live: false, rawText: '' }
+  if (!s.enabled) return { ...PV_STATE_META.disabled, rawText: '' }
+  const meta = PV_STATE_META[String(s.workerState ?? '').toLowerCase()]
+  if (meta) return { ...meta, rawText: '' }
+  return { text: '在岗', tone: 'text-emerald-300', live: false, rawText: s.workerState ? String(s.workerState) : '' }
+})
+
+// 卡题旁那枚进度徽章：worker 报 running 或台账有在途件都算「生成中」，与右侧状态灯同口径。
+const pvBadge = computed(() => {
+  const s = pv.value
+  if (!s) return '状态未知'
+  if (!s.enabled || String(s.workerState ?? '').toLowerCase() === 'disabled') return '开关已关'
+  const round = `本轮 ${s.roundDone ?? 0}/${s.roundBatch ?? '—'}`
+  const busy = (s.inflight ?? 0) > 0 || String(s.workerState ?? '').toLowerCase() === 'running'
+  return busy ? `生成中 · ${round}` : `待命 · ${round}`
+})
+
+function pvDur(sec) {
+  if (sec === null || sec === undefined) return '—'
+  const n = Number(sec)
+  if (!Number.isFinite(n)) return '—'
+  const s = Math.round(n)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return r ? `${m}m${r}s` : `${m}m`
+}
+
+function pvIn(sec) {
+  if (sec === null || sec === undefined) return '—'
+  const n = Number(sec)
+  if (!Number.isFinite(n)) return '—'
+  const s = Math.round(n)
+  if (s <= 0) return '就在眼下'
+  if (s < 60) return `${s}秒后`
+  return `${Math.round(s / 60)}分钟后`
+}
+
+// 欠账预估：后端 unit（最近成功件的实测均值 { seconds, costSeconds, bytes }）优先，
+// 没数据才回退 30 秒基线常量表。两条路的来路各写各的，绝不把推算当实测显示。
+const pvCost = computed(() => {
+  const s = pv.value
+  if (!s) return null
+  const d = pvDraft.value
+  const pending = s.pending ?? 0
+  const total = (perSec) => (pending ? Math.max(1, Math.round(perSec * pending)) : 0)
+  const unit = s.unit
+  const costSec = Number(unit?.costSeconds)
+  const unitBytes = Number(unit?.bytes)
+  if (unit && Number.isFinite(costSec) && costSec > 0 && Number.isFinite(unitBytes) && unitBytes > 0) {
+    // 样本数后端直接给了（unit.count），没给才拿 covered 封顶 20 条估。
+    const given = Number(unit?.count)
+    const samples = Number.isFinite(given) && given > 0 ? given : s.covered == null ? null : Math.min(s.covered, PV_UNIT_SAMPLES)
+    const clipSec = Number(unit.seconds)
+    const want = Number(d?.seconds ?? s.seconds)
+    const drift = Number.isFinite(clipSec) && Number.isFinite(want) && clipSec !== want ? `基线量自 ${clipSec}s 片段，当前设 ${want}s` : ''
+    const note = `按最近${samples == null ? '' : ` ${samples} 条`}实测${drift ? `（${drift}）` : ''}`
+    return {
+      pending,
+      total: total(costSec),
+      disk: fmtBytes(unitBytes * pending),
+      baseline: `${costSec < 10 ? costSec.toFixed(1) : Math.round(costSec)}s / ${fmtBytes(unitBytes)}`,
+      note,
+      measured: true,
+    }
+  }
+  // 回退：30 秒片段的常量基线按当前片段时长线性缩放，磁盘与耗时同比例。
+  const res = Number(d?.res ?? s.res) || 360
+  const unit0 = PV_UNIT[res] ?? PV_UNIT[360]
+  const want = Number(d?.seconds ?? s.seconds) || 45
+  const scale = Math.max(0.1, want / PV_UNIT_BASE_SECONDS)
+  const perSec = unit0.sec * scale
+  const perMb = unit0.mb * scale
+  return {
+    pending,
+    total: total(perSec),
+    disk: fmtBytes(Math.round(perMb * pending) * 1048576),
+    baseline: `${perSec.toFixed(1)}s / ${perMb.toFixed(2)} MB`,
+    note: `按 ${PV_UNIT_BASE_SECONDS} 秒片段基线推算 · ${res}p ${unit0.sec}s/${unit0.mb}MB（${unit0.src}）`,
+    measured: false,
+  }
+})
+
+// 逐件流水：本轮 recent 打底，再把往轮欠着的 failures 补在队尾，保证每条失败都有单条重试可点。
+const pvRows = computed(() => {
+  const recent = (pv.value?.recent ?? []).map((r, i) => ({ ...r, key: `r-${r.bvid}-${r.at ?? i}` }))
+  const seen = new Set(recent.map((r) => r.bvid))
+  const extra = (pv.value?.failures ?? [])
+    .filter((f) => !seen.has(f.bvid))
+    .map((f) => ({ bvid: f.bvid, ok: false, error: f.error, at: null, title: '', key: `f-${f.bvid}` }))
+  return recent.concat(extra)
+})
+
+function pvClock(at) {
+  if (at === null || at === undefined || at === '') return '—'
+  const t = typeof at === 'number' ? (at < 1e12 ? at * 1000 : at) : Date.parse(at)
+  if (!Number.isFinite(t)) return '—'
+  const d = new Date(t)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// 实测元数据：360p 1.1MB 45s 用 2.3s —— 前四个各是各的：产物体积与产物时长来自 ffprobe，
+// 「用 Xs」才是这一件 ffmpeg 实跑的耗时（后端 cost_seconds）。后端没下发 cost 的行就不显这一段，不拿产物时长扮耗时。
+function pvMeta(row) {
+  const bits = [`${Number(pv.value?.res ?? pvDraft.value?.res) || 360}p`]
+  if (row.bytes != null) bits.push(fmtBytes(row.bytes))
+  const s = Number(row.seconds)
+  if (row.seconds != null && Number.isFinite(s) && s > 0) bits.push(`${s < 10 ? s.toFixed(1) : Math.round(s)}s`)
+  const c = Number(row.cost)
+  if (row.cost != null && Number.isFinite(c) && c > 0) bits.push(`用 ${c < 10 ? c.toFixed(1) : Math.round(c)}s`)
+  return bits.join(' ')
+}
+
 // ─── 订阅爬工状态：每小时前后随机一轮 + 站长手动一轮 ───
 const crawlStatus = ref(null) // { runAtUtc, results: [{kind,target,ok,added,duplicated,error}] }
 const crawlBusy = ref(false)
@@ -464,82 +823,6 @@ async function crawlNow() {
     subNotice.value = { kind: 'err', text: '后端没应答' }
   } finally {
     crawlBusy.value = false
-  }
-}
-
-// ─── 主人模式：key 只在生成那一刻亮一次，服务端只存 data/owner.key 文件 ───
-const ownerState = ref(null) // { configured, isOwner }，/api/owner/state
-const ownerKeyShown = ref('') // 生成/换钥时的一次性展示窗
-const ownerInput = ref('')
-const ownerOldInput = ref('')
-const ownerBusy = ref(false)
-const ownerNotice = ref(null) // { kind, text }
-
-async function loadOwnerState() {
-  try {
-    const res = await fetch('/api/owner/state')
-    ownerState.value = res.ok ? await res.json() : null
-  } catch {
-    ownerState.value = null
-  }
-}
-
-async function requestOwnerKey(oldKey) {
-  if (ownerBusy.value) return
-  ownerBusy.value = true
-  ownerNotice.value = null
-  try {
-    const res = await fetch('/api/owner/key', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ oldKey: oldKey ?? null }),
-    })
-    const data = await res.json().catch(() => null)
-    if (res.ok && data?.key) {
-      ownerKeyShown.value = data.key
-      ownerNotice.value = { kind: 'ok', text: data.message }
-      ownerOldInput.value = ''
-      loadOwnerState()
-    } else {
-      ownerNotice.value = { kind: 'err', text: res.status === 401 ? '旧钥匙不对，换不了' : (data?.message ?? '操作失败') }
-    }
-  } catch {
-    ownerNotice.value = { kind: 'err', text: '后端没应答' }
-  } finally {
-    ownerBusy.value = false
-  }
-}
-
-async function enterOwnerMode() {
-  const key = ownerInput.value.trim()
-  if (!key || ownerBusy.value) return
-  ownerBusy.value = true
-  ownerNotice.value = null
-  try {
-    const res = await fetch('/api/owner/enter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key }),
-    })
-    const data = await res.json().catch(() => null)
-    ownerNotice.value = res.ok ? { kind: 'ok', text: data?.message ?? '已进入主人模式' } : { kind: 'err', text: '钥匙不对' }
-    if (res.ok) ownerInput.value = ''
-    loadOwnerState()
-  } catch {
-    ownerNotice.value = { kind: 'err', text: '后端没应答' }
-  } finally {
-    ownerBusy.value = false
-  }
-}
-
-async function leaveOwnerMode() {
-  if (ownerBusy.value) return
-  ownerBusy.value = true
-  try {
-    await fetch('/api/owner/leave', { method: 'POST' })
-    loadOwnerState()
-  } finally {
-    ownerBusy.value = false
   }
 }
 
@@ -1254,7 +1537,6 @@ async function bootAdmin() {
     .catch(() => {})
   loadSubscriptions()
   loadCrawlStatus()
-  loadOwnerState()
   loadLoginState()
   loadAlt()
   loadCollectMode()
@@ -1266,11 +1548,59 @@ async function bootAdmin() {
   loadExports()
   loadImportState()
   loadDynTargets()
+  loadPreviewStats()
   if (!dlTimer) dlTimer = setInterval(loadDlQueue, 5000)
+  if (!pvTimer) pvTimer = setInterval(pvBeat, 1000)
+}
+
+// ─── 站长室排版：六组 + 顶部定位条（正文仍一屏到底，不切标签）───
+// 十六张卡是同一个 grid 的孩子，分组靠 order 排座、靠 md:col-span-2 定整行还是半格：
+// 这样分组只动 class，不必把卡块在文件里搬来搬去（搬一次就多一次丢代码的机会）。
+const ADMIN_GROUPS = [
+  { id: 'overview', title: '概览', hint: '数字与健康度', order: 10 },
+  { id: 'harvest', title: '采集与下载', hint: '日常盯得最勤', order: 20 },
+  { id: 'people', title: '人与话', hint: '席位与公告', order: 30 },
+  { id: 'accounts', title: '登录与号', hint: '一年动不了几次', order: 40 },
+  { id: 'data', title: '数据', hint: '备份 · 搬家 · 捐回', order: 50 },
+]
+const activeGroup = ref('overview')
+const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
+const dlWaiting = computed(() => (dlQueue.value?.pending?.length ?? 0) + (dlQueue.value?.downloading?.length ?? 0))
+const adminNav = computed(() => [
+  { ...ADMIN_GROUPS[0], n: (pv.value?.pending ?? 0) > 0 ? pv.value.pending : null, tone: 'warn' },
+  { ...ADMIN_GROUPS[1], n: dlWaiting.value > 0 ? dlWaiting.value : null, tone: 'hot' },
+  { ...ADMIN_GROUPS[2], n: null, tone: '' },
+  { ...ADMIN_GROUPS[3], n: null, tone: '' },
+  { ...ADMIN_GROUPS[4], n: null, tone: '' },
+])
+
+async function gotoGroup(id) {
+  if (id === 'danger') {
+    dangerOpen.value = true // 先从收起来变回展开，否则下面找不到可滚的锚
+  }
+  await nextTick()
+  document.getElementById(`grp-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  activeGroup.value = id
+}
+
+// 定位条的高亮：找最后一条已经滚到条子上沿之上的组头（rAF 节流，不每像素都算一遗）。
+let groupSpyRaf = 0
+function onGroupSpyScroll() {
+  if (groupSpyRaf) return
+  groupSpyRaf = requestAnimationFrame(() => {
+    groupSpyRaf = 0
+    let current = 'overview'
+    for (const g of [...ADMIN_GROUPS.map((x) => x.id), 'danger']) {
+      const el = document.getElementById(`grp-${g}`)
+      if (el && el.getBoundingClientRect().top <= 120) current = g
+    }
+    activeGroup.value = current
+  })
 }
 
 onMounted(() => {
   bootAdmin()
+  window.addEventListener('scroll', onGroupSpyScroll, { passive: true })
 })
 
 // 站长在 LoginDialog 里扫码进来、或从顶栏登出后，重跑开机核身。
@@ -1279,7 +1609,12 @@ watch(member, () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('scroll', onGroupSpyScroll)
+  if (groupSpyRaf) cancelAnimationFrame(groupSpyRaf)
   if (dlTimer) clearInterval(dlTimer)
+  if (pvTimer) clearInterval(pvTimer)
+  clearTimeout(pvClearTimer)
+  if (pvSaveTimer) savePvSettings() // 帘子收了还有没交出去的参数：离场前补发一次，不吞站长的改动
   clearTimeout(expTimer)
   clearTimeout(exportArmTimer)
   clearTimeout(pendingTimer)
@@ -1331,8 +1666,43 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <main v-if="adminAuth === 'ok'" class="lbs-rise mx-auto grid max-w-[1100px] grid-cols-1 gap-4 px-6 py-8 md:grid-cols-2">
-      <section class="lbs-card md:col-span-2">
+    <!-- 分组定位条：sticky 在顶，只负责跳位与报数（下载排队、预览欠账）；正文仍一屏到底 -->
+    <nav v-if="adminAuth === 'ok'" class="sticky top-0 z-30 mx-auto flex max-w-[1400px] flex-wrap items-center gap-2 border-b border-adminLine bg-adminBg/90 px-6 py-2.5 backdrop-blur">
+      <button
+        v-for="g in adminNav"
+        :key="g.id"
+        type="button"
+        class="rounded-full border px-3 py-1 text-xs transition"
+        :class="activeGroup === g.id ? 'border-adminAccent/50 bg-adminAccent/10 text-adminAccent' : 'border-white/10 text-white/45 hover:border-white/25 hover:text-white/70'"
+        @click="gotoGroup(g.id)"
+      >
+        {{ g.title }}
+        <span v-if="g.n" class="ml-1 font-mono text-[10px]" :class="g.tone === 'hot' ? 'text-rose-300/90' : 'text-amber-200/85'">{{ g.n }}</span>
+      </button>
+      <button
+        type="button"
+        class="ml-auto rounded-full border border-rose-400/25 px-3 py-1 text-xs text-rose-300/70 transition hover:border-rose-400/50 hover:text-rose-200"
+        @click="gotoGroup('danger')"
+      >
+        危险区<span class="ml-1 text-[10px] text-rose-300/45">{{ dangerOpen ? '已展开' : '已收起' }}</span>
+      </button>
+    </nav>
+
+    <main v-if="adminAuth === 'ok'" class="lbs-rise mx-auto grid max-w-[1400px] grid-cols-1 gap-4 px-6 py-8 md:grid-cols-2">
+      <!-- 组头：也是 grid 的孩子，跟着卡一起排座 -->
+      <div
+        v-for="g in ADMIN_GROUPS"
+        :id="`grp-${g.id}`"
+        :key="g.id"
+        class="order-[9] md:col-span-2 flex items-baseline gap-2.5 pt-3"
+        :style="{ order: g.order }"
+      >
+        <h2 class="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">{{ g.title }}</h2>
+        <span class="font-mono text-[11px] text-white/20">{{ g.hint }}</span>
+        <span class="ml-1 h-px flex-1 bg-white/5"></span>
+      </div>
+
+      <section class="lbs-card md:col-span-2 order-[11] border-l-2 border-l-adminAccent/50">
         <div class="mb-5 flex items-center justify-between">
           <h3 class="lbs-title !mb-0">分站统计</h3>
           <div class="flex items-center gap-3 font-mono text-xs">
@@ -1356,7 +1726,176 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="lbs-card md:col-span-2">
+      <!-- 悬停预览：首页卡片鼠标停一下就起播的那批 360p 无声小片段，本卡是它的全套仪表盘（状态·覆盖率·参数·流水） -->
+      <section class="lbs-card md:col-span-2 order-[12] border-l-2 border-l-adminAccent/50">
+        <div class="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+          <h3 class="lbs-title !mb-0">
+            悬停预览
+            <span class="ml-1 rounded-full border border-adminAccent/30 px-2 py-0.5 text-[10px] normal-case tracking-normal text-adminAccent/70">{{ pvBadge }}</span>
+          </h3>
+          <div class="flex items-center gap-3.5 font-mono text-xs">
+            <span class="flex items-center gap-1.5" :class="pvState.tone" :title="`workerState: ${pv?.workerState ?? '—'}`">
+              <span class="pv-dot" :class="pvState.live ? 'pv-dot-live' : ''"></span>{{ pvState.text }}<template v-if="pvState.rawText"> · {{ pvState.rawText }}</template>
+            </span>
+            <span class="text-white/30">上轮耗时 <span class="text-adminAccent/85">{{ pvDur(pv?.lastRoundSeconds) }}</span></span>
+            <span class="text-white/30">下轮 <span class="text-adminAccent/85">{{ pvIn(pv?.nextRoundSeconds) }}</span></span>
+          </div>
+        </div>
+
+        <!-- 覆盖率三段条：已生成 / 失败 / 待生成（总宽固定，按 covered+pending+failed 分） -->
+        <div>
+          <div class="flex h-2 overflow-hidden rounded-full bg-white/[0.06]">
+            <div class="bg-gradient-to-r from-adminAccent/85 to-adminAccent/55" :style="{ width: pvWidth(pv?.covered) }"></div>
+            <div class="bg-rose-400/75" :style="{ width: pvWidth(pv?.failed) }"></div>
+            <div class="bg-white/[0.13]" :style="{ width: pvWidth(pv?.pending) }"></div>
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-4 text-[11px] text-white/35">
+            <span><i class="mr-1.5 inline-block h-2 w-2 rounded-sm bg-adminAccent/70"></i>已生成 {{ pv?.covered ?? '—' }}</span>
+            <span><i class="mr-1.5 inline-block h-2 w-2 rounded-sm bg-white/15"></i>待生成 {{ pv?.pending ?? '—' }}</span>
+            <span><i class="mr-1.5 inline-block h-2 w-2 rounded-sm bg-rose-400/75"></i>失败 {{ pv?.failed ?? '—' }}</span>
+            <span class="ml-auto" :title="'covered / 已到站总数'">覆盖率 {{ pvCoverText }}</span>
+          </div>
+        </div>
+
+        <div class="mt-5 grid grid-cols-3 gap-x-5 gap-y-5 sm:grid-cols-6">
+          <div class="lbs-stat-lg"><b>{{ pv?.covered ?? '—' }}</b><span>已生成</span></div>
+          <div class="lbs-stat-lg"><b>{{ pv?.pending ?? '—' }}</b><span>待生成</span></div>
+          <div class="lbs-stat-lg"><b>{{ pv?.inflight ?? '—' }}</b><span>生成中</span></div>
+          <div class="lbs-stat-lg"><b :class="pv?.failed ? 'text-rose-300/90' : ''">{{ pv?.failed ?? '—' }}</b><span>失败待重试</span></div>
+          <div class="lbs-stat-lg" title="悬停预览占用磁盘，不计入分站统计的库存体积"><b>{{ fmtBytes(pv?.previewBytes) }}</b><span>预览占用</span></div>
+          <div class="lbs-stat-lg" :title="`${pv?.res ?? '—'}p 无声均值`"><b>{{ fmtBytes(pv?.avgBytes) }}</b><span>平均产物</span></div>
+        </div>
+
+        <div class="my-5 h-px bg-white/5"></div>
+
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-[1.05fr_1fr]">
+          <!-- 左：生成参数 + 欠账预估 + 四枚动作 -->
+          <div>
+            <h4 class="mb-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-white/30">生成参数</h4>
+            <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div class="flex items-center justify-between gap-2.5 rounded-lg border border-white/5 bg-black/20 px-2.5 py-2">
+                <label class="text-xs text-white/40" for="pv-enabled">自动生成预览</label>
+                <button
+                  id="pv-enabled"
+                  type="button"
+                  role="switch"
+                  class="pv-switch"
+                  :aria-checked="pvDraft.enabled ? 'true' : 'false'"
+                  :disabled="pvSaving || !pv"
+                  @click="pvDraft.enabled = !pvDraft.enabled; queuePvSave(true)"
+                ></button>
+              </div>
+              <div class="flex items-center justify-between gap-2.5 rounded-lg border border-white/5 bg-black/20 px-2.5 py-2">
+                <label class="text-xs text-white/40" for="pv-yield" title="下载占带宽时预览生成自行让路">下载中让路</label>
+                <button
+                  id="pv-yield"
+                  type="button"
+                  role="switch"
+                  class="pv-switch"
+                  :aria-checked="pvDraft.yieldOnDownload ? 'true' : 'false'"
+                  :disabled="pvSaving || !pv"
+                  @click="pvDraft.yieldOnDownload = !pvDraft.yieldOnDownload; queuePvSave(true)"
+                ></button>
+              </div>
+              <div class="flex items-center justify-between gap-2.5 rounded-lg border border-white/5 bg-black/20 px-2.5 py-2">
+                <label class="text-xs text-white/40" for="pv-res">清晰度</label>
+                <select id="pv-res" v-model="pvDraft.res" class="eng-input w-auto cursor-pointer" :disabled="pvSaving || !pv" @change="queuePvSave(true)">
+                  <option :value="360">360p</option>
+                  <option :value="480">480p</option>
+                  <option :value="720">720p（推算）</option>
+                </select>
+              </div>
+              <div class="flex items-center justify-between gap-2.5 rounded-lg border border-white/5 bg-black/20 px-2.5 py-2">
+                <label class="text-xs text-white/40" for="pv-seconds">片段时长</label>
+                <span class="flex items-center gap-1.5">
+                  <input id="pv-seconds" v-model="pvDraft.seconds" type="number" min="5" max="120" class="eng-input !w-[62px]" :disabled="pvSaving || !pv" title="5..120 秒（后端就认这个区间）" @input="queuePvSave(false)" />
+                  <span class="text-[11px] text-white/30">秒</span>
+                </span>
+              </div>
+              <div class="flex items-center justify-between gap-2.5 rounded-lg border border-white/5 bg-black/20 px-2.5 py-2">
+                <label class="text-xs text-white/40" for="pv-batch">每轮封顶</label>
+                <select id="pv-batch" v-model.number="pvDraft.batch" class="eng-input w-auto cursor-pointer" :disabled="pvSaving || !pv" @change="queuePvSave(true)">
+                  <option v-for="n in pvBatchOptions" :key="n" :value="n">{{ n }}</option>
+                </select>
+              </div>
+              <div class="flex items-center justify-between gap-2.5 rounded-lg border border-white/5 bg-black/20 px-2.5 py-2">
+                <label class="text-xs text-white/40" for="pv-conc" title="同时转几路：每路 ffmpeg 吃一个核，日常建议 1～4；封顶 32 是追齐积压用的，换档在下一轮开头生效">同时生成数</label>
+                <select id="pv-conc" v-model.number="pvDraft.concurrency" class="eng-input w-auto cursor-pointer" :disabled="pvSaving || !pv" @change="queuePvSave(true)">
+                  <option v-for="n in PV_CONCURRENCY_OPTIONS" :key="n" :value="n">{{ n }} 路</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mt-3 rounded-lg border border-dashed border-adminAccent/30 bg-adminAccent/[0.05] px-3 py-2.5">
+              <p class="flex flex-wrap items-center gap-2 text-[11px] tracking-[0.06em] text-adminAccent/70">
+                补齐欠账的成本预估（随清晰度与片段时长实时重算）
+                <span
+                  class="rounded-full border px-1.5 py-px text-[10px] normal-case tracking-normal"
+                  :class="pvCost?.measured ? 'border-emerald-400/40 text-emerald-300' : 'border-amber-400/40 text-amber-300'"
+                >
+                  {{ pvCost ? (pvCost.measured ? '实测' : '推算') : '—' }}
+                </span>
+              </p>
+              <p class="mt-1.5 font-mono text-xs leading-[1.65] text-white/65">
+                待生成 <em class="not-italic text-adminAccent/90">{{ pvCost ? pvCost.pending : '—' }}</em> 条 · 约
+                <em class="not-italic text-adminAccent/90">{{ pvCost ? pvCost.total : '—' }}</em> 秒 · 磁盘
+                <em class="not-italic text-adminAccent/90">{{ pvCost ? `+${pvCost.disk}` : '—' }}</em><br />
+                单条基线 {{ pvCost ? pvCost.baseline : '—' }}
+                <span class="text-white/30">· {{ pvCost ? pvCost.note : '—' }}</span>
+              </p>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button class="lbs-btn" :disabled="pvBusy" @click="pvBackfill">{{ pvBusy ? '忙中…' : '立即补采' }}</button>
+              <button class="lbs-btn-ghost" :disabled="pvBusy || !pv?.failed" @click="pvRetry()">重试失败{{ pv?.failed ? ` ${pv.failed} 条` : '' }}</button>
+              <button class="lbs-btn-ghost" :disabled="pvBusy" title="只补今天到站、还没预览的馆藏" @click="pvRetryToday">补今天新货</button>
+              <button :class="pvClearArmed ? 'lbs-btn-danger-armed' : 'lbs-btn-danger'" :disabled="pvBusy" @click="pvClear">
+                {{ pvClearArmed ? '确定销掉全部预览？再点一次执行' : '清空预览' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 右：逐件流水（本轮 recent + 往轮欠着的 failures），失败行给原因与单条重试 -->
+          <div class="flex min-w-0 flex-col">
+            <h4 class="mb-2.5 flex items-center justify-between gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-white/30">
+              最近一轮 · 逐件流水
+              <span class="normal-case tracking-normal text-white/20">元数据：清晰度 · 体积 · 产物时长 · 生成耗时</span>
+            </h4>
+            <ul class="max-h-[330px] overflow-y-auto pr-1">
+              <li v-for="row in pvRows" :key="row.key" class="flex items-center gap-2.5 border-b border-white/[0.04] py-1.5 text-xs">
+                <time class="shrink-0 font-mono text-[11px] text-white/25">{{ pvClock(row.at) }}</time>
+                <span class="shrink-0" :class="row.ok ? 'text-emerald-400' : 'text-rose-400'">{{ row.ok ? '✓' : '✗' }}</span>
+                <span class="shrink-0 font-mono text-white/55">{{ row.bvid }}</span>
+                <span v-if="row.ok" class="min-w-[40px] flex-1 truncate text-white/40" :title="row.title">{{ row.title || '—' }}</span>
+                <span v-if="row.ok" class="shrink-0 font-mono text-[11px] text-white/30" title="实测产物：清晰度 · 体积 · 片段时长；末位「用 Xs」是这一件 ffmpeg 实跑的耗时">{{ pvMeta(row) }}</span>
+                <template v-else>
+                  <span class="min-w-[40px] flex-1 truncate text-[11px] text-rose-300/70" :title="row.error">{{ row.error || '生成失败' }}</span>
+                  <button
+                    class="shrink-0 rounded-md border border-white/10 px-1.5 py-px text-[11px] text-white/45 transition hover:border-adminAccent/50 hover:text-adminAccent"
+                    :disabled="pvBusy"
+                    @click="pvRetry([row.bvid])"
+                  >
+                    重试
+                  </button>
+                </template>
+              </li>
+              <li v-if="!pvRows.length" class="py-6 text-center text-xs text-white/25">{{ pv ? '这一轮还没跑过件：点「立即补采」催一轮。' : '预览状态没拿到（后端没应答），稍后自动重试。' }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-adminLine pt-3 font-mono text-[11px] text-white/25">
+          <span>目录 /data/previews · 开关 settings:preview-enabled · 独立于 /media 与下载并发闸</span>
+          <span
+            v-if="pvText"
+            :class="pvText.kind === 'ok' ? 'text-adminAccent/80' : pvText.kind === 'err' ? 'text-rose-300/80' : 'text-amber-200/80'"
+          >
+            {{ pvText.text }}
+          </span>
+        </div>
+      </section>
+
+      <section class="lbs-card md:col-span-2 order-[31]">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             分站成员
@@ -1391,8 +1930,7 @@ onUnmounted(() => {
         <ul v-else class="space-y-1.5">
           <li v-for="m in members" :key="m.id" class="rounded-lg border border-white/5 bg-black/20">
             <div class="flex flex-wrap items-center gap-3 px-3 py-2">
-              <img v-if="m.faceUrl" :src="m.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-8 w-8 shrink-0 rounded-full object-cover" alt="" />
-              <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs text-white/40">{{ (m.nickname || m.username || '?').slice(0, 1).toUpperCase() }}</span>
+              <img :src="m.faceUrl || defaultAvatar" referrerpolicy="no-referrer" loading="lazy" class="h-8 w-8 shrink-0 rounded-full object-cover" alt="" @error="onAvatarError" />
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-1.5 text-xs text-white/85">
                   <span class="truncate">{{ seatLabel(m) }}</span>
@@ -1439,8 +1977,7 @@ onUnmounted(() => {
             </div>
             <ul v-if="expandedMember === m.id" class="space-y-1 border-t border-white/5 px-3 py-2">
               <li v-for="acc in m.accounts ?? []" :key="acc.id" class="flex items-center gap-2.5">
-                <img v-if="acc.faceUrl" :src="acc.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-6 w-6 shrink-0 rounded-full object-cover" alt="" />
-                <span v-else class="h-6 w-6 shrink-0 rounded-full bg-white/10"></span>
+                <img :src="acc.faceUrl || defaultAvatar" referrerpolicy="no-referrer" loading="lazy" class="h-6 w-6 shrink-0 rounded-full object-cover" alt="" @error="onAvatarError" />
                 <span class="min-w-0 flex-1 truncate text-[11px] text-white/70">
                   {{ acc.accountName || `B站账号 ${acc.accountMid}` }}
                   <span v-if="acc.isPrimary" class="ml-1 text-adminAccent/80">主号</span>
@@ -1518,7 +2055,7 @@ onUnmounted(() => {
         </ul>
       </section>
 
-      <section class="lbs-card md:col-span-2">
+      <section class="lbs-card md:col-span-2 order-[32]">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             全站公告
@@ -1549,7 +2086,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="lbs-card md:col-span-2">
+      <section class="lbs-card order-[24]">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             动态关注
@@ -1568,8 +2105,7 @@ onUnmounted(() => {
         </div>
         <ul class="space-y-1">
           <li v-for="t in dynTargets ?? []" :key="t.mid" class="flex items-center gap-2.5 rounded-lg bg-white/5 px-2.5 py-1.5">
-            <img v-if="t.faceUrl" :src="t.faceUrl" referrerpolicy="no-referrer" loading="lazy" class="h-7 w-7 shrink-0 rounded-full object-cover" alt="" />
-            <span v-else class="h-7 w-7 shrink-0 rounded-full bg-white/10"></span>
+            <img :src="t.faceUrl || defaultAvatar" referrerpolicy="no-referrer" loading="lazy" class="h-7 w-7 shrink-0 rounded-full object-cover" alt="" @error="onAvatarError" />
             <span class="min-w-0 flex-1 truncate text-[12px] text-white/75">
               {{ t.nickname || `B站号 ${t.mid}` }}
               <span class="font-mono text-[10px] text-white/30">B站号 {{ t.mid }}</span>
@@ -1589,7 +2125,7 @@ onUnmounted(() => {
         </ul>
       </section>
 
-      <section class="lbs-card md:col-span-2">
+      <section class="lbs-card md:col-span-2 order-[21] border-l-2 border-l-adminAccent/50">
         <div class="mb-4 flex items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             下载队列
@@ -1672,7 +2208,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="lbs-card md:col-span-2">
+      <section class="lbs-card order-[23] border-l-2 border-l-adminAccent/50">
         <div class="mb-4 flex items-center justify-between">
           <h3 class="lbs-title !mb-0">
             订阅更新
@@ -1745,7 +2281,7 @@ onUnmounted(() => {
         </p>
       </section>
 
-      <section class="lbs-card">
+      <section class="lbs-card order-[13]">
         <h3 class="lbs-title">分站状态</h3>
         <dl class="space-y-3 font-mono text-sm">
           <div class="flex justify-between">
@@ -1763,7 +2299,7 @@ onUnmounted(() => {
         </dl>
       </section>
 
-      <section class="lbs-card">
+      <section class="lbs-card order-[14]">
         <h3 class="lbs-title">存储</h3>
         <dl class="space-y-3 font-mono text-sm">
           <div class="flex justify-between gap-4">
@@ -1776,7 +2312,7 @@ onUnmounted(() => {
         </dl>
       </section>
 
-      <section class="lbs-card">
+      <section class="lbs-card order-[41]">
         <h3 class="lbs-title">站长登录</h3>
         <div class="mb-4 flex items-center gap-2 text-sm">
           <span class="lbs-dot" :class="loginState?.isLogin ? 'lbs-dot-on' : 'lbs-dot-off'"></span>
@@ -1822,7 +2358,7 @@ onUnmounted(() => {
         </p>
       </section>
 
-      <section class="lbs-card">
+      <section class="lbs-card order-[42]">
         <h3 class="lbs-title">副登录 · 按视频分号</h3>
         <div class="mb-4 flex items-center gap-2 text-sm">
           <span class="lbs-dot" :class="altState?.isAlt ? 'lbs-dot-on' : 'lbs-dot-off'"></span>
@@ -1878,57 +2414,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="lbs-card">
-        <div class="mb-3 flex items-center justify-between">
-          <h3 class="lbs-title !mb-0">主人模式</h3>
-          <span v-if="ownerState" class="flex items-center gap-1.5 text-[11px] text-white/35">
-            <span :class="['lbs-dot', ownerState.isOwner ? 'lbs-dot-on' : 'lbs-dot-off']"></span>
-            {{ ownerState.isOwner ? '主人在线' : ownerState.configured ? '访客中' : '未设主人' }}
-          </span>
-        </div>
-        <p class="mb-3 text-xs leading-5 text-white/30">
-          站内弹幕只有发送者本人或主人能删，访客只看不改。主人钥匙只存在服务器上，生成时只亮一次，存好；钥匙丢了只能拿旧的换新的。
-        </p>
-
-        <button v-if="!ownerState?.configured" class="lbs-btn" :disabled="ownerBusy" @click="requestOwnerKey(null)">
-          生成主人钥匙
-        </button>
-
-        <div v-if="ownerKeyShown" class="mt-3 rounded-lg border border-adminAccent/40 bg-adminAccent/10 px-3 py-2.5">
-          <p class="text-[11px] text-adminAccent/80">立刻复制走，离开本页就不再显示：</p>
-          <p class="mt-1 select-all break-all font-mono text-base tracking-[0.2em] text-white/90">{{ ownerKeyShown }}</p>
-        </div>
-
-        <template v-if="ownerState?.configured">
-          <div v-if="!ownerState.isOwner" class="mt-1 flex gap-2">
-            <input
-              v-model="ownerInput"
-              type="password"
-              placeholder="输主人钥匙"
-              class="lbs-input flex-1"
-              @keyup.enter="enterOwnerMode"
-            />
-            <button class="lbs-btn" :disabled="ownerBusy || !ownerInput.trim()" @click="enterOwnerMode">进主人</button>
-          </div>
-          <button v-else class="lbs-btn-ghost mt-1" :disabled="ownerBusy" @click="leaveOwnerMode">退出主人模式</button>
-
-          <div class="mt-3 flex gap-2">
-            <input
-              v-model="ownerOldInput"
-              type="password"
-              placeholder="现钥匙（仅换钥时用得着）"
-              class="lbs-input flex-1"
-            />
-            <button class="lbs-btn-ghost" :disabled="ownerBusy || !ownerOldInput.trim()" @click="requestOwnerKey(ownerOldInput.trim())">换钥匙</button>
-          </div>
-        </template>
-
-        <p v-if="ownerNotice" class="mt-3 font-mono text-xs" :class="ownerNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">
-          {{ ownerNotice.text }}
-        </p>
-      </section>
-
-      <section v-if="eng && engDraft" class="lbs-card md:col-span-2">
+      <section v-if="eng && engDraft" class="lbs-card md:col-span-2 order-[22]">
         <div class="mb-4 flex items-center justify-between">
           <h3 class="lbs-title !mb-0">下载设置</h3>
           <div class="flex items-center gap-2">
@@ -2142,7 +2628,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-if="backupState" class="lbs-card md:col-span-2">
+      <section v-if="backupState" class="lbs-card order-[51]">
         <div class="mb-4 flex items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             台账备份
@@ -2188,7 +2674,7 @@ onUnmounted(() => {
         <p v-if="backupText" class="mt-2 text-xs text-adminAccent/80">{{ backupText }}</p>
       </section>
 
-      <section class="lbs-card md:col-span-2">
+      <section class="lbs-card md:col-span-2 order-[53]">
         <div class="mb-4 flex items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             数据交换
@@ -2314,8 +2800,25 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="lbs-card-danger md:col-span-2">
-        <h3 class="lbs-title-danger">危险区 · 一键清空分站</h3>
+      <!-- 回收站：删档后的捞回口，挨着危险区放——破坏性操作集中在一处，翻柜子时顺手就能确认 -->
+      <RecycleBinCard class="order-[52]" />
+
+      <button
+        v-if="!dangerOpen"
+        id="grp-danger"
+        type="button"
+        class="order-[61] md:col-span-2 flex items-center gap-2.5 rounded-2xl border border-rose-400/20 bg-rose-400/[0.04] px-5 py-3 text-left text-xs text-rose-300/60 transition hover:border-rose-400/40 hover:text-rose-200"
+        @click="gotoGroup('danger')"
+      >
+        <span class="h-3 w-[3px] rounded-full bg-rose-400/60"></span>
+        危险区 · 一键清空分站
+        <span class="ml-auto font-mono text-[11px] text-white/25">点开展开</span>
+      </button>
+      <section v-else id="grp-danger" class="lbs-card-danger md:col-span-2 order-[61]">
+        <div class="mb-1 flex items-center justify-between gap-2">
+          <h3 class="lbs-title-danger">危险区 · 一键清空分站</h3>
+          <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="dangerOpen = false">收起</button>
+        </div>
         <p class="mb-3 text-xs leading-5 text-white/30">
           把整座站拍回空仓：视频库（视频/弹幕/评论/封面）、头像表情评论图缓存、台账全部销账，引擎任务记录也一并清掉。站长登录、副登录、采集偏好、下载设置全部保留。不可撤销。
         </p>
@@ -2337,3 +2840,60 @@ onUnmounted(() => {
     <LoginDialog />
   </div>
 </template>
+
+<style scoped>
+/* 悬停预览卡专用小件：呼吸点与开关。只在这张卡上用，不挤全站装修件。 */
+.pv-dot {
+  display: inline-block;
+  height: 7px;
+  width: 7px;
+  flex: none;
+  border-radius: 9999px;
+  background: currentColor;
+}
+.pv-dot-live {
+  animation: pv-breathe 1.8s ease-out infinite;
+}
+@keyframes pv-breathe {
+  0% {
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(0, 0, 0, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+.pv-switch {
+  position: relative;
+  flex: none;
+  height: 18px;
+  width: 34px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background 0.18s ease;
+}
+.pv-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  height: 14px;
+  width: 14px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.55);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.pv-switch[aria-checked='true'] {
+  background: rgba(34, 211, 238, 0.32);
+}
+.pv-switch[aria-checked='true']::after {
+  transform: translateX(16px);
+  background: #22d3ee;
+}
+.pv-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+</style>

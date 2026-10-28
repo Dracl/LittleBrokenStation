@@ -14,7 +14,7 @@ namespace LBS.Server;
 /// 导入走「上传暂存 → 校验 → 应用（自救快照 + 现站保底 + 写 pending 标记）→ 停机 → 下次开机换库」，
 /// 换库必须赶在 StationDb 首次打开之前（Program.cs 挂在 builder.Build() 之后第一件事）。
 /// </summary>
-public sealed record ExportOptions(bool WithCreds, bool WithMedia, bool WithCmtImg, bool WithCaches);
+public sealed record ExportOptions(bool WithCreds, bool WithMedia, bool WithCmtImg, bool WithCaches, bool WithPreviews = true);
 
 public sealed record ExportManifestFile(string Path, long Bytes);
 
@@ -40,7 +40,7 @@ public sealed record ExportArchiveInfo(
     string? StationName,
     string? ExportedAtUtc);
 
-public sealed record ExportStats(long Videos, long CmtImg, long Avatars, long Emotes, long Cache, long DbBytes);
+public sealed record ExportStats(long Videos, long CmtImg, long Avatars, long Emotes, long Cache, long DbBytes, long Previews);
 
 public sealed record ExportRunResult(string Name, long Bytes);
 
@@ -171,6 +171,12 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
                     AddTree(zip, paths.Cache, "caches/cache/", tally);
                 }
 
+                if (options.WithPreviews)
+                {
+                    // 预览成片单独一勾：它是派生物，有人想瘦包就只把它去掉，不必连着三座缓存一起丢。
+                    AddTree(zip, paths.Previews, "previews/", tally);
+                }
+
                 var manifest = new ExportManifest(
                     "lbs-export", 1, stationName, DateTimeOffset.UtcNow.ToString("O"),
                     options, counts, files, tally.Count, tally.Bytes);
@@ -229,7 +235,8 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
         DirBytes(paths.Avatars),
         DirBytes(paths.Emotes),
         DirBytes(paths.Cache),
-        File.Exists(paths.DatabaseFile) ? new FileInfo(paths.DatabaseFile).Length : 0);
+        File.Exists(paths.DatabaseFile) ? new FileInfo(paths.DatabaseFile).Length : 0,
+        DirBytes(paths.Previews));
 
     /// <summary>销包：只认包名白名单，路径花活一律拒。</summary>
     public bool Delete(string name)
@@ -618,12 +625,13 @@ public static class PendingImportSwapper
             SwapFileInto(Path.Combine(staging, "cookies", "alt-login.json"), DataExchangeLayout.AltLoginFile(paths));
             SwapFileInto(Path.Combine(staging, "login", "downkyi-login.json"), DataExchangeLayout.DownkyiLoginFile(paths));
 
-            // ③ 媒体与缓存合并解盘（覆盖同名，不碰包里没带的存量）
+            // ③ 媒体与缓存合并解盘（覆盖同名，不碰包里没带的存量）；预览成片同属派生物，跟着一起回座
             CopyMerge(Path.Combine(staging, "media"), paths.Videos);
             CopyMerge(Path.Combine(staging, "cmtimg"), paths.CmtImg);
             CopyMerge(Path.Combine(staging, "caches", "avatars"), paths.Avatars);
             CopyMerge(Path.Combine(staging, "caches", "emotes"), paths.Emotes);
             CopyMerge(Path.Combine(staging, "caches", "cache"), paths.Cache);
+            CopyMerge(Path.Combine(staging, "previews"), paths.Previews);
 
             // ④ 引擎任务台账清掉：新库的行在引擎眼里是生面孔，不清会被「已存在」误拦（也正好躲开回炉判重撞车）
             var engineRows = LbsEnginePurge.PurgeEngineStorage(paths.Downkyi);

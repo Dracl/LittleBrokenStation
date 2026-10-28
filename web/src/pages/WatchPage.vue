@@ -167,7 +167,16 @@ async function onSendDanmaku({ text, pageIdx, t }) {
     })
     const body = await res.json().catch(() => null)
     if (res.ok && body?.id) {
-      localDanmaku.value.push({ id: body.id, pageIdx, t, text })
+      // 服务端把身份一并算好回过来：刚发的这条立刻挂自己的脸与冠，不用等下一轮重拉。
+      localDanmaku.value.push({
+        id: body.id,
+        pageIdx,
+        t,
+        text,
+        fromOwner: body.fromOwner === true,
+        face: typeof body.face === 'string' && body.face ? body.face : null,
+        canDelete: true,
+      })
     }
   } catch {
     /* 后端没应答就静默：本地体验优先，不弹窗打扰看片 */
@@ -180,6 +189,78 @@ async function onDeleteDanmaku(id) {
     await fetch(`/api/videos/danmaku/${id}`, { method: 'DELETE' })
   } catch {
     /* 删不动拉倒，重进页面会自愈 */
+  }
+}
+
+// ─── 投稿人自管：重拉 B 站快照（评论区 + 弹幕）与删自己的稿 ───
+// 可见性由服务端算好的 data.canManage 说了算（投稿人本人 ∥ 站长），前端只是藏钮，真门在端点里。
+const manageBusy = ref(false)
+const removing = ref(false)
+const commentsRev = ref(0)
+const notice = ref(null)
+let noticeTimer = null
+
+function showNotice(kind, text) {
+  notice.value = { kind, text }
+  if (noticeTimer) clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => (notice.value = null), 7000)
+}
+
+onBeforeUnmount(() => {
+  if (noticeTimer) clearTimeout(noticeTimer)
+})
+
+// 弹幕覆写在同一路径，DanmakuLayer 只认 src 变化；换个 ?v= 既顶它重取，又绕过 /media 的 ETag 缓存。
+function bumpDanmaku() {
+  const page = data.value?.pages?.find((p) => p.index === activeIndex.value)
+  if (page?.danmakuUrl) {
+    page.danmakuUrl = `${String(page.danmakuUrl).split('?')[0]}?v=${Date.now()}`
+  }
+}
+
+async function refreshSnapshots() {
+  if (manageBusy.value || !data.value) return
+  manageBusy.value = true
+  const id = data.value.id
+  const parts = []
+  try {
+    const [cmt, dm] = await Promise.all([
+      fetch(`/api/videos/${id}/comments`, { method: 'POST' }).then((r) => r.json().catch(() => null).then((b) => ({ ok: r.ok, body: b }))),
+      fetch(`/api/videos/${id}/danmaku-refresh`, { method: 'POST' }).then((r) => r.json().catch(() => null).then((b) => ({ ok: r.ok, body: b }))),
+    ])
+    parts.push(cmt.body?.message ?? (cmt.ok ? '评论已归档' : '评论采集失败'))
+    parts.push(dm.body?.message ?? (dm.ok ? 'B 站弹幕已重拉' : '弹幕重拉失败'))
+    if (cmt.ok) commentsRev.value += 1
+    if (dm.ok) bumpDanmaku()
+    const fails = [cmt.ok, dm.ok].filter((ok) => !ok).length
+    showNotice(fails === 2 ? 'err' : fails ? 'warn' : 'ok', parts.join('；'))
+  } catch {
+    showNotice('err', '分站后端没有应答')
+  } finally {
+    manageBusy.value = false
+  }
+}
+
+async function removeSubmission() {
+  if (!data.value || removing.value) return
+  const label = data.value.title || data.value.bvid
+  if (!window.confirm(`确定把「${label}」从分站彻底删除？本地文件（视频/弹幕/字幕/封面）会一并清掉，不可恢复。`)) {
+    return
+  }
+  removing.value = true
+  try {
+    const res = await fetch(`/api/videos/${data.value.id}`, { method: 'DELETE' })
+    const body = await res.json().catch(() => null)
+    if (res.ok) {
+      // 这条馆藏已经不存在了，把用户送回首页卡阵，别留在空页面上。
+      router.push('/')
+      return
+    }
+    showNotice('err', body?.message ?? '删不动，稍后再试')
+  } catch {
+    showNotice('err', '分站后端没有应答')
+  } finally {
+    removing.value = false
   }
 }
 
@@ -371,19 +452,47 @@ const playerShellW = ref(0)
               <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」；右侧访客下载 -->
               <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 py-2">
                 <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" />
-                <button
-                  class="flex shrink-0 items-center gap-1.5 rounded-full border border-stationPink px-4 py-1.5 text-sm text-stationPink transition hover:bg-stationPink hover:text-white disabled:cursor-not-allowed disabled:border-black/10 disabled:text-inkFaint disabled:hover:bg-transparent"
-                  :disabled="!currentPage?.videoUrl || !downloadInfo"
-                  :title="downloadInfo ? `把正在看的版本（${(downloadInfo.codec ?? '主版本').toUpperCase()}）存到本地` : '这一 P 还没下载，没东西可拿'"
-                  @click="downloadCurrent"
-                >
-                  <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 4v11m0 0 4-4m-4 4-4-4M4 19h16" />
-                  </svg>
-                  <span>
-                    下载{{ downloadInfo?.codec ? ' · ' + downloadInfo.codec.toUpperCase() : '' }}{{ downloadInfo?.bytes ? ' · ' + fmtDlBytes(downloadInfo.bytes) : '' }}
-                  </span>
-                </button>
+                <div class="flex shrink-0 items-center gap-2">
+                  <!-- 投稿人自管两钮（下载胶囊左侧）：白底描边，hover 才上色，不抢下载胶囊的风头 -->
+                  <template v-if="data.canManage">
+                    <button
+                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 text-inkSub transition hover:border-stationBlue hover:text-stationBlue disabled:cursor-not-allowed disabled:opacity-40"
+                      :disabled="manageBusy"
+                      title="重新采集评论区快照与 B 站弹幕（分站朋友发的站内弹幕不受影响）"
+                      @click="refreshSnapshots"
+                    >
+                      <svg v-if="!manageBusy" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                      <svg v-else viewBox="0 0 24 24" class="h-4 w-4 animate-spin" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 9 9" stroke-linecap="round" />
+                      </svg>
+                    </button>
+                    <button
+                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 text-inkSub transition hover:border-rose-500 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
+                      :disabled="removing"
+                      title="删掉这个馆藏（含本地文件），仅投稿人本人与站长可删"
+                      @click="removeSubmission"
+                    >
+                      <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1L6 7" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </template>
+                  <button
+                    class="flex shrink-0 items-center gap-1.5 rounded-full border border-stationPink px-4 py-1.5 text-sm text-stationPink transition hover:bg-stationPink hover:text-white disabled:cursor-not-allowed disabled:border-black/10 disabled:text-inkFaint disabled:hover:bg-transparent"
+                    :disabled="!currentPage?.videoUrl || !downloadInfo"
+                    :title="downloadInfo ? `把正在看的版本（${(downloadInfo.codec ?? '主版本').toUpperCase()}）存到本地` : '这一 P 还没下载，没东西可拿'"
+                    @click="downloadCurrent"
+                  >
+                    <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 4v11m0 0 4-4m-4 4-4-4M4 19h16" />
+                    </svg>
+                    <span>
+                      下载{{ downloadInfo?.codec ? ' · ' + downloadInfo.codec.toUpperCase() : '' }}{{ downloadInfo?.bytes ? ' · ' + fmtDlBytes(downloadInfo.bytes) : '' }}
+                    </span>
+                  </button>
+                </div>
               </div>
 
               <p
@@ -393,7 +502,7 @@ const playerShellW = ref(0)
                 <span v-html="mentionHtml(data.description)"></span>
               </p>
 
-              <CommentSection class="mt-5 border-t border-black/5 pt-5" :src="data.commentsUrl" :video-id="data.id" :up-mid="data.upMid" />
+              <CommentSection :key="commentsRev" class="mt-5 border-t border-black/5 pt-5" :src="data.commentsUrl" :video-id="data.id" :up-mid="data.upMid" />
             </div>
 
             <!-- 右栏（不吸顶，随页滚动）：UP 卡、弹幕列表、分 P 列表、接下来播放 -->
@@ -422,6 +531,14 @@ const playerShellW = ref(0)
 
       <ShareDialog v-if="shareFor" :target="shareFor" @close="shareFor = null" @done="onShared" />
       <p v-if="shareToast" class="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-inkMain/85 px-4 py-2 text-xs text-white shadow-lg">{{ shareToast }}</p>
+      <p
+        v-if="notice"
+        class="fixed bottom-6 left-1/2 z-50 max-w-[80vw] -translate-x-1/2 truncate rounded-full px-4 py-2 text-xs text-white shadow-lg"
+        :class="notice.kind === 'err' ? 'bg-rose-500/90' : notice.kind === 'warn' ? 'bg-amber-500/90' : 'bg-inkMain/85'"
+        :title="notice.text"
+      >
+        {{ notice.text }}
+      </p>
     </main>
   </div>
 </template>

@@ -1,5 +1,6 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { CROWN, crownPath as buildCrownPath } from '../utils/crown.js'
 
 const props = defineProps({
   src: { type: String, default: null },
@@ -135,25 +136,8 @@ function fontStr(fontPx) {
   return `${props.bold ? 'bold ' : ''}${fontPx}px ${FONT_STACKS[props.family] ?? FONT_STACKS.hei}`
 }
 
-// ─── 站长头像：主人发的弹幕挂站长登录头像（服务端 nav 缓存，层启动时只取一次；取不到就用默认小人）───
-let ownerFaceImg = null
-let faceVersion = 0
-
-fetch('/api/station/profile')
-  .then((res) => (res.ok ? res.json() : null))
-  .then((profile) => {
-    const url = profile?.face
-    if (!url) return
-    const img = new Image()
-    img.onload = () => {
-      ownerFaceImg = img
-      faceVersion++ // styleTag 变号，药丸位图自动作废重建
-    }
-    img.src = url
-  })
-  .catch(() => { /* 没头像就没，默认小人顶上 */ })
-
-// 站内弹幕造型（方案 A）：半透黑药丸 + 白圆 B 站风小人头像（主人弹幕换站长真容）+ 正文。
+// ─── 站内弹幕造型（方案 A）：半透黑药丸 + 白圆 B 站风小人头像 + 正文。
+// 全员同款，不给站长开小灶：谁在说话靠药丸右上角那颗金冠认（同顶栏 CrownBadge 的形与色）。
 function drawPillBadge(oc, x, y, d) {
   oc.fillStyle = '#ffffff'
   oc.beginPath()
@@ -174,9 +158,93 @@ function drawPillBadge(oc, x, y, d) {
   oc.restore()
 }
 
+// 站长角标冠：贴着小圆的圆弧现算的一顶冠（3 尖、中尖最高两肩低，底边就是圆周上的一段弧），
+// 与头像角标共用 utils/crown.js 那一套数。冠整体退出圆外悬在右上，不压头像一根毫毛。
+const crownGeoCache = new Map()
+
+function ownerCrownGeo(d) {
+  const key = Math.round(d * 100) // 字号只有几档，取整后命中率够用
+  if (crownGeoCache.has(key)) return crownGeoCache.get(key)
+  if (crownGeoCache.size >= 32) crownGeoCache.delete(crownGeoCache.keys().next().value)
+  let geo = null
+  const g = buildCrownPath(0, 0, d) // 按圆心在origin生成，画的时候平移过去
+  try {
+    if (typeof Path2D === 'function') geo = { p: new Path2D(g.path), gem: g.gem, reach: g.reach }
+  } catch {
+    geo = null // 老机器上 Path2D 不可用：不画冠，小圆照旧
+  }
+  crownGeoCache.set(key, geo)
+  return geo
+}
+
+// 冠尖比圆边多出多少：药丸位图按它往上/右让位（没 Path2D 也要按公式把地方留足）。
+function crownProtrusion(d) {
+  const geo = ownerCrownGeo(d)
+  return geo ? geo.reach : buildCrownPath(0, 0, d).reach
+}
+
+function drawOwnerCrown(oc, x, y, d) {
+  const geo = ownerCrownGeo(d)
+  if (!geo) return
+  oc.save()
+  oc.translate(x + d / 2, y + d / 2)
+  oc.lineJoin = 'round'
+  oc.fillStyle = CROWN.gold
+  oc.fill(geo.p)
+  oc.lineWidth = Math.max(0.4, d * CROWN.sw) // 地底 0.4px：再细到 1x 屏上会被抗锯齿抹成一道雾
+  oc.strokeStyle = CROWN.stroke
+  oc.stroke(geo.p)
+  oc.fillStyle = CROWN.gem
+  oc.beginPath()
+  oc.arc(geo.gem.cx, geo.gem.cy, geo.gem.r, 0, Math.PI * 2)
+  oc.fill()
+  oc.restore()
+}
+
+// 席位真容：URL → 位图的缓存。图比字晚到，到货就把 faceSeq 加一（styleTag 变号），
+// 已缓存的药丸位图集体作废重建；不跨会话保留，反正图床自会缓存。
+const faceCache = new Map()
+const FACE_LIMIT = 96
+let faceSeq = 0
+
+function faceOf(url) {
+  if (!url) return null
+  const hit = faceCache.get(url)
+  if (hit) return hit.img // 没到货/坏链都是 null，调用方画小圆兼底
+  if (faceCache.size >= FACE_LIMIT) faceCache.delete(faceCache.keys().next().value)
+  const entry = { img: null }
+  faceCache.set(url, entry)
+  const img = new Image()
+  // 不加 crossOrigin：只画进位图、从不读回像素，省一次 CORS 预检，图床不给头也能成。
+  img.onload = () => {
+    entry.img = img
+    faceSeq++
+  }
+  img.onerror = () => {
+    // 坏链就不再重试（每帧重取会把图床打穿），永进画小圆
+    entry.img = null
+  }
+  img.src = url
+  return null
+}
+
+// 真容圆裁：白底垫一下再画，图带透明或没铺满不会露出药丸的黑底。
+function drawFaceBadge(oc, x, y, d, img) {
+  oc.save()
+  oc.beginPath()
+  oc.arc(x + d / 2, y + d / 2, d / 2, 0, Math.PI * 2)
+  oc.clip()
+  oc.fillStyle = '#ffffff'
+  oc.fillRect(x, y, d, d)
+  oc.drawImage(img, x, y, d, d)
+  oc.restore()
+}
+
 function bitmapFor(ctx, item, fontPx) {
   if (item.bmp && item.bmpFont === fontPx && item.bmpStyle === styleTag()) return item.bmp
-  const key = `${item.badge ? 'P' : 'N'}|${item.text}|${item.color}|${fontPx}|${styleTag()}`
+  // 键里得带身份与脸：不然站长与旁人发了同一句话会共用同一张位图，金冠与真容就串到别人头上了。
+  const face = faceOf(item.face)
+  const key = `${item.badge ? 'P' : 'N'}${item.fromOwner ? 'O' : '-'}|${item.face || '-'}|${item.text}|${item.color}|${fontPx}|${styleTag()}`
   let entry = bmpCache.get(key)
   if (!entry) {
     const font = fontStr(fontPx)
@@ -188,6 +256,7 @@ function bitmapFor(ctx, item, fontPx) {
     let h
     let textX = pad
     let textY = pad
+    let extraTop = 0 // 站长金冠探到圆外，往上让出来的高度（drawImage 靠 padT 抵消，药丸不会偏下）
     const off = document.createElement('canvas')
     if (item.badge) {
       // 药丸包住头像与正文；药丸比字稍高，垂直居中。
@@ -195,36 +264,43 @@ function bitmapFor(ctx, item, fontPx) {
       const avatarD = pillH * 0.88
       const innerX = fontPx * 0.2
       const gapA = fontPx * 0.28
+      // 冠整体悬在圆外，得先给位图圈出上/右两块地方；padT 多扣一份，药丸中线才不会往下跑。
+      const crownOver = item.fromOwner ? crownProtrusion(avatarD) : 0
+      extraTop = Math.ceil(crownOver)
+      const extraRight = Math.ceil(crownOver * 0.85)
       textX = pad + innerX + avatarD + gapA
-      textY = pad + pillH / 2 // middle 基线直接坐药丸中线，CJK 字形居中不再靠估高
-      w = Math.max(1, Math.ceil(textX + textW + innerX + pad))
-      h = Math.max(1, Math.ceil(pillH + pad * 2))
+      textY = pad + extraTop + pillH / 2 // middle 基线直接坐药丸中线，CJK 字形居中不再靠估高
+      w = Math.max(1, Math.ceil(textX + textW + innerX + pad + extraRight))
+      h = Math.max(1, Math.ceil(pillH + pad * 2 + extraTop))
       off.width = w
       off.height = h
       const oc = off.getContext('2d')
       oc.fillStyle = 'rgba(17,17,20,0.52)'
       oc.beginPath()
       if (oc.roundRect) {
-        oc.roundRect(pad, pad, w - pad * 2, pillH, pillH / 2)
+        oc.roundRect(pad, pad + extraTop, w - pad * 2 - extraRight, pillH, pillH / 2)
       } else {
-        oc.rect(pad, pad, w - pad * 2, pillH)
+        oc.rect(pad, pad + extraTop, w - pad * 2 - extraRight, pillH)
       }
       oc.fill()
       const avatarX = pad + innerX
-      const avatarY = pad + (pillH - avatarD) / 2
-      if (item.fromOwner && ownerFaceImg) {
-        // 主人弹幕：圆裁站长真容顶替默认小人。
-        oc.save()
-        oc.beginPath()
-        oc.arc(avatarX + avatarD / 2, avatarY + avatarD / 2, avatarD / 2, 0, Math.PI * 2)
-        oc.clip()
-        oc.drawImage(ownerFaceImg, avatarX, avatarY, avatarD, avatarD)
-        oc.restore()
-      } else {
-        drawPillBadge(oc, avatarX, avatarY, avatarD)
-      }
+      const avatarY = pad + extraTop + (pillH - avatarD) / 2
+      // 有席位真容就圆裁那张脸；老行/未登录/没头像/图没到货，都画同颗白圆粉小人。
+      if (face) drawFaceBadge(oc, avatarX, avatarY, avatarD, face)
+      else drawPillBadge(oc, avatarX, avatarY, avatarD)
+      if (item.fromOwner) drawOwnerCrown(oc, avatarX, avatarY, avatarD)
       oc.font = font
-      oc.textBaseline = 'middle'
+      // 垂直居中按「这一串字的实际墨迹」算，不按字体行高：CJK 的字在 em 框里偏上，
+      // 拿 middle 基线会让字比小圆高出 1~2px（截图里那颗圆就是明显坐得比字低）。
+      const ink = oc.measureText(item.text)
+      const asc = Number.isFinite(ink.actualBoundingBoxAscent) && ink.actualBoundingBoxAscent > 0
+        ? ink.actualBoundingBoxAscent
+        : fontPx * 0.8
+      const desc = Number.isFinite(ink.actualBoundingBoxDescent) && ink.actualBoundingBoxDescent >= 0
+        ? ink.actualBoundingBoxDescent
+        : fontPx * 0.2
+      textY = pad + extraTop + pillH / 2 + (asc - desc) / 2 // alphabetic 基线，墨迹中心坐药丸中线
+      oc.textBaseline = 'alphabetic'
       oc.lineJoin = 'round'
       oc.strokeStyle = 'rgba(0,0,0,0.55)'
       oc.lineWidth = Math.max(1, fontPx / 18)
@@ -255,7 +331,7 @@ function bitmapFor(ctx, item, fontPx) {
       oc.fillStyle = item.color
       oc.fillText(item.text, pad, pad)
     }
-    entry = { canvas: off, width: w, pad, padT: pad }
+    entry = { canvas: off, width: w, pad, padT: pad + extraTop }
     if (bmpCache.size >= BMP_LIMIT) {
       // 简单 FIFO 蒸发，弹幕文本重复度高，命中率不受影响。
       bmpCache.delete(bmpCache.keys().next().value)
@@ -269,7 +345,7 @@ function bitmapFor(ctx, item, fontPx) {
 }
 
 function styleTag() {
-  return `${props.family}|${props.bold ? 'b' : 'n'}|${props.stroke}|f${faceVersion}`
+  return `${props.family}|${props.bold ? 'b' : 'n'}|${props.stroke}|f${faceSeq}`
 }
 
 // ---- 活跃集合：双指针增量维护，杜绝每帧全表扫描 ----
@@ -521,7 +597,7 @@ function injectLocal(all) {
     if (!li.text) continue
     injectedLocal.add(li.id)
     const start = Number.isFinite(li.t) ? li.t : t
-    items.push({ start, end: start + 12, mode: 'scroll', x: null, y: null, color: '#FFFFFF', text: li.text, badge: true, fromOwner: li.fromOwner === true, localId: li.id, canDelete: li.canDelete !== false, lane: null, gone: false, width: null, bmp: undefined })
+    items.push({ start, end: start + 12, mode: 'scroll', x: null, y: null, color: '#FFFFFF', text: li.text, badge: true, fromOwner: li.fromOwner === true, face: typeof li.face === 'string' && li.face ? li.face : null, localId: li.id, canDelete: li.canDelete !== false, lane: null, gone: false, width: null, bmp: undefined })
   }
 }
 watch(() => props.localItems.length, () => injectLocal(false))

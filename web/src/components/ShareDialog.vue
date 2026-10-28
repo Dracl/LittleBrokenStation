@@ -4,6 +4,7 @@
 //   站内放映厅：{ type:'video', bvid, title, cover, upName }
 // 安利语随信落库，定格卡面由后端定格（dyn_json 同族），对方点卡回橱窗/放映厅。SubmitDialog 同款语言。
 import { computed, onMounted, ref } from 'vue'
+import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 
 const props = defineProps({
   target: { type: Object, required: true },
@@ -104,14 +105,12 @@ onMounted(loadPeople)
       </div>
       <div v-else class="mx-4 mt-3 flex items-center gap-2.5 rounded-xl bg-[#f6f7f8] px-3 py-2.5">
         <img
-          v-if="target.authorFaceUrl"
-          :src="target.authorFaceUrl"
+          :src="target.authorFaceUrl || defaultAvatar"
           referrerpolicy="no-referrer"
           class="h-8 w-8 shrink-0 rounded-full object-cover"
           alt=""
-          @error="$event.target.style.display = 'none'"
+          @error="onAvatarError"
         />
-        <span v-else class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-stationPink/15 text-xs text-stationPink">{{ (target.authorName || '?').slice(0, 1) }}</span>
         <span class="min-w-0 flex-1">
           <span class="block text-[12px] font-medium text-inkMain">{{ target.authorName || 'B站作者' }}</span>
           <span class="block truncate text-[12px] text-inkSub">{{ summary }}</span>
@@ -133,8 +132,7 @@ onMounted(loadPeople)
             :class="picked === p.memberId ? 'bg-stationPink/10 ring-1 ring-stationPink/50' : 'hover:bg-stationPink/5'"
             @click="picked = p.memberId"
           >
-            <img v-if="p.faceUrl" :src="p.faceUrl" referrerpolicy="no-referrer" class="h-7 w-7 rounded-full object-cover" alt="" />
-            <span v-else class="flex h-7 w-7 items-center justify-center rounded-full bg-lineSoft text-[11px] text-inkFaint">{{ (p.displayName || '?').slice(0, 1) }}</span>
+            <img :src="p.faceUrl || defaultAvatar" referrerpolicy="no-referrer" class="h-7 w-7 rounded-full object-cover" alt="" @error="onAvatarError" />
             <span class="min-w-0 flex-1 truncate text-[13px] text-inkMain">{{ p.displayName }}</span>
             <span v-if="picked === p.memberId" class="text-[11px] text-stationPink">✓</span>
           </button>

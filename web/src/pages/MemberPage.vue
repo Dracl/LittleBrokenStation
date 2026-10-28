@@ -5,6 +5,7 @@ import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
 import { member, loaded, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember } from '../memberStore'
 import { friendlyTime } from '../utils/time'
+import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 
 const busy = ref(false)
 const notice = ref(null) // { kind, text }
@@ -156,19 +157,17 @@ async function doLogout() {
           <div class="flex flex-wrap items-center gap-5">
             <span class="relative block h-16 w-16 shrink-0">
               <img
-                v-if="member.faceUrl"
-                :src="member.faceUrl"
+                :src="member.faceUrl || defaultAvatar"
                 :alt="member.nickname"
                 referrerpolicy="no-referrer"
                 class="h-full w-full rounded-full object-cover ring-2 ring-stationPink/20"
+                @error="onAvatarError"
               />
-              <span v-else class="flex h-full w-full items-center justify-center rounded-full bg-lineSoft text-xl text-inkFaint">
-                {{ (member.nickname || member.username || '?').slice(0, 1).toUpperCase() }}
-              </span>
               <CrownBadge
                 v-if="member"
                 :tier="member.role"
-                class="absolute -right-1.5 -top-1.5 h-5 w-5"
+                mode="fit"
+                class="pointer-events-none absolute inset-0 h-full w-full"
               />
             </span>
 
@@ -211,10 +210,14 @@ async function doLogout() {
           </div>
 
           <!-- 入站统计 -->
-          <div class="mt-6 grid grid-cols-2 gap-x-6 gap-y-4 border-t border-lineSoft/70 pt-5 sm:max-w-[420px]">
+          <div class="mt-6 grid grid-cols-3 gap-x-6 gap-y-4 border-t border-lineSoft/70 pt-5 sm:max-w-[560px]">
             <div class="flex flex-col gap-1">
               <b class="font-mono text-[26px] font-medium leading-none text-inkMain">{{ member.submitted ?? 0 }}</b>
-              <span class="text-xs text-inkFaint">投稿进站（条）</span>
+              <span class="text-xs text-inkFaint">投稿进站</span>
+            </div>
+            <div class="flex flex-col gap-1">
+              <b class="font-mono text-[26px] font-medium leading-none text-inkMain">{{ member.danmaku ?? 0 }}</b>
+              <span class="text-xs text-inkFaint">发过的弹幕</span>
             </div>
             <div class="flex flex-col gap-1">
               <b class="font-mono text-[26px] font-medium leading-none text-inkMain">{{ fmtBytes(member.bytes) }}</b>

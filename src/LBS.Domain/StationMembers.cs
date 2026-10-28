@@ -34,7 +34,7 @@ public sealed record MemberAccount(
 public sealed record MemberAccountCredential(long Id, long MemberId, long AccountMid, string Cookie);
 
 /// <summary>某成员的入站概览（站长室与未来 AI 都吃这口）。</summary>
-public sealed record MemberIngestStats(long SubmitterMemberId, int VideoCount, long TotalBytes);
+public sealed record MemberIngestStats(long SubmitterMemberId, int VideoCount, long TotalBytes, int DanmakuCount = 0);
 
 /// <summary>成员状态三字经。</summary>
 public static class MemberStatus

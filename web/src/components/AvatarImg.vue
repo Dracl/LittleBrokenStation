@@ -1,14 +1,15 @@
 <script setup>
 // 头像显示倒挂（站长方针：平时白嫖 B 站图床，嫖不到回落本地）：
 // src 起手 = 远程热链缩略（hdslb 裸链拼 _220x220.jpg，几 KB；已带 @ 或非 hdslb 域原样，cover.js 同款防御）；
-// 热链挂了切 faceLocal（data/avatars 本地原图，存档最高清）；两边都空渲灰底首字占位。
-// 尺寸、底色、字号全由外层 class 控制（单根条件渲染，class 落到 img 或占位 span 头上）。
+// 热链挂了切 faceLocal（data/avatars 本地原图，存档最高清）；两边都空就顶全站默认小人。
+// 尺寸、底色、字号全由外层 class 控制（单根条件渲染，class 落到 img 头上）。
 import { computed, ref } from 'vue'
+import { defaultAvatar } from '../utils/avatar.js'
 
 const props = defineProps({
   face: { type: String, default: '' }, // 远程头像 url（原图或已定格的本地路径都可）
   faceLocal: { type: String, default: '' }, // /avatars/xxx 本地原图
-  name: { type: String, default: '' }, // 占位首字用
+  name: { type: String, default: '' }, // 默认头像的 alt 用（读屏与裂图提示）
 })
 
 const failedRemote = ref(false)
@@ -45,5 +46,11 @@ function onError() {
     alt=""
     @error="onError"
   />
-  <span v-else class="inline-flex shrink-0 select-none items-center justify-center">{{ (name ? Array.from(name)[0] : '?') }}</span>
+  <img
+    v-else
+    :src="defaultAvatar"
+    :alt="name || ''"
+    decoding="async"
+    class="shrink-0 object-cover"
+  />
 </template>

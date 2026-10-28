@@ -231,6 +231,7 @@ public static class MemberEndpoints
                 }),
                 submitted = stats?.VideoCount ?? 0,
                 bytes = stats?.TotalBytes ?? 0,
+                danmaku = stats?.DanmakuCount ?? 0,
             });
         });
 

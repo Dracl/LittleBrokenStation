@@ -289,11 +289,12 @@ public sealed class StatusSyncWorker(
     /// <summary>
     /// UP 主名片采集：到站时顺手采一次头像/简介/粉丝。失败也销账（up_face 置空串），
     /// 免得每次打开观看页都去扰 B 站；要重采删 video_meta 对应行即可。
+    /// 除了 NULL，陈旧值（/avatars/ 下文件已不存在）也算没采好，会再出去采一趟。
     /// </summary>
     private async Task TryFetchUpAsync(long videoId)
     {
-        var (mid, collected) = db.GetUpCardState(videoId);
-        if (mid is null || collected)
+        var (mid, face) = db.GetUpCardState(videoId);
+        if (mid is null || !LbsUpInfoFetcher.NeedsRefetch(face, paths.Avatars))
         {
             return;
         }

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import TopBar from '../components/TopBar.vue'
 import AdminVideoCell from '../components/AdminVideoCell.vue'
 import { coverThumb } from '../utils/cover'
+import { previewHovering } from '../utils/previewHover'
 import { submitDialogOpen } from '../submitStore'
 
 // 两百多件馆藏每 5 秒整数组替换，深响应式代理是白付的税；shallowRef 只在整组换新的时候通知视图。
@@ -35,7 +36,16 @@ function homeTier(v, now) {
 const orderedVideos = computed(() => {
   const now = Date.now()
   const seed = homeSeed.value
+  // 悬停锁：鼠标停在某张卡上时把当下这份 id 名单钉住，轮询整组替换也不许让卡片在鼠标底下换人；
+  // 名单外的新货排到队尾，等鼠标移开再归位。只锁顺序，取数与内容照常刷新。
+  const lock = hoverLock.value
+  const rank = lock ? new Map(lock.map((id, i) => [id, i])) : null
   return [...videos.value].sort((a, b) => {
+    if (rank) {
+      const ra = rank.has(a.id) ? rank.get(a.id) : rank.size
+      const rb = rank.has(b.id) ? rank.get(b.id) : rank.size
+      return ra !== rb ? ra - rb : b.id - a.id
+    }
     const ta = homeTier(a, now)
     const tb = homeTier(b, now)
     if (ta !== tb) return ta - tb
@@ -46,8 +56,15 @@ const orderedVideos = computed(() => {
   })
 })
 
+// 悬停进行中 = VideoCard 起了悬停预览（或正在 350ms 延时窗口里）。进出各翻一次，锁只在真正悬停时存在。
+const hoverLock = ref(null)
+watch(previewHovering, (on) => {
+  hoverLock.value = on ? orderedVideos.value.map((v) => v.id) : null
+})
+
 function reshuffle() {
   homeSeed.value = (homeSeed.value * 1103515245 + 12345) >>> 0 ^ Math.floor(Math.random() * 0x7fffffff)
+  hoverLock.value = null // 手动换一批是明确意图，悬停锁不许拦着
   featured.value = [] // 大幕跟卡阵一起换一批
   featIdx.value = 0
   buildFeatured()
@@ -163,9 +180,17 @@ async function fetchComments(video) {
   busy.add(video.id)
   commentBusy.value = busy
   try {
-    const res = await fetch(`/api/videos/${video.id}/comments`, { method: 'POST' })
-    const body = await res.json().catch(() => null)
-    showNotice(res.ok ? 'ok' : 'err', body?.message ?? (res.ok ? '评论已归档' : '评论采集失败'))
+    // 一枚钮两件活：评论快照 + B 站弹幕快照（站内弹幕住在 danmaku_local，重拉碰不到它），与放映厅同形。
+    const [cmt, dm] = await Promise.all([
+      fetch(`/api/videos/${video.id}/comments`, { method: 'POST' }).then((r) => r.json().catch(() => null).then((b) => ({ ok: r.ok, body: b }))),
+      fetch(`/api/videos/${video.id}/danmaku-refresh`, { method: 'POST' }).then((r) => r.json().catch(() => null).then((b) => ({ ok: r.ok, body: b }))),
+    ])
+    const parts = [
+      cmt.body?.message ?? (cmt.ok ? '评论已归档' : '评论采集失败'),
+      dm.body?.message ?? (dm.ok ? 'B 站弹幕已重拉' : '弹幕重拉失败'),
+    ]
+    const fails = [cmt.ok, dm.ok].filter((ok) => !ok).length
+    showNotice(fails === 2 ? 'err' : 'ok', parts.join('；'))
   } catch {
     showNotice('err', '分站后端没有应答')
   } finally {
@@ -346,6 +371,7 @@ watch(sentinelEl, (el) => {
             :video="video"
             :comment-busy="commentBusy.has(video.id)"
             :revive-busy="reviveBusy.has(video.id)"
+            :can-manage="!!video.canManage"
             @fetch-comments="fetchComments"
             @revive="reviveVideo"
             @requeue="requeueVideo"
@@ -361,6 +387,7 @@ watch(sentinelEl, (el) => {
             :video="video"
             :comment-busy="commentBusy.has(video.id)"
             :revive-busy="reviveBusy.has(video.id)"
+            :can-manage="!!video.canManage"
             @fetch-comments="fetchComments"
             @revive="reviveVideo"
             @requeue="requeueVideo"
