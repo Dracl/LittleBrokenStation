@@ -31,11 +31,25 @@ public sealed class StatusSyncWorker(
 
     private readonly Dictionary<long, StallWatch> _stalled = new();
 
+    // 钉子户名片补采：单稿 UP 站内无现货可蹭、Arrived 后又永不再入站重采——每 24 轮（约两分钟）挑两条零散补采，
+    // 节奏慢到不扰 B 站；没采集号时 TryFetchUpAsync 自己空转，不用这里把关。
+    private const int UpCardRescueEveryPasses = 24;
+    private const int UpCardRescueBatch = 2;
+    private int _passesSinceUpCardRescue;
+
     private sealed record StallWatch(long Bytes, DownloadPhase Phase, DateTimeOffset StuckSince, bool Flagged);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("状态同步员上岗，每 {Seconds} 秒巡视一次下载中的馆藏", Interval.TotalSeconds);
+
+        // 开局对账：头像文件换过 sha1 命名，早年 up-{mid}.jpg 那代老账全部丢链——先从同站现货里蹭一波（零出门），
+        // 免得 UpCard 永远 404 顶灰占位；真正没现货可蹭的留给到站重采的老路。
+        var borrowed = db.BackfillUpCardsFromShared();
+        if (borrowed > 0)
+        {
+            logger.LogInformation("UP 名片开局蹭库：{Count} 条老账改了同站现货", borrowed);
+        }
 
         using var timer = new PeriodicTimer(Interval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
@@ -59,6 +73,23 @@ public sealed class StatusSyncWorker(
     {
         await SyncMainVideosAsync(cancellationToken);
         await SyncCodecVersionsAsync(cancellationToken);
+        await RescueStuckUpCardsAsync(cancellationToken);
+    }
+
+    /// <summary>钉子户补采：把脸没落盘又无现货可蹭的行零散挑几条出门重采（重采前 TryFetchUpAsync 自己会再蹭一次库）。</summary>
+    private async Task RescueStuckUpCardsAsync(CancellationToken cancellationToken)
+    {
+        if (++_passesSinceUpCardRescue < UpCardRescueEveryPasses)
+        {
+            return;
+        }
+
+        _passesSinceUpCardRescue = 0;
+        foreach (var videoId in db.ListUpCardsBeyondSalvage(UpCardRescueBatch))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await TryFetchUpAsync(videoId);
+        }
     }
 
     private async Task SyncMainVideosAsync(CancellationToken cancellationToken)
@@ -296,6 +327,15 @@ public sealed class StatusSyncWorker(
         var (mid, face) = db.GetUpCardState(videoId);
         if (mid is null || !LbsUpInfoFetcher.NeedsRefetch(face, paths.Avatars))
         {
+            return;
+        }
+
+        // 同站先蹭：同一位 UP 的别稿已有化好的名片就直接抄一份，不扰 B 站也不占采集号；
+        // 没现货可蹭才继续下面的出门流程。
+        if (db.FindSharedUpCardByMid(mid.Value, videoId) is { } shared)
+        {
+            db.SetUpInfo(videoId, shared.Face, shared.Sign, shared.Fans);
+            logger.LogInformation("馆藏 {VideoId} UP 名片同站蹭成：{Face}", videoId, shared.Face);
             return;
         }
 

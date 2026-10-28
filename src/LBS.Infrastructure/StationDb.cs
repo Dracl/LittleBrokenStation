@@ -1890,6 +1890,166 @@ public sealed partial class StationDb
         return (mid, reader.IsDBNull(1) ? null : reader.GetString(1));
     }
 
+    /// <summary>同站可蹭的名片快照：同一位 UP 的另一条稿子把头像化到了本地且盘上真有件。</summary>
+    public sealed record UpCardCopy(string Face, string? Sign, long? Fans);
+
+    /// <summary>
+    /// 该不该去蹭：本行脸是 null/空串/本地件丢链（早年 up-{mid}.jpg 命名那一代）就算该蹭；
+    /// 热链按站长方针算能用，不蹭（白嫖图床本来就是第一选择）。
+    /// </summary>
+    private bool ShouldBorrowFace(string? face)
+    {
+        if (string.IsNullOrWhiteSpace(face))
+        {
+            return true;
+        }
+
+        var value = face.Trim();
+        if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !IsLocalFaceOnDisk(value);
+    }
+
+    /// <summary>/avatars/... 落盘验货：前缀对、leaf 不穿目录、文件真在。其余一律 not usable。</summary>
+    private bool IsLocalFaceOnDisk(string value)
+    {
+        if (!value.StartsWith("/avatars/", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var leaf = value["/avatars/".Length..]
+            .Replace('/', Path.DirectorySeparatorChar)
+            .Replace('\\', Path.DirectorySeparatorChar);
+        if (leaf.Length == 0 || leaf.Contains("..", StringComparison.Ordinal) || Path.IsPathRooted(leaf))
+        {
+            return false;
+        }
+
+        return File.Exists(Path.Combine(_paths.Avatars, leaf));
+    }
+
+    /// <summary>
+    /// 同站蹭脸：同一 mid 的其它稿子里挑一张本地化且落盘的名片（新账优先）。
+    /// 只认本地件：热链不配当被蹭源（那是每次都要去敲图床的门），空串/缺件行也不算现货。
+    /// </summary>
+    public UpCardCopy? FindSharedUpCardByMid(long mid, long exceptVideoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT up_face, up_sign, up_fans FROM video_meta
+            WHERE up_mid = $mid AND video_id <> $except AND up_face LIKE '/avatars/%'
+            ORDER BY video_id DESC;
+            """;
+        command.Parameters.AddWithValue("$mid", mid);
+        command.Parameters.AddWithValue("$except", exceptVideoId);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var face = reader.GetString(0);
+            if (!IsLocalFaceOnDisk(face))
+            {
+                continue;
+            }
+
+            return new UpCardCopy(
+                face,
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetInt64(2));
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 存量对账（开局一次，零出门）：把 mid 已知却脸没落盘的老账，从同站现货里蹭回来落账；
+    /// 签名/粉丝只在原行空着时垫，不把本行已有的数抹掉。回蹭成几条。
+    /// </summary>
+    public int BackfillUpCardsFromShared()
+    {
+        var repaired = 0;
+        using var connection = Open(_dbPath);
+
+        var stale = new List<(long VideoId, long Mid)>();
+        using (var scan = connection.CreateCommand())
+        {
+            scan.CommandText = "SELECT video_id, up_mid, up_face FROM video_meta WHERE up_mid IS NOT NULL;";
+            using var reader = scan.ExecuteReader();
+            while (reader.Read())
+            {
+                var face = reader.IsDBNull(2) ? null : reader.GetString(2);
+                if (ShouldBorrowFace(face))
+                {
+                    stale.Add((reader.GetInt64(0), reader.GetInt64(1)));
+                }
+            }
+        }
+
+        foreach (var (videoId, mid) in stale)
+        {
+            var shared = FindSharedUpCardByMid(mid, videoId);
+            if (shared is null)
+            {
+                continue;
+            }
+
+            using var fix = connection.CreateCommand();
+            fix.CommandText = """
+                UPDATE video_meta
+                SET up_face = $face, up_sign = COALESCE(up_sign, $sign), up_fans = COALESCE(up_fans, $fans)
+                WHERE video_id = $id;
+                """;
+            fix.Parameters.AddWithValue("$face", shared.Face);
+            fix.Parameters.AddWithValue("$sign", (object?)shared.Sign ?? DBNull.Value);
+            fix.Parameters.AddWithValue("$fans", (object?)shared.Fans ?? DBNull.Value);
+            fix.Parameters.AddWithValue("$id", videoId);
+            repaired += fix.ExecuteNonQuery();
+        }
+
+        return repaired;
+    }
+
+    /// <summary>
+    /// 钉子户名单：mid 已知、脸没落盘、且同站没现货可蹭（单稿 UP）的行。这些只能出门重采，
+    /// 但早已 Arrived、不再走重新排队重采，交给巡捕零散补采（限流防扰 B 站；无采集号时 TryFetchUpAsync 自己会空转）。
+    /// </summary>
+    public IReadOnlyList<long> ListUpCardsBeyondSalvage(int limit)
+    {
+        if (limit <= 0)
+        {
+            return [];
+        }
+
+        var stuck = new List<long>();
+        using var connection = Open(_dbPath);
+        var scan = connection.CreateCommand();
+        scan.CommandText = "SELECT video_id, up_mid, up_face FROM video_meta WHERE up_mid IS NOT NULL ORDER BY video_id;";
+        using var reader = scan.ExecuteReader();
+        while (reader.Read() && stuck.Count < limit)
+        {
+            var face = reader.IsDBNull(2) ? null : reader.GetString(2);
+            if (!ShouldBorrowFace(face))
+            {
+                continue;
+            }
+
+            var videoId = reader.GetInt64(0);
+            // 能蹭到现货的不算钉子户——那部分开局对账已修好（或本轮不会出门）。
+            if (FindSharedUpCardByMid(reader.GetInt64(1), videoId) is not null)
+            {
+                continue;
+            }
+
+            stuck.Add(videoId);
+        }
+
+        return stuck;
+    }
+
     /// <summary>互动数据登记：五维真数 + 销账标记；失败重试时覆盖式更新。</summary>
     public void SetVideoStat(long videoId, long? like, long? coin, long? fav, long? share, long? reply)
     {
@@ -2193,6 +2353,15 @@ public sealed partial class StationDb
                 statShare = reader.IsDBNull(12) ? null : reader.GetInt64(12);
                 statReply = reader.IsDBNull(13) ? null : reader.GetInt64(13);
             }
+        }
+
+        // 同站蹭脸（展示层兜底，不动账；存量老账由开局 BackfillUpCardsFromShared 批量改库）：
+        // 本行脸没落盘（早年 up-{mid}.jpg 命名换 sha1 后丢件那一代）就从同一 UP 的别稿搭一张现货，别让 UpCard 吃 404 顶灰占位。
+        if (upMid is long faceMid && ShouldBorrowFace(upFace) && FindSharedUpCardByMid(faceMid, id) is { } sharedFace)
+        {
+            upFace = sharedFace.Face;
+            upSign ??= sharedFace.Sign;
+            upFans ??= sharedFace.Fans;
         }
 
         var pages = new List<(int Index, string Title, long? Cid, string? Duration, string? VideoRel, string? Codec)>();
