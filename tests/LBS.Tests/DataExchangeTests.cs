@@ -13,6 +13,7 @@ namespace LBS.Tests;
 /// 数据交换：导出包 manifest 往返、快照洗白（cookie 洗成固定串 + 会话清空）、
 /// 导入安检（zip slip 整包拒、integrity_check 拒收、包名/回执白名单）与开机换库全流程。
 /// </summary>
+[Collection("DiskBound")]
 public sealed class DataExchangeTests : IDisposable
 {
     private readonly string _root;

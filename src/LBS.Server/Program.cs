@@ -1452,6 +1452,11 @@ app.MapGet("/api/settings", (DataPaths paths) => Results.Ok(new
     skin = new { bare = false, note = "裸分站皮肤 M4 到站" },
 }));
 
+// 认不出的 /api/* 给个正经 404 脸：以前拼错的地址会被下面的兗底兜到 index.html，
+// 前端 res.json() 炸得很难看。挂在所有端点之后、SPA 兗底之前，只有没被认领的 /api 才会落这里。
+app.Map("/api/{**rest}", () =>
+    Results.Json(new { message = "没有这个接口" }, statusCode: StatusCodes.Status404NotFound));
+
 if (File.Exists(Path.Combine(webRoot, "index.html")))
 {
     app.MapFallbackToFile("index.html");

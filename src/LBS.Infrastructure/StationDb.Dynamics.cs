@@ -255,8 +255,11 @@ public sealed partial class StationDb
         }
 
         using var connection = Open(_dbPath);
-        var fresh = 0;
+        // 整批收进单事务：一次巡捕能落五百多条评论，逐条自提会把写锁磨成几百次短促占领，
+        // 观片页的无辜读客就是在缝里撞上 database is locked 的。一个事务一次提交，锁只占一段。
+        using var transaction = connection.BeginTransaction();
         using var insert = connection.CreateCommand();
+        insert.Transaction = transaction;
         insert.CommandText = """
             INSERT OR IGNORE INTO dynamic_comments
                 (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, cached_at_utc, pictures_json, pictures_local_json, level)
@@ -277,6 +280,7 @@ public sealed partial class StationDb
         var pPics = insert.Parameters.Add("$pics", SqliteType.Text);
         var pPicsLocal = insert.Parameters.Add("$picslocal", SqliteType.Text);
         var pLevel = insert.Parameters.Add("$level", SqliteType.Integer);
+        var fresh = 0;
         foreach (var c in comments)
         {
             pDid.Value = dynamicId;
@@ -297,6 +301,7 @@ public sealed partial class StationDb
             fresh += insert.ExecuteNonQuery();
         }
 
+        transaction.Commit();
         return fresh;
     }
 

@@ -6,6 +6,7 @@ using Xunit;
 namespace LBS.Tests;
 
 /// <summary>台账备份员：在线快照、档案柜修剪与销单守门。</summary>
+[Collection("DiskBound")]
 public sealed class LedgerBackupTests : IDisposable
 {
     private readonly string _tempDir;
@@ -66,11 +67,24 @@ public sealed class LedgerBackupTests : IDisposable
         var shelf = _backup.List();
         // 修剪是最终一致：刚拍完的快照可能被系统短暂扣着，补一轮 SetKeep 触发的修剪就该扫干净
         // （生产里由整点巡班兼任这个兜底）
-        Assert.True(_backup.SetKeep(7));
-        shelf = _backup.List();
+        shelf = WaitForShelf(7);
         Assert.True(shelf.Count == 7, $"柜里 {shelf.Count} 张：{string.Join(" | ", shelf.Select(f => f.Name))}");
         // 白名单外的份数拒收，免得站长一挥手把档案柜清空
         Assert.False(_backup.SetKeep(2));
+    }
+
+    /// <summary>反复补一轮 SetKeep 触发的修剪（等价整点巡班），直到柜里只剩 expect 张或预算（2 秒）用尽。
+    /// 刚拍完的快照可能被连接池短暂扣着句柄，删不动就补刀，与生产里整点巡班扫尾同义。</summary>
+    private IReadOnlyList<LedgerBackup.BackupFile> WaitForShelf(int expect)
+    {
+        var shelf = _backup.List();
+        for (var round = 0; round < 20 && shelf.Count != expect; round++)
+        {
+            Thread.Sleep(100);
+            _backup.SetKeep(7);
+            shelf = _backup.List();
+        }
+        return shelf;
     }
 
     [Fact]

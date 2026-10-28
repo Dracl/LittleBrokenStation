@@ -34,7 +34,9 @@ public sealed partial class StationDb
         connection.Open();
 
         using var pragma = connection.CreateCommand();
-        pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;";
+        // busy_timeout 放宽到 15 秒：巡捕批量落库的高峰，读写撞车时让 SQLite 自己多等几秒，
+        // 别让 GetWatchData 这种无辜读客吃 database is locked。
+        pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=15000;";
         pragma.ExecuteNonQuery();
 
         return connection;
