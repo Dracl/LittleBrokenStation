@@ -1497,8 +1497,9 @@ const ADMIN_GROUPS = [
   // 组名走仓库比喻（柜台/进货口/观众席……）：胶囊是拿来跳位的，有点火气反而好记；
   // 但卡题里的「危险区」「一键清空分站」保持大白话，破坏性操作那一步不玩括令。
   // 原先还有「钥匙串」（放站级 B 站号的两张卡）：分站已不收站级号，采集号情报已搬到柜台的分站统计里。
-  // 「观众席」与「库房」这两组则是设好就不碰的那一批，整组收进下面的「平时不动」抽屉，
+  // 「观众席」与「库房」这两组则是设好就不碰的那一批，整组收进下面的「货架」抽屉，
   // 首屏只留天天盯的柜台与进货口（卡块不搬家，靠 order 排座 + quietOpen 一道闸）。
+  // 悬停预览也下了柜（仪表盘不是天天睥的）；抽屉内下载设置压底。
   { id: 'overview', title: '柜台', hint: '家底与健康度，扫一眼', order: 10 },
   { id: 'harvest', title: '进货口', hint: '下载 · 订阅 · 动态关注', order: 20 },
 ]
@@ -1515,13 +1516,14 @@ function savedAdminGroup() {
 
 const activeGroup = ref(savedAdminGroup())
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
-const quietOpen = ref(false) // 「平时不动」抽屉：下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面
+const quietOpen = ref(false) // 「货架」抽屉：悬停预览、下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面；下载设置压底
 const dlWaiting = computed(() => (dlQueue.value?.pending?.length ?? 0) + (dlQueue.value?.downloading?.length ?? 0))
 const adminNav = computed(() => [
-  { ...ADMIN_GROUPS[0], n: (pv.value?.pending ?? 0) > 0 ? pv.value.pending : null, tone: 'warn' },
+  // 预览欠账徽章随卡下柜：挂在货架胶囊上，柜台只留天天盯的
+  { ...ADMIN_GROUPS[0], n: null, tone: '' },
   { ...ADMIN_GROUPS[1], n: dlWaiting.value > 0 ? dlWaiting.value : null, tone: 'hot' },
   // 抽屉也占一枚胶囊：点了先把盖子掀开再滚过去，否则定位锚不在
-  { id: 'quiet', title: '平时不动', hint: '', order: 55, n: null, tone: '' },
+  { id: 'quiet', title: '货架', hint: '', order: 55, n: (pv.value?.pending ?? 0) > 0 ? pv.value.pending : null, tone: 'warn' },
 ])
 
 async function gotoGroup(id) {
@@ -1697,8 +1699,8 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <!-- 悬停预览：首页卡片鼠标停一下就起播的那批 360p 无声小片段，本卡是它的全套仪表盘（状态·覆盖率·参数·流水） -->
-      <section class="lbs-card md:col-span-2 order-[12] border-l-2 border-l-adminAccent/50">
+      <!-- 悬停预览：首页卡片鼠标停一下就起播的那批 360p 无声小片段，全套仪表盘随卡下柜进货架 -->
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[56]">
         <div class="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
           <h3 class="lbs-title !mb-0">
             悬停预览
@@ -2392,8 +2394,8 @@ onUnmounted(() => {
         </ul>
       </section>
 
-      <!-- 下载设置：字段密又一年改不了几回，整块收进「平时不动」抽屉，揭盖才摆出来 -->
-      <section v-if="quietOpen && eng && engDraft" class="lbs-card md:col-span-2 order-[56]">
+      <!-- 下载设置：字段密又一年改不了几回，整块收进「货架」抽屉压底 -->
+      <section v-if="quietOpen && eng && engDraft" class="lbs-card md:col-span-2 order-[62]">
         <div class="mb-4 flex items-center justify-between">
           <h3 class="lbs-title !mb-0">下载设置</h3>
           <div class="flex items-center gap-2">
@@ -2777,7 +2779,7 @@ onUnmounted(() => {
       <!-- 回收站：删档后的捞回口，挨着危险区放——破坏性操作集中在一处，翻柜子时顺手就能确认 -->
       <RecycleBinCard v-if="quietOpen" class="order-[60]" />
 
-      <!-- 平时不动：下载设置、成员席位、全站公告、备份与搬家这些设好就不碰的，整批收在这儿 -->
+      <!-- 货架：悬停预览、下载设置、成员席位、全站公告、备份与搬家这些设好就不碰的，整批收在这儿；下载设置压底 -->
       <button
         v-if="!quietOpen"
         id="grp-quiet"
@@ -2786,13 +2788,13 @@ onUnmounted(() => {
         @click="gotoGroup('quiet')"
       >
         <span class="h-3 w-[3px] rounded-full bg-white/20"></span>
-        平时不动
-        <span class="ml-2 font-mono text-[11px] text-white/22">下载设置 · 成员席位 · 全站公告 · 备份与搬家 · 设好就不碰</span>
+        货架
+        <span class="ml-2 font-mono text-[11px] text-white/22">预览 · 下载设置 · 成员席位 · 全站公告 · 备份与搬家 · 设好就不碰</span>
         <span class="ml-auto font-mono text-[11px] text-white/25">点开取出</span>
       </button>
       <div v-else id="grp-quiet" class="order-[55] md:col-span-2 flex items-baseline gap-2.5 pt-3">
-        <h2 class="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">平时不动</h2>
-        <span class="font-mono text-[11px] text-white/20">盖子已开 · 六张卡都在下面</span>
+        <h2 class="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">货架</h2>
+        <span class="font-mono text-[11px] text-white/20">盖子已开 · 七张卡都在下面</span>
         <span class="ml-1 h-px flex-1 bg-white/5"></span>
         <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="quietOpen = false">盖回去</button>
       </div>
