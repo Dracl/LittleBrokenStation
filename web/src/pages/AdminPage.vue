@@ -1557,11 +1557,13 @@ async function bootAdmin() {
 // 十六张卡是同一个 grid 的孩子，分组靠 order 排座、靠 md:col-span-2 定整行还是半格：
 // 这样分组只动 class，不必把卡块在文件里搬来搬去（搬一次就多一次丢代码的机会）。
 const ADMIN_GROUPS = [
-  { id: 'overview', title: '概览', hint: '数字与健康度', order: 10 },
-  { id: 'harvest', title: '采集与下载', hint: '日常盯得最勤', order: 20 },
-  { id: 'people', title: '人与话', hint: '席位与公告', order: 30 },
-  { id: 'accounts', title: '登录与号', hint: '一年动不了几次', order: 40 },
-  { id: 'data', title: '数据', hint: '备份 · 搬家 · 捐回', order: 50 },
+  // 组名走仓库比喻（柜台/进货口/观众席……）：胶囊是拿来跳位的，有点火气反而好记；
+  // 但卡题里的「危险区」「一键清空分站」保持大白话，破坏性操作那一步不玩括令。
+  { id: 'overview', title: '柜台', hint: '家底与健康度，扫一眼', order: 10 },
+  { id: 'harvest', title: '进货口', hint: '下载 · 订阅 · 动态关注', order: 20 },
+  { id: 'people', title: '观众席', hint: '成员席位与全站公告', order: 30 },
+  { id: 'accounts', title: '钥匙串', hint: '站长登录与采集号', order: 40 },
+  { id: 'data', title: '库房', hint: '备份 · 搬家 · 捐回', order: 50 },
 ]
 const activeGroup = ref('overview')
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
@@ -1684,7 +1686,7 @@ onUnmounted(() => {
         class="ml-auto rounded-full border border-rose-400/25 px-3 py-1 text-xs text-rose-300/70 transition hover:border-rose-400/50 hover:text-rose-200"
         @click="gotoGroup('danger')"
       >
-        危险区<span class="ml-1 text-[10px] text-rose-300/45">{{ dangerOpen ? '已展开' : '已收起' }}</span>
+        碎纸机<span class="ml-1 text-[10px] text-rose-300/45">{{ dangerOpen ? '已开盖' : '已收起' }}</span>
       </button>
     </nav>
 

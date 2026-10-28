@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<title>评论区长文折叠 · 换行超 20 行收起</title>
+<script type="application/json" data-card-manifest>{"spec":"1.0","display":{"styleProfile":"custom","preferredWidthPx":900}}</script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #f6f7f8; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; color: #18191c; padding: 14px 18px 22px; }
+  header { padding-right: 110px; margin-bottom: 10px; }
+  h1 { font-size: 15px; margin: 0 0 3px; }
+  .sub { font-size: 11.5px; color: #9499a0; margin: 0; line-height: 1.6; }
+  .sub code { color: #61666d; background: #eef0f2; padding: 0 4px; border-radius: 3px; }
+  .toolbar { display: flex; align-items: center; gap: 8px; margin: 12px 0 10px; flex-wrap: wrap; }
+  .seg { display: inline-flex; border: 1px solid #e3e5e7; border-radius: 6px; overflow: hidden; background: #fff; }
+  .seg button { border: 0; background: #fff; color: #61666d; font: inherit; font-size: 12px; padding: 4px 11px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid #e3e5e7; }
+  .seg button[aria-pressed="true"] { background: #fb7299; color: #fff; }
+  .ghost { border: 1px solid #e3e5e7; background: #fff; color: #61666d; font: inherit; font-size: 12px; padding: 4px 11px; border-radius: 6px; cursor: pointer; }
+  .ghost:hover { color: #18191c; }
+  .tick { font-size: 12px; color: #61666d; display: inline-flex; align-items: center; gap: 4px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 236px; gap: 12px; align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+  .blk { background: #fff; border: 1px solid #e3e5e7; border-radius: 10px; padding: 12px 14px; }
+  .blk > .kind { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: #fb7299; margin-bottom: 9px; }
+  .blk > .kind em { font-style: normal; font-weight: 400; color: #9499a0; letter-spacing: 0; margin-left: 7px; }
+  .cmt { display: flex; gap: 12px; }
+  .cmt + .cmt { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e3e5e7; }
+  .ava { width: 44px; height: 44px; border-radius: 50%; background: #eceef0; flex: none; }
+  .sub2 .ava { width: 28px; height: 28px; }
+  .cbody { min-width: 0; flex: 1; }
+  .meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .name { font-size: 15px; color: #18191c; }
+  .sub2 .name { font-size: 13px; }
+  .dyn .name { font-size: 13px; font-weight: 500; }
+  .content { color: #18191c; white-space: pre-line; word-break: break-word; position: relative; margin: 4px 0 0; }
+  .main .content { font-size: 15px; line-height: 28px; }
+  .sub2 .content { font-size: 14px; line-height: 24px; margin-left: 40px; }
+  .dyn .content { font-size: 14px; line-height: 22.5px; }
+  .content.faded::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 30px; background: linear-gradient(180deg, rgba(255,255,255,0), #fff); pointer-events: none; }
+  .emote { display: inline-block; height: 18px; line-height: 18px; vertical-align: text-bottom; padding: 0 4px; margin: 0 1px; border-radius: 4px; background: #ffe9f0; color: #fb7299; font-size: 11px; }
+  .expand { border: 0; background: none; padding: 0; margin: 2px 0 0 40px; font: inherit; font-size: 12px; color: #fb7299; cursor: pointer; }
+  .main .expand, .dyn .expand { margin-left: 0; }
+  .expand:hover { text-decoration: underline; }
+  .foot { display: flex; align-items: center; gap: 16px; margin-top: 6px; font-size: 12px; color: #9499a0; }
+  .foot .h { margin-left: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #00a1d6; }
+  .sub2 .foot { margin-left: 40px; }
+  .spec { background: #fff; border: 1px solid #e3e5e7; border-radius: 10px; padding: 12px 13px; position: sticky; top: 12px; }
+  .spec h2 { font-size: 12px; margin: 0 0 8px; color: #18191c; }
+  .spec dl { margin: 0; font-size: 11.5px; line-height: 1.75; color: #61666d; }
+  .spec dt { color: #9499a0; margin-top: 7px; }
+  .spec dd { margin: 0; }
+  .spec code { font-family: ui-monospace, Consolas, monospace; color: #18191c; background: #f1f2f3; padding: 0 3px; border-radius: 3px; font-size: 11px; }
+  .calc { margin-top: 9px; padding-top: 9px; border-top: 1px dashed #e3e5e7; font: 11px ui-monospace, Consolas, monospace; color: #61666d; line-height: 1.9; }
+  .calc b { color: #fb7299; font-weight: 600; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>评论区长文折叠 · 按换行数判定，超阈值收起成一屏</h1>
+    <p class="sub">规则：<code>content.split('\n').length &gt; 阈值</code> 时只渲染前 15 行（站长定的线），尾部出「展开」，点一下全展开。样本 1、4 是这条视频评论区的真实数据（BV1T8qpYGEtb）。</p>
+  </header>
+
+  <div class="toolbar">
+    <span style="font-size:12px;color:#61666d">阈值</span>
+    <span class="seg" id="seg">
+      <button data-n="10" aria-pressed="false">10 行</button>
+      <button data-n="15" aria-pressed="true">15 行</button>
+      <button data-n="20" aria-pressed="false">20 行</button>
+      <button data-n="30" aria-pressed="false">30 行</button>
+    </span>
+    <button class="ghost" id="all">全部展开</button>
+    <label class="tick"><input type="checkbox" id="fade" checked> 裁切处渐隐</label>
+    <span style="font-size:11.5px;color:#9499a0">蓝数字是该块正文当前渲染高度</span>
+  </div>
+
+  <div class="grid">
+    <div class="col" id="demos"></div>
+    <aside class="spec">
+      <h2>折叠规格</h2>
+      <dl>
+        <dt>判定</dt><dd>按 <code>\n</code> 计数，正好 15 行不折</dd>
+        <dt>折叠渲染</dt><dd><code>lines.slice(0, 15).join('\n')</code>，表情 token 不含换行，切不坏</dd>
+        <dt>展开</dt><dd>一次到全文，不做「再展开 20 行」的分段</dd>
+        <dt>覆盖</dt><dd>置顶主楼 / 主楼 / 楼中楼 / 动态正文 / 动态评论区</dd>
+        <dt>状态</dt><dd><code>Set&lt;rpid&gt;</code>，不落 localStorage，刷新回到折叠</dd>
+        <dt>盲区</dt><dd>单行不换行的长文不触发（见样本 4）；要补的话再加一条「折算高度超阈值也折」</dd>
+      </dl>
+      <div class="calc" id="calc"></div>
+    </aside>
+  </div>
+
+<script>
+const LYRIC = '说不清缘故\n\n我 为何只顾着\n\n将你拥住\n\n千万缕酸楚\n\n在 你泪滴划过我时放逐\n\n世人无数\n\n偏为你 神无主\n\n连命数 都想宽恕\n\n相思入骨\n\n白首却无处\n\n今生吻过你眉目\n\n是我的救赎\n\n别哭\n\n握过你手心纹路\n\n风雪不冷酷\n\n乱世之中你向我凝眸\n\n是我曾重生的一幕\n\n爱过你让我一生 满足\n\n说不清缘故\n\n我 为何只顾着\n\n将你拥住\n\n千万缕酸楚\n\n在 你泪滴划过我时放逐\n\n世人无数\n\n偏为你 神无主\n\n连命数 都想宽恕\n\n相思入骨\n\n白首却无处\n\n今生吻过你眉目\n\n是我的救赎\n\n别哭\n\n握过你手心纹路\n\n风雪不冷酷\n\n乱世之中你向我凝眸\n\n是我曾重生的一幕\n\n爱过你让我一生 满足\n\n今生吻过你眉目\n\n是我的救赎\n\n别哭\n\n握过你手心纹路\n\n风雪不冷酷\n\n乱世之中你向我凝眸\n\n是我曾重生的一幕\n\n爱过你让我一生 满足\n\n爱过你让我一生 满足'
+const SINGLE = '太好听了，太刀了😭铁刀了😭骨刀了😭土砂龙太刀了😭深土太刀了😭优雅弯刀了😭飞龙刀了😭防卫队连刃式太刀了😭幻光刃了😭蛮鄂龙激牙了😭巢穴搭档了😭崩坏雷颚了😭朱赤麻痹牙了😭碎龙偃月刀了😭仙子冰川了😭夜刀月影了😭亚铎霜锋了😭天上天下天地无双刀了😭超采掘十字镐了😭狱刀龙骨了😭冰灵芒刃了😭真苍星的太刀舞龙了😭飞龙刀月了😭暴君柱头了😭行云流水和光了😭鬼神薙刀了😭碎光之晓刀了😭漆黑爪终焉了😭黑龙歼灭刀了😋总而言之就是太刀了😭'
+const TIMELINE = '补一份这期的时间轴，方便对照：\n00:00 前奏\n00:14 说不清缘故\n00:21 我 为何只顾着\n00:28 将你拥住\n00:35 千万缕酸楚\n00:42 在 你泪滴划过我时放逐\n00:50 世人无数\n00:57 偏为你 神无主\n01:04 连命数 都想宽恕\n01:12 相思入骨\n01:19 白首却无处\n01:26 今生吻过你眉目\n01:33 是我的救赎\n01:40 别哭\n01:47 握过你手心纹路\n01:54 风雪不冷酷\n02:02 乱世之中你向我凝眸\n02:09 是我曾重生的一幕\n02:17 爱过你让我一生 满足\n02:31 第二段进戏腔\n02:44 高音在这里\n02:58 尾奏渐弱\n03:12 和声收尾\n03:20 结束\n以上，听歌不用看，写稿方便 [UP_1802654492_打call]'
+const POLL = '【翻唱投票 · 第 34 期】\n本周候选，先听着，周四晚 21:00 开奖：\n1. 若梦\n2. 冬之花\n3. 寄り酔い\n4. LAST STARDUST\n5. RAIN piano ver.\n6. スパークル\n7. 花に亡霊\n8. 夜に駆ける\n9. 心墙\n10. 糸\n11. 蝶々結び\n12. 昔涟\n13. 年\n14. 此去半生\n15. 我不爱无聊人间\n16. 再被你提起\n17. 骑士\n18. 若思念便思念\n19. 神探\n20. 上海1943\n21. 雨永远下不完\n22. 再见深海\n投票写在评论区，一条评论只能填三个序号，超了算作废 [七禾表情包_比心]'
+
+const SAMPLES = [
+  { kind: 'main', tag: '样本 1 · 视频评论区 主楼', note: '真实数据 · 377 字 / 89 行', name: '酒糟鱼籽江', lv: 5, time: '2024-12-08 21:03', ip: 'IP属地：广东', like: 0, text: LYRIC, lh: 28 },
+  { kind: 'sub2', tag: '样本 2 · 楼中楼', note: '示意 · 26 行（含表情 token）', name: '绫波十七', lv: 6, time: '2024-12-09 02:11', ip: '', like: 3, text: TIMELINE, lh: 24 },
+  { kind: 'dyn', tag: '样本 3 · 动态正文', note: '示意 · 26 行；现状是 line-clamp 2 行、无展开', name: '七禾いえ', lv: 6, time: '2026-10-27 22:04', ip: '', like: 128, text: POLL, lh: 22.5 },
+  { kind: 'main', tag: '样本 4 · 单行长文（盲区）', note: '真实数据 · 235 字 / 1 行 → 不触发折叠', name: '-喜欢包包4ever-', lv: 5, time: '2024-12-08 19:40', ip: 'IP属地：江苏', like: 0, text: SINGLE, lh: 28 },
+]
+const LV_COLOR = { 1: '#C0C0C0', 2: '#8BD29B', 3: '#7BCDEF', 4: '#FEBB8B', 5: '#EE672A', 6: '#F04C49' }
+const LV_PATH = 'M14,10c-0.4,0-0.6,0.3-0.6,0.6V11H1.6C1.2,11,1,11.3,1,11.6v7.8C1,19.8,1.3,20,1.6,20h18.8 c0.4,0,0.6-0.3,0.6-0.6v-8.8c0.1-0.3-0.2-0.6-0.5-0.6H14z M19.8,12.3c0,0.2-0.2,0.4-0.4,0.4H16v1.6h3.4c0.2,0,0.4,0.2,0.4,0.4v3.7 c0,0.2-0.2,0.4-0.4,0.4H15c-0.2,0-0.4-0.2-0.4-0.4v-6.8c0-0.2,0.2-0.4,0.4-0.4h4.4c0.2,0,0.4,0.2,0.4,0.4V12.3z M12.6,16.7 c0.1-0.1,0.1-0.2,0.1-0.4v-0.1v-3.4c0-0.2-0.2-0.4-0.4-0.4h-0.6c-0.2,0-0.4,0.2-0.4,0.4v3.3L10,17.3l-1.2-1.2v-3.4 c0-0.2-0.2-0.4-0.4-0.4H7.8c-0.2,0-0.4,0.2-0.4,0.4v3.5v0.1c0,0.2,0,0.4,0.1,0.4l2,2c0.1,0.1,0.5,0.1,0.5,0.1s0.4,0,0.5-0.1 L12.6,16.7z M6.1,18.9H2.6c-0.2,0-0.4-0.2-0.4-0.4v-5.8c0-0.2,0.2-0.4,0.4-0.4h0.6c0.2,0,0.4,0.2,0.4,0.4v4.7h2.4 c0.2,0,0.4,0.2,0.4,0.4v0.6C6.5,18.7,6.3,18.9,6.1,18.9z M18.4,17.4H16v-1.7h2.4V17.4z'
+const lvSvg = (n, h) => {
+  const c = LV_COLOR[n] || '#F04C49'
+  return `<svg viewBox="0.9 9.9 20.3 10.3" style="height:${h}px;width:auto;flex:none;align-self:center" aria-label="LV${n}"><path fill="#FFF" d="M19.9,11.1h-5.6v1.1H2.1v6.7h17.8v-6.7h0V11.1z"/><path fill="${c}" d="${LV_PATH}"/></svg><span style="font:10px ui-monospace,Consolas,monospace;color:#9499a0">LV${n}</span>`
+}
+const esc = (s) => s.replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]))
+const rich = (s) => esc(s).replace(/\[[^\]\n]{1,24}\]/g, (m) => `<span class="emote">${m}</span>`)
+
+const state = { threshold: 15, fade: true, open: {} }
+
+function render() {
+  const host = document.getElementById('demos')
+  host.innerHTML = ''
+  SAMPLES.forEach((s, i) => {
+    const ls = s.text.split('\n')
+    const over = ls.length > state.threshold
+    const isOpen = over && !!state.open[i]
+    const shown = over && !isOpen ? ls.slice(0, state.threshold).join('\n') : s.text
+    const art = document.createElement('article')
+    art.className = 'blk'
+    art.innerHTML = `<div class="kind">${s.tag}<em>${s.note} · 共 ${ls.length} 行</em></div>
+      <div class="cmt ${s.kind}">
+        <div class="ava"></div>
+        <div class="cbody">
+          <div class="meta"><span class="name">${esc(s.name)}</span>${lvSvg(s.lv, s.kind === 'sub2' ? 10.5 : 12)}</div>
+          <div class="content${over && !isOpen && state.fade ? ' faded' : ''}">${rich(shown)}</div>
+          ${over ? `<button class="expand" data-i="${i}">${isOpen ? '收起 ⌃' : '展开 ⌄ 共 ' + ls.length + ' 行'}</button>` : ''}
+          <div class="foot"><span>${s.time}</span>${s.ip ? `<span>${s.ip}</span>` : ''}<span>赞 ${s.like}</span><span class="h" data-h="${i}"></span></div>
+        </div>
+      </div>`
+    host.append(art)
+  })
+  host.querySelectorAll('.content').forEach((el) => {
+    const i = +el.closest('.blk').querySelector('.h').dataset.h
+    const s = SAMPLES[i]
+    const ls = s.text.split('\n')
+    const over = ls.length > state.threshold
+    const isOpen = over && !!state.open[i]
+    el.closest('.blk').querySelector('.h').textContent =
+      `当前 ${Math.round(el.getBoundingClientRect().height)}px` + (over && !isOpen ? ` / 全文 ~${Math.round(ls.length * s.lh)}px` : '')
+  })
+  document.getElementById('calc').innerHTML =
+    `阈值 <b>${state.threshold}</b> 行<br>主楼 ${state.threshold} × 28 = <b>${state.threshold * 28}px</b><br>楼中楼 ${state.threshold} × 24 = <b>${state.threshold * 24}px</b><br>动态 ${state.threshold} × 22.5 = <b>${Math.round(state.threshold * 22.5)}px</b>`
+}
+
+document.getElementById('seg').addEventListener('click', (e) => {
+  const b = e.target.closest('button')
+  if (!b) return
+  state.threshold = +b.dataset.n
+  state.open = {}
+  Array.prototype.forEach.call(e.currentTarget.children, function (x) { x.setAttribute('aria-pressed', String(x === b)) })
+  render()
+})
+document.getElementById('demos').addEventListener('click', (e) => {
+  const b = e.target.closest('.expand')
+  if (!b) return
+  const i = +b.dataset.i
+  state.open[i] = !state.open[i]
+  render()
+})
+document.getElementById('all').addEventListener('click', (e) => {
+  const anyClosed = SAMPLES.some((s, i) => s.text.split('\n').length > state.threshold && !state.open[i])
+  state.open = {}
+  if (anyClosed) SAMPLES.forEach((s, i) => { state.open[i] = true })
+  e.target.textContent = anyClosed ? '全部收起' : '全部展开'
+  render()
+})
+document.getElementById('fade').addEventListener('change', (e) => { state.fade = e.target.checked; render() })
+render()
+</script>
+</body>
+</html>
