@@ -139,14 +139,20 @@ async function loadRelated(id) {
   }
 }
 
-// ─── 站内弹幕：存分站库，刷新不丢；自己发的点一下可删 ───
+// ─── 站内弹幕：存分站库，刷新不丢；自己发的点一下可删，别人发的点一下举报 ───
 const localDanmaku = ref([])
+const reportedDmIds = ref(new Set()) // 本页已经举报过的弹幕：重拉列表也不让钮变回「举报这条」
+const reportingDmIds = ref(new Set()) // 在飞的那几发：网络没回来前连点也不重发
 
 async function loadLocalDanmaku() {
   if (!data.value) return
   try {
     const res = await fetch(`/api/videos/${data.value.id}/danmaku`)
     localDanmaku.value = res.ok ? await res.json() : []
+    // 服务端不存举报态（举报进的是 danmaku_reports），这一页的举报印记得自己贴回去。
+    for (const d of localDanmaku.value) {
+      if (reportedDmIds.value.has(d.id)) d.reported = true
+    }
   } catch {
     localDanmaku.value = []
   }
@@ -189,6 +195,29 @@ async function onDeleteDanmaku(id) {
     await fetch(`/api/videos/danmaku/${id}`, { method: 'DELETE' })
   } catch {
     /* 删不动拉倒，重进页面会自愈 */
+  }
+}
+
+// 举报只递单给站长：不预先藏掉这条（pending 的弹幕照旧飘），也不弹 alert。
+async function onReportDanmaku(id) {
+  if (!data.value || reportedDmIds.value.has(id) || reportingDmIds.value.has(id)) return
+  const item = localDanmaku.value.find((d) => d.id === id)
+  if (!item) return
+  reportingDmIds.value = new Set([...reportingDmIds.value, id])
+  try {
+    const res = await fetch(`/api/videos/${data.value.id}/danmaku/${id}/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}), // 最小闭环不填理由（reason 可选，上限 50 字由服务端把关）
+    })
+    if (res.ok) {
+      item.reported = true
+      reportedDmIds.value = new Set([...reportedDmIds.value, id])
+    }
+  } catch {
+    /* 后端没应答就静默：与删除的乐观风格一致，不弹窗打扰看片 */
+  } finally {
+    reportingDmIds.value = new Set([...reportingDmIds.value].filter((v) => v !== id))
   }
 }
 
@@ -417,6 +446,7 @@ const playerShellW = ref(0)
             @codec-change="playerCodec = $event"
             @send-danmaku="onSendDanmaku"
             @delete-danmaku="onDeleteDanmaku"
+            @report-danmaku="onReportDanmaku"
           />
 
           <div class="mt-[30px] flex justify-center">

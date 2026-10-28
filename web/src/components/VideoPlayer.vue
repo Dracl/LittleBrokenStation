@@ -16,7 +16,7 @@ const props = defineProps({
   danmakuCount: { type: Number, default: null }, // 全站已归档弹幕总数（watch 顶层字段）
   localItems: { type: Array, default: () => [] }, // 站内弹幕 [{id, pageIdx, t, text}]（已按当前 P 筛好）
 })
-const emit = defineEmits(['next', 'request-codec', 'shell-width', 'next-video', 'codec-change', 'send-danmaku', 'delete-danmaku'])
+const emit = defineEmits(['next', 'request-codec', 'shell-width', 'next-video', 'codec-change', 'send-danmaku', 'delete-danmaku', 'report-danmaku'])
 
 const root = ref(null)
 const video = ref(null)
@@ -1155,6 +1155,7 @@ const STROKE_ITEMS = [
       :stroke="danmaku.stroke"
       :keywords="keywordList"
       @delete-local="$emit('delete-danmaku', $event)"
+      @report-local="$emit('report-danmaku', $event)"
     />
 
     <!-- 关灯模式：只黑掉画面以外的页面，视频和弹幕照常亮；点黑幕亮回（B 站同款）。必须传送到 body：root 带 isolate，黑幕留在子树里 z 再高也盖不住页面 -->

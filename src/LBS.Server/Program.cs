@@ -402,6 +402,10 @@ app.MapMemberMessageEndpoints();
 app.MapDmEndpoints();
 app.MapAdminDmEndpoints();
 
+// 站内弹幕举报（最小闭环）：会员对站内弹幕一键举报，站长在站长室删或忽略；不预隐藏，只此一口（B 站弹幕不管）。
+app.MapDanmakuReportEndpoints();
+app.MapAdminDanmakuReportEndpoints();
+
 // 数据交换：导出打包/档案柜/导入暂存与换库（全在 /api/admin/** 站长门下）。
 app.MapDataExchangeApi();
 app.MapDynamicEndpoints();

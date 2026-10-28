@@ -1417,8 +1417,77 @@ async function bootAdmin() {
   loadImportState()
   loadDynTargets()
   loadPreviewStats()
+  loadDanmakuReports()
   if (!dlTimer) dlTimer = setInterval(loadDlQueue, 5000)
   if (!pvTimer) pvTimer = setInterval(pvBeat, 1000)
+}
+
+// ─── 弹幕举报（最小闭环）：分站朋友对站内弹幕递单，站长在这儿删弹幕或忽略 ───
+// 只此一口：B 站档案弹幕（ass 通道）不归分站管，没有举报入口。
+// 举报不预隐藏：pending 的弹幕照常飘，只有站长处置才消失（所以本卡不给「先藏起来」这种钮）。
+const dmReportStatus = ref('pending') // 'pending' | 'all'
+const dmReports = ref(null) // null = 没拉到（加载中或后端没应答），[] = 确实一张单子都没有
+const dmReportLoading = ref(false)
+const dmReportPending = ref(0) // h3 上的待处理徽章
+const dmReportBusy = ref(null) // 正在处置的那张单 id：一颗在飞就把整卡的动作钮按死
+const dmReportNotice = ref(null) // { kind: 'ok' | 'err', text }
+
+async function loadDanmakuReports() {
+  if (dmReportLoading.value) return
+  dmReportLoading.value = true
+  try {
+    const res = await fetch(`/api/admin/danmaku-reports?status=${dmReportStatus.value}`)
+    if (!res.ok) {
+      dmReports.value = null // 拒客与空仓是两回事，别把 401 报成「天下太平」
+      return
+    }
+    const data = await res.json().catch(() => null)
+    dmReports.value = Array.isArray(data?.items) ? data.items : []
+    dmReportPending.value = data?.pending ?? 0
+  } catch {
+    /* 后端打盹：不算空仓，交给卡里的重试条说话 */
+    dmReports.value = null
+  } finally {
+    dmReportLoading.value = false
+  }
+}
+
+function switchDmReportStatus(next) {
+  if (dmReportStatus.value === next) return
+  dmReportStatus.value = next
+  loadDanmakuReports()
+}
+
+async function handleDanmakuReport(item, action) {
+  if (dmReportBusy.value !== null) return
+  dmReportBusy.value = item.id
+  dmReportNotice.value = null
+  try {
+    const res = await fetch(`/api/admin/danmaku-reports/${item.id}/handle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    })
+    const data = await res.json().catch(() => null)
+    dmReportNotice.value = {
+      kind: res.ok ? 'ok' : 'err',
+      text: data?.message ?? (res.ok ? '已处置' : '处置没成，这张单子还在'),
+    }
+  } catch {
+    dmReportNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    dmReportBusy.value = null
+    await loadDanmakuReports() // 重拉一次：处置完的单子该从待处理里退场，徽章也跟着改数
+  }
+}
+
+// 片内时间点：举报单上是浮点秒，摆成 mm:ss（超一小时的片子就报 72:15 这种累加分钟，不装成时:分:秒）。
+function dmReportClock(sec) {
+  const n = Number(sec)
+  if (!Number.isFinite(n) || n < 0) return '—'
+  const pad = (x) => String(x).padStart(2, '0')
+  const total = Math.floor(n)
+  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`
 }
 
 // ─── 站长室排版：五组 + 顶部定位条（正文仍一屏到底，不切标签）───
@@ -1433,7 +1502,18 @@ const ADMIN_GROUPS = [
   { id: 'overview', title: '柜台', hint: '家底与健康度，扫一眼', order: 10 },
   { id: 'harvest', title: '进货口', hint: '下载 · 订阅 · 动态关注', order: 20 },
 ]
-const activeGroup = ref('overview')
+const ADMIN_GROUP_KEY = 'lbs-admin-group' // 定位条高亮记住上次点过的组（进页恢复；滚动侦测会接着自己改口）
+
+function savedAdminGroup() {
+  try {
+    const saved = localStorage.getItem(ADMIN_GROUP_KEY)
+    return ['overview', 'harvest', 'quiet'].includes(saved) ? saved : 'overview'
+  } catch {
+    return 'overview' // 隐私模式里 localStorage 会抛：照常从柜台开始
+  }
+}
+
+const activeGroup = ref(savedAdminGroup())
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
 const quietOpen = ref(false) // 「平时不动」抽屉：下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面
 const dlWaiting = computed(() => (dlQueue.value?.pending?.length ?? 0) + (dlQueue.value?.downloading?.length ?? 0))
@@ -1454,6 +1534,11 @@ async function gotoGroup(id) {
   await nextTick()
   document.getElementById(`grp-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   activeGroup.value = id
+  try {
+    localStorage.setItem(ADMIN_GROUP_KEY, id) // 下次进站长室还从上次那一组开始
+  } catch {
+    /* 存不下就算了，不影响跳位 */
+  }
 }
 
 // 定位条的高亮：找最后一条已经滚到条子上沿之上的组头（rAF 节流，不每像素都算一遗）。
@@ -2196,6 +2281,115 @@ onUnmounted(() => {
             视频库、SQLite 台账、各类缓存都在这个目录里（B 站号也存在台账的 member_accounts 表，不另存明文 cookie 件）。容器内请挂载为 /data volume，并保持落在 NAS 本地盘。
           </p>
         </dl>
+      </section>
+
+      <!-- 弹幕举报：分站朋友对站内弹幕递的单子（B 站档案弹幕不归分站管，没这个入口）。
+           单子上写的都是举报那一刻定格的快照：弹幕被删、席位改名都不回头改这张单。 -->
+      <section class="lbs-card md:col-span-2 order-[15] border-l-2 border-l-adminAccent/50">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            弹幕举报
+            <span class="ml-1 rounded-full border border-adminAccent/30 px-2 py-0.5 text-[10px] normal-case tracking-normal text-adminAccent/70">{{ dmReportPending }} 条待处理</span>
+          </h3>
+          <div class="flex shrink-0 items-center gap-2">
+            <div class="flex items-center gap-0.5 rounded-full border border-white/10 p-0.5">
+              <button
+                type="button"
+                class="rounded-full px-2.5 py-0.5 text-[11px] transition"
+                :class="dmReportStatus === 'pending' ? 'bg-adminAccent/15 text-adminAccent' : 'text-white/40 hover:text-white/70'"
+                @click="switchDmReportStatus('pending')"
+              >
+                待处理
+              </button>
+              <button
+                type="button"
+                class="rounded-full px-2.5 py-0.5 text-[11px] transition"
+                :class="dmReportStatus === 'all' ? 'bg-adminAccent/15 text-adminAccent' : 'text-white/40 hover:text-white/70'"
+                @click="switchDmReportStatus('all')"
+              >
+                全部
+              </button>
+            </div>
+            <button class="lbs-btn-ghost !px-3 !py-1 !text-[11px]" :disabled="dmReportBusy !== null" @click="loadDanmakuReports">
+              重新翻一遍
+            </button>
+          </div>
+        </div>
+
+        <p class="mb-3 text-xs leading-5 text-white/30">
+          分站朋友看着不对的站内弹幕会递到这儿来。举报只是递单、不预先藏弹幕——待处理的照旧在放映厅里飘；
+          你点「删除弹幕」它才真没，点「忽略」就连原话一起留着。同一席位对同一条弹幕只能递一单。
+        </p>
+        <p v-if="dmReportNotice" class="mb-3 font-mono text-xs" :class="dmReportNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">
+          {{ dmReportNotice.text }}
+        </p>
+
+        <div v-if="dmReports === null" class="flex items-center gap-3 py-4">
+          <p class="text-xs text-white/30">{{ dmReportLoading ? '正在翻举报柜……' : '分站后端没有应答，举报柜暂时打不开' }}</p>
+          <button v-if="!dmReportLoading" class="lbs-btn-ghost !px-3 !py-1 !text-[11px]" @click="loadDanmakuReports">再试一次</button>
+        </div>
+        <p v-else-if="!dmReports.length" class="py-4 text-xs text-white/30">
+          {{ dmReportStatus === 'pending' ? '没有待处理的举报单，弹幕区天下太平。' : '一张举报单都没有——分站朋友还没递过单。' }}
+        </p>
+        <ul v-else class="max-h-[460px] space-y-2 overflow-y-auto pr-1">
+          <li
+            v-for="item in dmReports"
+            :key="item.id"
+            class="flex items-start gap-3 rounded-xl border border-white/[0.06] bg-black/25 p-3"
+          >
+            <div class="min-w-0 flex-1">
+              <p class="break-words text-sm text-white/85" :title="item.text">{{ item.text }}</p>
+              <p class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-white/45">
+                <RouterLink
+                  v-if="item.bvid"
+                  :to="`/watch/${item.bvid}`"
+                  class="text-adminAccent/80 transition hover:text-adminAccent hover:underline"
+                  :title="`去放映厅看这条弹幕（${item.bvid}）`"
+                >
+                  {{ item.bvid }}
+                </RouterLink>
+                <span v-else class="text-white/25">片子已下架</span>
+                <span>第 {{ item.pageIdx ?? 0 }} P</span>
+                <span>片内 {{ dmReportClock(item.tSec) }}</span>
+                <span>弹幕发于 {{ friendlyTime(item.dmCreatedAtUtc) }}</span>
+              </p>
+              <p class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-white/35">
+                <span>被举报：{{ item.senderName || (item.senderDmid ? `匿名朋友（凭证 ${String(item.senderDmid).slice(-6)}）` : '无凭证的老弹幕') }}</span>
+                <span>举报人：{{ item.reporterName || '未留名' }}</span>
+                <span :class="item.reason ? 'text-amber-200/75' : ''">理由：{{ item.reason || '没写' }}</span>
+                <span>举报于 {{ friendlyTime(item.createdAtUtc) }}</span>
+              </p>
+            </div>
+            <div class="flex shrink-0 flex-col items-stretch gap-2 self-center">
+              <template v-if="item.status === 'pending'">
+                <button
+                  class="lbs-btn-danger !px-3 !py-1 !text-xs"
+                  :disabled="dmReportBusy !== null"
+                  title="硬删这条弹幕（台账行一起清掉），这张单也结了"
+                  @click="handleDanmakuReport(item, 'delete')"
+                >
+                  {{ dmReportBusy === item.id ? '删除中…' : '删除弹幕' }}
+                </button>
+                <button
+                  class="lbs-btn-ghost !px-3 !py-1 !text-xs"
+                  :disabled="dmReportBusy !== null"
+                  title="不删，标成已忽略：这条弹幕留着照旧飘"
+                  @click="handleDanmakuReport(item, 'dismiss')"
+                >
+                  {{ dmReportBusy === item.id ? '处理中…' : '忽略' }}
+                </button>
+              </template>
+              <span
+                v-else
+                class="whitespace-nowrap font-mono text-[11px]"
+                :class="item.status === 'deleted' ? 'text-rose-300/70' : 'text-white/35'"
+              >
+                {{ item.status === 'deleted' ? '已删弹幕' : '已忽略' }}
+                <template v-if="item.handledAtUtc"> · {{ friendlyTime(item.handledAtUtc) }}</template>
+              </span>
+            </div>
+          </li>
+        </ul>
       </section>
 
       <!-- 下载设置：字段密又一年改不了几回，整块收进「平时不动」抽屉，揭盖才摆出来 -->

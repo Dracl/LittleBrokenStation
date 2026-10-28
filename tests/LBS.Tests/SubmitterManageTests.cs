@@ -59,10 +59,15 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("DELETE", "/api/videos/123/codecs/hevc", true, false)]
     // 站内弹幕（自带本人/主人规则）与只读配套设施：照旧
     [InlineData("DELETE", "/api/videos/danmaku/9", false, true)]   // 站内弹幕删除：不属站长室，但要会员会话（与弹幕读写同闸）
+    [InlineData("POST", "/api/videos/9/danmaku/9/report", false, true)] // 站内弹幕举报：吃会员门（路径含 /danmaku），不给站长室抢去
+    [InlineData("POST", "/api/videos/danmaku/9/report", false, true)]  // 同一形状压在弹幕删除那一口下：照样只吃会员门
     [InlineData("GET", "/api/videos/123/danmaku", false, true)]
     [InlineData("GET", "/api/videos/123/related", false, true)]
     [InlineData("GET", "/api/videos", false, false)]
     [InlineData("POST", "/api/videos", false, true)]
+    // 举报清单与处置：整段挂在 /api/admin/ 前缀下，身份即钥匙（站长门管，会员门不管）
+    [InlineData("GET", "/api/admin/danmaku-reports", true, false)]
+    [InlineData("POST", "/api/admin/danmaku-reports/9/handle", true, false)]
     public void 两张门的归属矩阵(string method, string path, bool expectAdmin, bool expectMember)
     {
         var request = Request(method, path);

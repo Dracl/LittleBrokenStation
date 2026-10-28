@@ -19,7 +19,7 @@ const props = defineProps({
   localItems: { type: Array, default: () => [] }, // 站内弹幕 [{id, t, text}]：药丸+头像样式，存站可删
 })
 
-const emit = defineEmits(['delete-local'])
+const emit = defineEmits(['delete-local', 'report-local'])
 
 const canvas = ref(null)
 let items = []
@@ -545,8 +545,10 @@ function frame() {
     const bl = drawX - entry.pad
     const bt = drawY - entry.padT
     ctx.drawImage(entry.canvas, bl, bt)
-    if (item.badge && item.localId != null && item.canDelete !== false) {
-      hits.push({ localId: item.localId, x: bl, y: bt, w: entry.width, h: entry.canvas.height })
+    // 站内弹幕全部登记命中区：自己的（canDelete）弹「删除这条」，别人的一律弹「举报这条」。
+    // 可删性存进命中区（每帧重建，不拿点击那一刻的旧值骗人）。
+    if (item.badge && item.localId != null) {
+      hits.push({ localId: item.localId, canDelete: item.canDelete !== false, x: bl, y: bt, w: entry.width, h: entry.canvas.height })
     }
     drawn++
   }
@@ -554,13 +556,18 @@ function frame() {
   costEma = costEma ? costEma * 0.9 + cost * 0.1 : cost
 }
 
-// ---- 站内弹幕：点击命中出删除泡 ----
-const pick = ref(null) // { id, left, top } CSS 像素
+// ---- 站内弹幕：点击命中出操作泡（自己的→删除，别人的→举报）----
+const pick = ref(null) // { id, left, top, canDelete, reported } CSS 像素
+
+// 举报态只在 WatchPage 的 localItems 上存一份（item.reported）：现取现用，不在这里拿副本过日子。
+function isReported(localId) {
+  return (props.localItems ?? []).some((it) => it.id === localId && it.reported === true)
+}
 
 function onStageClick(e) {
   const el = canvas.value
   if (!el || !props.enabled) return
-  if (pick.value && e.target?.closest?.('[data-dm-del]')) return // 点的是删除泡自身，交给按钮
+  if (pick.value && e.target?.closest?.('[data-dm-pick]')) return // 点的是泡自身，交给按钮
   const rect = el.getBoundingClientRect()
   if (!pick.value) {
     const inStage = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom
@@ -572,20 +579,33 @@ function onStageClick(e) {
   const hit = hits.find((v) => px >= v.x && px <= v.x + v.w && py >= v.y && py <= v.y + v.h)
   if (hit) {
     e.stopPropagation()
-    pick.value = { id: hit.localId, left: e.clientX - rect.left + 6, top: e.clientY - rect.top + 10 }
+    pick.value = {
+      id: hit.localId,
+      canDelete: hit.canDelete === true,
+      reported: isReported(hit.localId),
+      left: e.clientX - rect.left + 6,
+      top: e.clientY - rect.top + 10,
+    }
   } else {
     pick.value = null
   }
 }
 
 function removePicked() {
-  if (!pick.value) return
+  if (!pick.value || pick.value.canDelete !== true) return
   const id = pick.value.id
   emit('delete-local', id)
   items = items.filter((it) => it.localId !== id)
   active = active.filter((it) => it.localId !== id)
   hits = hits.filter((it) => it.localId !== id)
   pick.value = null
+}
+
+// 举报不预隐藏：这条弹幕发完照旧飘，只把泡上的钮换成「已举报」，不给同一条发第二发。
+function reportPicked() {
+  if (!pick.value || pick.value.canDelete === true || pick.value.reported === true) return
+  emit('report-local', pick.value.id)
+  pick.value = { ...pick.value, reported: true }
 }
 
 // 站内弹幕注入：按发弹幕时记录的时点起飞（刷新重进照旧位置飘）；无时点的当场即发。
@@ -649,8 +669,8 @@ onBeforeUnmount(() => {
 <template>
   <canvas ref="canvas" class="pointer-events-none absolute inset-0 h-full w-full"></canvas>
   <button
-    v-if="pick"
-    data-dm-del
+    v-if="pick && pick.canDelete"
+    data-dm-pick
     class="absolute z-20 flex items-center gap-1 rounded-full border border-white/15 bg-[#1b1d23]/95 px-2.5 py-1 text-[11px] text-white/85 shadow-lg backdrop-blur transition hover:border-rose-400/60 hover:text-rose-300"
     :style="{ left: `${pick.left}px`, top: `${pick.top}px` }"
     @click.stop="removePicked"
@@ -659,5 +679,19 @@ onBeforeUnmount(() => {
       <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1L6 7" />
     </svg>
     删除这条
+  </button>
+  <!-- 别人的站内弹幕：只递一张举报单给站长，不预先藏掉（站长处置前照旧飘） -->
+  <button
+    v-else-if="pick"
+    data-dm-pick
+    :disabled="pick.reported"
+    class="absolute z-20 flex items-center gap-1 rounded-full border border-white/15 bg-[#1b1d23]/95 px-2.5 py-1 text-[11px] text-white/85 shadow-lg backdrop-blur transition hover:border-amber-300/60 hover:text-amber-200 disabled:cursor-default disabled:text-white/40 disabled:hover:border-white/15"
+    :style="{ left: `${pick.left}px`, top: `${pick.top}px` }"
+    @click.stop="reportPicked"
+  >
+    <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <path d="M5 21V4m0 0h11l-2 4 2 4H5" />
+    </svg>
+    {{ pick.reported ? '已举报' : '举报这条' }}
   </button>
 </template>

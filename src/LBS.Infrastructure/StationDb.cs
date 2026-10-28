@@ -146,6 +146,37 @@ public sealed partial class StationDb
             preview.ExecuteNonQuery();
         }
 
+        // 站内弹幕举报台账：举报即定格——弹幕正文、被举报人、举报人、视频链接全在落单那一刻抄成快照，
+        // 之后弹幕被删、席位改名都不回头改这张单（所以读列表一律直读本表，不再 JOIN 别处）。
+        // danmaku_local 本身没有状态列也不加：pending 的弹幕照常飘，只有站长处置才真删。
+        using (var report = connection.CreateCommand())
+        {
+            report.CommandText = """
+                CREATE TABLE IF NOT EXISTS danmaku_reports (
+                    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dm_id              INTEGER NOT NULL,
+                    video_id           INTEGER NOT NULL,
+                    bvid               TEXT,
+                    page_idx           INTEGER NOT NULL,
+                    t_sec              REAL NOT NULL,
+                    text               TEXT NOT NULL,
+                    sender_member_id   INTEGER,
+                    sender_dmid        TEXT,
+                    sender_name        TEXT,
+                    dm_created_at_utc  TEXT,
+                    reporter_member_id INTEGER NOT NULL,
+                    reporter_name      TEXT,
+                    reason             TEXT,
+                    status             TEXT NOT NULL DEFAULT 'pending',
+                    created_at_utc     TEXT NOT NULL,
+                    handled_at_utc     TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_dmreport_dm_reporter ON danmaku_reports (dm_id, reporter_member_id);
+                CREATE INDEX IF NOT EXISTS idx_dmreport_status ON danmaku_reports (status, created_at_utc);
+                """;
+            report.ExecuteNonQuery();
+        }
+
         // 逐件生成耗时（秒，ffmpeg 从起跑到交件的墙钟时间）：站长室「单件耗时」只吃这一列的真数，
         // 绝拿 seconds（产物时长）冒充。早先建的库没这列，缺就补。
         EnsureColumn(connection, "previews", "cost_seconds", "REAL");
