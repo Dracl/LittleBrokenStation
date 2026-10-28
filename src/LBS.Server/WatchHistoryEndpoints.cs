@@ -6,7 +6,7 @@ namespace LBS.Server;
 /// 观看历史（续播点位）：会员看片时把「看到哪了」随手报上来，下次进放映厅接着放。
 /// 四条口径：① durationSec 说不清（≤0 或非有限数）→ 400 中文；
 /// ② 刚开个头（&lt;5 秒）且库里本来没行 → 忽略回 ok，不占历史位；
-/// ③ 位置过 95% 视为看完 → 删行，历史只装「还没看完」的那批；
+/// ③ 位置过 95% 视为看完 → 照常盖戳留档（历史是完整播放足迹，看完的也露面；要不要跳回是前端的闸，过线不续播）；
 /// ④ 其余 upsert，一人一片一行、新位盖旧位。
 /// 校验与落库全收进 ValidateProgress（仿 DanmakuReportEndpoints：端点 lambda 与测试驱动同一张嘴）。
 /// 所有拒绕显式 Results.Json(new { ... }, statusCode:)，不用 Results.Forbid()（分站没注册认证服务，它会 500）。
@@ -18,18 +18,18 @@ public static class WatchHistoryEndpoints
     /// <summary>开个头地板：没到 5 秒又不算续播，就别往历史里塞行。</summary>
     internal const double StartFloorSec = 5;
 
-    /// <summary>看完线：位置到时长这个比例就算看完，直接删行（历史只留没看完的）。</summary>
+    /// <summary>看完线：位置到时长这个比例就算看完，照常落库但盖完结戳（历史不再只装没看完的）。</summary>
     internal const double FinishedRatio = 0.95;
 
     internal sealed record ProgressRequest(int? PageIdx, double? PositionSec, double? DurationSec);
 
     internal sealed record HistoryVideoRequest(long? VideoId);
 
-    /// <summary>报一次位置的三种结局：落了行 / 看完删了行 / 没到地板什么都没干。</summary>
+    /// <summary>报一次位置的三种结局：落了行 / 盖了完结戳 / 没到地板什么都没干。</summary>
     internal enum ProgressOutcome
     {
         Saved,
-        Removed,
+        Finished,
         Ignored,
     }
 
@@ -55,11 +55,12 @@ public static class WatchHistoryEndpoints
         position = Math.Clamp(position, 0, duration);
         var page = Math.Max(0, pageIdx ?? 0);
 
-        // 看完的先判：过线就删行，不给它落回历史（哪怕这位又在末尾来回拖进度条）。
+        // 看完的不删行（站长口径：历史记所有，不只没看完的）：照常盖戳留档，
+        // 要不要跳回交给前端 loadResumePoint 的 95% 闸（过线从头播，不把刚看完的人抓回末尾）。
         if (position >= duration * FinishedRatio)
         {
-            db.DeleteWatchHistory(memberId, videoId);
-            return (null, ProgressOutcome.Removed);
+            db.UpsertWatchHistory(memberId, videoId, page, position, duration);
+            return (null, ProgressOutcome.Finished);
         }
 
         // 刚开个头：库里没行就不占坑（有行则照常覆盖，别把上次看到的点顶没了还留着旧数）。
@@ -93,7 +94,7 @@ public static class WatchHistoryEndpoints
                 outcome = outcome.ToString().ToLowerInvariant(),
                 message = outcome switch
                 {
-                    ProgressOutcome.Removed => "看到末尾了，这条历史就销了",
+                    ProgressOutcome.Finished => "看完了，这部在历史里给你留档",
                     ProgressOutcome.Ignored => "刚开个头，就不占历史位了",
                     _ => "位置已记下，下次进来接着放",
                 },

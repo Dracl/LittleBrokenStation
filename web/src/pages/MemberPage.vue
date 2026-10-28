@@ -11,7 +11,7 @@ import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 const busy = ref(false)
 const notice = ref(null) // { kind, text }
 
-// ─── 观看历史：只装「还没看完」的那批（看到 95% 以上服务端直接销行）───
+// ─── 观看历史：记所有不只没看完（2026-10-29 站长改口：看完的也盖戳留档），卡面滚动展最近十档 ───
 const history = ref(null) // null = 没拉到（在飞或后端没应答），[] = 确实没看过东西
 const historyBusy = ref(false)
 const historyNotice = ref(null) // { kind, text }
@@ -47,6 +47,11 @@ function historyCover(item) {
   return item.localCover || (item.coverUrl ? coverThumb(item.coverUrl, 480) : '')
 }
 
+// 卡面只展最近十档（接口本就在按 updated_at 倒序）；「没看完」角标数的是全量，不被十档窗口遮蔽。
+const HISTORY_SHOW_COUNT = 10
+const historyRecent = computed(() => (history.value ?? []).slice(0, HISTORY_SHOW_COUNT))
+const unfinishedCount = computed(() => (history.value ?? []).filter((it) => progressPct(it) < 95).length)
+
 // 片内时间点：分:秒，过小时补时。
 function historyClock(sec) {
   const n = Math.max(0, Math.floor(Number(sec) || 0))
@@ -78,7 +83,7 @@ async function deleteHistory(item) {
 async function clearHistory() {
   if (historyBusy.value) return
   if (!history.value?.length) return
-  if (!window.confirm(`清空观看历史：${history.value.length} 部。\n清完再进片子就从从头放，确定？`)) return
+  if (!window.confirm(`清空观看历史：${history.value.length} 部。\n清完再进片子都从头放，确定？`)) return
   historyBusy.value = true
   historyNotice.value = null
   try {
@@ -376,16 +381,16 @@ async function doLogout() {
           </div>
         </section>
 
-        <!-- 观看历史：只装「还没看完」的那批（看到 95% 以上服务端直接销行），点行进放映厅接着放 -->
+        <!-- 观看历史：记所有不只没看完（看完的也盖戳留档），卡面滚动展最近十档，点行进放映厅接着放 -->
         <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
           <div class="mb-4 flex items-center justify-between gap-3">
             <h3 class="text-sm font-semibold text-inkMain">
               观看历史
               <span
-                v-if="history?.length"
+                v-if="history?.length && unfinishedCount"
                 class="ml-1.5 rounded-full border border-stationPink/30 bg-stationPink/5 px-2 py-0.5 text-[11px] font-normal text-stationPink"
               >
-                {{ history.length }} 部没看完
+                {{ unfinishedCount }} 部没看完
               </span>
             </h3>
             <button
@@ -397,9 +402,10 @@ async function doLogout() {
             </button>
           </div>
 
-          <ul v-if="history?.length" class="space-y-2">
+          <!-- 固定高滚动区：十档叠起来比半屏还高，让列表自己内部滚，不把个人空间顶成无限长 -->
+          <ul v-if="history?.length" class="max-h-[440px] space-y-2 overflow-y-auto pr-1">
             <li
-              v-for="item in history"
+              v-for="item in historyRecent"
               :key="item.videoId"
               class="flex items-start gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
             >
@@ -422,7 +428,7 @@ async function doLogout() {
                   <span class="block truncate text-sm text-inkMain transition group-hover:text-stationPink" :title="item.title || item.bvid">
                     {{ item.title || item.bvid }}
                   </span>
-                  <!-- 进度条：位置/时长的百分比（看完的早就不在这列里了）-->
+                  <!-- 进度条：位置/时长的百分比（看完的也留档，条满格配「已看完」戳）-->
                   <span class="mt-2 block h-1 w-full overflow-hidden rounded-full bg-black/[0.08]">
                     <span class="block h-full rounded-full bg-stationPink/70" :style="{ width: `${progressPct(item)}%` }"></span>
                   </span>
@@ -430,6 +436,7 @@ async function doLogout() {
                     <span>看到 {{ historyClock(item.positionSec) }}</span>
                     <span>第 {{ item.pageIdx ?? 0 }} P</span>
                     <span>{{ friendlyTime(item.updatedAtUtc) }}</span>
+                    <span v-if="progressPct(item) >= 95" class="rounded bg-emerald-500/10 px-1 text-emerald-600">已看完</span>
                   </span>
                 </span>
               </RouterLink>
@@ -447,7 +454,7 @@ async function doLogout() {
             {{ historyBusy ? '正在翻你的历史……' : '历史没打开：分站后端没有应答' }}
           </p>
           <p v-else class="py-8 text-center text-sm text-inkFaint">
-            还没有没看完的片子——去大厅抽一部，看到一半走了它会记得你的位子。
+            还没有观看记录——去大厅抽一部，看过的都会在这里留档；看到一半走了它也会记得你的位子。
           </p>
 
           <p
@@ -458,7 +465,7 @@ async function doLogout() {
             {{ historyNotice.text }}
           </p>
           <p v-else class="mt-3 text-[11px] leading-4 text-inkFaint">
-            历史按席位存，一人一片只占一行；看到 95% 以上算看完，自动从这份名单里退场。
+            历史按席位存，一人一片只占一行，看完的也留档；卡面滚动展最近 {{ HISTORY_SHOW_COUNT }} 条，退场只认手动删除与清空。
           </p>
         </section>
 

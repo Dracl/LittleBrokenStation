@@ -5,7 +5,7 @@ namespace LBS.Infrastructure;
 /// 三条口径：① 主键 (member_id, video_id)——同片再报只覆盖位置与翻 updated_at_utc，一人一片永远一行；
 /// ② 片名/封面不抄进本表，读列表时 JOIN videos 现取（封面走馆藏本地件优先，与首页卡片同口径），
 ///    片被删了这条历史就自然看不见，不留在库里当死行；
-/// ③ 看完的不留行——位置过 95% 由端点直接删行，历史只装「还没看完」的那批。
+/// ③ 看完的也留行——位置过 95% 由端点照常盖戳落库，历史是完整播放足迹（要不要跳回是前端的闸，过线不续播）。
 /// </summary>
 public sealed partial class StationDb
 {
@@ -47,7 +47,7 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
     }
 
-    /// <summary>某人的全部观看历史，最近看过的排前头（MemberPage 那张卡就吃这个，LIMIT 兜住别拉爆）。</summary>
+    /// <summary>某人的全部观看历史，最近看过的排前头（MemberPage 历史卡吃这个，滚动展最近十档；LIMIT 兜住别拉爆）。</summary>
     public IReadOnlyList<WatchHistoryRow> GetWatchHistory(long memberId, int limit = 100)
     {
         using var connection = Open(_dbPath);

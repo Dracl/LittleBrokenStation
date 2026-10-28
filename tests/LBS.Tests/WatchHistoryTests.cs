@@ -8,7 +8,7 @@ namespace LBS.Tests;
 /// <summary>
 /// 观看历史（续播点位）：校验与落库直测，仿 DanmakuReportTests 造库造席位（临时目录 + Initialize + BindMember，Dispose 里 ClearAllPools）。
 /// 钉住这几件事：刚开个头（&lt;5 秒）且库里没行 → 什么都不落；库里已有行则连早于地板的位置也照常覆盖（不把旧点顶成空气）；
-/// 一人一片一行——再报只盖旧位并翻新 updated_at_utc；位置过 95% 视为看完，直接删行不把看完的堆进历史；
+/// 一人一片一行——再报只盖旧位并翻新 updated_at_utc；位置过 95% 视为看完，照常盖戳留档不删行（历史记所有，续播闸在前端）；
 /// durationSec 说不清（≤0 / NaN / ∞ / 没给）一律 400 中文，越界位置夹进 [0, duration]；
 /// 列表按 updated_at 倒序并 JOIN 出现成片名与封面（本地件优先），片删了历史里就看不见；席位之间互不可见；单删与清点数清楚。
 /// </summary>
@@ -118,29 +118,37 @@ public sealed class WatchHistoryTests : IDisposable
     }
 
     [Fact]
-    public void 过九十五线算看完_直接删行不留历史()
+    public void 过九十五线算看完_盖戳留档不删行()
     {
         var video = AddVideo("BVhist03", "看完的片子");
         var me = Seat("守到片尾的");
         Report(me, video, 1, 300, 600);
         Assert.NotNull(_db.GetWatchHistoryOne(me, video));
 
-        // 94.9% 还在：没到线就别删。
+        // 94.9% 还在途中：算普通进度。
         Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 1, 600 * 0.949, 600));
-        Assert.NotNull(_db.GetWatchHistoryOne(me, video));
+        var midway = _db.GetWatchHistoryOne(me, video);
+        Assert.NotNull(midway);
+        Assert.Equal(600 * 0.949, midway!.PositionSec);
 
-        // 95% 起跳：删行，历史里查无此片。
-        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Removed, Report(me, video, 1, 600 * 0.95, 600));
-        Assert.Null(_db.GetWatchHistoryOne(me, video));
-        Assert.Empty(_db.GetWatchHistory(me));
+        // 95% 起跳：完结戳落袋，行照常留着（历史记所有，不只没看完的）。
+        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Finished, Report(me, video, 1, 600 * 0.95, 600));
+        var done = _db.GetWatchHistoryOne(me, video);
+        Assert.NotNull(done);
+        Assert.Equal(600 * 0.95, done!.PositionSec);
+        Assert.Contains(_db.GetWatchHistory(me), r => r.VideoId == video); // 列表里也得露面
 
-        // 删完再报个中段位置，行能重新长回来（这人回看没看完的段落，历史该记住）。
+        // 看完后回看中段：同一个坑盖戳降回普通进度，不另开新行。
         Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 2, 90, 600));
-        Assert.Equal(90, _db.GetWatchHistoryOne(me, video)!.PositionSec);
+        var rewatch = _db.GetWatchHistoryOne(me, video);
+        Assert.Equal(90, rewatch!.PositionSec);
+        Assert.Equal(2, rewatch.PageIdx);
+        Assert.Single(_db.GetWatchHistory(me)); // 一人一片永远一行
 
-        // 位置比时长还大（前端把缓冲末尾抖出去这种脏数）：夹进时长 → 照样按看完处理。
-        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Removed, Report(me, video, 2, 9999, 600));
-        Assert.Null(_db.GetWatchHistoryOne(me, video));
+        // 位置比时长还大（前端把缓冲末尾抖出去这种脏数）：夹进时长 → 照样按看完盖戳留档。
+        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Finished, Report(me, video, 2, 9999, 600));
+        var clamped = _db.GetWatchHistoryOne(me, video);
+        Assert.Equal(600, clamped!.PositionSec);
     }
 
     [Fact]
