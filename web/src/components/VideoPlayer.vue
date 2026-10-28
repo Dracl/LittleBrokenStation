@@ -1267,10 +1267,10 @@ const STROKE_ITEMS = [
       <div class="h-10 w-10 animate-spin rounded-full border-2 border-white/25 border-t-white"></div>
     </div>
 
-    <!-- 自动重试也没救回来时的手动恢复钮 -->
+    <!-- 自动重试也没救回来时的手动恢复钮：站长口径摆播放器左上角，不再堵画面正中（加速提示在右上，不碰面） -->
     <button
       v-if="stuckRecover"
-      class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-lg bg-black/70 px-4 py-2 text-sm text-white backdrop-blur transition hover:bg-stationBlue"
+      class="absolute left-3 top-3 z-20 rounded-lg bg-black/70 px-4 py-2 text-sm text-white backdrop-blur transition hover:bg-stationBlue"
       @click.stop="manualUnstick"
     >
       缓冲停滞，点击恢复播放
