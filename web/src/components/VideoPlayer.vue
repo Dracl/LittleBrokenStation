@@ -1029,7 +1029,7 @@ function wakeControls() {
   clearTimeout(hideTimer)
   hideTimer = setTimeout(() => {
     if (playing.value && !rateMenu.value && !qualityMenu.value && !gearPanel.value && !playPanel.value && !statsOpen.value && !ctx.visible) showControls.value = false
-  }, 2600)
+  }, 5000) // 站长口径：与续播小泡同步驻留五秒，鼠标一碰重新计时
 }
 
 // ---- 右键菜单 ----
