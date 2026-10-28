@@ -1427,26 +1427,29 @@ async function bootAdmin() {
 const ADMIN_GROUPS = [
   // 组名走仓库比喻（柜台/进货口/观众席……）：胶囊是拿来跳位的，有点火气反而好记；
   // 但卡题里的「危险区」「一键清空分站」保持大白话，破坏性操作那一步不玩括令。
-  // 原先还有一组「钥匙串」（放站级 B 站号的两张卡）：分站已不收站级号，采集号情报已搬到柜台的分站统计里，这组就此撑空、一并撤了。
+  // 原先还有「钥匙串」（放站级 B 站号的两张卡）：分站已不收站级号，采集号情报已搬到柜台的分站统计里。
+  // 「观众席」与「库房」这两组则是设好就不碰的那一批，整组收进下面的「平时不动」抽屉，
+  // 首屏只留天天盯的柜台与进货口（卡块不搬家，靠 order 排座 + quietOpen 一道闸）。
   { id: 'overview', title: '柜台', hint: '家底与健康度，扫一眼', order: 10 },
   { id: 'harvest', title: '进货口', hint: '下载 · 订阅 · 动态关注', order: 20 },
-  { id: 'people', title: '观众席', hint: '成员席位与全站公告', order: 30 },
-  { id: 'data', title: '库房', hint: '备份 · 搬家 · 捞回', order: 50 },
 ]
 const activeGroup = ref('overview')
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
-const engOpen = ref(false) // 下载设置同样默认收起：字段密、又极少改，展开率低的卡不该占首屏
+const quietOpen = ref(false) // 「平时不动」抽屉：下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面
 const dlWaiting = computed(() => (dlQueue.value?.pending?.length ?? 0) + (dlQueue.value?.downloading?.length ?? 0))
 const adminNav = computed(() => [
   { ...ADMIN_GROUPS[0], n: (pv.value?.pending ?? 0) > 0 ? pv.value.pending : null, tone: 'warn' },
   { ...ADMIN_GROUPS[1], n: dlWaiting.value > 0 ? dlWaiting.value : null, tone: 'hot' },
-  { ...ADMIN_GROUPS[2], n: null, tone: '' },
-  { ...ADMIN_GROUPS[3], n: null, tone: '' },
+  // 抽屉也占一枚胶囊：点了先把盖子掀开再滚过去，否则定位锚不在
+  { id: 'quiet', title: '平时不动', hint: '', order: 55, n: null, tone: '' },
 ])
 
 async function gotoGroup(id) {
   if (id === 'danger') {
     dangerOpen.value = true // 先从收起来变回展开，否则下面找不到可滚的锚
+  }
+  if (id === 'quiet') {
+    quietOpen.value = true // 抽屉收起时里面那六张卡不在 DOM 里，先得把盖子掀开才能滚过去
   }
   await nextTick()
   document.getElementById(`grp-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -1460,7 +1463,7 @@ function onGroupSpyScroll() {
   groupSpyRaf = requestAnimationFrame(() => {
     groupSpyRaf = 0
     let current = 'overview'
-    for (const g of [...ADMIN_GROUPS.map((x) => x.id), 'danger']) {
+    for (const g of [...ADMIN_GROUPS.map((x) => x.id), 'quiet', 'danger']) {
       const el = document.getElementById(`grp-${g}`)
       if (el && el.getBoundingClientRect().top <= 120) current = g
     }
@@ -1778,7 +1781,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="lbs-card md:col-span-2 order-[31]">
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[57]">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             分站成员
@@ -1938,7 +1941,7 @@ onUnmounted(() => {
         </ul>
       </section>
 
-      <section class="lbs-card md:col-span-2 order-[32]">
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[58]">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             全站公告
@@ -2195,23 +2198,11 @@ onUnmounted(() => {
         </dl>
       </section>
 
-      <!-- 下载设置：字段密又极少改，默认收成一条；展开后才摆引擎、画质、并发这些 -->
-      <button
-        v-if="eng && engDraft && !engOpen"
-        type="button"
-        class="order-[22] md:col-span-2 flex items-center gap-2.5 rounded-2xl border border-white/8 bg-white/[0.015] px-5 py-3 text-left text-xs text-white/45 transition hover:border-adminAccent/35 hover:text-white/75"
-        @click="engOpen = true"
-      >
-        <span class="h-3 w-[3px] rounded-full bg-white/20"></span>
-        下载设置
-        <span class="ml-2 font-mono text-[11px] text-white/22">引擎 · 画质 · 并发与限速 · 一年改不了几回</span>
-        <span class="ml-auto font-mono text-[11px] text-white/25">点开展开</span>
-      </button>
-      <section v-else-if="eng && engDraft" class="lbs-card md:col-span-2 order-[22]">
+      <!-- 下载设置：字段密又一年改不了几回，整块收进「平时不动」抽屉，揭盖才摆出来 -->
+      <section v-if="quietOpen && eng && engDraft" class="lbs-card md:col-span-2 order-[56]">
         <div class="mb-4 flex items-center justify-between">
           <h3 class="lbs-title !mb-0">下载设置</h3>
           <div class="flex items-center gap-2">
-            <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="engOpen = false">收起</button>
             <button
               class="lbs-btn-ghost"
               :disabled="engBusy"
@@ -2422,7 +2413,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section v-if="backupState" class="lbs-card order-[51]">
+      <section v-if="quietOpen && backupState" class="lbs-card order-[59]">
         <div class="mb-4 flex items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             台账备份
@@ -2468,7 +2459,7 @@ onUnmounted(() => {
         <p v-if="backupText" class="mt-2 text-xs text-adminAccent/80">{{ backupText }}</p>
       </section>
 
-      <section class="lbs-card md:col-span-2 order-[53]">
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[61]">
         <div class="mb-4 flex items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             数据交换
@@ -2590,20 +2581,40 @@ onUnmounted(() => {
       </section>
 
       <!-- 回收站：删档后的捞回口，挨着危险区放——破坏性操作集中在一处，翻柜子时顺手就能确认 -->
-      <RecycleBinCard class="order-[52]" />
+      <RecycleBinCard v-if="quietOpen" class="order-[60]" />
+
+      <!-- 平时不动：下载设置、成员席位、全站公告、备份与搬家这些设好就不碰的，整批收在这儿 -->
+      <button
+        v-if="!quietOpen"
+        id="grp-quiet"
+        type="button"
+        class="order-[55] md:col-span-2 flex items-center gap-2.5 rounded-2xl border border-white/8 bg-white/[0.015] px-5 py-3 text-left text-xs text-white/45 transition hover:border-adminAccent/35 hover:text-white/75"
+        @click="gotoGroup('quiet')"
+      >
+        <span class="h-3 w-[3px] rounded-full bg-white/20"></span>
+        平时不动
+        <span class="ml-2 font-mono text-[11px] text-white/22">下载设置 · 成员席位 · 全站公告 · 备份与搬家 · 设好就不碰</span>
+        <span class="ml-auto font-mono text-[11px] text-white/25">点开取出</span>
+      </button>
+      <div v-else id="grp-quiet" class="order-[55] md:col-span-2 flex items-baseline gap-2.5 pt-3">
+        <h2 class="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">平时不动</h2>
+        <span class="font-mono text-[11px] text-white/20">盖子已开 · 六张卡都在下面</span>
+        <span class="ml-1 h-px flex-1 bg-white/5"></span>
+        <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="quietOpen = false">盖回去</button>
+      </div>
 
       <button
         v-if="!dangerOpen"
         id="grp-danger"
         type="button"
-        class="order-[61] md:col-span-2 flex items-center gap-2.5 rounded-2xl border border-rose-400/20 bg-rose-400/[0.04] px-5 py-3 text-left text-xs text-rose-300/60 transition hover:border-rose-400/40 hover:text-rose-200"
+        class="order-[70] md:col-span-2 flex items-center gap-2.5 rounded-2xl border border-rose-400/20 bg-rose-400/[0.04] px-5 py-3 text-left text-xs text-rose-300/60 transition hover:border-rose-400/40 hover:text-rose-200"
         @click="gotoGroup('danger')"
       >
         <span class="h-3 w-[3px] rounded-full bg-rose-400/60"></span>
         危险区 · 一键清空分站
         <span class="ml-auto font-mono text-[11px] text-white/25">点开展开</span>
       </button>
-      <section v-else id="grp-danger" class="lbs-card-danger md:col-span-2 order-[61]">
+      <section v-else id="grp-danger" class="lbs-card-danger md:col-span-2 order-[70]">
         <div class="mb-1 flex items-center justify-between gap-2">
           <h3 class="lbs-title-danger">危险区 · 一键清空分站</h3>
           <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="dangerOpen = false">收起</button>
