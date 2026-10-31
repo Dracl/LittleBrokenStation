@@ -1,3 +1,4 @@
+using LBS.Domain;
 using LBS.Infrastructure;
 
 namespace LBS.Server;
@@ -47,6 +48,59 @@ public static class AdminRecycleEndpoints
         {
             var cleared = db.PurgeAllRecycle(paths.Recycle);
             return Results.Ok(new { message = cleared > 0 ? $"回收站已清空，带走 {cleared} 件" : "回收站本来就是空的", cleared });
+        });
+
+        // 一键清理「已取消」遗留：卡阵里的 Canceled 行整批抖进回收站——和手动删档同一条船，站长可从回收站反悔。
+        // 带引擎台账的行（极少数 Failed→重排→再取消的路径残留）先跳过不碰：清理不该动引擎的账，宁可留下不误搬。
+        app.MapPost("/api/admin/canceled/purge", (StationDb db, DataPaths paths, HttpContext http) =>
+        {
+            var items = db.GetCanceledQueueItems();
+            if (items.Count == 0)
+            {
+                return Results.Ok(new { purged = 0, skipped = 0, message = "没有已取消的馆藏需要清理" });
+            }
+
+            var deleter = MemberGate.Current(http);
+            var who = deleter?.Nickname ?? deleter?.Username ?? "站长";
+            var purged = 0;
+            var skipped = 0;
+            foreach (var item in items)
+            {
+                var row = db.GetVideoForDelete(item.Id);
+                if (row is null || row.Value.Status != VideoStatus.Canceled || !string.IsNullOrWhiteSpace(row.Value.TaskIdsJson))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var commentCount = 0;
+                if (db.GetArtifactRel(item.Id, "comments") is { } commentsRel)
+                {
+                    var snapshotPath = Path.Combine(paths.Videos, commentsRel.Replace('/', Path.DirectorySeparatorChar));
+                    if (LBS.Engine.CommentSnapshotOps.Load(snapshotPath) is { } snapshot)
+                    {
+                        commentCount = snapshot.Replies.Count + (snapshot.Top is null ? 0 : 1);
+                    }
+                }
+
+                var recycled = db.MoveVideoToRecycle(item.Id, paths.Videos, paths.Recycle, who, commentCount);
+                if (recycled.Ok)
+                {
+                    purged++;
+                }
+                else
+                {
+                    skipped++;
+                }
+            }
+
+            var tail = skipped > 0 ? $"，{skipped} 件跳过（引擎账未清或文件占用）" : string.Empty;
+            return Results.Ok(new
+            {
+                purged,
+                skipped,
+                message = purged > 0 ? $"清理了 {purged} 件已取消馆藏（存进了回收站）{tail}" : $"{skipped} 件都没清动（引擎账未清或文件占用）",
+            });
         });
 
         // 回收站里的封面：清单说哪个是封面就递哪个，路径越界一律不给。

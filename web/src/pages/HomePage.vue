@@ -5,7 +5,18 @@ import AdminVideoCell from '../components/AdminVideoCell.vue'
 import { coverThumb } from '../utils/cover'
 import { previewHovering } from '../utils/previewHover'
 import { submitDialogOpen } from '../submitStore'
+import { askDeleteVideo } from '../confirmStore'
 import { isDark, toggleTheme } from '../theme'
+import BangumiHome from '../components/BangumiHome.vue'
+
+// ─── 视图开关：番剧模式（大幕轮播 + 分区横滚行，照 B 站番剧区）为默认，网格卡阵是另一档。
+// 选择存 localStorage，下次进站还是上次的样子；没选过的新客默认落番剧模式。右下三颗圆钮最下面那颗切换。
+const VIEW_KEY = 'lbs_home_view'
+const viewMode = ref(localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'anime')
+function toggleView() {
+  viewMode.value = viewMode.value === 'grid' ? 'anime' : 'grid'
+  localStorage.setItem(VIEW_KEY, viewMode.value)
+}
 
 // ─── 日夜开关：坐在首页右下角换一批钮上方，同款黑玻离圆钮。
 // 只管把 html.dark 掰上掰下（真活在 style.css 的变量里），图标跟着当前昼夜换脸。
@@ -23,7 +34,7 @@ let pollTick = 0
 
 // ─── 首页排序：新货组置顶 + 各组内种子洗牌（同一次进站一个种子，轮询期间不乱跳）───
 const homeSeed = ref((Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0)
-const NEW_ARRIVAL_MS = 72 * 3600 * 1000 // 入站（建行）3 天内算新货
+const NEW_ARRIVAL_MS = 7 * 24 * 3600 * 1000 // 入站（建行）7 天内算新货
 
 function shuffleScore(id, seed) {
   // xorshift 整数哈希：便宜且分布均匀，不需要密码学强度
@@ -211,7 +222,7 @@ async function fetchComments(video) {
 
 async function removeVideo(video) {
   const label = video.title || video.bvid
-  if (!window.confirm(`确定把「${label}」从分站彻底删除？本地文件（视频/弹幕/字幕/封面）会一并清掉，不可恢复。`)) {
+  if (!(await askDeleteVideo(label))) {
     return
   }
   try {
@@ -302,7 +313,18 @@ watch(sentinelEl, (el) => {
     <TopBar />
 
     <main class="mx-auto max-w-[1400px] px-6 py-6">
-      <!-- 馆藏墙 -->
+      <!-- 番剧模式：大幕轮播 + 入口卡 + 分区横滚行，整套交给 BangumiHome -->
+      <BangumiHome
+          v-if="viewMode === 'anime'"
+          :videos="videos"
+          :seed="homeSeed"
+          :comment-busy="commentBusy"
+          @fetch-comments="fetchComments"
+          @remove="removeVideo"
+        />
+
+      <!-- 馆藏墙（网格模式专属；番剧模式整块换成上面的 BangumiHome） -->
+      <template v-else>
       <div class="mb-3 flex items-center justify-between">
         <h2 class="text-base font-semibold text-inkMain">馆藏<span v-if="videos.length" class="ml-2 text-xs font-normal text-inkFaint">{{ videos.length }} 件</span></h2>
         <p
@@ -411,11 +433,12 @@ watch(sentinelEl, (el) => {
           <span class="grid-spin mr-2"></span>放下帘子，迎接更多馆藏…
         </div>
       </div>
+      </template>
     </main>
 
     <!-- 日夜开关：压在换一批正上方，白昼见月、夜里见日 -->
     <button
-      class="fixed bottom-[5.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
+      class="fixed bottom-[9.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
       :title="nightMode ? '切回白昼' : '切进黑夜'"
       :aria-label="nightMode ? '切回白昼' : '切进黑夜'"
       @click="flipDayNight"
@@ -429,15 +452,35 @@ watch(sentinelEl, (el) => {
       </svg>
     </button>
 
-    <!-- 换一批：重抽种子重洗卡阵与大幕，轮询期间顺序锁定 -->
+    <!-- 换一批：重抽种子重洗卡阵与大幕（番剧模式下 banner 也跟着重抽），轮询期间顺序锁定 -->
     <button
-      class="fixed bottom-6 right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:rotate-6 hover:border-stationPink/60 hover:text-stationPink"
+      class="fixed bottom-[5.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:rotate-6 hover:border-stationPink/60 hover:text-stationPink"
       title="换一批：重新洗牌首页卡阵"
       aria-label="换一批"
       @click="reshuffle"
     >
       <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
         <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+
+    <!-- 视图切换：压在换一批正下方，网格卡阵 ⇄ 番剧模式（图标跟着当前视图换脸） -->
+    <button
+      class="fixed bottom-6 right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
+      :title="viewMode === 'grid' ? '切到番剧模式（大幕轮播 + 分区横滚行）' : '切回网格卡阵'"
+      :aria-label="viewMode === 'grid' ? '切到番剧模式' : '切回网格卡阵'"
+      @click="toggleView"
+    >
+      <svg v-if="viewMode === 'grid'" viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3" y="4" width="18" height="9" rx="2" />
+        <path d="M3 16.5h7.5M3 20h11" stroke-linecap="round" />
+        <path d="M15.5 16.5h5.5M15.5 20h3" stroke-linecap="round" opacity="0.45" />
+      </svg>
+      <svg v-else viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
+        <rect x="3.5" y="3.5" width="7" height="7" rx="1.8" />
+        <rect x="13.5" y="3.5" width="7" height="7" rx="1.8" />
+        <rect x="3.5" y="13.5" width="7" height="7" rx="1.8" />
+        <rect x="13.5" y="13.5" width="7" height="7" rx="1.8" />
       </svg>
     </button>
   </div>

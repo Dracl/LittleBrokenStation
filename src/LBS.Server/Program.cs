@@ -39,6 +39,13 @@ builder.Services.AddSingleton<CommentArchiveService>();
 builder.Services.AddSingleton<DanmakuArchiveService>();
 builder.Services.AddSingleton<LbsCollectPolicy>();
 builder.Services.AddHostedService<DownloadWorker>();
+// 分轨码率探子：起进程的事集中在这一个类，同步员在「主片到站」与「加档定档」两个事件点叫它，
+// StationDb 只管写台账、不起进程，热路径（开观看页）也不探。
+builder.Services.AddSingleton<MediaStreamProber>();
+// worker 供号：下载 worker 是 runtime 启动时的常驻循环，AsyncLocal 不跨队列——
+// 账号分流上线后 worker 里第一个带凭据请求判无号、异常炸工无日志（10-26 晚后引擎零完成的根因），
+// 每个任务的执行包进采集号上下文才能带着凭据跑。
+builder.Services.AddSingleton<IDownloadWorkerAmbient, LbsDownloadWorkerAmbient>();
 builder.Services.AddHostedService<StatusSyncWorker>();
 // 订阅爬工：单例注册以便站长室手动触发拿到同一个实例（串行闸在它手里）。
 builder.Services.AddSingleton<SubscriptionCrawler>();
@@ -49,6 +56,7 @@ builder.Services.AddSingleton<DynamicFetchWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DynamicFetchWorker>());
 // 封面补员：到站时没勾封面的视频，每小时一轮从 cover_url 补下封面原图（每轮封顶 40、条间 300ms，先文件后 artifacts 行）。
 builder.Services.AddHostedService<CoverBackfillWorker>();
+builder.Services.AddHostedService<StreamBackfillWorker>(); // 分轨码率补员：把探子上岗前落盘的老货逐轮补探
 // 悬停预览补员：ffmpeg 从本地成片转低码率无声短片到 data/previews（不进视频库、不进 artifacts）。
 // 设定全存 settings KV（preview-*），与引擎设置互不串门；补员员单例注册，站长室催一轮与总览拿的是同一个实例。
 builder.Services.AddSingleton<PreviewSettings>();
@@ -357,8 +365,9 @@ app.MapPost("/api/gate/unlock", (GateRequest request, AdminGate gate, HttpContex
 
 app.MapPost("/api/gate/lock", (GateRequest request, AdminGate gate, HttpContext http) =>
 {
-    // 已上锁时换口令也得先递口令：否则任何人一发请求就能换掉站长钥匙。
-    if (gate.IsLocked && !gate.HasValidSession(http.Request))
+    // 挂牌得是站长本人（或留档的口令会话）：否则未上锁时任何人都能抢设口令，
+    // 「公网复位」启用那天这把闸就是别人抢钥匙的门。
+    if (!MemberGate.IsOwner(MemberGate.Current(http)) && !gate.HasValidSession(http.Request))
     {
         return Results.Unauthorized();
     }
@@ -380,8 +389,8 @@ app.MapPost("/api/gate/release", (AdminGate gate, HttpContext http) =>
         return Results.BadRequest(new { message = "本来就没锁" });
     }
 
-    // 除锁必须持有效会话：不然路过的访客一发请求就把锁卸了。
-    if (!gate.HasValidSession(http.Request))
+    // 摘牌同挂牌：站长会话或留档口令会话，二者皆无一律拒。
+    if (!MemberGate.IsOwner(MemberGate.Current(http)) && !gate.HasValidSession(http.Request))
     {
         return Results.Unauthorized();
     }
@@ -439,7 +448,7 @@ app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upI
         : Results.Ok(data with { CanManage = CanManageVideo(http, db, data.Id) });
 });
 
-// 接下来播放：同 UP 主优先、新入站补齐，卡片形状与列表接口一致。
+// 接下来播放：同 UP 主优先、层内随机（库里同 UP 主上百支，按 id 倒序会永远只递那几张新面孔），卡片形状与列表接口一致。
 app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db) =>
 {
     var related = db.GetRelatedVideos(id);
@@ -453,6 +462,11 @@ app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db) =>
         v.ViewCountText,
         v.DurationText,
         v.DanmakuCount,
+        // 展示用时间走投稿时间（与首页卡阵同一口径：首取 publishedAtUtc，其次归档的 publishText，
+        // 两个都没就整段不显）：全站批量下载后 created_at_utc 清一色同一天，那是站长台账概念。
+        // createdAt 照旧留着（可能有别的消费方在用），只是前端不再拿它显时间。
+        v.PublishedAtUtc,
+        v.PublishText,
         CreatedAt = v.CreatedAtUtc,
     }).ToList());
 });
@@ -533,7 +547,7 @@ void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy
     });
 }
 
-app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, CancellationToken cancellationToken) =>
+app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, IDownloadHistoryService history, CancellationToken cancellationToken) =>
 {
     var row = db.GetVideoForDelete(id);
     if (row is null)
@@ -549,43 +563,46 @@ app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, Station
     }
 
     // 先安顿引擎侧：在途/排队任务要先取消并删除，否则删完站它们还会继续往硬盘写。
-    if (!string.IsNullOrWhiteSpace(row.Value.TaskIdsJson))
+    // 任务号不再只看 videos.engine_task_ids（到站那一刻已被 MarkArrived 清成 NULL）：加档行的在途任务
+    // 从来没人安顿，片子删了它们照样往 data/videos 里补字节。GetEngineTraceForVideo 三处一并取。
+    var trace = db.GetEngineTraceForVideo(id);
+    var (retired, blocking) = await EngineTaskRetire.RunAsync(
+        trace.TaskIds, lookup, state, taskQueue, tolerateFailures: false, cancellationToken);
+    if (blocking is not null)
     {
-        List<string>? taskIds = null;
-        try
+        return Results.Conflict(new { message = $"引擎任务删不动（{blocking}），等下载告一段落再试" });
+    }
+
+    // 加档行跟着馆藏一起收：引擎任务上面那一步已销，这里只销分站这侧的账，
+    // 免得留一行 Downloading 让同步员去扫一台已经不存在的片子。
+    foreach (var codecRow in db.GetDownloadingCodecVersions())
+    {
+        if (codecRow.VideoId == id)
         {
-            taskIds = JsonSerializer.Deserialize<List<string>>(row.Value.TaskIdsJson);
+            db.MarkCodecFailed(codecRow.Id, "馆藏已删档，这次加档随之取消");
         }
-        catch (JsonException)
+    }
+
+    // 引擎历史台账按片销掉：它按 (cid, 需要下载的内容) 判重（DownloadTaskAdmissionService.cs:65），
+    // 不销它的话删完重投会被判「已下过」：新行落到无人认领的 Skipped，老行又因 bvid 撞车恢复不了，两头卡死。
+    // 先走引擎接口按任务号销（顺带对齐它的内存态），再按 cid 补扫一遍任务号丢失的旧行（到站后 engine_task_ids 会被清）。
+    var historyRows = 0;
+    try
+    {
+        foreach (var taskId in trace.TaskIds)
         {
-            // 脏数据就当没得安顿，继续删站
-        }
-
-        foreach (var taskId in taskIds ?? new List<string>())
-        {
-            var downloadTask = await lookup.FindAsync(new DownloadTaskId(taskId), cancellationToken);
-            if (downloadTask is null)
+            if ((await history.DeleteAsync(new DownloadTaskId(taskId), cancellationToken)).IsSuccess)
             {
-                continue; // 已完成搬走的不用安顿（文件在删站阶段一并清）
-            }
-
-            // 先打断队列里可能活着的执行再销账（对齐引擎自家删除编排），不然它会把字节继续往已删的行里写。
-            try
-            {
-                await taskQueue.CancelAsync(new DownloadTaskId(taskId));
-            }
-            catch (Exception)
-            {
-                // 本就没在跑，取消不掉无妨
-            }
-
-            await state.CancelAsync(new DownloadTaskId(taskId), cancellationToken);
-            var remove = await state.DeleteAsync(new DownloadTaskId(taskId), cancellationToken);
-            if (!remove.IsSuccess)
-            {
-                return Results.Conflict(new { message = $"引擎任务删不动（{remove.Error?.Message ?? "原因未知"}），等下载告一段落再试" });
+                historyRows++;
             }
         }
+
+        historyRows += LbsEnginePurge.PurgeEngineHistoryByCids(paths.Downkyi, trace.Cids);
+    }
+    catch (Exception ex)
+    {
+        // 引擎库锁着/不在不拦删档：站这侧该进的回收站照样进，历史行留给下次或危险区一键清空。
+        app.Logger.LogWarning(ex, "馆藏 {VideoId} 的引擎历史没销动（删档继续）", id);
     }
 
     // 不再就地焚毁：文件抖进 data/recycle，六张表的行连主键封进清单。
@@ -605,7 +622,9 @@ app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, Station
     return recycled.Ok
         ? Results.Ok(new
         {
-            message = $"「{row.Value.Bvid}」已从分站删除，带走 {recycled.Files} 个文件（存进了回收站）",
+            message = $"「{row.Value.Bvid}」已从分站删除，带走 {recycled.Files} 个文件（存进了回收站）"
+                + (historyRows > 0 ? $"，顺手销掉 {historyRows} 行引擎历史（重投不再判重）" : "")
+                + (retired > 0 ? $"，安顿 {retired} 个引擎任务" : ""),
             binId = recycled.BinId,
         })
         : Results.Conflict(new { message = recycled.Message });
@@ -619,13 +638,25 @@ app.MapPost("/api/videos/{id:long}/revive", async (long id, LbsTaskReviver reviv
     return ok ? Results.Ok(new { message }) : Results.BadRequest(new { message });
 });
 
-// 重新排队：站长取消过的馆藏（Canceled）从卡阵里捞回排队区；其它状态不响应免得误复活。
+// 重新排队：站长取消过的馆藏（Canceled）从卡阵里捞回排队区；被引擎判为「已下过」的（Skipped）
+// 走另一条道：挂上重下旗再回炉，否则同一把判重键会在门口再挡一次。其它状态不响应免得误复活。
 app.MapPost("/api/videos/{id:long}/requeue", async (long id, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
 {
     var brief = db.GetVideoBrief(id);
     if (brief is null)
     {
         return Results.NotFound(new { message = "没有这条馆藏" });
+    }
+
+    if (brief.Value.Status == VideoStatus.Skipped)
+    {
+        // Skipped 的成因在引擎那一侧：download_history 里有同名行就判无需下载。光重投还是原样被打回，
+        // 所以这路必须带 RedownloadCompleted 走正门（引擎自己给加档重下用的就是这条），而不是伸手改它的库。
+        // 挂牌必须在 ResetToPending 之后：那一步走状态机统一入口，会把这枚旗顺手清零。
+        db.ResetToPending(id);
+        db.MarkForceRedownload(id);
+        await queue.EnqueueAsync(id, cancellationToken);
+        return Results.Ok(new { message = "这馆先前被引擎判为已下过，已绕开判重重新排队（正片会重下一遍）" });
     }
 
     if (brief.Value.Status != VideoStatus.Canceled)
@@ -871,6 +902,101 @@ app.MapPost("/api/videos/{id:long}/codecs", async (long id, CodecVersionRequest 
     return Results.Ok(new { message = $"{codec.ToUpperInvariant()} 版本已排队进站（{added} 个分 P）" });
 });
 
+// 加档实况轻端点（匿名可读）：放映厅的版本面板把「进站中…」报成带百分比/字节/速度的实况，
+// 与站长室队列同一本账——引擎在途表逐枚现查，进度的真伪以引擎为准。
+app.MapGet("/api/videos/{id:long}/codecs/progress", async (long id, StationDb db, IDownloadTaskLookup lookup, CancellationToken cancellationToken) =>
+{
+    var rows = new List<object>();
+    foreach (var (rowId, videoId, pageIdx, codec, taskIdsJson, basePath) in db.GetDownloadingCodecVersions())
+    {
+        if (videoId != id)
+        {
+            continue;
+        }
+
+        foreach (var taskId in StatusSyncWorker.ParseTaskIds(taskIdsJson))
+        {
+            var task = await lookup.FindAsync(new DownloadTaskId(taskId), cancellationToken);
+            if (task is null)
+            {
+                continue; // 已搬历史库，没得可报
+            }
+
+            rows.Add(new
+            {
+                codec,
+                pageIdx,
+                phase = task.Phase.ToString(),
+                percent = task.Progress.Percentage,
+                got = task.Progress.DownloadedSizeText,
+                speed = task.Progress.SpeedText,
+            });
+            break;
+        }
+    }
+
+    return Results.Ok(rows);
+});
+
+// 取消一件在途加档：销引擎账 + 判 Failed；反悔了在首页重新点单即可。
+// 早先面板注释说「加档没取消端点，造个按下去没反应的钮比没有更坑」——现在引擎账销得动，钮按得动了。
+app.MapPost("/api/videos/{id:long}/codecs/cancel", async (long id, CancelCodecRequest request, StationDb db, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, CancellationToken cancellationToken) =>
+{
+    var codec = (request.Codec ?? string.Empty).Trim().ToLowerInvariant();
+    if (!StationDb.SupportedCodecs.Contains(codec, StringComparer.Ordinal))
+    {
+        return Results.BadRequest(new { message = "不认的编码，只收 avc / hevc / av1" });
+    }
+
+    long? targetRow = null;
+    string? targetTasks = null;
+    foreach (var row in db.GetDownloadingCodecVersions())
+    {
+        if (row.VideoId == id && string.Equals(row.Codec, codec, StringComparison.Ordinal)
+            && (request.PageIdx is null || row.PageIdx == request.PageIdx))
+        {
+            targetRow = row.Id;
+            targetTasks = row.TaskIdsJson;
+            break;
+        }
+    }
+
+    if (targetRow is null)
+    {
+        return Results.NotFound(new { message = $"这条馆藏没有正在进行的 {codec.ToUpperInvariant()} 加档，不用取消" });
+    }
+
+    foreach (var taskId in StatusSyncWorker.ParseTaskIds(targetTasks))
+    {
+        if (await lookup.FindAsync(new DownloadTaskId(taskId), cancellationToken) is null)
+        {
+            continue;
+        }
+
+        try
+        {
+            await taskQueue.CancelAsync(new DownloadTaskId(taskId));
+        }
+        catch (Exception)
+        {
+            // 本就没在跑，取消不掉无妨
+        }
+
+        try
+        {
+            await state.CancelAsync(new DownloadTaskId(taskId), cancellationToken);
+            await state.DeleteAsync(new DownloadTaskId(taskId), cancellationToken);
+        }
+        catch (Exception)
+        {
+            // 引擎销不动也不拦取消：账先销，残存任务由看门狗下一轮收拾
+        }
+    }
+
+    db.MarkCodecFailed(targetRow.Value, "站长取消了这次加档，可在首页重新点单");
+    return Results.Ok(new { message = $"已取消 {codec.ToUpperInvariant()} 加档（反悔可在首页重新点单）" });
+});
+
 // 删单个编码版本：销账 + 删文件；主版本不受影响。
 app.MapDelete("/api/videos/{id:long}/codecs/{pageIdx:int}/{codec}", (long id, int pageIdx, string codec, StationDb db, DataPaths paths) =>
 {
@@ -960,8 +1086,16 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
 
     // 投稿定人：谁投的归谁，下载提交时走他自己的账号池（M5.4：定的是站内席位 id）。
     var submitter = MemberGate.Current(http);
+    // 投稿必留名：查不出席位的匿名稿一律拒收——门闸按路径点名，历史上尾斜杠就能穿到这里白灌台账；
+    // 就算门修好，这道死规也留着：宁可多拒一票，台账不养无主行。
+    if (submitter is null)
+    {
+        return Results.Json(new { error = "member-required", message = "投稿要留名：登录进站再丢链接" },
+            statusCode: StatusCodes.Status401Unauthorized);
+    }
+
     // 投稿闸门（M5.4）：素净席位能看能聊不能投稿——得有一个未过期的 B 站号才烧得起别人的登录态；站长拿引擎登录态投稿，不受此闸。
-    if (submitter is not null && !SubmissionGate.Allows(db, submitter))
+    if (!SubmissionGate.Allows(db, submitter))
     {
         return Results.Json(new
         {
@@ -970,14 +1104,10 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
         }, statusCode: StatusCodes.Status403Forbidden);
     }
 
-    if (submitter is not null)
-    {
-        db.SetVideoSubmitterMember(outcome.VideoId, submitter.Id);
-    }
+    db.SetVideoSubmitterMember(outcome.VideoId, submitter.Id);
 
-    events.RecordWithPayload(submitter is null ? EventActors.Guest : EventActors.Member, submitter?.Mid,
-        EventNames.VideoSubmit, "video", bvid, new { url = request.Url, via = "link" },
-        http.Connection.RemoteIpAddress?.ToString(), submitter?.Id);
+    events.RecordWithPayload(EventActors.Member, submitter.Mid, EventNames.VideoSubmit, "video", bvid,
+        new { url = request.Url, via = "link" }, http.Connection.RemoteIpAddress?.ToString(), submitter.Id);
 
     await queue.EnqueueAsync(outcome.VideoId, cancellationToken);
     return Results.Ok(new { videoId = outcome.VideoId, message = $"已加入进站队列，{bvid} 正在赶来" });
@@ -1189,15 +1319,68 @@ app.MapPost("/api/up/import", async (UpImportRequest request,
 
 // ─── 下载控制面板：暂停/继续/取消 + 队列快照 ──────────────────────────
 // 暂停是全站闸：提交停投 + 在途引擎任务挂起；取消只动排队区（还没碰引擎的行，零成本）。
-app.MapGet("/api/downloads/queue", (DownloadPauseBoard board, StationDb db) => Results.Ok(new
+app.MapGet("/api/downloads/queue", async (DownloadPauseBoard board, StationDb db, IDownloadTaskLookup lookup, CancellationToken cancellationToken) =>
 {
-    paused = board.IsPaused,
-    intervalSec = board.IntervalSec,
-    downloading = db.GetDownloadingRows()
-        .Select(r => new { id = r.Id, bvid = r.Bvid, title = r.Title, coverUrl = r.CoverUrl }),
-    pending = db.GetPendingQueueItems()
-        .Select(i => new { id = i.Id, bvid = i.Bvid, title = i.Title, coverUrl = i.CoverUrl }),
-}));
+    // 加档行多透三层实况：让路缘由与回炉倒计时（waiting）、引擎在途进度（有任务号才查得到）、
+    // 让路次数——站长不用猜「排队中在排什么」，面板直接把账摆开。
+    var codecRows = new List<object>();
+    foreach (var c in db.GetCodecQueueRows())
+    {
+        object? progress = null;
+        foreach (var taskId in StatusSyncWorker.ParseTaskIds(c.Extra.TaskIdsJson))
+        {
+            var task = await lookup.FindAsync(new DownloadTaskId(taskId), cancellationToken);
+            if (task is null)
+            {
+                continue; // 已搬历史库，没得可报
+            }
+
+            progress = new
+            {
+                phase = task.Phase.ToString(),
+                percentage = task.Progress.Percentage,
+                downloadedText = task.Progress.DownloadedSizeText,
+                totalBytes = task.Progress.TotalBytes,
+                speedText = task.Progress.SpeedText,
+            };
+            break;
+        }
+
+        codecRows.Add(new
+        {
+            videoId = c.VideoId,
+            bvid = c.Bvid,
+            title = c.Title,
+            codec = c.Codec,
+            pageIdx = c.PageIdx,
+            waiting = c.Waiting,
+            measured = c.Measured,
+            retryCount = c.Extra.RetryCount,
+            hint = c.Extra.LastError,
+            retryInSec = c.Extra.RetryAtUtc is { } retryAt
+                ? Math.Max(0, (int)(retryAt - DateTimeOffset.UtcNow).TotalSeconds)
+                : (int?)null,
+            progress,
+        });
+    }
+
+    return Results.Ok(new
+    {
+        paused = board.IsPaused,
+        intervalSec = board.IntervalSec,
+        downloading = db.GetDownloadingRows()
+            .Select(r => new { id = r.Id, bvid = r.Bvid, title = r.Title, coverUrl = r.CoverUrl }),
+        pending = db.GetPendingQueueItems()
+            .Select(i => new { id = i.Id, bvid = i.Bvid, title = i.Title, coverUrl = i.CoverUrl }),
+        // 加档账在 video_codecs 表，上面两块只认 videos 表，所以这块面板一直看不见它们；
+        // waiting=true 是「判重让路、排队等回炉」，false 是「已交给提交链进站中」；
+        // measured 是盘上实测编码（定档那一刻探回来的，与点单的 codec 对不上就是挂羊头卖狗肉）。
+        // 既有四块的形状与语义不动（外面还有别的代码在吃），只往加档行里添新字段。
+        codecs = codecRows,
+        // 已取消遗留数：面板「清理已取消」按钮上的数，清了进回收站可反悔
+        canceledCount = db.CountCanceledVideos(),
+    });
+});
 
 // 逐件提交间隔：白名单 0/60/300/600/1800 秒，实际等待带 ±10% 随机抖动，改完下一件就生效。
 app.MapPost("/api/downloads/interval", (SetDownloadIntervalRequest request, DownloadPauseBoard board) =>
@@ -1491,3 +1674,5 @@ internal sealed record SubscriptionRequest(string Kind, string Target);
 internal sealed record LocalDanmakuRequest(int PageIdx, double T, string Text);
 internal sealed record SubsRequest(long Rpid, int Page);
 internal sealed record CodecVersionRequest(string? Codec);
+
+internal sealed record CancelCodecRequest(string? Codec, int? PageIdx);

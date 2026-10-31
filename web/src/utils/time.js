@@ -13,6 +13,22 @@ export function colonTime(text) {
   return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`
 }
 
+// B 站投稿时间的取数口径（首页卡阵与「接下来播放」共用，别再各写一份）：
+// 首取导入源自带的 publishedAtUtc，其次到站归档的 publishText，两个都拿不到给 null——
+// 入站时间是站长台账的概念，不该顶替投稿时间上桌（拿 createdAt 显的卡会满屏同一天）。
+export function publishedDate(v) {
+  if (!v) return null
+  if (v.publishedAtUtc) {
+    const d = new Date(v.publishedAtUtc)
+    if (!Number.isNaN(d.getTime())) return d
+  }
+  if (v.publishText) {
+    const d = new Date(String(v.publishText).replace(' ', 'T'))
+    if (!Number.isNaN(d.getTime())) return d
+  }
+  return null
+}
+
 // 进站类时间人性化：一小时内报分钟，一天内报小时，昨天点名，更早给日期。
 // UTC 串（…Z）由 Date.parse 认时区；认不出的一律「—」，不编数。
 export function friendlyTime(iso) {

@@ -7,6 +7,8 @@ import ImageLightbox from '../components/ImageLightbox.vue'
 import AvatarImg from '../components/AvatarImg.vue'
 import LevelBadge from '../components/LevelBadge.vue'
 import ShareDialog from '../components/ShareDialog.vue'
+import BIcon from '../components/BIcon.vue'
+import { biDynForward, biDynComment, biDynLike, biDynLikeFill } from '../assets/bicons'
 import { member, loginDialogOpen } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 import CollapsibleRichText from '../components/CollapsibleRichText.vue'
@@ -26,6 +28,42 @@ const toast = ref(null)
 const roundBusy = ref(false)
 
 const PAGE_SIZE = 20
+
+// 动态点赞本机存档（站长定案「图个过瘾」）：与评论区同脾气——localStorage 小本本，
+// 线稿/实心成对切换、点亮粉、赞数本机 +1；不上报 B 站、不入服务器档，换设备清零。
+const dynLiked = ref(loadDynLiked())
+
+function loadDynLiked() {
+  try {
+    const raw = window.localStorage.getItem('lbs-dyn-likes')
+    return new Set(raw ? JSON.parse(raw) : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function persistDynLiked() {
+  try {
+    window.localStorage.setItem('lbs-dyn-likes', JSON.stringify([...dynLiked.value]))
+  } catch {
+    /* 存不下就算了 */
+  }
+}
+
+function toggleDynLike(d) {
+  const key = String(d.dynamicId)
+  const next = new Set(dynLiked.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  dynLiked.value = next
+  persistDynLiked()
+}
+
+function dynLikeCount(d) {
+  const base = d.statLike ?? 0
+  const n = base + (dynLiked.value.has(String(d.dynamicId)) ? 1 : 0)
+  return n > 0 ? n : null // 零赞与采不到同口径：退「点赞」中文（官方风）
+}
 
 // ─── 卡型判定（B 站式）───
 function isLive(d) {
@@ -57,7 +95,7 @@ function splitForward(text) {
 // ─── 评论抽屉：每条评价现拉现展，收起来不拆数据（二次展开不重拉）───
 const commentsMap = reactive({})
 function cmtState(d) {
-  return (commentsMap[d.dynamicId] ||= { open: false, loading: false, loaded: false, fetched: false, total: 0, items: [], expanded: {}, emotes: {} })
+  return (commentsMap[d.dynamicId] ||= { open: false, loading: false, loaded: false, fetched: false, fetchedAtUtc: null, refreshing: false, total: 0, items: [], expanded: {}, emotes: {}, emoteMeta: {} })
 }
 
 async function loadComments(d) {
@@ -71,13 +109,44 @@ async function loadComments(d) {
       st.items = data.items ?? []
       st.total = data.total ?? 0
       st.fetched = !!data.fetched
+      st.fetchedAtUtc = data.fetchedAtUtc ?? null
       st.emotes = data.emotes ?? {}
+      st.emoteMeta = data.emoteMeta ?? {}
       st.loaded = true
     }
   } catch {
     /* 评论拉砸不阁主卡，收起重开可重试 */
   } finally {
     st.loading = false
+  }
+}
+
+// 抽屉刷新钮：催后端向 B 站补采这条动态的评论（rpid 增量 upsert，新楼插旧楼留），成事重拉回显。
+// 补采要登录（与安利同权）；未登录不白跑，直接弹登录窗。
+async function refreshComments(d) {
+  if (!member.value) {
+    loginDialogOpen.value = true
+    return
+  }
+  const st = cmtState(d)
+  if (st.refreshing) return
+  st.refreshing = true
+  try {
+    const res = await fetch(`/api/dynamics/${encodeURIComponent(d.dynamicId)}/comments/refresh`, { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    if (res.ok) {
+      st.loaded = false
+      await loadComments(d)
+      toast.value = '评论补采到货，已刷新'
+    } else {
+      toast.value = data?.message ?? '补采没成，等巡捕下轮再试'
+    }
+    setTimeout(() => { toast.value = null }, 2600)
+  } catch {
+    toast.value = '分站后端没有应答'
+    setTimeout(() => { toast.value = null }, 2600)
+  } finally {
+    st.refreshing = false
   }
 }
 
@@ -344,19 +413,23 @@ onMounted(async () => {
           v-for="d in shown"
           :key="d.id ?? d.dynamicId"
           :data-dyn="d.dynamicId"
-          class="mb-2.5 rounded-lg border bg-cardBg p-4 transition-shadow duration-500"
+          class="relative mb-4 rounded-lg border bg-cardBg pb-4 pr-4 transition-shadow duration-500"
           :class="[isLive(d) ? 'border-stationPink/50' : 'border-lineSoft', focusHit === d.dynamicId ? 'ring-2 ring-stationPink/60' : '']"
+          style="padding-left: 88px"
         >
-          <!-- 头行：头像（抓取定格的缓存脸）+ 昵称 + 时间；视频卡右上挂内外签 -->
-          <header class="mb-2 flex items-center gap-2.5">
+          <!-- 头像独柱（官方 bili-dyn-item-draw 布局）：88px 左栏居中挂脸，正文/底栏都从 88px 起对齐 -->
+          <div class="absolute left-0 top-0 flex h-[88px] w-[88px] items-center justify-center">
             <AvatarImg
               :face="authorFace(d)"
               :name="d.authorName || String(d.authorMid ?? '?')"
-              :class="['h-10 w-10 shrink-0 rounded-full object-cover text-sm text-white', avatarClass(d.authorMid)]"
+              :class="['h-12 w-12 shrink-0 rounded-full object-cover text-base text-white', avatarClass(d.authorMid)]"
             />
+          </div>
+          <!-- 头行：昵称 + 时间（官高 62px）；视频卡右上挂内外签 -->
+          <header class="flex min-h-[62px] items-start justify-between pt-4">
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-sm font-semibold text-inkMain">{{ d.authorName || `B站号 ${d.authorMid}` }}</span>
-              <span class="block text-xs text-inkFaint">{{ friendlyTime(d.publishedAtUtc) }}</span>
+              <span class="block truncate text-[15px] font-semibold leading-5 text-inkMain">{{ d.authorName || `B站号 ${d.authorMid}` }}</span>
+              <span class="mt-[3px] block text-[13px] leading-[18px] text-inkFaint">{{ friendlyTime(d.publishedAtUtc) }}</span>
             </span>
             <span
               v-if="!isLive(d) && d.bvid"
@@ -385,7 +458,7 @@ onMounted(async () => {
 
           <!-- 转发条：评语 + 灰块内嵌原文（B 站同款）；灰块头挂原作者的小脸 -->
           <template v-else-if="isForward(d)">
-            <CollapsibleRichText v-if="splitForward(d.text).comment" :text="splitForward(d.text).comment" :emotes="d.bodyEmotes" content-class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" />
+            <CollapsibleRichText v-if="splitForward(d.text).comment" :text="splitForward(d.text).comment" :emotes="d.bodyEmotes" content-class="mb-[8px] whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" />
             <div class="rounded-md bg-[#f6f7f8] dark:bg-[#23262e] p-3">
               <div v-if="d.origAuthorName || splitForward(d.text).fromName" class="mb-2 flex items-center gap-1.5">
                 <img
@@ -398,7 +471,14 @@ onMounted(async () => {
                 />
                 <span class="text-xs text-inkSub">转发自 {{ d.origAuthorName || splitForward(d.text).fromName }}</span>
               </div>
-              <CollapsibleRichText :text="splitForward(d.text).orig || '原文已被删'" :emotes="d.bodyEmotes" content-class="whitespace-pre-wrap break-words text-sm leading-relaxed text-inkSub" />
+              <!-- 原文无文字时不再咬死「已被删」：有视频/图体就只留卡（删了文字不等于删了货），
+                   连体都没有才是真删了，给个不带审讯味道的提示。 -->
+              <CollapsibleRichText
+                v-if="splitForward(d.text).orig || !(d.bvid || d.pics?.length)"
+                :text="splitForward(d.text).orig || '原文没留文字，只转发了内容本身'"
+                :emotes="d.bodyEmotes"
+                content-class="whitespace-pre-wrap break-words text-sm leading-relaxed text-inkSub"
+              />
               <DynamicVideoCard v-if="d.bvid" :d="d" class="mt-2" />
               <div v-else-if="d.pics?.length" :class="['mt-2', picsLayout(d.pics.length)]">
                 <div v-for="(pic, i) in d.pics" :key="i" class="relative">
@@ -420,8 +500,8 @@ onMounted(async () => {
 
           <!-- 平常条：正文 → 图格 → 视频卡 -->
           <template v-else>
-            <CollapsibleRichText v-if="d.text" :text="d.text" :emotes="d.bodyEmotes" content-class="mb-2 whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" />
-            <div v-if="d.pics?.length" :class="['mb-1', picsLayout(d.pics.length)]">
+            <CollapsibleRichText v-if="d.text" :text="d.text" :emotes="d.bodyEmotes" content-class="mb-[8px] whitespace-pre-wrap break-words text-[15px] leading-relaxed text-inkMain" />
+            <div v-if="d.pics?.length" :class="['mb-[8px]', picsLayout(d.pics.length)]">
               <div v-for="(pic, i) in d.pics" :key="i" class="relative">
                 <img
                   :src="picSrc(d, i)"
@@ -439,46 +519,67 @@ onMounted(async () => {
             <DynamicVideoCard v-if="d.bvid" :d="d" class="mt-1" />
           </template>
 
-          <!-- 底栏三段（B 站同款）：转发走私信安利，评论开抽屉，赞数只读 -->
-          <footer v-if="!isLive(d)" class="mt-2 flex items-stretch border-t border-lineSoft/70 pt-1">
-            <button class="flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-[13px] text-inkSub transition hover:text-stationPink" title="安利给分站朋友" @click="openShare(d)">
-              <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M13 5l5 5-5 5" stroke-linecap="round" stroke-linejoin="round" />
-                <path d="M18 10H9a5 5 0 0 0-5 5v3" stroke-linecap="round" />
-              </svg>
-              转发<span v-if="d.statForward" class="text-[12px] text-inkFaint">{{ d.statForward }}</span>
+          <!-- 底栏：三项均分全宽，内容统一从各自 slot 左缘起笔（站长选定的 B 钉法，兼取官方左向款灵魂），
+               图标 18px，hover 官蓝；图标直采 SVGIconNext BDC 细线系（axes stroke=1）。转发走私信安利，评论开抽屉，赞本机点亮（与评论区同脾气，刷新不丢）。 -->
+          <footer v-if="!isLive(d)" class="mt-3 flex items-center">
+            <button class="flex flex-1 items-center rounded-md py-1 text-[13px] text-inkSub transition hover:text-[#00a1d6]" aria-label="安利给分站朋友" @click="openShare(d)">
+              <BIcon :meta="biDynForward" class="mr-1 h-[18px] w-[18px] shrink-0" />
+              <span>{{ d.statForward > 0 ? d.statForward : '转发' }}</span>
             </button>
-            <button class="flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-[13px] text-inkSub transition hover:text-stationPink" @click="toggleComments(d)">
-              <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M21 12a8 8 0 0 1-8 8c-1.2 0-2.3-.2-3.3-.6L5 21l1.2-3.4A8 8 0 1 1 21 12Z" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-              <span v-if="cmtCount(d) !== null">{{ cmtCount(d) }}</span>
+            <button class="flex flex-1 items-center rounded-md py-1 text-[13px] text-inkSub transition hover:text-[#00a1d6]" @click="toggleComments(d)">
+              <BIcon :meta="biDynComment" class="mr-1 h-[18px] w-[18px] shrink-0" />
+              <span>{{ cmtCount(d) > 0 ? cmtCount(d) : '评论' }}</span>
             </button>
-            <span class="flex flex-1 items-center justify-center gap-1.5 py-1.5 text-[13px] text-inkSub" :title="d.statLike !== null ? 'B 站赞数（抓取定格）' : ''">
-              <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path d="M7 10v10H4.5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1H7Zm0 0l4.2-7a2 2 0 0 1 2 1v3.5h5.2a2 2 0 0 1 2 2.4l-1.3 6.2A2 2 0 0 1 17.1 19H7" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-              <span v-if="d.statLike !== null">{{ d.statLike }}</span>
-            </span>
+            <button
+              class="flex flex-1 items-center rounded-md py-1 text-[13px] transition"
+              :class="dynLiked.has(String(d.dynamicId)) ? 'text-stationPink' : 'text-inkSub hover:text-[#00a1d6]'"
+              aria-label="点赞"
+              @click="toggleDynLike(d)"
+            >
+              <BIcon :meta="dynLiked.has(String(d.dynamicId)) ? biDynLikeFill : biDynLike" class="mr-1 h-[18px] w-[18px] shrink-0" />
+              <span>{{ dynLikeCount(d) ?? '点赞' }}</span>
+            </button>
           </footer>
 
           <!-- 评论抽屉：热评与子回复都吃分站留档，名字粉红、时间淡灰，B 站同款排布 -->
-          <section v-if="cmtState(d).open" class="mt-1 border-t border-lineSoft/70 pt-3">
+          <!-- 评论抽屉：热评与子回复都吃分站留档，名字粉红、时间淡灰，B 站同款排布；
+               站长定案：抵掉卡的 88px 左栏，评论整组（头像+文字）左对齐卡缘，不要竖线 -->
+          <section v-if="cmtState(d).open" class="mt-1 -ml-[88px] border-t border-lineSoft/70 pt-3">
+            <div class="ml-[16px] pl-[14px]">
             <p v-if="cmtState(d).loading" class="py-3 text-center text-xs text-inkFaint">评论拉取中…</p>
             <p v-else-if="!cmtState(d).items.length" class="py-3 text-center text-xs text-inkFaint">
               {{ cmtState(d).fetched ? '这条动态还没人开口' : '评论还没巡到货，等巡捕下轮补' }}
             </p>
             <template v-else>
-              <p class="mb-2 text-[11px] text-inkFaint">评论同步自 B 站，分站只读留档 · 共 {{ cmtState(d).total }} 条</p>
-              <div v-for="top in cmtState(d).items" :key="top.rpid" class="mb-3 flex gap-2.5">
-                <AvatarImg :face="top.face" :face-local="top.faceLocal" :name="top.name" class="h-8 w-8 shrink-0 rounded-full object-cover bg-stationPink/10 text-xs text-stationPink" />
+              <p class="mb-2 flex flex-wrap items-center gap-x-2 text-[11px] text-inkFaint">
+                <span>评论同步自 B 站，分站只读留档 · 共 {{ cmtState(d).total }} 条</span>
+                <span v-if="cmtState(d).fetchedAtUtc">· 留档 {{ friendlyTime(cmtState(d).fetchedAtUtc) }}</span>
+                <button
+                  class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-stationBlue transition hover:opacity-80 disabled:opacity-40"
+                  :disabled="cmtState(d).refreshing"
+                  :title="member ? '催分站向 B 站补采这条的评论（新楼增量入库）' : '登录后才能催补采'"
+                  @click="refreshComments(d)"
+                >
+                  <svg viewBox="0 0 24 24" class="h-3 w-3 shrink-0" :class="cmtState(d).refreshing ? 'animate-spin' : ''" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 11.5A8 8 0 1 0 18.4 16M20 5.5V11.5h-6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  {{ cmtState(d).refreshing ? '补采中…' : '刷新' }}
+                </button>
+              </p>
+              <div
+                v-for="(top, ti) in cmtState(d).items"
+                :key="top.rpid"
+                class="flex items-start gap-2.5"
+                :class="[ti > 0 ? 'border-t border-lineSoft/60 pt-4' : '', 'mb-4']"
+              >
+                <AvatarImg :face="top.face" :face-local="top.faceLocal" :name="top.name" class="mt-px h-8 w-8 shrink-0 rounded-full object-cover bg-stationPink/10 text-xs text-stationPink" />
                 <div class="min-w-0 flex-1">
-                  <div class="flex items-baseline gap-2">
-                    <span class="text-[12.5px] font-medium text-stationPink">{{ top.name || '无名网友' }}</span>
-                    <LevelBadge :level="top.level" :size="10" />
-                    <span class="text-[11px] text-inkFaint">{{ friendlyTime(top.ctimeUtc) }}</span>
+                  <!-- 主楼与楼中楼同骨架（站长定案）：名字行不带时间，时间与赞数同站行动行 -->
+                  <div class="flex items-center gap-1.5">
+                    <span class="truncate text-[12.5px] font-medium text-stationPink">{{ top.name || '无名网友' }}</span>
+                    <LevelBadge :level="top.level" :size="10" class="shrink-0" />
                   </div>
-                  <CollapsibleRichText :text="top.message" :emotes="cmtState(d).emotes" content-class="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain" />
+                  <CollapsibleRichText :text="top.message" :emotes="cmtState(d).emotes" :emote-meta="cmtState(d).emoteMeta" content-class="mt-2.5 whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-inkMain" />
                   <!-- 评论配图：端点已本地优先合并；单图 200px 宽、多图小方格（照视频侧 CommentSection 观感） -->
                   <div v-if="top.pictures?.length" class="mt-1 flex flex-wrap gap-1">
                     <img
@@ -494,19 +595,26 @@ onMounted(async () => {
                       @click="openZoom(top.pictures, pi)"
                     />
                   </div>
-                  <div class="mt-0.5 flex items-center gap-3 text-[11.5px] text-inkFaint">
-                    <span v-if="top.like">👍 {{ top.like }}</span>
+                  <div class="mt-2.5 flex items-center gap-3 text-[11.5px] text-inkFaint">
+                    <span>{{ friendlyTime(top.ctimeUtc) }}</span>
+                    <span v-if="top.ipLocation">IP属地：{{ top.ipLocation }}</span>
+                    <span v-if="top.like" class="flex items-center gap-1"><BIcon :meta="biDynLike" class="h-3.5 w-3.5 shrink-0" />{{ top.like }}</span>
                   </div>
-                  <!-- 子回复也随抓取定格，缩进挂在楼下 -->
-                  <div v-if="top.replies?.length" class="mt-2 space-y-2.5 border-l-2 border-lineSoft/80 pl-3">
+                  <!-- 子回复随抓取定格，缩进挂在楼下；pl 补回子楼头像的自身宽（h-5），名字与主楼正文同轴 -->
+                  <div v-if="top.replies?.length" class="mt-3 space-y-3.5 pl-5">
                     <template v-for="(sub, si) in top.replies" :key="sub.rpid">
-                      <div v-if="top.replies.length <= 3 || cmtState(d).expanded[top.rpid] || si < 3" class="flex gap-2">
-                        <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="h-5 w-5 shrink-0 rounded-full object-cover bg-[#f1f2f3] dark:bg-white/10 text-[9px] text-inkFaint" />
+                      <div
+                        v-if="top.replies.length <= 3 || cmtState(d).expanded[top.rpid] || si < 3"
+                        class="flex items-start gap-2"
+                      >
+                        <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="mt-px h-5 w-5 shrink-0 rounded-full object-cover bg-[#f1f2f3] dark:bg-white/10 text-[9px] text-inkFaint" />
                         <div class="min-w-0 flex-1">
-                          <span class="text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
-                          <LevelBadge :level="sub.level" :size="9.5" />
-                          <span class="ml-1.5 text-[10.5px] text-inkFaint">{{ friendlyTime(sub.ctimeUtc) }}</span>
-                          <CollapsibleRichText :text="sub.message" :emotes="cmtState(d).emotes" content-class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain" />
+                          <!-- 官方楼中楼骨架（站长照 B 站图定案）：名字行不带时间，时间落到正文下的行动行，楼层间拉浅分隔线 -->
+                          <div class="flex items-center gap-1.5">
+                            <span class="truncate text-[12px] font-medium text-stationPink">{{ sub.name || '无名网友' }}</span>
+                            <LevelBadge :level="sub.level" :size="9.5" class="shrink-0" />
+                          </div>
+                          <CollapsibleRichText :text="sub.message" :emotes="cmtState(d).emotes" :emote-meta="cmtState(d).emoteMeta" content-class="mt-2.5 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-inkMain" />
                           <div v-if="sub.pictures?.length" class="mt-1 flex flex-wrap gap-1">
                             <img
                               v-for="(pic, pi) in sub.pictures"
@@ -521,20 +629,26 @@ onMounted(async () => {
                               @click="openZoom(sub.pictures, pi)"
                             />
                           </div>
+                          <div class="mt-2.5 flex items-center gap-3 text-[10.5px] text-inkFaint">
+                            <span>{{ friendlyTime(sub.ctimeUtc) }}</span>
+                            <span v-if="sub.ipLocation">IP属地：{{ sub.ipLocation }}</span>
+                            <span v-if="sub.like" class="flex items-center gap-1"><BIcon :meta="biDynLike" class="h-3 w-3 shrink-0" />{{ sub.like }}</span>
+                          </div>
                         </div>
                       </div>
                     </template>
                     <button
                       v-if="top.replies.length > 3 && !cmtState(d).expanded[top.rpid]"
-                      class="text-[12px] text-stationPink transition hover:underline"
+                      class="text-[12px] text-inkSub transition hover:text-stationPink"
                       @click="cmtState(d).expanded[top.rpid] = true"
                     >
-                      展开查看全部 {{ top.replies.length }} 条子回复
+                      共 {{ top.replies.length }} 条回复，点击查看
                     </button>
                   </div>
                 </div>
               </div>
             </template>
+            </div>
           </section>
         </article>
 

@@ -73,7 +73,9 @@ public sealed partial class StationDb
         string? PicturesJson = null,
         string? PicturesLocalJson = null,
         // 发评人 B 站等级（官方徽记渲染）；存量行由等级补员盖章，认不到留 null。
-        int? Level = null);
+        int? Level = null,
+        // 发评人 IP 属地（content.ip_location）；老评论没这个袋留 null，前端不显示。
+        string? IpLocation = null);
 
     /// <summary>分享卡定格快照：转发到私信那一刻的卡面，B 站后续删改不连累分站。</summary>
     public sealed record DynamicSnapshot(
@@ -85,7 +87,13 @@ public sealed partial class StationDb
         string? Text,
         string? Bvid,
         string? PublishedAtUtc,
-        string? Cover);
+        string? Cover,
+        // 图片动态的图集（远程热链 + 本地成行同序）：分享定格随身带，私信卡不只能靠封面。
+        string? PicsJson,
+        string? PicsLocalJson,
+        // 视频题与时长（馆藏 title 优，其次抓取定格的 archive_title/duration）：报头标题行有料可显。
+        string? VideoTitle,
+        string? VideoDuration);
 
     /// <summary>落一条动态：dynamic_id 撞车即 IGNORE（返回 false = 历史已有）。新落行顺手把 target 的空白名片补齐。</summary>
     public bool UpsertDynamic(string dynamicId, long targetMid, long? authorMid, string? authorName,
@@ -261,9 +269,14 @@ public sealed partial class StationDb
         using var insert = connection.CreateCommand();
         insert.Transaction = transaction;
         insert.CommandText = """
-            INSERT OR IGNORE INTO dynamic_comments
-                (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, cached_at_utc, pictures_json, pictures_local_json, level)
-            VALUES ($did, $rpid, $root, $parent, $mid, $name, $face, $facelocal, $msg, $like, $ctime, $cached, $pics, $picslocal, $level);
+            INSERT INTO dynamic_comments
+                (dynamic_id, rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, cached_at_utc, pictures_json, pictures_local_json, level, ip_location)
+            VALUES ($did, $rpid, $root, $parent, $mid, $name, $face, $facelocal, $msg, $like, $ctime, $cached, $pics, $picslocal, $level, $ip)
+            ON CONFLICT (dynamic_id, rpid) DO UPDATE SET
+                -- 老行不回改的定格原则只破 IP 这一角：刷新抓到属地就补进去（新值非空才更，拿不到不清旧值）；
+                -- 同理等级也认新值。其余列（正文/头像/赞数）仍吃首次定格，不随刷回改。
+                ip_location = COALESCE(excluded.ip_location, dynamic_comments.ip_location),
+                level = COALESCE(dynamic_comments.level, excluded.level);
             """;
         var pDid = insert.Parameters.Add("$did", SqliteType.Text);
         var pRpid = insert.Parameters.Add("$rpid", SqliteType.Integer);
@@ -280,6 +293,7 @@ public sealed partial class StationDb
         var pPics = insert.Parameters.Add("$pics", SqliteType.Text);
         var pPicsLocal = insert.Parameters.Add("$picslocal", SqliteType.Text);
         var pLevel = insert.Parameters.Add("$level", SqliteType.Integer);
+        var pIp = insert.Parameters.Add("$ip", SqliteType.Text);
         var fresh = 0;
         foreach (var c in comments)
         {
@@ -298,6 +312,7 @@ public sealed partial class StationDb
             pPics.Value = (object?)c.PicturesJson ?? DBNull.Value;
             pPicsLocal.Value = (object?)c.PicturesLocalJson ?? DBNull.Value;
             pLevel.Value = (object?)c.Level ?? DBNull.Value;
+            pIp.Value = (object?)c.IpLocation ?? DBNull.Value;
             fresh += insert.ExecuteNonQuery();
         }
 
@@ -425,6 +440,22 @@ public sealed partial class StationDb
     /// <summary>待抓评论的一条动态：id + B 站给的评论区坐标（缺了巡捕退回 type=17+id）。</summary>
     public sealed record PendingCommentRow(string DynamicId, long? CommentType, string? CommentOid);
 
+    /// <summary>点名要一条动态的评论坐标（手动补采用）；动态不在库回 null。坐标全空也认（fetcher 自会兑底 type=17）。</summary>
+    public PendingCommentRow? GetPendingCommentCoords(string dynamicId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT dynamic_id, comment_type, comment_oid FROM dynamics WHERE dynamic_id = $did LIMIT 1;";
+        command.Parameters.AddWithValue("$did", dynamicId);
+        using var reader = command.ExecuteReader();
+        return reader.Read()
+            ? new PendingCommentRow(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2))
+            : null;
+    }
+
     /// <summary>评论欠账名单：没盖章且已知坐标的动态新→旧限量补抓。
     /// 没坐标 = feed 还没重巡到它，不急着拿兑底坐标误盖章（等巡捕补完再办）。</summary>
     public IReadOnlyList<PendingCommentRow> ListPendingCommentDynamics(int limit = 5)
@@ -467,7 +498,7 @@ public sealed partial class StationDb
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, pictures_json, pictures_local_json, level
+            SELECT rpid, root_rpid, parent_rpid, mid, name, face, face_local, message, like_count, ctime_utc, pictures_json, pictures_local_json, level, ip_location
             FROM dynamic_comments WHERE dynamic_id = $did ORDER BY root_rpid, id;
             """;
         command.Parameters.AddWithValue("$did", dynamicId);
@@ -488,7 +519,8 @@ public sealed partial class StationDb
                 reader.IsDBNull(6) ? null : reader.GetString(6),
                 reader.IsDBNull(10) ? null : reader.GetString(10),
                 reader.IsDBNull(11) ? null : reader.GetString(11),
-                reader.IsDBNull(12) ? null : reader.GetInt32(12)));
+                reader.IsDBNull(12) ? null : reader.GetInt32(12),
+                reader.IsDBNull(13) ? null : reader.GetString(13)));
         }
 
         return list;
@@ -511,7 +543,9 @@ public sealed partial class StationDb
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT d.dynamic_id, d.type, d.author_mid, d.author_name, d.author_face_url, d.text, d.bvid, d.published_at_utc,
-                   COALESCE(v.cover_url, d.archive_cover)
+                   COALESCE(v.cover_url, d.archive_cover), d.pics_json, d.pics_local_json,
+                   COALESCE(v.title, d.archive_title),
+                   COALESCE((SELECT p.duration_text FROM pages p WHERE p.video_id = v.id ORDER BY p.idx LIMIT 1), d.archive_duration)
             FROM dynamics d LEFT JOIN videos v ON v.bvid = d.bvid
             WHERE d.dynamic_id = $did LIMIT 1;
             """;
@@ -531,7 +565,11 @@ public sealed partial class StationDb
             reader.IsDBNull(5) ? null : reader.GetString(5),
             reader.IsDBNull(6) ? null : reader.GetString(6),
             reader.IsDBNull(7) ? null : reader.GetString(7),
-            reader.IsDBNull(8) ? null : reader.GetString(8));
+            reader.IsDBNull(8) ? null : reader.GetString(8),
+            reader.IsDBNull(9) ? null : reader.GetString(9),
+            reader.IsDBNull(10) ? null : reader.GetString(10),
+            reader.IsDBNull(11) ? null : reader.GetString(11),
+            reader.IsDBNull(12) ? null : reader.GetString(12));
     }
 
     public IReadOnlyList<DynamicTargetRow> ListDynamicTargets()

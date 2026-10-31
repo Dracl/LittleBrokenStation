@@ -35,6 +35,9 @@ public sealed class LbsCollectPolicy(StationDb db, LbsAccountRouter router, ILog
     /// <summary>不挂具体视频的采集动作（收藏整架导入、动态巡捕）。</summary>
     public Task<T> RunForActivityAsync<T>(Func<Task<T>> action) => RunAsync(action);
 
+    /// <summary>非泛型重载，给只交出 Task 的执行链用（worker 环境的 ExecuteAsync）。</summary>
+    public Task RunForActivityAsync(Func<Task> action) => RunAsync(action);
+
     /// <summary>
     /// 手动开一段采集号上下文：一趟里多个采集调用共用同一个号时用（状态同步员一轮一个号）。
     /// 出号在此刻定死，中途成员换了号也不改口，免得一趟里换号被 B 站当成漂移。

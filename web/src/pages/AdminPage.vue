@@ -8,6 +8,7 @@ import RecycleBinCard from '../components/RecycleBinCard.vue'
 import { member, loginDialogOpen, loginDialogMode } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
+import { VIDEO_GONE_HINT } from '../utils/gone.js'
 
 const health = ref(null)
 const settings = ref(null)
@@ -697,7 +698,7 @@ async function crawlNow() {
 }
 
 // ─── 下载控制面板：暂停/继续/取消排队 + 队列快照（站长一键止血） ───
-const dlQueue = ref(null) // { paused, intervalSec, downloading:[{id,bvid,title,coverUrl}], pending:[...] }
+const dlQueue = ref(null) // { paused, intervalSec, downloading:[{id,bvid,title,coverUrl}], pending:[...], codecs:[{videoId,bvid,title,codec,pageIdx,waiting}] }
 const dlBusy = ref(false)
 const dlText = ref('')
 const dlInterval = ref('0')
@@ -763,6 +764,65 @@ async function dlCancelAll() {
     const body = await res.json().catch(() => null)
     dlText.value = body?.message ?? '已取消'
     await loadDlQueue()
+  } finally {
+    dlBusy.value = false
+  }
+}
+
+// 一键清理「已取消」：卡阵里的已取消遗留整批抖进回收站，可在回收站恢复。
+async function dlPurgeCanceled() {
+  const n = dlQueue.value?.canceledCount ?? 0
+  if (!n || dlBusy.value) return
+  if (!window.confirm(`确定清理全部 ${n} 件「已取消」馆藏？会存进回收站，可从回收站随时找回。`)) return
+  dlBusy.value = true
+  try {
+    const res = await fetch('/api/admin/canceled/purge', { method: 'POST' })
+    const body = await res.json().catch(() => null)
+    dlText.value = body?.message ?? (res.ok ? '已清理' : '清理没成，稍后再试')
+    await loadDlQueue()
+  } catch {
+    dlText.value = '清理没成，稍后再试'
+  } finally {
+    dlBusy.value = false
+  }
+}
+
+// 加档行实况小注：让路中报「让路中 · Ns 后重投 · 第 X 次」，进站中报引擎进度「42% · 68.4 MB · 3.2 MB/s」；
+// 数据全部来自队列接口的透传字段，5 秒一轮的轮询自然刷新。
+function codecDetail(item) {
+  if (!item.waiting) {
+    const p = item.progress
+    if (!p) return ''
+    if (p.percentage > 0) {
+      const bits = [`${Math.round(p.percentage)}%`]
+      if (p.downloadedText) bits.push(p.downloadedText)
+      if (p.speedText && p.speedText !== '—' && p.speedText !== '0 B/s') bits.push(p.speedText)
+      return bits.join(' · ')
+    }
+    return p.phase === 'Queued' ? '待引擎起跑' : ''
+  }
+  const bits = ['让路中']
+  if (item.retryInSec != null) bits.push(`${item.retryInSec}s 后重投`)
+  if (item.retryCount > 0) bits.push(`第 ${item.retryCount} 次`)
+  return bits.join(' · ')
+}
+
+// 取消一件编码加档：后端销引擎账+判 Failed，反悔在首页重点；卡死的僵尸行也可以这样手动超度。
+async function codecCancel(item) {
+  if (dlBusy.value) return
+  if (!window.confirm(`取消「${item.title || item.bvid}」的 ${codecLabel(item.codec)}${item.pageIdx != null ? ` P${item.pageIdx}` : ''} 加档？可在首页重新点单。`)) return
+  dlBusy.value = true
+  try {
+    const res = await fetch(`/api/videos/${item.videoId}/codecs/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codec: item.codec, pageIdx: item.pageIdx ?? null }),
+    })
+    const body = await res.json().catch(() => null)
+    dlText.value = body?.message ?? (res.ok ? '已取消' : '取消没成，稍后再试')
+    await loadDlQueue()
+  } catch {
+    dlText.value = '取消没成，稍后再试'
   } finally {
     dlBusy.value = false
   }
@@ -1099,7 +1159,7 @@ const dynRoundBusy = ref(false)
 
 async function loadDynTargets() {
   try {
-    const res = await fetch('/api/dynamics/targets')
+    const res = await fetch('/api/admin/dynamics/targets')
     dynTargets.value = res.ok ? await res.json() : []
   } catch {
     dynTargets.value = []
@@ -1517,7 +1577,13 @@ function savedAdminGroup() {
 const activeGroup = ref(savedAdminGroup())
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
 const quietOpen = ref(false) // 「货架」抽屉：悬停预览、下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面；下载设置压底
-const dlWaiting = computed(() => (dlQueue.value?.pending?.length ?? 0) + (dlQueue.value?.downloading?.length ?? 0))
+// 加档牌面上的人话编码名：后端回的是 'avc'/'hevc'/'av1'，没见过的原样贴出，不替它编个名
+const CODEC_LABEL = { avc: 'AVC', hevc: 'HEVC', av1: 'AV1' }
+function codecLabel(codec) {
+  return CODEC_LABEL[codec] ?? codec ?? '未知编码'
+}
+
+const dlWaiting = computed(() => (dlQueue.value?.pending?.length ?? 0) + (dlQueue.value?.downloading?.length ?? 0) + (dlQueue.value?.codecs?.length ?? 0))
 const adminNav = computed(() => [
   // 预览欠账徽章随卡下柜：挂在货架胶囊上，柜台只留天天盯的
   { ...ADMIN_GROUPS[0], n: null, tone: '' },
@@ -1611,7 +1677,7 @@ onUnmounted(() => {
     </div>
 
     <header v-if="adminAuth === 'ok'" class="border-b border-adminLine bg-gradient-to-b from-white/[0.02] to-transparent">
-      <div class="mx-auto flex h-14 max-w-[1100px] items-center justify-between px-6">
+      <div class="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-6">
         <div class="flex items-center gap-3">
           <span class="lbs-dot lbs-dot-on"></span>
           <span class="text-sm tracking-widest text-white/90">站长室</span>
@@ -2122,6 +2188,8 @@ onUnmounted(() => {
             </label>
             <p class="text-[11px] text-white/30">
               进站中 {{ dlQueue?.downloading?.length ?? 0 }} · 排队 {{ dlQueue?.pending?.length ?? 0 }}
+              <!-- 加档单独报数：三组活挤在「进站中/排队」两个词里，看的人分不清哪个数是编码加档；平时为零就不占位 -->
+              <template v-if="dlQueue?.codecs?.length"> · 加档 {{ dlQueue.codecs.length }}</template>
             </p>
             <div class="flex gap-2">
               <button class="lbs-btn-ghost !px-3 !py-1 !text-[11px]" :disabled="dlBusy" @click="dlToggle">
@@ -2134,6 +2202,13 @@ onUnmounted(() => {
               >
                 取消排队区
               </button>
+              <button
+                class="lbs-btn-ghost !px-3 !py-1 !text-[11px] hover:!text-rose-300"
+                :disabled="dlBusy || !dlQueue?.canceledCount"
+                @click="dlPurgeCanceled"
+              >
+                清理已取消{{ dlQueue?.canceledCount ? ` (${dlQueue.canceledCount})` : '' }}
+              </button>
             </div>
           </div>
         </div>
@@ -2141,7 +2216,7 @@ onUnmounted(() => {
           暂停是全站闸：提交停投、在途的引擎任务挂起，重启也记得住；取消只清排队区（还没碰引擎的行，零成本），取消后可在首页卡阵重新排队。
         </p>
         <p v-if="dlText" class="mb-3 text-xs text-adminAccent/80">{{ dlText }}</p>
-        <div v-if="!dlQueue?.downloading?.length && !dlQueue?.pending?.length" class="py-6 text-center text-xs text-white/25">
+        <div v-if="!dlQueue?.downloading?.length && !dlQueue?.pending?.length && !dlQueue?.codecs?.length" class="py-6 text-center text-xs text-white/25">
           队列空空，没有在途和排队的馆藏
         </div>
         <div v-else class="space-y-4">
@@ -2175,6 +2250,44 @@ onUnmounted(() => {
                     <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
                   </svg>
                 </button>
+              </li>
+            </ul>
+          </div>
+          <!-- 编码加档（第二发）：跟整片进站同队不同工——同一时刻只跑一个编码，waiting:true 的就是在等前一个跑完。
+               每行可取消：后端销引擎账+判 Failed，反悔在首页重新点单；停滞超 30 分钟还有看门狗自动收摊。 -->
+          <div v-if="dlQueue?.codecs?.length">
+            <p class="mb-2 text-[11px] uppercase tracking-widest text-white/35">编码加档</p>
+            <ul class="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
+              <li v-for="item in dlQueue.codecs" :key="`cc-${item.videoId}-${item.codec}-${item.pageIdx}-${item.waiting}`" class="relative flex items-center gap-2.5">
+                <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="item.waiting ? 'bg-white/25' : 'animate-pulse bg-stationPink'"></span>
+                <span class="min-w-0 flex-1 truncate text-xs" :class="item.waiting ? 'text-white/60' : 'text-white/75'" :title="item.hint || `${item.title || item.bvid} · ${codecLabel(item.codec)} 加档`">
+                  {{ item.title || item.bvid }} · {{ codecLabel(item.codec) }} 加档<span v-if="item.pageIdx != null" class="text-white/40"> · P{{ item.pageIdx }}</span>
+                </span>
+                <!-- 实况小注：让路中的缘由与回炉倒计时；进站中的引擎进度（百分比+已下+速度），hover 可看让路缘由原文 -->
+                <span v-if="codecDetail(item)" class="shrink-0 text-[10px] tabular-nums text-white/40" :title="item.hint || codecDetail(item)">{{ codecDetail(item) }}</span>
+                <span class="shrink-0 text-[10px] text-white/25">{{ item.bvid }}</span>
+                <span
+                  class="shrink-0 rounded-full border px-2 py-0.5 text-[10px]"
+                  :class="item.waiting ? 'border-white/15 text-white/40' : 'border-stationPink/40 text-stationPink'"
+                >
+                  {{ item.waiting ? '排队中' : '进站中' }}
+                </span>
+                <button
+                  class="shrink-0 rounded-md p-1 text-white/35 transition hover:bg-rose-500/20 hover:text-rose-300"
+                  title="取消这次加档（销引擎账，可在首页重新点单）"
+                  :disabled="dlBusy"
+                  @click="codecCancel(item)"
+                >
+                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
+                  </svg>
+                </button>
+                <!-- 进站中的行底一条细进度条，不占字位也能看出在动 -->
+                <span
+                  v-if="!item.waiting && item.progress && item.progress.percentage > 0"
+                  class="absolute bottom-[-3px] left-0 h-0.5 rounded-full bg-stationPink/70 transition-all"
+                  :style="{ width: `${Math.min(100, Math.round(item.progress.percentage))}%` }"
+                ></span>
               </li>
             </ul>
           </div>
@@ -2343,14 +2456,22 @@ onUnmounted(() => {
               <p class="break-words text-sm text-white/85" :title="item.text">{{ item.text }}</p>
               <p class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-white/45">
                 <RouterLink
-                  v-if="item.bvid"
+                  v-if="item.inStation"
                   :to="`/watch/${item.bvid}`"
                   class="text-adminAccent/80 transition hover:text-adminAccent hover:underline"
                   :title="`去放映厅看这条弹幕（${item.bvid}）`"
                 >
                   {{ item.bvid }}
                 </RouterLink>
-                <span v-else class="text-white/25">片子已下架</span>
+                <!-- 按服务端算的 inStation 判，不拿 bvid 非空当“在架”：bvid 是落库定格列，片删了照旧非空，
+                     拿它当判定会让下面这句「已下架」永远轮不到触发。 -->
+                <span
+                  v-else
+                  class="text-white/25"
+                  :title="item.bvid ? `馆藏里已经没有 ${item.bvid}（进了回收站或已销毁）` : '这张举报单没记下 BV 号'"
+                >
+                  {{ VIDEO_GONE_HINT }}<span v-if="item.bvid" class="ml-1 font-mono">{{ item.bvid }}</span>
+                </span>
                 <span>第 {{ item.pageIdx ?? 0 }} P</span>
                 <span>片内 {{ dmReportClock(item.tSec) }}</span>
                 <span>弹幕发于 {{ friendlyTime(item.dmCreatedAtUtc) }}</span>

@@ -29,7 +29,10 @@ public sealed record NewVideo(string Url, string Bvid, string? Title, string? Co
 public sealed record DownloadQueueItem(long Id, string Bvid, string? Title, string? CoverUrl);
 
 /// <summary>待提交给下载引擎的站内记录（只取提交所需字段）。</summary>
-public sealed record SubmissionCandidate(long Id, string Url, string? Title);
+/// <param name="ForceRedownload">这次提交绕开引擎的「已下过」记录：引擎准入判重键是 (cid, 需要下载的内容)，
+/// 历史台账里只要同名一行就在门口被打回（Skipped）。Skipped 出口靠这枚旗走正门（RedownloadCompleted），
+/// 不伸手改引擎的库；引擎自己给加档重下用的也是这条道。</param>
+public sealed record SubmissionCandidate(long Id, string Url, string? Title, bool ForceRedownload = false);
 
 /// <summary>批量入库结果：insertedIds 保持插入顺序，供逐条入队。</summary>
 public sealed record AddVideosOutcome(int Added, int Duplicated, IReadOnlyList<long> InsertedIds);

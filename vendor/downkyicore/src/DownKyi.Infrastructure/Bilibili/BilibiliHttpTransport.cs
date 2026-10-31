@@ -13,6 +13,11 @@ internal sealed record BilibiliHttpTextResponse(
 internal sealed class BilibiliHttpTransport
 {
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
+
+    // LBS fork: HttpClient.Timeout（30s）在 ResponseHeadersRead 下只护到响应头——B 站发完头就停流时，
+    // ReadAsStringAsync 永等不返，任务静默挂在 Downloading。body 读取自设 30s 闸门，
+    // 到点按传输失败报（可重试），不拿无限挂起冒充「还在路上」。
+    private static readonly TimeSpan BodyReadTimeout = TimeSpan.FromSeconds(30);
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly TimeProvider _timeProvider;
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
@@ -37,6 +42,45 @@ internal sealed class BilibiliHttpTransport
                              ?? throw new ArgumentNullException(nameof(httpClientFactory));
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _delayAsync = delayAsync ?? throw new ArgumentNullException(nameof(delayAsync));
+    }
+
+    // LBS fork: 带闸门的 body 收——调用方 token 没停而 body 闸到点，按传输失败报（进重试圈），
+    // 不把无限挂起当成「还在路上」。
+    private static async Task<string> ReadBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        using var bodyTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bodyTimeout.CancelAfter(BodyReadTimeout);
+        try
+        {
+            return await response.Content.ReadAsStringAsync(bodyTimeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new BilibiliHttpRequestException(
+                "Bilibili sent response headers but the body never arrived.",
+                BilibiliHttpFailureKind.Transport,
+                response.StatusCode);
+        }
+    }
+
+    private static async Task<Stream> OpenBodyStreamAsync(
+        HttpContent content,
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        using var bodyTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bodyTimeout.CancelAfter(BodyReadTimeout);
+        try
+        {
+            return await content.ReadAsStreamAsync(bodyTimeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new BilibiliHttpRequestException(
+                "Bilibili sent response headers but the body stream never opened.",
+                BilibiliHttpFailureKind.Transport,
+                response.StatusCode);
+        }
     }
 
     public async Task<string> GetStringAsync(
@@ -78,8 +122,7 @@ internal sealed class BilibiliHttpTransport
                 }
 
                 ThrowForTerminalStatus(response, allowRedirectStatus);
-                var content = await response.Content.ReadAsStringAsync(cancellationToken)
-                    .ConfigureAwait(false);
+                var content = await ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
                 if (requireContent && string.IsNullOrWhiteSpace(content))
                 {
                     throw new BilibiliHttpRequestException(
@@ -155,8 +198,7 @@ internal sealed class BilibiliHttpTransport
 
                 ThrowForTerminalStatus(response);
                 var content = response.Content;
-                var stream = await content.ReadAsStreamAsync(cancellationToken)
-                    .ConfigureAwait(false);
+                var stream = await OpenBodyStreamAsync(content, response, cancellationToken).ConfigureAwait(false);
                 response.Content = null;
                 response.Dispose();
                 response = null;

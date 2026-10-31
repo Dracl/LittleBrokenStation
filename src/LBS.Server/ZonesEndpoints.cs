@@ -13,8 +13,17 @@ public static class ZonesEndpoints
 
     public static void MapZonesEndpoints(this WebApplication app)
     {
+        // hot = 分区总览入口卡的底图一摄（按次数的冠军分区 + 区内最火那条的封面）。
+        // 只是封面，与分区清单同口公开不上会员门；首页拉分区时顺带走，不为它另开一口。
         app.MapGet("/api/zones", (StationDb db) =>
-            Results.Ok(new { zones = db.ListZones().Select(z => new { name = z.Name, count = z.Count }) }));
+        {
+            var hot = db.GetZoneEntryCover(DateTimeOffset.UtcNow);
+            return Results.Ok(new
+            {
+                zones = db.ListZones().Select(z => new { name = z.Name, count = z.Count }),
+                hot = new { zone = hot.Zone, bvid = hot.Bvid, cover = hot.Cover },
+            });
+        });
 
         // name 空/查无回空 items：分区页换瓷砖不该挨 404。
         app.MapGet("/api/zones/videos", (string? name, StationDb db) =>

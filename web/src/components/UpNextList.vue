@@ -1,8 +1,8 @@
 <script setup>
 import { useRouter } from 'vue-router'
-import { colonTime } from '../utils/time'
+import { colonTime, publishedDate } from '../utils/time'
 
-// 接下来播放：分站自己的推荐流（同 UP 主优先 + 新入站补齐），卡形仿 B 站「封面左 + 信息右」。
+// 接下来播放：分站自己的推荐流（同 UP 主优先 + 层内随机抽），卡形仿 B 站「封面左 + 信息右」。
 const props = defineProps({
   items: { type: Array, default: () => [] },
   autoplay: { type: Boolean, default: false },
@@ -11,10 +11,12 @@ const emit = defineEmits(['update:autoplay'])
 
 const router = useRouter()
 
-function relDate(text) {
-  if (!text) return ''
-  const d = new Date(text)
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+// 显的是 B 站投稿时间，取数口径与首页卡阵共用（utils/time.js 的 publishedDate）：
+// createdAt 是入站时间，批量下载后满屏同一天，那是台账概念，不该顶替投稿时间上桌；
+// 两个源都拿不到就整段不显（连「· 」分隔符一起掉，不留个孤零零的点）。
+function pubDate(v) {
+  const d = publishedDate(v)
+  return d ? d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }) : ''
 }
 
 function go(bvid) {
@@ -45,10 +47,10 @@ function go(bvid) {
         </span>
       </button>
     </div>
-    <ul class="space-y-1">
+    <ul class="space-y-3">
       <li v-for="v in items" :key="v.id">
-        <button class="flex w-full gap-2.5 rounded-lg p-1.5 text-left transition hover:bg-white/5" @click="go(v.bvid)">
-          <span class="relative block h-[76px] w-[124px] shrink-0 overflow-hidden rounded-md bg-[#f1f2f3] dark:bg-[#23262e]">
+        <button class="group flex w-full text-left" @click="go(v.bvid)">
+          <span class="relative block h-[80px] w-[141px] shrink-0 overflow-hidden rounded-[6px] bg-[#c9ccd0] dark:bg-[#23262e]">
             <img
               v-if="v.coverUrl"
               :src="v.coverUrl"
@@ -57,24 +59,40 @@ function go(bvid) {
               referrerpolicy="no-referrer"
               class="h-full w-full object-cover"
             />
+            <span class="pointer-events-none absolute inset-0 bg-black/[.07]"></span>
             <span
               v-if="v.durationText"
-              class="absolute bottom-1 right-1 rounded bg-black/65 px-1 py-px text-[10px] leading-4 text-white tabular-nums"
+              class="absolute bottom-[6px] right-[6px] rounded-[2px] bg-black/40 px-1 text-[13px] leading-[20px] text-white tabular-nums"
             >{{ colonTime(v.durationText) }}</span>
           </span>
-          <span class="min-w-0 flex-1">
-            <span class="line-clamp-2 text-[13px] font-medium leading-5 text-inkMain">{{ v.title ?? v.bvid }}</span>
-            <span class="mt-0.5 block truncate text-xs text-inkFaint">{{ v.upName ?? '—' }} · {{ relDate(v.createdAt) }}</span>
-            <span class="mt-0.5 flex items-center gap-2.5 text-xs text-inkFaint">
-              <span class="flex items-center gap-1 tabular-nums">
-                <svg viewBox="0 0 16 16" class="h-3 w-3" fill="currentColor"><path d="M4.5 2.8v10.4L13 8z" /></svg>
-                {{ v.viewCountText ?? '—' }}
-              </span>
-              <span v-if="v.danmakuCount != null" class="flex items-center gap-1 tabular-nums">
-                <svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.4">
-                  <rect x="1.5" y="3" width="13" height="8.5" rx="2" />
+          <span class="ml-[10px] min-w-0 flex-1">
+            <span class="line-clamp-2 text-[15px] font-medium leading-[19px] text-inkMain transition group-hover:text-stationBlue">{{ v.title ?? v.bvid }}</span>
+            <span class="my-[2px] flex items-center text-[13px] leading-[15px] text-inkFaint">
+              <!-- UP 徽标（18×18）：自绘描边圆角方框 + U、P 两笔，尺寸距距对齐 B 站官方实测 -->
+              <svg viewBox="0 0 18 18" class="mr-1 h-[18px] w-[18px] shrink-0" fill="currentColor">
+                <path d="M5.18 6.75v2.83a2.31 2.31 0 0 0 4.62 0V6.75a.58.58 0 0 1 1.15 0v2.83a3.46 3.46 0 0 1-6.92 0V6.75a.58.58 0 0 1 1.15 0z" />
+                <path d="M9.49 6.75c0-.32.26-.57.58-.57h1.74a2.16 2.16 0 0 1 0 4.31h-1.17v.75a.58.58 0 0 1-1.15 0V6.75zm1.15 2.62h1.17a1.01 1.01 0 0 0 0-2.03h-1.17v2.03z" />
+                <path d="M9 2.62c1.93 0 3.61.1 4.79.2 1.35.1 2.41 1.15 2.53 2.5.09.98.18 2.27.18 3.68s-.09 2.7-.18 3.67c-.12 1.36-1.18 2.4-2.53 2.51-1.18.1-2.86.19-4.79.19s-3.61-.09-4.79-.19c-1.35-.11-2.41-1.15-2.53-2.51C1.59 11.7 1.5 10.4 1.5 9s.09-2.7.18-3.67c.12-1.36 1.18-2.4 2.53-2.51C5.39 2.72 7.07 2.62 9 2.62zm0 1.13c-1.89 0-3.54.1-4.7.19-.81.07-1.44.69-1.51 1.49-.09.95-.17 2.2-.17 3.57s.08 2.62.17 3.57c.07.8.7 1.42 1.51 1.49 1.16.09 2.81.19 4.7.19s3.54-.1 4.7-.19c.81-.07 1.44-.69 1.51-1.49.09-.95.17-2.2.17-3.57s-.08-2.62-.17-3.57c-.07-.8-.7-1.42-1.51-1.49-1.16-.09-2.81-.19-4.7-.19z" />
+              </svg>
+              <span class="truncate">{{ v.upName ?? '—' }}<template v-if="pubDate(v)"> · {{ pubDate(v) }}</template></span>
+            </span>
+            <span class="flex items-center text-[13px] leading-[15px] text-inkFaint">
+              <!-- 播放量图标（18×18）：自绘描边方框 + 实心三角 -->
+              <svg viewBox="0 0 18 18" class="mr-1 h-[18px] w-[18px] shrink-0" fill="currentColor">
+                <path d="M9 2.62c1.93 0 3.61.1 4.79.2 1.35.1 2.41 1.15 2.53 2.5.09.98.18 2.27.18 3.68s-.09 2.7-.18 3.67c-.12 1.36-1.18 2.4-2.53 2.51-1.18.1-2.86.19-4.79.19s-3.61-.09-4.79-.19c-1.35-.11-2.41-1.15-2.53-2.51C1.59 11.7 1.5 10.4 1.5 9s.09-2.7.18-3.67c.12-1.36 1.18-2.4 2.53-2.51C5.39 2.72 7.07 2.62 9 2.62zm0 1.13c-1.89 0-3.54.1-4.7.19-.81.07-1.44.69-1.51 1.49-.09.95-.17 2.2-.17 3.57s.08 2.62.17 3.57c.07.8.7 1.42 1.51 1.49 1.16.09 2.81.19 4.7.19s3.54-.1 4.7-.19c.81-.07 1.44-.69 1.51-1.49.09-.95.17-2.2.17-3.57s-.08-2.62-.17-3.57c-.07-.8-.7-1.42-1.51-1.49-1.16-.09-2.81-.19-4.7-.19z" />
+                <path d="M7.31 7.63v2.74c0 .69.75 1.12 1.34.77l2.38-1.37a.9.9 0 0 0 0-1.54L8.65 6.86a.9.9 0 0 0-1.34.77z" />
+              </svg>
+              <span class="tabular-nums">{{ v.viewCountText ?? '—' }}</span>
+              <span v-if="v.danmakuCount != null" class="ml-2 flex items-center">
+                <!-- 弹幕量图标（18×18）：自绘描边方框 + 四条弹幕胶囊 -->
+                <svg viewBox="0 0 18 18" class="mr-1 h-[18px] w-[18px] shrink-0" fill="currentColor">
+                  <path d="M9 2.62c1.93 0 3.61.1 4.79.2 1.35.1 2.41 1.15 2.53 2.5.09.98.18 2.27.18 3.68s-.09 2.7-.18 3.67c-.12 1.36-1.18 2.4-2.53 2.51-1.18.1-2.86.19-4.79.19s-3.61-.09-4.79-.19c-1.35-.11-2.41-1.15-2.53-2.51C1.59 11.7 1.5 10.4 1.5 9s.09-2.7.18-3.67c.12-1.36 1.18-2.4 2.53-2.51C5.39 2.72 7.07 2.62 9 2.62zm0 1.13c-1.89 0-3.54.1-4.7.19-.81.07-1.44.69-1.51 1.49-.09.95-.17 2.2-.17 3.57s.08 2.62.17 3.57c.07.8.7 1.42 1.51 1.49 1.16.09 2.81.19 4.7.19s3.54-.1 4.7-.19c.81-.07 1.44-.69 1.51-1.49.09-.95.17-2.2.17-3.57s-.08-2.62-.17-3.57c-.07-.8-.7-1.42-1.51-1.49-1.16-.09-2.81-.19-4.7-.19z" />
+                  <path d="M11.91 8.06h-4.5a.57.57 0 1 1 0-1.14h4.5a.57.57 0 1 1 0 1.14z" />
+                  <path d="M13.03 11.06h-4.5a.57.57 0 1 1 0-1.14h4.5a.57.57 0 1 1 0 1.14z" />
+                  <path d="M5.34 8.06h-.37a.57.57 0 1 1 0-1.14h.37a.57.57 0 1 1 0 1.14z" />
+                  <path d="M6.47 11.06h-.37a.57.57 0 1 1 0-1.14h.37a.57.57 0 1 1 0 1.14z" />
                 </svg>
-                {{ v.danmakuCount }}
+                <span class="tabular-nums">{{ v.danmakuCount }}</span>
               </span>
             </span>
           </span>

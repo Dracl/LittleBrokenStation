@@ -162,6 +162,7 @@ public static class DanmakuReportEndpoints
                 status = r.Status,
                 createdAtUtc = r.CreatedAtUtc,
                 handledAtUtc = r.HandledAtUtc,
+                inStation = r.VideoInStation,
             });
             return Results.Ok(new { pending = db.CountDanmakuReports(StationDb.DanmakuReportPending), items });
         });

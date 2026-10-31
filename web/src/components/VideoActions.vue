@@ -1,30 +1,66 @@
 <script setup>
 // B 站式互动栏：官方图标（BIcon + bicons.js）+ 数字。站长定案：点赞/投币/收藏三枚纯展示（不发请求不落库）；
 // 分享一枚已激活（站内安利走私信，弹 ShareDialog，hover 蓝 #00a1d6 是本轮站长亲定的 B 站分享蓝）。
-// 点击反馈：四枚各有 CSS keyframes 小动画（弹跳/硬币下落/星星 pop/轻缩放）；like/fav 点击顺带点亮成
-// 站内装饰色（粉/金黄）、再点复位——纯前端装饰态，不上报 B 站，刷新即失。
-// 数字全部来自 B 站 view 接口真采快照（到站时入库），采不到显示「—」，绝不编数。
-import { reactive } from 'vue'
+// 点击反馈：四枚各有 CSS keyframes 小动画（弹跳/硬币下落/星星 pop/轻缩放）；like/coin/fav 点击顺带点亮成
+// 站内装饰色（粉/金黄）、再点复位——纯前端装饰态，不上报 B 站；点亮按视频记入 localStorage（与动态/评论区同脾气），刷新不丢。
+// 数字全部来自 B 站 view 接口真采快照（到站时入库），采不到显示「—」，绝不编数；本机点亮时赞数 +1（同评论区口径）。
+import { reactive, watch } from 'vue'
 import BIcon from './BIcon.vue'
 import { biLike, biCoin, biFav, biShare } from '../assets/bicons'
 
-defineProps({
+const props = defineProps({
   stat: { type: Object, default: null }, // { like, coin, favorite, share, reply }
+  storeKey: { type: String, default: '' }, // 本机点亮存档的每支视频键（传 bvid）；不给则退回刷新即失
 })
 const emit = defineEmits(['share'])
 
 // 动画触发：先落再点，同名 class 连点也能重放；animationend 后自动卸架。
 const anim = reactive({ like: false, coin: false, fav: false, share: false })
-// 装饰性点亮（点赞/投币/收藏）：只改颜色不上报，点击切换。
+// 装饰性点亮（点赞/投币/收藏）：只改颜色不上报，点击切换；有 storeKey 时落 localStorage 本机小本本。
 const lit = reactive({ like: false, coin: false, fav: false })
+
+const LIT_KEY = 'lbs-action-lit'
+
+function litMap() {
+  try {
+    return JSON.parse(window.localStorage.getItem(LIT_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function hydrate() {
+  const m = litMap()
+  for (const k of ['like', 'coin', 'fav']) lit[k] = !!(props.storeKey && m[`${props.storeKey}:${k}`])
+}
+hydrate()
+// 同一路由组件切集复用（/watch/:bvid 换视频不重新挂载），换视频时重新对齐本机存档
+watch(() => props.storeKey, hydrate)
 
 function tap(key) {
   anim[key] = false
   requestAnimationFrame(() => {
     anim[key] = true
   })
-  if (key in lit) lit[key] = !lit[key]
+  if (key in lit) {
+    lit[key] = !lit[key]
+    if (props.storeKey) {
+      try {
+        const m = litMap()
+        if (lit[key]) m[`${props.storeKey}:${key}`] = true
+        else delete m[`${props.storeKey}:${key}`]
+        window.localStorage.setItem(LIT_KEY, JSON.stringify(m))
+      } catch {
+        /* 存不下就算了 */
+      }
+    }
+  }
   if (key === 'share') emit('share')
+}
+
+function likeShown() {
+  if (props.stat?.like == null) return null
+  return props.stat.like + (lit.like ? 1 : 0)
 }
 
 function fmt(n) {
@@ -38,7 +74,6 @@ function fmt(n) {
   <div class="flex items-center gap-10 py-2 text-base text-inkSub">
     <span
       class="group flex cursor-pointer items-center gap-2"
-      title="B 站点赞（采自 view 接口）· 站内的点亮只是装饰"
       @click="tap('like')"
     >
       <BIcon
@@ -47,11 +82,10 @@ function fmt(n) {
         :class="[lit.like ? 'text-[#fb7299]' : 'text-[#757575] group-hover:text-[#fb7299]', anim.like ? 'va-anim-like' : '']"
         @animationend="anim.like = false"
       />
-      <span class="leading-none tabular-nums">{{ fmt(stat?.like) }}</span>
+      <span class="leading-none tabular-nums">{{ fmt(likeShown()) }}</span>
     </span>
     <span
       class="group flex cursor-pointer items-center gap-2"
-      title="B 站投币（采自 view 接口）· 站内的点亮只是装饰"
       @click="tap('coin')"
     >
       <BIcon
@@ -64,7 +98,6 @@ function fmt(n) {
     </span>
     <span
       class="group flex cursor-pointer items-center gap-2"
-      title="B 站收藏（采自 view 接口）· 站内的点亮只是装饰"
       @click="tap('fav')"
     >
       <BIcon
@@ -78,7 +111,7 @@ function fmt(n) {
     <button
       type="button"
       class="group flex items-center gap-2 transition hover:text-[#00a1d6]"
-      title="安利给分站朋友（走私信）"
+      aria-label="安利给分站朋友"
       @click="tap('share')"
     >
       <BIcon

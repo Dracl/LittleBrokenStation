@@ -1,6 +1,7 @@
 using System.Text.Json;
 using DownKyi.Application.Downloads;
 using DownKyi.Domain.Downloads;
+using DownKyi.Services.Download;
 using LBS.Domain;
 using LBS.Engine;
 using LBS.Infrastructure;
@@ -16,20 +17,37 @@ namespace LBS.Server;
 public sealed class StatusSyncWorker(
     StationDb db,
     IDownloadTaskLookup lookup,
+    IDownloadTaskStateService state,
+    IDownloadTaskQueue taskQueue,
     DataPaths paths,
     CommentArchiveService commentArchive,
     LbsUpInfoFetcher upInfo,
     LbsCollectPolicy policy,
     DownloadPauseBoard board,
+    DownloadQueue queue,
+    MediaStreamProber streams,
     ILogger<StatusSyncWorker> logger) : BackgroundService
 {
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(5);
+
+    // 判重让路的加档行：回炉前先拿 90 秒租约（比巡视间隔宽出十几倍）抢地皮，
+    // 租约期内 retry_at_utc 在未来，下一轮巡视看不见它，同一条就不会被连投两次。
+    private static readonly TimeSpan CodecRetryLease = TimeSpan.FromSeconds(90);
 
     // 停滞探测：连续巡视字节数与相位都不挪腾超阈值的在途任务，疑为崩溃遗留，销 last_error 提示站长可续下。
     private static readonly TimeSpan StallThreshold = TimeSpan.FromMinutes(5);
     internal const string StallHint = "引擎任务停滞（疑崩溃遗留），点首页这张卡的闪电续下";
 
     private readonly Dictionary<long, StallWatch> _stalled = new();
+
+    // 加档停滞看门狗：主版本有停滞探测，加档行一直没人管——引擎任务卡在非 Failed 相位就是一天天地等。
+    // 相位与字节数都不挪腾超 30 分钟即疑为崩溃遗留：销掉引擎任务回炉 Failed，站长首页重点；
+    // 一直没分到任务的行同样超时就销，重启遗留的盲区一并补掉。
+    private static readonly TimeSpan CodecStallThreshold = TimeSpan.FromMinutes(30);
+    private readonly Dictionary<long, CodecStallWatch> _codecStalled = new();
+    private readonly HashSet<long> _codecSeenThisPass = new();
+
+    private sealed record CodecStallWatch(string Signature, DateTimeOffset StuckSince);
 
     // 钉子户名片补采：单稿 UP 站内无现货可蹭、Arrived 后又永不再入站重采——每 24 轮（约两分钟）挑两条零散补采，
     // 节奏慢到不扰 B 站；没采集号时 TryFetchUpAsync 自己空转，不用这里把关。
@@ -38,6 +56,21 @@ public sealed class StatusSyncWorker(
     private int _passesSinceUpCardRescue;
 
     private sealed record StallWatch(long Bytes, DownloadPhase Phase, DateTimeOffset StuckSince, bool Flagged);
+
+    // 真值暂记簿：引擎实发的画质/音频档（Metadata.Resolution/.AudioCodec，替换完可用性降级后的真相，
+    // id 116=1080P 60帧、30251/31251=Hi-Res 系）只活在在途任务身上——搬进历史库后 FindAsync 就摸不到了，
+    // 只能趁在途拄下来。到站/定档那一刻落库（quality_name 进清晰度菜单、audio_quality_id 进 Hi-Res 徽记判据）；
+    // 重启窗口里错过的在途期没得拄，退回 ffprobe 实测链，不阻塞归档。
+    private sealed record QualityStamp(int? QualityId, string? QualityName, int? AudioQualityId);
+
+    private static QualityStamp StampOf(DownloadTask task) => new(
+        task.Metadata.Resolution?.Id,
+        string.IsNullOrWhiteSpace(task.Metadata.Resolution?.Name) ? null : task.Metadata.Resolution!.Name,
+        task.Metadata.AudioCodec?.Id);
+
+    // 主版本按 videoId 记、加档按 rowId 记：两张表主键会串号，分家省事。
+    private readonly Dictionary<long, QualityStamp> _qualitySeen = new();
+    private readonly Dictionary<long, QualityStamp> _codecQualitySeen = new();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -73,6 +106,7 @@ public sealed class StatusSyncWorker(
     {
         await SyncMainVideosAsync(cancellationToken);
         await SyncCodecVersionsAsync(cancellationToken);
+        await RequeueDeferredCodecsAsync(cancellationToken);
         await RescueStuckUpCardsAsync(cancellationToken);
     }
 
@@ -131,12 +165,19 @@ public sealed class StatusSyncWorker(
                 break;
             }
 
+            // 趁在途拄实发规格（每轮都拄最新的，多任务稿件最后见到的那份为准——同稿一档，谁拄都一样）。
+            if (inFlight is not null)
+            {
+                _qualitySeen[videoId] = StampOf(inFlight);
+            }
+
             // 循环里 null 有两种含义（全完成/在途），用显式标记区分
             if (target == VideoStatus.Failed)
             {
                 db.MarkFailed(videoId, failure!);
                 MemberMail.NotifyVideoFailed(db, logger, videoId, failure);
                 _stalled.Remove(videoId);
+                _qualitySeen.Remove(videoId);
                 logger.LogWarning("馆藏 {VideoId} 引擎侧失败：{Failure}", videoId, failure);
             }
             else if (AllGone(taskIds, lookup, cancellationToken).GetAwaiter().GetResult())
@@ -144,6 +185,14 @@ public sealed class StatusSyncWorker(
                 db.MarkArrived(videoId);
                 MemberMail.NotifyVideoArrived(db, logger, videoId);
                 _stalled.Remove(videoId);
+                // 引擎实发规格趁热盖章（在途拄的那份）：清晰度菜单直接照报「1080P 60帧」，
+                // Hi-Res 徽记拿 audio_quality_id 当硬判据。拄过即销账，不占内存。
+                if (_qualitySeen.TryGetValue(videoId, out var stamp))
+                {
+                    db.SetPageQuality(videoId, stamp.QualityId, stamp.QualityName, stamp.AudioQualityId);
+                }
+
+                _qualitySeen.Remove(videoId);
                 var (archived, missingVideo) = db.FinalizeArtifacts(videoId, paths.Videos);
                 logger.LogInformation(
                     "馆藏 {VideoId} 已到站（引擎任务 {Count} 个全部完成），归档产物 {Archived} 个{Missing}",
@@ -159,6 +208,9 @@ public sealed class StatusSyncWorker(
                     {
                         try
                         {
+                            // 分轨码率趁热探：正片刚归档完、还在页缓存里，一趟 ffprobe 把编码名 + 双轨 kbps 一次写掉。
+                            // 到站那一刻不探就得等开片，而前端不现探，错过这个事件点就一直没码率。
+                            streams.ProbeArrivedVideo(videoId);
                             await TryFetchUpAsync(videoId);
                             var outcome = await commentArchive.TryArchiveAsync(videoId, force: false, CancellationToken.None);
                             if (!outcome.Ok)
@@ -179,11 +231,17 @@ public sealed class StatusSyncWorker(
             }
         }
 
-        // 本轮没见到的馆藏（已删除/改状态）从停滞表里销名，免得字典长毛。
+        // 本轮没见到的馆藏（已删除/改状态）从停滞表与真值暂记簿里销名，免得字典长毛。
         foreach (var staleId in _stalled.Keys.Where(id => !_seenThisPass.Contains(id)).ToList())
         {
             _stalled.Remove(staleId);
         }
+
+        foreach (var staleId in _qualitySeen.Keys.Where(id => !_seenThisPass.Contains(id)).ToList())
+        {
+            _qualitySeen.Remove(staleId);
+        }
+
         _seenThisPass.Clear();
     }
 
@@ -229,14 +287,23 @@ public sealed class StatusSyncWorker(
     {
         foreach (var (rowId, videoId, pageIdx, codec, taskIdsJson, basePath) in db.GetDownloadingCodecVersions())
         {
+            _codecSeenThisPass.Add(rowId);
             var taskIds = ParseTaskIds(taskIdsJson);
             if (taskIds.Count == 0)
             {
-                continue; // 提交 worker 还没轮到这条，挂着等
+                // 提交 worker 还没轮到这条，挂着等；但一直挂超 30 分钟就是提交途中进程重启的遗留——
+                // 这种行从此没人捾，看门狗判它回炉，站长首页重点加档即可。
+                if (!TrackCodecStall(rowId, "no-task"))
+                {
+                    db.MarkCodecFailed(rowId, "加档迟迟没分到任务，看门狗超 30 分钟收摊，可重新在首页点单加档");
+                    logger.LogWarning("编码加档 {VideoId}/P{Page}/{Codec} 迟迟未提交，看门狗收摊", videoId, pageIdx, codec);
+                }
+                continue;
             }
 
             var allGone = true;
             string? failure = null;
+            DownloadTask? inFlight = null;
             foreach (var taskId in taskIds)
             {
                 var task = await lookup.FindAsync(new DownloadTaskId(taskId), cancellationToken);
@@ -250,21 +317,40 @@ public sealed class StatusSyncWorker(
                     failure = task.Failure is null ? "引擎未提供失败原因" : $"{task.Failure.Code}：{task.Failure.Message}";
                 }
 
+                inFlight = task;
                 allGone = false; // 还在途
                 break;
             }
 
             if (failure is not null)
             {
-                db.MarkCodecFailed(rowId, failure);
-                logger.LogWarning("编码版本 {VideoId}/P{Page}/{Codec} 引擎失败：{Failure}", videoId, pageIdx, codec, failure);
+                // 判 Failed 顺手把引擎账也销了：光判行不行——引擎判重不看相位，死任务会被当成
+                // 「未完成的同名任务」把同视频的重试点单永远拦在让路循环（锁R&B 事故现场）。
+                _codecQualitySeen.Remove(rowId);
+                await RetireCodecTaskAsync(rowId, videoId, pageIdx, codec, taskIds, failure, cancellationToken);
                 continue;
+            }
+
+            // 趁在途拄实发规格（与主版本同一套路，定档那一刻盖章）。
+            if (inFlight is not null)
+            {
+                _codecQualitySeen[rowId] = StampOf(inFlight);
             }
 
             if (!allGone)
             {
+                // 旧版盲区：任务只要在途表里就永远算「还在途」——相位与字节都不挪腾超 30 分钟，
+                // 看门狗把引擎任务撤销并判 Failed，不让僵尸行占住同名去重的名额。
+                if (inFlight is not null && !TrackCodecStall(rowId, $"{inFlight.Phase}:{inFlight.Progress.DownloadedBytes ?? 0}"))
+                {
+                    await RetireCodecTaskAsync(rowId, videoId, pageIdx, codec, taskIds,
+                        "引擎任务 30 分钟没有进展（疑崩溃遗留），看门狗收摊，可重新在首页点单加档", cancellationToken);
+                }
+
                 continue;
             }
+
+            _codecStalled.Remove(rowId); // 任务全消失了，停滞账本清账（接下来要么定档要么记失败）
 
             if (basePath is null)
             {
@@ -275,12 +361,133 @@ public sealed class StatusSyncWorker(
             if (db.FinalizeCodecVersion(rowId, basePath, paths.Videos))
             {
                 logger.LogInformation("编码版本 {VideoId}/P{Page}/{Codec} 已入库", videoId, pageIdx, codec);
+                // 定档那一刻盖引擎实发规格的章（在途拄的那份），盖完销账。
+                if (_codecQualitySeen.TryGetValue(rowId, out var stamp))
+                {
+                    db.SetCodecQuality(rowId, stamp.QualityId, stamp.QualityName, stamp.AudioQualityId);
+                }
+
+                _codecQualitySeen.Remove(rowId);
+                // 定档那一刻文件还热在页缓存里，趁热探分轨码率；起进程不许卡 5 秒一轮的巡视，甩后台。
+                _ = Task.Run(() => streams.ProbeCodecFile(rowId, videoId, pageIdx, codec), CancellationToken.None);
             }
             else
             {
                 db.MarkCodecFailed(rowId, $"引擎报完成，但没扫到 {basePath} 开头的视频文件");
                 logger.LogWarning("编码版本 {VideoId}/P{Page}/{Codec} 扫盘无文件：{Base}", videoId, pageIdx, codec, basePath);
             }
+        }
+
+        // 本轮没见到的加档行（定档/失败/被删）从停滞表与真值暂记簿销名，免得字典长毛。
+        foreach (var rowId in _codecStalled.Keys.Where(id => !_codecSeenThisPass.Contains(id)).ToList())
+        {
+            _codecStalled.Remove(rowId);
+        }
+
+        foreach (var rowId in _codecQualitySeen.Keys.Where(id => !_codecSeenThisPass.Contains(id)).ToList())
+        {
+            _codecQualitySeen.Remove(rowId);
+        }
+        _codecSeenThisPass.Clear();
+    }
+
+    /// <summary>加档停滞记号：签名（相位:字节 或 no-task）换了就重计时；超阈值返回 false 让调用方收摊。暂停板落着不算停滞。</summary>
+    private bool TrackCodecStall(long rowId, string signature)
+    {
+        if (board.IsPaused)
+        {
+            _codecStalled.Remove(rowId);
+            return true;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (_codecStalled.TryGetValue(rowId, out var seen))
+        {
+            if (seen.Signature == signature)
+            {
+                return now - seen.StuckSince < CodecStallThreshold;
+            }
+
+            _codecStalled[rowId] = new CodecStallWatch(signature, now);
+            return true;
+        }
+
+        _codecStalled[rowId] = new CodecStallWatch(signature, now);
+        return true;
+    }
+
+    /// <summary>销引擎账编排：逐枚撤销任务（打断队列→挂起→销账，对齐删档那套）再把加档行判 Failed；
+    /// 引擎销不动也不拦收摊——账先销，残存任务由下一轮看门狗、开机清扫或引擎自己收尾。
+    /// Failed 回炉与看门狗收摊共用这条道：死任务绝不能留在在途表里占同名去重的名额。</summary>
+    private async Task RetireCodecTaskAsync(
+        long rowId,
+        long videoId,
+        int pageIdx,
+        string codec,
+        IReadOnlyList<string> taskIds,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        foreach (var taskId in taskIds)
+        {
+            if (await lookup.FindAsync(new DownloadTaskId(taskId), cancellationToken) is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                await taskQueue.CancelAsync(new DownloadTaskId(taskId));
+            }
+            catch (Exception)
+            {
+                // 本就没在跑，取消不掉无妨
+            }
+
+            try
+            {
+                await state.CancelAsync(new DownloadTaskId(taskId), cancellationToken);
+                await state.DeleteAsync(new DownloadTaskId(taskId), cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "编码加档的引擎任务 {TaskId} 销不动，先销加档行", taskId);
+            }
+        }
+
+        db.MarkCodecFailed(rowId, reason);
+        _codecStalled.Remove(rowId);
+        logger.LogWarning("编码加档 {VideoId}/P{Page}/{Codec} 判 Failed 并销引擎账：{Reason}", videoId, pageIdx, codec, reason);
+    }
+
+    /// <summary>
+    /// 判重让路的加档行到期回炉：先抢租约（抢不到 = 已被别的轮次接走）再投回加档队列。
+    /// 按 (稿件, 编码) 去重只投一次——提交本来就是整稿整编码一把梭，逐分 P 入队会撞自己的在途任务。
+    /// 暂停板与逐件间隔仍由 SubmitCodecAsync 那条路照管，这里不另开闸。
+    /// </summary>
+    private async Task RequeueDeferredCodecsAsync(CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var batch in db.GetDueCodecRetries(now).GroupBy(row => (row.VideoId, row.Codec)))
+        {
+            var claimed = 0;
+            foreach (var row in batch)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (db.TakeCodecRetryLease(row.Id, now, now + CodecRetryLease))
+                {
+                    claimed++;
+                }
+            }
+
+            if (claimed == 0)
+            {
+                continue;
+            }
+
+            var head = batch.First();
+            logger.LogInformation("编码加档 {VideoId}/{Codec} 让路到期，回炉重投（{Rows} 个分 P）", head.VideoId, head.Codec, claimed);
+            await queue.EnqueueCodecAsync(head.VideoId, head.Codec, cancellationToken);
         }
     }
 

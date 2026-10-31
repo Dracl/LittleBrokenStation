@@ -3,7 +3,8 @@
 //   动态橱窗：{ type:'dynamic', dynamicId, authorName, authorFaceUrl, text }
 //   站内放映厅：{ type:'video', bvid, title, cover, upName }
 // 安利语随信落库，定格卡面由后端定格（dyn_json 同族），对方点卡回橱窗/放映厅。SubmitDialog 同款语言。
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
+import PeerPicker from './PeerPicker.vue'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 
 const props = defineProps({
@@ -13,7 +14,6 @@ const emit = defineEmits(['close', 'done'])
 
 const isVideo = computed(() => props.target.type === 'video')
 
-const people = ref(null) // null 加载中 / [] 没人
 const picked = ref(null) // memberId
 const note = ref('')
 const busy = ref(false)
@@ -24,22 +24,6 @@ const summary = computed(() => {
   const raw = (props.target.text || '').split('\n\n转发自')[0]
   return raw.length > 60 ? `${raw.slice(0, 60)}…` : raw || '（一条动态）'
 })
-
-async function loadPeople() {
-  try {
-    const res = await fetch('/api/dm/directory')
-    if (res.status === 401) {
-      error.value = '登录后才能给朋友安利'
-      people.value = []
-      return
-    }
-    const data = await res.json()
-    people.value = data.people ?? []
-  } catch {
-    error.value = '点名失败，检查分站后端'
-    people.value = []
-  }
-}
 
 async function submit() {
   if (!picked.value || busy.value) return
@@ -66,8 +50,6 @@ async function submit() {
     busy.value = false
   }
 }
-
-onMounted(loadPeople)
 </script>
 
 <template>
@@ -117,26 +99,10 @@ onMounted(loadPeople)
         </span>
       </div>
 
-      <!-- 选伙伴 -->
+      <!-- 选伙伴：常聊打底、输词才搜（与发起私信共用 PeerPicker） -->
       <div class="px-4 pt-3">
         <p class="mb-1.5 text-[12px] text-inkFaint">送给谁</p>
-        <p v-if="people === null" class="py-4 text-center text-[12px] text-inkFaint">在点名…</p>
-        <div v-else-if="!people.length" class="rounded-xl border border-dashed border-lineSoft px-3 py-4 text-center text-[12px] text-inkFaint">
-          站上还没有别的伙伴可安利
-        </div>
-        <div v-else class="max-h-[168px] space-y-1 overflow-y-auto pr-0.5">
-          <button
-            v-for="p in people"
-            :key="p.memberId"
-            class="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition"
-            :class="picked === p.memberId ? 'bg-stationPink/10 ring-1 ring-stationPink/50' : 'hover:bg-stationPink/5'"
-            @click="picked = p.memberId"
-          >
-            <img :src="p.faceUrl || defaultAvatar" referrerpolicy="no-referrer" class="h-7 w-7 rounded-full object-cover" alt="" @error="onAvatarError" />
-            <span class="min-w-0 flex-1 truncate text-[13px] text-inkMain">{{ p.displayName }}</span>
-            <span v-if="picked === p.memberId" class="text-[11px] text-stationPink">✓</span>
-          </button>
-        </div>
+        <PeerPicker v-model="picked" mode="select" />
       </div>
 
       <div class="px-4 pb-4 pt-3">

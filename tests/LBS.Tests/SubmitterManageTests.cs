@@ -91,6 +91,37 @@ public sealed class SubmitterManageTests : IDisposable
         Assert.Equal(expectMember, MemberGate.RequiresMember(request));
     }
 
+    [Theory]
+    // 尾斜杠穿门回归（2026-10-31 对活站实测漏过）：路由把 /x 与 /x/ 当同一扇门，两道门进门先 TrimEnd('/') 再点名。
+    // 同一扇门带不带斜杠必须落在同一格：门既不能被穿，也不能被剪子误封。
+    [InlineData("POST", "/api/videos/", false, true)]
+    [InlineData("GET", "/api/videos/123/related/", false, true)]
+    [InlineData("GET", "/api/videos/123/download/", false, true)]
+    [InlineData("GET", "/api/videos/123/progress/", false, true)]
+    [InlineData("GET", "/api/watch/BV1x411c7mD/", false, true)]
+    [InlineData("DELETE", "/api/videos/123/", false, true)]
+    [InlineData("POST", "/api/videos/123/comments/", false, true)]
+    [InlineData("POST", "/api/videos/123/comments/subs/", false, true)]
+    [InlineData("POST", "/api/videos/123/danmaku-refresh/", false, true)]
+    [InlineData("GET", "/api/stats/collect/", true, false)]
+    [InlineData("GET", "/api/station/throttle/", true, false)]
+    [InlineData("GET", "/api/stats/preview/", true, false)]
+    [InlineData("GET", "/api/admin/stats/", true, false)]
+    [InlineData("GET", "/api/admin", true, false)]
+    [InlineData("GET", "/api/downloads", true, false)]
+    [InlineData("GET", "/api/downloads/", true, false)]
+    [InlineData("GET", "/api/settings/", true, false)]
+    // 公开门面不被剪子误封：带斜杠照样放行访客。
+    [InlineData("GET", "/api/videos/", false, false)]
+    [InlineData("GET", "/api/dynamics/targets/", false, false)]
+    [InlineData("GET", "/api/collections/", false, false)]
+    public void 尾斜杠穿门回归(string method, string path, bool expectAdmin, bool expectMember)
+    {
+        var request = Request(method, path);
+        Assert.Equal(expectAdmin, _gate.IsAdminRequest(request));
+        Assert.Equal(expectMember, MemberGate.RequiresMember(request));
+    }
+
     [Fact]
     public void 投稿归属_写入后查得到()
     {

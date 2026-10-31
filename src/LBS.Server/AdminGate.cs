@@ -49,15 +49,21 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
     /// <summary>这条请求是不是站长事务（需要过门）。</summary>
     public bool IsAdminRequest(HttpRequest request)
     {
-        var path = request.Path.Value ?? "";
-        if (!path.StartsWith("/api/", StringComparison.Ordinal))
+        var raw = request.Path.Value ?? "";
+        if (!raw.StartsWith("/api/", StringComparison.Ordinal))
         {
             return false;
         }
 
+        // 与 MemberGate 同一把剪子：先去掉尾部多余斜杠再点名，否则 /api/stats/collect/ 这类
+        // 精确匹配型的站长情报会被一枚斜杠穿给匿名（实测漏过：throttle/stats/collect/stats preview）。
+        var path = raw.TrimEnd('/');
+
         foreach (var prefix in AdminPrefixes)
         {
-            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            // 剪掉尾斜杠后 /api/admin/ 这类带尾前缀要兼容裸形（/api/admin），点名不能因剪子放宽或收紧。
+            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                || path.Equals(prefix.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }

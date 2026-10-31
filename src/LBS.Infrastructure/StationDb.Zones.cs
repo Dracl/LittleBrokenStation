@@ -1,3 +1,4 @@
+using LBS.Domain;
 using Microsoft.Data.Sqlite;
 
 namespace LBS.Infrastructure;
@@ -139,6 +140,120 @@ public sealed partial class StationDb
         zone = string.Join('>', parts.Select(p => p.Trim()));
         message = "改派落定";
         return true;
+    }
+
+    /// <summary>分区总览入口卡的底图一摄：冠军分区、区内最火那条的 bvid 与它的封面（整区拿不到封面时 Cover 为 null，前端回落渐变）。</summary>
+    public sealed record ZoneEntryCover(string? Zone, string? Bvid, string? Cover);
+
+    /// <summary>入口卡底图的按日快照钥匙：同日反复取都是同一张，本地（UTC+8）零点过才重算。</summary>
+    public const string ZoneEntryDayKey = "zone-entry-day";
+    public const string ZoneEntryVideoKey = "zone-entry-video";
+
+    /// <summary>
+    /// 分区总览入口卡的底图：先按「次数」选冠军分区，再在冠军分区里取次数最高的那条，用它的封面。
+    /// 次数 = events 台账里 watch.play / watch.heartbeat 的行数，不去重人头（访客也算）——
+    /// 与周报「最多人看」的去重口径有意分开：那边数观众人数，这边数热度。
+    /// 只认在站的货，与 ListZones 同一口径；顶级分区仍旧在 C# 里掰，不去 SQL 玩 LIKE。
+    /// 按日固定：快照存 settings（日期 + 中选 bvid），当日命中就直接复用，免得站长自己每放一条视频首页就当场跳图。
+    /// </summary>
+    public ZoneEntryCover GetZoneEntryCover(DateTimeOffset nowUtc)
+    {
+        var today = nowUtc.ToOffset(LocalWeekOffset).ToString("yyyyMMdd");
+        var pinned = GetSetting(ZoneEntryDayKey) == today ? GetSetting(ZoneEntryVideoKey) : null;
+        if (!string.IsNullOrWhiteSpace(pinned))
+        {
+            var kept = ReadZoneEntryOf(pinned!);
+            if (kept != null)
+            {
+                return kept;
+            }
+            // 快照那条已下架或封面丢了：重新算一次，下面会把新结果盖回快照
+        }
+
+        var picked = PickZoneEntry();
+        if (picked.Bvid != null)
+        {
+            SetSetting(ZoneEntryDayKey, today);
+            SetSetting(ZoneEntryVideoKey, picked.Bvid);
+        }
+
+        return picked;
+    }
+
+    /// <summary>台账里每条在站稿件的实况次数（形状与 ListZoneVideos 同路：封面子查询、有效分区、顶级段留 C# 剔）。</summary>
+    private ZoneEntryCover PickZoneEntry()
+    {
+        var rows = new List<(string Bvid, string? Cover, string? Zone, long Shots, long LastId)>();
+        using (var connection = Open(_dbPath))
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $"""
+                SELECT v.bvid,
+                       COALESCE((SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
+                                v.cover_url),
+                       {EffZoneExpr},
+                       COUNT(*),
+                       MAX(e.id)
+                FROM events e
+                JOIN videos v ON v.bvid = e.subject_id
+                LEFT JOIN video_meta vm ON vm.video_id = v.id
+                WHERE e.event IN ($play, $beat) AND e.subject_type = 'video' AND v.status = 'Arrived'
+                GROUP BY v.id, v.bvid, v.title;
+                """;
+            command.Parameters.AddWithValue("$play", WatchPlayEvent);
+            command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                rows.Add((
+                    reader.GetString(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.GetInt64(3),
+                    reader.GetInt64(4)));
+            }
+        }
+
+        var champion = rows
+            .Where(r => r.Zone != null && TopOf(r.Zone!) is { Length: > 0 })
+            .GroupBy(r => TopOf(r.Zone!)!, StringComparer.Ordinal)
+            .Select(g => (Zone: g.Key, Shots: g.Sum(r => r.Shots), Items: g.OrderByDescending(r => r.Shots).ThenByDescending(r => r.LastId).ToList()))
+            .OrderByDescending(x => x.Shots)
+            .ThenBy(x => x.Zone, StringComparer.Ordinal)
+            .FirstOrDefault();
+
+        if (champion.Items is null)
+        {
+            return new ZoneEntryCover(null, null, null);
+        }
+
+        // 冠军区内从最火往下找到第一条有封面的为止；整区都没图就交 null，入口卡回落深渐变
+        var hit = champion.Items.FirstOrDefault(r => r.Cover != null);
+        return hit.Cover is null
+            ? new ZoneEntryCover(champion.Zone, null, null)
+            : new ZoneEntryCover(champion.Zone, hit.Bvid, hit.Cover);
+    }
+
+    /// <summary>按 bvid 取入口卡底图一摄（走按日快照时用它）；已下架或无封面 → null，让上层重算。</summary>
+    private ZoneEntryCover? ReadZoneEntryOf(string bvid)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT {EffZoneExpr},
+                   COALESCE((SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
+                            v.cover_url)
+            FROM videos v LEFT JOIN video_meta vm ON vm.video_id = v.id
+            WHERE v.bvid = $bvid AND v.status = 'Arrived';
+            """;
+        command.Parameters.AddWithValue("$bvid", bvid);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read() || reader.IsDBNull(1))
+        {
+            return null;
+        }
+
+        return new ZoneEntryCover(reader.IsDBNull(0) ? null : TopOf(reader.GetString(0)), bvid, reader.GetString(1));
     }
 
     private static string? TopOf(string zone)

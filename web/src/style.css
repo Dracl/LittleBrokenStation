@@ -35,6 +35,12 @@
   body {
     @apply bg-pageBg text-inkMain font-sans antialiased;
   }
+  /* 首页 banner 靠 w-screen（100vw）做通栏。Windows 上 100vw 含竖向滚动条那 15px，
+     文档就会多出一条几乎满宽的横向滚动条（滑块占满轨道 = 只溢出一丁点）。
+     用 clip 而不是 hidden：不生成滚动容器，竖向滚动、锚点定位、sticky 都不受影响。 */
+  html {
+    overflow-x: clip;
+  }
 }
 
 @layer components {
@@ -45,6 +51,33 @@
   select.eng-input option {
     background-color: #171a21;
     color: rgba(255, 255, 255, 0.85);
+  }
+
+  /* 评论正文里的表情 token：能显图的与「失效胶囊」共用一个盒子，全站只此一处定义（utils/emote 只挂类名）。
+     vertical-align:middle 锚的是西文 x-height 中线，汉字视觉中心比它低半格，那 2px 是站长 2026-10-29 肉眼定的，
+     不补就总像浮在文字上半格。 */
+  .emote-token {
+    /* display 必须写：Tailwind preflight 把 img 定成 display:block，旧的拼串里那句 inline 就是顶它的，
+       只靠 height/vertical-align 会让整枚表情跌成整行一个。 */
+    display: inline;
+    height: 18px;
+    vertical-align: middle;
+    transform: translateY(-2px);
+    margin: 0 1px;
+  }
+  /* B 站不再生效的表情（UP 专属包下架那批，接口不但不给 URL、连 key 都不下发）：
+     把 [UP_1802654492_得意] 压成只显「得意」的灰胶囊，比裸转义符体面，也明说了这是失效态。 */
+  .emote-dead {
+    @apply inline-flex items-center rounded-full border border-lineSoft/70 bg-lineSoft/25 text-[12px] text-inkFaint align-middle;
+    height: 18px;
+    line-height: 1;
+    padding: 0 6px;
+    margin: 0 1px;
+    transform: translateY(-2px);
+  }
+  .emote-dead::before {
+    content: '';
+    @apply mr-1 h-[5px] w-[5px] shrink-0 rounded-full bg-inkFaint/70;
   }
 
   /* ── 站长室装修件：暗色控制室质感，不换色板只提层次 ── */

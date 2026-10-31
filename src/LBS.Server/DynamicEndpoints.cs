@@ -71,6 +71,7 @@ public static class DynamicEndpoints
         app.MapGet("/api/dynamics/{dynamicId}/comments", (string dynamicId, StationDb db) =>
         {
             var rows = db.ListDynamicComments(dynamicId);
+            // IP 属地有则带、没有给 null（老评论留档没这料，前端不占位）。
             var items = rows.Where(r => r.RootRpid == 0).Select(top => new
             {
                 rpid = top.Rpid,
@@ -81,6 +82,7 @@ public static class DynamicEndpoints
                 like = top.LikeCount,
                 ctimeUtc = top.CtimeUtc,
                 level = top.Level,
+                ipLocation = top.IpLocation,
                 pictures = MergePictures(top.PicturesJson, top.PicturesLocalJson),
                 replies = rows.Where(r => r.RootRpid == top.Rpid).Select(r => new
                 {
@@ -92,6 +94,7 @@ public static class DynamicEndpoints
                     like = r.LikeCount,
                     ctimeUtc = r.CtimeUtc,
                     level = r.Level,
+                    ipLocation = r.IpLocation,
                     pictures = MergePictures(r.PicturesJson, r.PicturesLocalJson),
                 }).ToList(),
             }).ToList();
@@ -102,9 +105,30 @@ public static class DynamicEndpoints
                 // 总数优先拿巡捕盖章的 page.count（本地只存热评前 20，数条数会低估）。
                 total = db.GetStatComment(dynamicId) ?? rows.Count,
                 fetched = db.GetCommentsFetchedAt(dynamicId) is not null,
+                // 留档盖章时刻（UTC 串）：抽屉顶行给分站朋友看「这批评论是哪轮采的」。
+                fetchedAtUtc = db.GetCommentsFetchedAt(dynamicId),
                 emotes,
                 items,
             });
+        });
+
+        // 单条动态的评论手动补采（分站成员）：前端抽屉刷新钮走这里，不等巡捕下轮。
+        // 增量写走 worker 的同一套 UpsertComments（rpid 主键只更不删，新楼插旧楼留），节流与风控熔断也在闸内。
+        app.MapPost("/api/dynamics/{dynamicId}/comments/refresh", async (string dynamicId, DynamicFetchWorker worker, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is null)
+            {
+                return Results.Json(new { message = "登录后才能催评论补采" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            var (ok, busy, reason, total) = await worker.RefreshCommentsOnceAsync(dynamicId, http.RequestAborted);
+            return ok
+                ? Results.Ok(new { refreshed = true, total })
+                : busy
+                    ? Results.Json(new { message = "这条动态的评论正在补采，稍候再点" }, statusCode: StatusCodes.Status409Conflict)
+                    : reason is "not_found"
+                        ? Results.Json(new { message = "分站还没收过这条动态" }, statusCode: StatusCodes.Status404NotFound)
+                        : Results.Json(new { message = reason ?? "补采没成，等巡捕下轮再试" }, statusCode: StatusCodes.Status502BadGateway);
         });
 
         // 把动态安利给朋友：定格快照随私信落库，对方会话里直接看到卡，点卡回橱窗定位。
@@ -157,12 +181,32 @@ public static class DynamicEndpoints
                 bvid = snap.Bvid,
                 publishedAtUtc = snap.PublishedAtUtc,
                 cover = snap.Cover,
+                // 图集随身定格（本地优先、热链兑底）：图文动态递到私信里不只剩一张封面。
+                pics = ParseSharePics(snap.PicsJson, snap.PicsLocalJson),
+                // 视频题与时长：报头标题行的料（老消息没这两字段，前端静默不加行）。
+                videoTitle = snap.VideoTitle,
+                videoDuration = snap.VideoDuration is { } dur ? DurationText.Normalize(dur) : null,
             });
             var id = db.SendDm(me.Id, target, note, "dynamic", snap.DynamicId, dynJson);
             return Results.Ok(new { id, message = $"已把这条动态塞进对方信箱" });
         });
 
+        // 公开橱窗只发「在看谁」的门面：启用中目标的 mid/昵称/头像/条数（动态页筛选用）；
+        // enabled 与巡捕时刻是站长情报，走 /api/admin/dynamics/targets，与 stats/collect 同一口径。
         app.MapGet("/api/dynamics/targets", (StationDb db) =>
+            Results.Ok(db.ListDynamicTargets().Where(t => t.Enabled).Select(t => new
+            {
+                mid = t.Mid,
+                nickname = t.Nickname,
+                faceUrl = t.FaceUrl,
+                count = t.Count,
+            })));
+    }
+
+    public static void MapAdminDynamicEndpoints(this WebApplication app)
+    {
+        // 站长室订阅战报：全量目标含停用与巡捕时刻（/api/admin/ 前缀吃站长门，身份即钥匙）。
+        app.MapGet("/api/admin/dynamics/targets", (StationDb db) =>
             Results.Ok(db.ListDynamicTargets().Select(t => new
             {
                 mid = t.Mid,
@@ -172,10 +216,7 @@ public static class DynamicEndpoints
                 count = t.Count,
                 lastFetchAtUtc = t.LastFetchAtUtc,
             })));
-    }
 
-    public static void MapAdminDynamicEndpoints(this WebApplication app)
-    {
         app.MapPost("/api/admin/dynamics/targets", (TargetRequest request, StationDb db, EventRecorder events,
             HttpContext http) =>
         {
@@ -225,6 +266,23 @@ public static class DynamicEndpoints
         {
             return [];
         }
+    }
+
+    /// <summary>分享定格的图集：远程链配同序本地链（本地可空），坏 JSON 当没图——私信卡宁缺毋空。</summary>
+    private static IReadOnlyList<object> ParseSharePics(string? picsJson, string? picsLocalJson)
+    {
+        var pics = ParsePics(picsJson);
+        if (pics.Count == 0)
+        {
+            return [];
+        }
+
+        var locals = ParseNullableStrings(picsLocalJson);
+        return pics.Select((p, i) => (object)new
+        {
+            url = p.Url,
+            local = locals is not null && i < locals.Count ? locals[i] : null,
+        }).ToList();
     }
 
     /// <summary>同序本地路径数组（允许 null 元素）；坏 JSON 当没存，前端全量热链兑底。</summary>

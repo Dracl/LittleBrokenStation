@@ -36,6 +36,8 @@ public static class MemberMessageEndpoints
                     link = m.Link,
                     createdAtUtc = m.CreatedAtUtc,
                     readAtUtc = m.ReadAtUtc,
+                    // 归档回执里的片链死了没：没带片链的信（公告/欢迎）给 null，前端不去判。
+                    videoGone = m.VideoInStation == false,
                 });
             return Results.Ok(new { items, unread = db.CountUnread(me.Id) });
         });

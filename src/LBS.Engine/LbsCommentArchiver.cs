@@ -45,7 +45,18 @@ public sealed record CommentSnapshot(
     int Total,
     CommentItem? Top,
     IReadOnlyList<CommentItem> Replies,
-    IReadOnlyDictionary<string, string>? Emotes = null);
+    IReadOnlyDictionary<string, string>? Emotes = null,
+    // 表情元数据留档（转义符 → id/包号/类型/人类叫法）：B 站对一部分 UP 专属表情（如 [UP_1802654492_得意]）
+    // 连 content.emote 的 key 都不下发，我们永久拿不到图，但接口肯给的这几个字段是将来按包回填的唯一线索。
+    // 存这个不存 url：本地图的路径已在 Emotes 里，缺图那批本来就没 url。
+    IReadOnlyDictionary<string, EmoteMetaEntry>? EmoteMeta = null);
+
+/// <summary>一枚表情的身份卡（B 站 content.emote 里本来就带的几个字段，我们曾经丢掉）。</summary>
+public sealed record EmoteMetaEntry(
+    int? Id = null,
+    int? PackageId = null,
+    int? Type = null,
+    string? JumpTitle = null);
 
 /// <summary>
 /// 评论归档器：用 fork 的 wbi 签名设施翻 x/v2/reply/main，把评论区按提交时刻的样貌存成
@@ -176,9 +187,11 @@ public sealed class LbsCommentArchiver(
             var allRaw = topOverride is null ? (IEnumerable<ReplyRaw>)collected : collected.Append(topOverride);
             var faceMap = await CacheAvatarsAsync(Flatten(allRaw), cancellationToken);
             var emoteMap = await CacheEmotesAsync(Flatten(allRaw), cancellationToken);
+            // 元数据与落盘分开走：落盘只认有 url 的，留档要连没 url 的一起收（那批才是回填时唯一能对上号的）。
+            var emoteMeta = CollectEmoteMeta(Flatten(allRaw));
             var pictureMap = await CachePicturesAsync(Flatten(allRaw), cancellationToken);
 
-            var snapshot = MapSnapshot(aid.Value, bvid, firstPage, collected, faceMap, topOverride, pictureMap, emoteMap);
+            var snapshot = MapSnapshot(aid.Value, bvid, firstPage, collected, faceMap, topOverride, pictureMap, emoteMap, emoteMeta);
             logger.LogInformation(
                 "评论归档完成：{Bvid} 主楼 {Count} 条（B 站报总数 {Total}），头像落盘 {Avatars} 张",
                 bvid, snapshot.Replies.Count, snapshot.Total, faceMap.Count);
@@ -258,7 +271,8 @@ public sealed class LbsCommentArchiver(
         IReadOnlyDictionary<string, string>? faceMap = null,
         ReplyRaw? topOverride = null,
         IReadOnlyDictionary<string, string>? pictureMap = null,
-        IReadOnlyDictionary<string, string>? emoteMap = null)
+        IReadOnlyDictionary<string, string>? emoteMap = null,
+        IReadOnlyDictionary<string, EmoteMetaEntry>? emoteMeta = null)
     {
         var topRaw = topOverride
             ?? firstPage?.Upper?.Top
@@ -270,7 +284,9 @@ public sealed class LbsCommentArchiver(
             .Select(r => ToItem(r, isTop: false, faceMap, null, pictureMap))
             .ToList();
         var total = Math.Max(firstPage?.Page?.Count ?? 0, replies.Count + (top is null ? 0 : 1));
-        return new CommentSnapshot(1, aid, bvid, DateTimeOffset.UtcNow, total, top, replies, emoteMap is { Count: > 0 } ? emoteMap : null);
+        return new CommentSnapshot(1, aid, bvid, DateTimeOffset.UtcNow, total, top, replies,
+            emoteMap is { Count: > 0 } ? emoteMap : null,
+            emoteMeta is { Count: > 0 } ? emoteMeta : null);
     }
 
     public static string Serialize(CommentSnapshot snapshot) => System.Text.Json.JsonSerializer.Serialize(snapshot, SnapshotJson);
@@ -496,6 +512,36 @@ public sealed class LbsCommentArchiver(
         return CacheEmotesCoreAsync(pairs, cancellationToken);
     }
 
+    /// <summary>
+    /// 表情元数据收集（与落盘同一次扫，但不靠落盘）：<c>content.emote</c> 里出现过的 token 全收，
+    /// 包括 <c>url</c> 为空、根本没进 <see cref="CommentSnapshot.Emotes"/> 的那批——UP 专属表情停发后，
+    /// 它们的 package_id 与 jump_title 是日后回填的唯一把手。上限跟下载共用 <see cref="MaxEmoteDownloads"/>，
+    /// 不另开一个闸门管份数。
+    /// </summary>
+    public static Dictionary<string, EmoteMetaEntry> CollectEmoteMeta(IEnumerable<ReplyRaw> raws)
+    {
+        var meta = new Dictionary<string, EmoteMetaEntry>(StringComparer.Ordinal);
+        foreach (var raw in raws)
+        {
+            foreach (var (seq, emote) in raw.Content?.Emote ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(seq) || emote is null || meta.Count >= MaxEmoteDownloads)
+                {
+                    continue;
+                }
+
+                if (emote.Id is null && emote.PackageId is null && emote.Type is null && string.IsNullOrWhiteSpace(emote.JumpTitle))
+                {
+                    continue; // 四个字段全空的条目没考古价值，不收进来占位
+                }
+
+                meta[seq] = new EmoteMetaEntry(emote.Id, emote.PackageId, emote.Type, string.IsNullOrWhiteSpace(emote.JumpTitle) ? null : emote.JumpTitle);
+            }
+        }
+
+        return meta;
+    }
+
     private async Task<Dictionary<string, string>> CacheEmotesCoreAsync(IEnumerable<(string Seq, string Url)> pairs, CancellationToken cancellationToken)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -699,6 +745,7 @@ public static class CommentSnapshotOps
             Top = fresh.Top ?? oldSnapshot.Top,
             Total = Math.Max(fresh.Total, replies.Count),
             Emotes = fresh.Emotes is { Count: > 0 } ? fresh.Emotes : oldSnapshot.Emotes,
+            EmoteMeta = fresh.EmoteMeta is { Count: > 0 } ? fresh.EmoteMeta : oldSnapshot.EmoteMeta,
         };
         return new ArchiveMerge(merged, added, refreshed, keptGone, replies.Count);
     }
@@ -868,6 +915,19 @@ public sealed class ReplyEmote
 {
     [JsonProperty("url")]
     public string? Url { get; set; }
+
+    [JsonProperty("id")]
+    public int? Id { get; set; }
+
+    [JsonProperty("package_id")]
+    public int? PackageId { get; set; }
+
+    [JsonProperty("type")]
+    public int? Type { get; set; }
+
+    /// <summary>B 站给这枚表情的人类叫法（「打call」这种），前端失效胶囊就念它。</summary>
+    [JsonProperty("jump_title")]
+    public string? JumpTitle { get; set; }
 }
 
 public sealed class ReplyUpAction

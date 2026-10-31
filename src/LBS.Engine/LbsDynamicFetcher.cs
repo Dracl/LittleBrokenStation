@@ -58,7 +58,9 @@ public sealed record ParsedComment(
     // 评论配图远程 url（content.pictures[].img_src）；落盘交给评论资产缓存，同序对齐存 pictures_local_json。
     IReadOnlyList<string>? Pictures = null,
     // 发评人 B 站等级（member.level_info.current_level，老口没这个袋就退 member.level）；认不到 null，前端不渲染徽记。
-    int? Level = null);
+    int? Level = null,
+    // 发评人 IP 属地（content 层的 ip_location，与视频侧归档器同一字段名）；老评论/接口没给就 null，前端不显示。
+    string? IpLocation = null);
 
 public enum FeedParseStatus
 {
@@ -445,6 +447,23 @@ public sealed class LbsDynamicFetcher(
                     int? level = (Num(Path(el, "member", "level_info"), "current_level") ?? Num(Path(el, "member"), "level")) is long lv and >= 0 and <= 99
                         ? (int)lv
                         : null;
+                    // IP 属地：动态评论区（老口 /x/v2/reply）把它挂在 reply_control.location，还带「IP属地：」前缀；
+                    // 视频侧同字段同处理（剥前缀入库，前端统一自己添 label）。老评论没这个袋，认不到留 null 不硬凑。
+                    var rawIp = Str(Path(el, "content", "ip_location")) ?? Str(Path(el, "reply_control", "location"));
+                    string? ipLocation = null;
+                    if (!string.IsNullOrWhiteSpace(rawIp))
+                    {
+                        var ip = rawIp.Trim();
+                        if (ip.StartsWith("IP属地：", StringComparison.Ordinal))
+                        {
+                            ip = ip["IP属地：".Length..].Trim();
+                        }
+                        else if (ip.StartsWith("IP属地:", StringComparison.Ordinal))
+                        {
+                            ip = ip["IP属地:".Length..].Trim();
+                        }
+                        ipLocation = ip.Length > 0 ? ip : null;
+                    }
 
                     replies.Add(new ParsedComment(
                         rpid,
@@ -458,7 +477,8 @@ public sealed class LbsDynamicFetcher(
                         Num(el, "like") ?? 0,
                         ctime is > 0 ? DateTimeOffset.FromUnixTimeSeconds(ctime.Value).ToString("O") : null,
                         pictures,
-                        level));
+                        level,
+                        string.IsNullOrWhiteSpace(ipLocation) ? null : ipLocation.Trim()));
 
                     if (collectRoots && (Num(el, "rcount") ?? 0) > 0)
                     {

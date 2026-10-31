@@ -35,6 +35,9 @@ public sealed class DownloadRuntimeFactory : IDownloadRuntimeFactory
     private readonly IBilibiliApiClient _client;
     private readonly DownloadTaskStaging? _staging;
 
+    // LBS fork: worker 执行链的环境钩子（宿主可注入采集号上下文），未注册则直通。
+    private readonly IDownloadWorkerAmbient? _workerAmbient;
+
     public DownloadRuntimeFactory(
         DownloadListState downloadLists,
         DownloadTaskProjectionStore projectionStore,
@@ -51,7 +54,8 @@ public sealed class DownloadRuntimeFactory : IDownloadRuntimeFactory
         DownloadTaskFileService fileService,
         ILoggerFactory loggerFactory,
         IBilibiliApiClient client,
-        DownloadTaskStaging? staging = null)
+        DownloadTaskStaging? staging = null,
+        IDownloadWorkerAmbient? workerAmbient = null)
     {
         _downloadLists = downloadLists ?? throw new ArgumentNullException(nameof(downloadLists));
         _projectionStore = projectionStore
@@ -71,6 +75,7 @@ public sealed class DownloadRuntimeFactory : IDownloadRuntimeFactory
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _staging = staging;
+        _workerAmbient = workerAmbient;
     }
 
     public IDownloadRuntime? Create()
@@ -149,7 +154,8 @@ public sealed class DownloadRuntimeFactory : IDownloadRuntimeFactory
             _stateWriter,
             _taskScheduler,
             network.MaxCurrentDownloads,
-            _loggerFactory.CreateLogger<DownloadOrchestrator>());
+            _loggerFactory.CreateLogger<DownloadOrchestrator>(),
+            _workerAmbient);
     }
 
 }

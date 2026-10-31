@@ -255,8 +255,11 @@ public sealed class DmTests : IDisposable
         _db.SetMemberStatus(banned, MemberStatus.Banned);
         _db.CreateMemberInvite("待邀丁");
 
-        var roster = _db.GetActiveMembersForDirectory();
-        Assert.Equal([8001L, 8002L], roster.Where(m => m.Mid is not null).Select(m => m.Mid).OrderBy(m => m));
+        // 名册不再整本递出（全量接口已拆），只有搜索命中可见：封禁与待邀同样不露面。
+        var hits = StationDb.MatchMembersForDirectory(_db.ListMembers(), "在站");
+        Assert.Equal([8001L, 8002L], hits.Where(m => m.Mid is not null).Select(m => m.Mid).OrderBy(m => m));
+        Assert.Empty(StationDb.MatchMembersForDirectory(_db.ListMembers(), "被封"));
+        Assert.Empty(StationDb.MatchMembersForDirectory(_db.ListMembers(), "待邀"));
     }
 
     [Fact]
@@ -305,5 +308,169 @@ public sealed class DmTests : IDisposable
         Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", new string('字', 501)).Error!.Value.Status);
         var (pendingId, _) = _db.CreateMemberInvite(null);
         Assert.Equal(StatusCodes.Status404NotFound, DmEndpoints.ValidateVideoShare(_db, me, pendingId, "BVshare001", null).Error!.Value.Status);
+    }
+
+    // ─── 选人框搜索（directory?q=）：门槛、命中、只搜不兑底 ───
+
+    private static StationMember Seat(long id, long? mid, string? nickname, string? username, string status = MemberStatus.Active) =>
+        new(id, mid, nickname, null, null, status, "member", "2026-10-31T00:00:00Z", null, null, username);
+
+    [Fact]
+    public void 选人门槛_纯数字一位即搜_文字单字不收()
+    {
+        Assert.False(StationDb.DirectorySearchAllowed(null));
+        Assert.False(StationDb.DirectorySearchAllowed(""));
+        Assert.False(StationDb.DirectorySearchAllowed("   "));
+        Assert.False(StationDb.DirectorySearchAllowed("猫")); // 单字不收，防广撒网
+        Assert.False(StationDb.DirectorySearchAllowed("a")); // 单字母同样不收
+        Assert.True(StationDb.DirectorySearchAllowed("猫与"));
+        Assert.True(StationDb.DirectorySearchAllowed("ab"));
+        Assert.True(StationDb.DirectorySearchAllowed("2")); // 纯数字走等值，无枚举面
+        Assert.True(StationDb.DirectorySearchAllowed(" 7禾 ")); // 首尾空白不当字数
+    }
+
+    [Fact]
+    public void 选人搜索_命中昵称用户名_数字撞席位与mid_不达门槛绝不兑底()
+    {
+        var pool = new[]
+        {
+            Seat(2, 111, "测试账号", "ceshi"),
+            Seat(3, 222, "猫与深巷", null),
+            Seat(4, null, "ClearSky", "clearsky_fan"),
+            Seat(5, 333, "封禁的猫", null, MemberStatus.Banned),
+            Seat(6, 606, "小猫猫", null),
+        };
+
+        // 文字命中昵称/用户名，忽略大小写；封禁席位不露面。
+        Assert.Equal(new long[] { 6 }, StationDb.MatchMembersForDirectory(pool, "猫猫").Select(m => m.Id).ToArray());
+        Assert.Equal(new long[] { 3 }, StationDb.MatchMembersForDirectory(pool, "猫与").Select(m => m.Id).ToArray());
+        Assert.Equal(new long[] { 2 }, StationDb.MatchMembersForDirectory(pool, "测试").Select(m => m.Id).ToArray());
+        Assert.Equal(new long[] { 4 }, StationDb.MatchMembersForDirectory(pool, "CLEARSKY_FAN").Select(m => m.Id).ToArray());
+        Assert.Empty(StationDb.MatchMembersForDirectory(pool, "封禁"));
+
+        // 纯数字撞席位 id 与 B 站 mid（等值，不搞前缀模糊）。
+        Assert.Equal(new long[] { 2 }, StationDb.MatchMembersForDirectory(pool, "2").Select(m => m.Id).ToArray());
+        Assert.Equal(new long[] { 2 }, StationDb.MatchMembersForDirectory(pool, "111").Select(m => m.Id).ToArray());
+        Assert.Empty(StationDb.MatchMembersForDirectory(pool, "1")); // mid 前缀不算命中
+
+        // 不达门槛/空词一律空手，绝不全量兑底。
+        Assert.Empty(StationDb.MatchMembersForDirectory(pool, null));
+        Assert.Empty(StationDb.MatchMembersForDirectory(pool, "  "));
+        Assert.Empty(StationDb.MatchMembersForDirectory(pool, "小"));
+
+        // 限流：前 20 条。
+        var crowd = Enumerable.Range(0, 30).Select(i => Seat(100 + i, null, "同名兄弟", null)).ToList();
+        Assert.Equal(20, StationDb.MatchMembersForDirectory(crowd, "同名").Count);
+    }
+
+    [Fact]
+    public void 素净席位展示名_不搭at前缀()
+    {
+        // 站长钦定：站内人名不搭 @（前院风味不进分站）。
+        Assert.Equal("测试账号", StationDb.DisplayOf(Seat(9, null, null, "测试账号")));
+        Assert.Equal("昵称优先", StationDb.DisplayOf(Seat(9, 999, "昵称优先", "用户名")));
+        Assert.Null(StationDb.DisplayOf(Seat(9, null, null, null)));
+    }
+
+    [Fact]
+    public void 会话单边销账_列表隐身_发信复活_对方不动()
+    {
+        var me = AdmitSeat(8201, "销账甲");
+        var peer = AdmitSeat(8202, "被销乙");
+        _db.SendDm(me, peer, "在吗");
+        _db.SendDm(peer, me, "在的");
+        Assert.Single(_db.ListDmThreads(me));
+        Assert.Single(_db.ListDmThreads(peer));
+
+        _db.HideDmThread(me, peer);
+        Assert.Empty(_db.ListDmThreads(me));            // 我这边隐身
+        Assert.Single(_db.ListDmThreads(peer));          // 对方账本不动
+        _db.HideDmThread(me, peer);                      // 幂等再销不炸
+        Assert.Empty(_db.ListDmThreads(me));
+
+        _db.SendDm(me, peer, "重新聊聊");                 // 开口即复活
+        var revived = Assert.Single(_db.ListDmThreads(me));
+        Assert.Equal(peer, revived.PeerMemberId);
+    }
+
+    [Fact]
+    public void 清空聊天记录_单边盖章_旧话隐身_对方照看_新话露面()
+    {
+        var me = AdmitSeat(8211, "清空甲");
+        var peer = AdmitSeat(8212, "被清乙");
+        _db.SendDm(me, peer, "老话一");
+        _db.SendDm(peer, me, "老话二");
+
+        Assert.False(_db.ClearDmThread(me, peer));         // 只盖了自己的章
+        Assert.Empty(_db.ListDmConversation(me, peer, viewerMemberId: me));  // 我这边旧话全隐身
+        Assert.Equal(2, _db.ListDmConversation(peer, me, viewerMemberId: peer).Count); // 对方账本不动
+        Assert.Equal(2, _db.ListDmConversation(me, peer).Count);                 // 审计视角（不传 viewer）全量仍在
+        Assert.Empty(_db.ListDmThreads(me));               // 列表也抹了
+        Assert.Single(_db.ListDmThreads(peer));            // 对方列表照旧
+
+        _db.SendDm(peer, me, "章后的新话");                 // 对方来话：列表摆回，且只看得见章后的
+        var revived = Assert.Single(_db.ListDmThreads(me));
+        Assert.Equal(peer, revived.PeerMemberId);
+        Assert.Equal("章后的新话", revived.LastBody);      // 摘要也不偷看隐身旧事
+        var convo = _db.ListDmConversation(me, peer, viewerMemberId: me);
+        var only = Assert.Single(convo);
+        Assert.Equal("章后的新话", only.Body);
+    }
+
+    [Fact]
+    public void 清空聊天记录_双键集齐_往来真删_墓碑同销()
+    {
+        var jia = AdmitSeat(8221, "甲");
+        var yi = AdmitSeat(8222, "乙");
+        _db.SendDm(jia, yi, "悄悄话一");
+        _db.SendDm(yi, jia, "悄悄话二");
+        _db.SendDm(jia, yi, "悄悄话三");
+
+        Assert.False(_db.ClearDmThread(jia, yi));          // 甲先盖章：消息还在（乙可见）
+        Assert.Equal(3, _db.ListDmConversation(jia, yi).Count);
+
+        Assert.True(_db.ClearDmThread(yi, jia));           // 乙盖章：两把钥匙集齐
+        Assert.Empty(_db.ListDmConversation(jia, yi));     // 物理销毁，审计视角也没了
+        Assert.Empty(_db.ListDmThreads(jia));
+        Assert.Empty(_db.ListDmThreads(yi));
+
+        // 墓碑一并销账：重新开口是全新会话，旧话不会因盖章时刻早于旧消息而回魂
+        _db.SendDm(jia, yi, "重新来过");
+        var fresh = Assert.Single(_db.ListDmConversation(jia, yi, viewerMemberId: yi));
+        Assert.Equal("重新来过", fresh.Body);
+    }
+
+    [Fact]
+    public void 撤回_发件人真删自己那句_销别人的不行()
+    {
+        var me = AdmitSeat(8241, "撤回甲");
+        var peer = AdmitSeat(8242, "围观乙");
+        var mine = _db.SendDm(me, peer, "手滑说错");
+        var theirs = _db.SendDm(peer, me, "乙的正常话");
+
+        Assert.False(_db.DeleteDmMessageAsSender(peer, mine));   // 别人代发不得（锁发件人）
+        Assert.False(_db.DeleteDmMessageAsSender(me, 999999));   // 查无此句
+        Assert.Equal(2, _db.ListDmConversation(me, peer).Count); // 两试皆未伤账
+
+        Assert.True(_db.DeleteDmMessageAsSender(me, mine));      // 自己销自己的，成
+        var rest = Assert.Single(_db.ListDmConversation(me, peer)); // 双方同灭：谁看都只剩乙那句
+        Assert.Equal("乙的正常话", rest.Body);
+        Assert.True(_db.DeleteDmMessageAsSender(peer, theirs));  // 乙也销自己那句，账本彻底清空
+        Assert.Empty(_db.ListDmConversation(me, peer));
+    }
+
+    [Fact]
+    public void 清空聊天记录_第三人账本不受波及()
+    {
+        var jia = AdmitSeat(8231, "甲");
+        var yi = AdmitSeat(8232, "乙");
+        var bing = AdmitSeat(8233, "丙");
+        _db.SendDm(jia, yi, "甲乙话");
+        _db.SendDm(bing, jia, "丙甲话");
+
+        _db.ClearDmThread(jia, yi);
+        var kept = Assert.Single(_db.ListDmConversation(jia, bing, viewerMemberId: jia)); // 丙甲往来不遭波及
+        Assert.Equal("丙甲话", kept.Body);
+        Assert.Single(_db.ListDmThreads(jia));
     }
 }

@@ -13,6 +13,7 @@ import UpNextList from '../components/UpNextList.vue'
 import EmptyTv from '../components/EmptyTv.vue'
 import { member, loginDialogOpen } from '../memberStore'
 import { submitDialogOpen } from '../submitStore'
+import { askDeleteVideo, HINT_DELETE_VIDEO, HINT_FETCH_COMMENTS } from '../confirmStore'
 
 const route = useRoute()
 const router = useRouter()
@@ -37,7 +38,11 @@ function playNextPage() {
   if (next) activeIndex.value = next.index
 }
 
-async function loadWatch(silent = false) {
+// withRelated：「接下来播放」「本地弹幕」这类进页才该动一次的区块，只跟进页 / 换 BV 那一刻走。
+// 编码轮询（silent）要的只是 pages.codecVersions 那一份：连推荐流一起拽回来，层内随机就变成
+// 每 5 秒重抽一批面孔（肉眼上是整个模块在抽风），弹幕列表也跟着白刷一趟。
+// 轮询本身不能停：加档行从 Downloading 变定档得靠这一发把面板催回来。
+async function loadWatch(silent = false, withRelated = !silent) {
   if (!silent) {
     loading.value = true
     gateState.value = null
@@ -46,8 +51,11 @@ async function loadWatch(silent = false) {
     const res = await fetch(`/api/watch/${route.params.bvid}`)
     if (res.ok) {
       data.value = await res.json()
-      loadRelated(data.value.id)
-      loadLocalDanmaku()
+      if (withRelated) {
+        loadRelated(data.value.id)
+        loadLocalDanmaku()
+      }
+      ensureCodecPoll() // 上一轮还没跑完的加档（含刷新前点的那些）：服务端有货就接着刷，不冻在快照上
       if (!openReported) {
         // 进入并加载成功：报一枪 watch.open（同一 BV 一次，换 P 不重报）
         openReported = true
@@ -271,12 +279,18 @@ function playNextVideo() {
   if (next) router.push(`/watch/${next.bvid}`)
 }
 
+// 代次护城：现在每 BV 只取一次，但换片时旧请求迟到落地会把上一支的推荐流盖到新页上
+// （自动连播取的就是 related[0]，盖一下就会接错片），所以谁最新谁写。
+let relatedSeq = 0
+
 async function loadRelated(id) {
+  const seq = ++relatedSeq
   try {
     const res = await fetch(`/api/videos/${id}/related`)
-    related.value = res.ok ? await res.json() : []
+    const body = res.ok ? await res.json() : []
+    if (seq === relatedSeq) related.value = body
   } catch {
-    related.value = []
+    if (seq === relatedSeq) related.value = []
   }
 }
 
@@ -414,7 +428,7 @@ async function refreshSnapshots() {
 async function removeSubmission() {
   if (!data.value || removing.value) return
   const label = data.value.title || data.value.bvid
-  if (!window.confirm(`确定把「${label}」从分站彻底删除？本地文件（视频/弹幕/字幕/封面）会一并清掉，不可恢复。`)) {
+  if (!(await askDeleteVideo(label))) {
     return
   }
   removing.value = true
@@ -437,33 +451,65 @@ async function removeSubmission() {
 // ─── 编码加档：点单后轮询 watch，直到该编码所有分 P 都脱离 Downloading ───
 let codecPoll = null
 
+// 播放器点加档时已本地显了「进站中」；这一发要是被驳回，得靠这个 prop 把乐观态催回来。
+// 连着整个对象 + 带序号：同一编码连着驳回两次也要能再触发一次子组件的清理。
+const pendingRevoke = ref(null)
+let pendingRevokeSeq = 0
+
+function revokePendingCodec(codec) {
+  pendingRevoke.value = { codec, seq: ++pendingRevokeSeq }
+}
+
 async function requestCodec(codec) {
   if (!data.value) return
+  let res
   try {
-    await fetch(`/api/videos/${data.value.id}/codecs`, {
+    res = await fetch(`/api/videos/${data.value.id}/codecs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ codec }),
     })
   } catch {
-    return // 后端没应答，不启动轮询
+    // 后端没应答：把刚许出去的「进站中」收回来，不启动轮询，也不能静悄悄
+    revokePendingCodec(codec)
+    showNotice('err', '分站后端没有应答')
+    return
   }
+  const body = await res.json().catch(() => null)
+  if (!res.ok) {
+    // 409「已在站或已在途」这类拒绝以前被丢掉了，用户只看到钮没反应；现在照实报，同时撤乐观态
+    revokePendingCodec(codec)
+    showNotice('err', body?.message ?? `加档没排上（HTTP ${res.status}）`)
+    return
+  }
+  if (body?.message) showNotice('ok', body.message) // 后端本身就是「AVC 版本已排队进站（1 个分 P）」这种人话
   startCodecPoll(codec)
 }
 
-function startCodecPoll(codec) {
+// codec 为 null = 不限编码：只要还有在途的加档行就一直刷（刷新页面后自动继上用的就是这一档）
+function startCodecPoll(codec = null) {
   if (codecPoll) clearInterval(codecPoll)
   let ticks = 0
-  codecPoll = setInterval(async () => {
+  const tick = async () => {
     ticks += 1
     await loadWatch(true)
-    const rows = (data.value?.pages ?? []).flatMap((p) => p.codecVersions ?? []).filter((c) => c.codec === codec)
+    const rows = (data.value?.pages ?? []).flatMap((p) => p.codecVersions ?? []).filter((c) => !codec || c.codec === codec)
     const settled = rows.length > 0 && rows.every((c) => c.status !== 'Downloading')
     if (settled || ticks > 240) {
       clearInterval(codecPoll)
       codecPoll = null
     }
-  }, 5000)
+  }
+  codecPoll = setInterval(tick, 5000)
+  tick() // 点完立刻跑第一发：排上队就该在一秒内看到动静，不是干等 5 秒
+}
+
+// 刷新页面会把轮询连同这份记忆一并丢掉：只要服务端还挂着 Downloading 的加档行就自动继上，
+// 否则状态会冻在刷新那一刻，直到用户再点一次。单例 codecPoll 守住不会开出第二个 interval。
+function ensureCodecPoll() {
+  if (codecPoll) return
+  const inflight = (data.value?.pages ?? []).some((p) => (p.codecVersions ?? []).some((c) => c.status === 'Downloading'))
+  if (inflight) startCodecPoll()
 }
 
 // ─── 播放行为上报：只走白名单事件，失败一律静默（看片体验优先）───
@@ -586,11 +632,13 @@ const playerShellW = ref(0)
             :has-next-page="hasNextPage"
             :auto-related="autoRelated"
             :local-items="localForPage"
+            :pending-revoke="pendingRevoke"
             @next="playNextPage"
             @next-video="playNextVideo"
             @request-codec="requestCodec"
             @shell-width="playerShellW = $event"
             @codec-change="playerCodec = $event"
+            @codec-arrived="loadWatch(true)"
             @send-danmaku="onSendDanmaku"
             @delete-danmaku="onDeleteDanmaku"
             @report-danmaku="onReportDanmaku"
@@ -641,8 +689,34 @@ const playerShellW = ref(0)
 
               <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」；右侧访客下载 -->
               <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 dark:border-white/10 py-2">
-                <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" />
+                <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" :store-key="data.bvid" />
                 <div class="relative flex shrink-0 items-center gap-2">
+                  <!-- 投稿人自管两钮（往左提一位，让「合集」紧贴下载胶囊的左侧）：白底描边，hover 才上色，不抢下载胶囊的风头 -->
+                  <template v-if="data.canManage">
+                    <button
+                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 dark:border-white/10 text-inkSub transition hover:border-stationBlue hover:text-stationBlue disabled:cursor-not-allowed disabled:opacity-40"
+                      :disabled="manageBusy"
+                      :title="HINT_FETCH_COMMENTS"
+                      @click="refreshSnapshots"
+                    >
+                      <svg v-if="!manageBusy" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                      <svg v-else viewBox="0 0 24 24" class="h-4 w-4 animate-spin" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3a9 9 0 1 0 9 9" stroke-linecap="round" />
+                      </svg>
+                    </button>
+                    <button
+                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 dark:border-white/10 text-inkSub transition hover:border-rose-500 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
+                      :disabled="removing"
+                      :title="HINT_DELETE_VIDEO"
+                      @click="removeSubmission"
+                    >
+                      <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1L6 7" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </template>
                   <!-- 加入合集：成员就地收纳，抽屉不够当场建一个 -->
                   <div v-if="member" class="relative">
                     <button
@@ -682,32 +756,6 @@ const playerShellW = ref(0)
                       <p v-if="collNotice" :class="collNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'" class="mt-1.5 text-[11px]">{{ collNotice.text }}</p>
                     </div>
                   </div>
-                  <!-- 投稿人自管两钮（下载胶囊左侧）：白底描边，hover 才上色，不抢下载胶囊的风头 -->
-                  <template v-if="data.canManage">
-                    <button
-                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 dark:border-white/10 text-inkSub transition hover:border-stationBlue hover:text-stationBlue disabled:cursor-not-allowed disabled:opacity-40"
-                      :disabled="manageBusy"
-                      title="重新采集评论区快照与 B 站弹幕（分站朋友发的站内弹幕不受影响）"
-                      @click="refreshSnapshots"
-                    >
-                      <svg v-if="!manageBusy" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z" stroke-linecap="round" stroke-linejoin="round" />
-                      </svg>
-                      <svg v-else viewBox="0 0 24 24" class="h-4 w-4 animate-spin" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 3a9 9 0 1 0 9 9" stroke-linecap="round" />
-                      </svg>
-                    </button>
-                    <button
-                      class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 dark:border-white/10 text-inkSub transition hover:border-rose-500 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
-                      :disabled="removing"
-                      title="删掉这个馆藏（含本地文件），仅投稿人本人与站长可删"
-                      @click="removeSubmission"
-                    >
-                      <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1L6 7" stroke-linecap="round" stroke-linejoin="round" />
-                      </svg>
-                    </button>
-                  </template>
                   <button
                     class="flex shrink-0 items-center gap-1.5 rounded-full border border-stationPink px-4 py-1.5 text-sm text-stationPink transition hover:bg-stationPink hover:text-white disabled:cursor-not-allowed disabled:border-black/10 dark:disabled:border-white/10 disabled:text-inkFaint disabled:hover:bg-transparent"
                     :disabled="!currentPage?.videoUrl || !downloadInfo"
@@ -735,7 +783,7 @@ const playerShellW = ref(0)
             </div>
 
             <!-- 右栏（不吸顶，随页滚动）：UP 卡、弹幕列表、分 P 列表、接下来播放 -->
-            <aside class="w-full shrink-0 space-y-3 lg:-mt-3 lg:w-[360px] xl:w-[400px]">
+            <aside class="w-full shrink-0 space-y-3 lg:-mt-3 lg:w-[374px] xl:w-[374px]">
               <UpCard
                 v-if="data.upName"
                 :up-name="data.upName"
@@ -744,7 +792,7 @@ const playerShellW = ref(0)
                 :up-sign="data.upSign"
                 :up-fans="data.upFans"
               />
-              <DanmakuList v-if="currentPage?.danmakuUrl" :src="currentPage.danmakuUrl" />
+              <DanmakuList v-if="currentPage?.danmakuUrl" :src="currentPage.danmakuUrl" :count="data.danmakuCount" />
               <PageList
                 v-if="data.pages.length > 1"
                 :pages="data.pages"

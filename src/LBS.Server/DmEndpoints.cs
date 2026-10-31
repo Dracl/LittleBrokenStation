@@ -143,26 +143,45 @@ public static class DmEndpoints
             return Results.Ok(new { unread = db.CountDmUnread(me.Id) });
         });
 
-        // 可私聊名单：memberId 是钥匙，mid 仅供展示（素净席位没有 mid）。
-        app.MapGet("/api/dm/directory", (StationDb db, HttpContext http) =>
+        // 可私信选人：默认只递「聊过天的人」小账本，全站花名册不再整本露面；
+        // 搜新人要带 q（门槛见 DirectorySearchAllowed，后端再拦一道），自己永远不列。
+        app.MapGet("/api/dm/directory", (StationDb db, HttpContext http, string? q) =>
         {
             if (MemberGate.Current(http) is not { } me)
             {
                 return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            var people = db.GetActiveMembersForDirectory()
+            static object Person(StationMember m) => new
+            {
+                memberId = m.Id,
+                mid = m.Mid,
+                username = m.Username,
+                nickname = m.Nickname,
+                displayName = StationDb.DisplayOf(m),
+                faceUrl = m.FaceUrl,
+            };
+
+            var people = StationDb.MatchMembersForDirectory(db.ListMembers(), q)
                 .Where(m => m.Id != me.Id)
-                .Select(m => new
-                {
-                    memberId = m.Id,
-                    mid = m.Mid,
-                    username = m.Username,
-                    nickname = m.Nickname,
-                    displayName = StationDb.DisplayOf(m),
-                    faceUrl = m.FaceUrl,
-                });
-            return Results.Ok(new { people });
+                .Select(Person);
+            // 搜索态只看结果；默认态才递常聊账本（会话列表同源，最近发言新→旧，取前 12 人）。
+            var searching = StationDb.DirectorySearchAllowed(q);
+            var recent = searching
+                ? new List<object>()
+                : db.ListDmThreads(me.Id)
+                    .Take(12)
+                    .Select(t => (object)new
+                    {
+                        memberId = t.PeerMemberId,
+                        mid = (long?)null,
+                        username = (string?)null,
+                        nickname = t.PeerName,
+                        displayName = t.PeerName ?? "站友",
+                        faceUrl = t.PeerFace,
+                    })
+                    .ToList();
+            return Results.Ok(new { people, recent });
         });
 
         // 拉会话即标读：进会话那一刻，对方发来的就算读过了。
@@ -179,7 +198,8 @@ public static class DmEndpoints
             }
 
             db.MarkDmRead(me.Id, peerMemberId);
-            var messages = db.ListDmConversation(me.Id, peerMemberId).Select(m => new
+            // 按查看者自己的清空章过滤：盖章前的老话对这侧隐身（对方视角不受影响）
+            var messages = db.ListDmConversation(me.Id, peerMemberId, viewerMemberId: me.Id).Select(m => new
             {
                 id = m.Id,
                 fromMemberId = m.FromMemberId,
@@ -189,6 +209,8 @@ public static class DmEndpoints
                 readAtUtc = m.ReadAtUtc,
                 msgType = m.MsgType,
                 dyn = ParseShareCard(m.DynJson),
+                // 分享卡是发送那一刻定格的：片子进了回收站，卡上标题封面照样完好，得给个死活。
+                videoGone = m.MsgType == "video" && m.VideoInStation != true,
             });
             return Results.Ok(new
             {
@@ -203,6 +225,42 @@ public static class DmEndpoints
                     faceUrl = peer.FaceUrl,
                 },
             });
+        });
+
+        // 清空聊天记录（双键墓碑）：单边盖章只隐自己这侧；双方都清过，往来才真删。
+        app.MapDelete("/api/dm/thread/{peerMemberId:long}", (long peerMemberId, StationDb db, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is not { } me)
+            {
+                return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            if (peerMemberId == me.Id)
+            {
+                return Results.Json(new { message = "跟自己没什么可销的" }, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (db.GetMemberById(peerMemberId) is not { Status: MemberStatus.Active })
+            {
+                return Results.Json(new { message = "对方不在站" }, statusCode: StatusCodes.Status404NotFound);
+            }
+
+            var burned = db.ClearDmThread(me.Id, peerMemberId);
+            return Results.Ok(new { message = burned ? "两边都清了，往来真删干净" : "记录销了，再聊再记", burned });
+        });
+
+        // 撤回：发件人自己销自己那句，真删——双方账本同时没，审计视角也不留。
+        // 发别人的信要不得（WHERE 把发件人锁死在登录者身上，匹不到行就是 404）。
+        app.MapDelete("/api/dm/message/{id:long}", (long id, StationDb db, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is not { } me)
+            {
+                return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            return db.DeleteDmMessageAsSender(me.Id, id)
+                ? Results.Ok(new { message = "撤回成功，烟消云散" })
+                : Results.Json(new { message = "这句没找到，或不是你说的" }, statusCode: StatusCodes.Status404NotFound);
         });
 
         app.MapPost("/api/dm", (DmSendRequest request, StationDb db, HttpContext http) =>

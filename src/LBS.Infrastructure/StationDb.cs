@@ -238,8 +238,53 @@ public sealed partial class StationDb
         EnsureColumn(connection, "videos", "published_at_utc", "TEXT");
         // 投稿人（B 站 UID，与 events.actor_mid 同口径，NULL=站长或史前）：下载提交时据此走投稿人的账号池。
         EnsureColumn(connection, "videos", "submitter_mid", "INTEGER");
+        // Skipped 出口旗：引擎历史台账里有同名行时，重投会在门口被打回（判重键 = (cid, 需要下载的内容)）。
+        // 站长点「销档重下」时置 1，提交链读到它就带 RedownloadCompleted 走正门，提交完（无论成败）自动清零。
+        EnsureColumn(connection, "videos", "force_redownload", "INTEGER NOT NULL DEFAULT 0");
         // 主版本编码实测缓存（'avc'/'hevc'/'av1'）：首次看片时 ffprobe 实测回填，之后不再探。
         EnsureColumn(connection, "pages", "codec", "TEXT");
+        // 分轨码率实测缓存（kbps，给播放页版本行显示用；前端不现探，数据得后端备齐）+ 防抖戳：
+        // stream_probed=1 表示「ffprobe 探过一次」，探失败也置位（与 video_meta.stat_probed 同一套路）
+        // ——省得每次开片都起一个 ffprobe 进程。
+        EnsureColumn(connection, "pages", "video_kbps", "INTEGER");
+        EnsureColumn(connection, "pages", "audio_kbps", "INTEGER");
+        EnsureColumn(connection, "pages", "stream_probed", "INTEGER");
+        EnsureColumn(connection, "video_codecs", "video_kbps", "INTEGER");
+        EnsureColumn(connection, "video_codecs", "audio_kbps", "INTEGER");
+        EnsureColumn(connection, "video_codecs", "stream_probed", "INTEGER");
+        // 画面形态实测（ffprobe 同趟顺带）：宽高/平均帧率给清晰度菜单判 1080P 60帧 这类档，
+        // audio_codec 只收白名单（'flac'/'aac'/…）给 Hi-Res 徽记当判据。
+        // shape_probed=1 是「升级后探过形态」的另枚防抖戳：旧行 stream_probed 已盖但新列全空，
+        // 补员巡视靠它把存量重探一趟；没 ffprobe 的环境也能区分「试过没探到」与「从没试」。
+        EnsureColumn(connection, "pages", "width", "INTEGER");
+        EnsureColumn(connection, "pages", "height", "INTEGER");
+        EnsureColumn(connection, "pages", "fps", "REAL");
+        EnsureColumn(connection, "pages", "audio_codec", "TEXT");
+        EnsureColumn(connection, "pages", "shape_probed", "INTEGER");
+        EnsureColumn(connection, "video_codecs", "width", "INTEGER");
+        EnsureColumn(connection, "video_codecs", "height", "INTEGER");
+        EnsureColumn(connection, "video_codecs", "fps", "REAL");
+        EnsureColumn(connection, "video_codecs", "audio_codec", "TEXT");
+        EnsureColumn(connection, "video_codecs", "shape_probed", "INTEGER");
+        // 引擎实发规格真值（到站/定档那一刻从在途任务 Metadata 拄下来）：Resolution 是替换完
+        // 可用性降级后的真实档位（id 116=1080P 60帧），AudioCodec 是实发音频档（id 30251/31251=Hi-Res 系）。
+        // 这是比 ffprobe 实测更硬的真相（B 站页面菜单同源），有它就直接照报，没它才退回实测链。
+        EnsureColumn(connection, "pages", "quality_id", "INTEGER");
+        EnsureColumn(connection, "pages", "quality_name", "TEXT");
+        EnsureColumn(connection, "pages", "audio_quality_id", "INTEGER");
+        EnsureColumn(connection, "video_codecs", "quality_id", "INTEGER");
+        EnsureColumn(connection, "video_codecs", "quality_name", "TEXT");
+        EnsureColumn(connection, "video_codecs", "audio_quality_id", "INTEGER");
+        // 盘上实测编码（'avc'/'hevc'/'av1'）：与 codec（点单要的编码）分家，专治挂羊头卖狗肉——
+        // B 站只给了别的编码、或引擎按可用性降级时，codec 仍是点单值（GetArrivedCodecRel 靠它找文件、不能改），
+        // 真实编码只进这一列，与点单不符时同步员留一条 Warning。只在定档探测那一步顺带写，不额外起 ffprobe。
+        EnsureColumn(connection, "video_codecs", "measured_codec", "TEXT");
+        // 加档撞车让路：引擎判重键不含编码（DuplicateKey.From(cid, NeedDownloadContent)），
+        // 同一稿件并发加两个编码时后到的必被判「已存在未完成的同名任务」。这类行不判死：
+        // 挂 retry_at_utc（UTC ISO，与 created_at_utc 同格式可比大小）等同步员到期回炉，
+        // retry_count 记已经让过几趟（退避长度与「放弃重试」都只看它）。
+        EnsureColumn(connection, "video_codecs", "retry_at_utc", "TEXT");
+        EnsureColumn(connection, "video_codecs", "retry_count", "INTEGER NOT NULL DEFAULT 0");
         // UP 主名片快照（头像本地化相对路径 / 简介 / 粉丝数），由 LbsUpInfoFetcher 到站时采。
         EnsureColumn(connection, "video_meta", "up_face", "TEXT");
         EnsureColumn(connection, "video_meta", "up_sign", "TEXT");
@@ -335,6 +380,35 @@ public sealed partial class StationDb
                 CREATE INDEX IF NOT EXISTS idx_dm_from_to ON dm_messages (from_mid, to_mid);
                 """;
             dm.ExecuteNonQuery();
+        }
+
+        // 会话单边销账：我删我的记录，对方账本不动（微信式删聊天）；重新开口说话自动复活。
+        using (var dmHidden = connection.CreateCommand())
+        {
+            dmHidden.CommandText = """
+                CREATE TABLE IF NOT EXISTS dm_thread_hidden (
+                    member_id      INTEGER NOT NULL,
+                    peer_member_id INTEGER NOT NULL,
+                    hidden_at_utc  TEXT NOT NULL,
+                    PRIMARY KEY (member_id, peer_member_id)
+                );
+                """;
+            dmHidden.ExecuteNonQuery();
+        }
+
+        // 聊天记录单边清空（双键墓碑）：盖自己的黑章，对话视图里盖章前的老记录不露面；
+        // 双方都盖了章，往来消息才真删（谁也看不见的账，留着没意义）。
+        using (var dmCleared = connection.CreateCommand())
+        {
+            dmCleared.CommandText = """
+                CREATE TABLE IF NOT EXISTS dm_thread_cleared (
+                    member_id       INTEGER NOT NULL,
+                    peer_member_id  INTEGER NOT NULL,
+                    cleared_at_utc  TEXT NOT NULL,
+                    PRIMARY KEY (member_id, peer_member_id)
+                );
+                """;
+            dmCleared.ExecuteNonQuery();
         }
 
         // M6 UP 主动态缓存：targets 是被盯的 UP（订阅台账种子 + 站长自加），dynamics 是抓回的动态橱窗。
@@ -436,6 +510,8 @@ public sealed partial class StationDb
         EnsureColumn(connection, "dynamic_comments", "pictures_local_json", "TEXT");
         // 发评人 B 站等级（官方徽记渲染用）；存量行由巡捕的等级补员逐批盖章。
         EnsureColumn(connection, "dynamic_comments", "level", "INTEGER");
+        // 发评人 IP 属地（B 站 content.ip_location）：新抓才带，老行留 NULL 前端不显示（老评论区本来就没这料）。
+        EnsureColumn(connection, "dynamic_comments", "ip_location", "TEXT");
 
         // M6+ 私信变厚：支持「分享动态」卡，msg_type 分文本/动态，dyn_json 存分享那刻定格的卡面快照
         // （B 站删动态不连累分站留档，会话渲染也不回头查表）。
@@ -936,7 +1012,7 @@ public sealed partial class StationDb
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT url, title, status FROM videos WHERE id = $id;";
+        command.CommandText = "SELECT url, title, status, force_redownload FROM videos WHERE id = $id;";
         command.Parameters.AddWithValue("$id", id);
 
         using var reader = command.ExecuteReader();
@@ -945,7 +1021,7 @@ public sealed partial class StationDb
             return null;
         }
 
-        return new SubmissionCandidate(id, reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+        return new SubmissionCandidate(id, reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), reader.GetInt32(3) == 1);
     }
 
     /// <summary>分站自有设置 KV（进站配置等），与引擎设置分开。</summary>
@@ -1085,6 +1161,7 @@ public sealed partial class StationDb
             SET status = $status,
                 engine_task_ids = $taskIds,
                 last_error = NULL,
+                force_redownload = 0,
                 title = COALESCE($title, title),
                 cover_url = COALESCE($cover, cover_url)
             WHERE id = $id;
@@ -1212,12 +1289,27 @@ public sealed partial class StationDb
     }
 
     /// <summary>下载面板的排队行（提交前的台账行，还没碰引擎）。</summary>
-    public IReadOnlyList<DownloadQueueItem> GetPendingQueueItems()
+    public IReadOnlyList<DownloadQueueItem> GetPendingQueueItems() => GetQueueItemsByStatus(VideoStatus.Pending);
+
+    /// <summary>已取消的遗留行（Canceled）：面板取消后留在首页卡阵里的「已取消」卡片，供站长一键清理。</summary>
+    public IReadOnlyList<DownloadQueueItem> GetCanceledQueueItems() => GetQueueItemsByStatus(VideoStatus.Canceled);
+
+    /// <summary>已取消遗留计数：清理按钮上的那个数。</summary>
+    public int CountCanceledVideos()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM videos WHERE status = $status;";
+        command.Parameters.AddWithValue("$status", VideoStatus.Canceled.ToString());
+        return (int)(long)command.ExecuteScalar()!;
+    }
+
+    private IReadOnlyList<DownloadQueueItem> GetQueueItemsByStatus(VideoStatus status)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT id, bvid, title, cover_url FROM videos WHERE status = $status ORDER BY id;";
-        command.Parameters.AddWithValue("$status", VideoStatus.Pending.ToString());
+        command.Parameters.AddWithValue("$status", status.ToString());
 
         using var reader = command.ExecuteReader();
         var list = new List<DownloadQueueItem>();
@@ -1260,11 +1352,15 @@ public sealed partial class StationDb
         return command.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// 状态机唯一改状态入口：连带把 force_redownload 清零——那枚旗只活一次提交，
+    /// 无论这轮是到站、失败还是回炉重投，都不能让它搭到下一趟顺风车。
+    /// </summary>
     private void ExecuteUpdate(long id, VideoStatus status, string? taskIdsJson, string? error)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE videos SET status = $status, engine_task_ids = $taskIds, last_error = $error WHERE id = $id;";
+        command.CommandText = "UPDATE videos SET status = $status, engine_task_ids = $taskIds, last_error = $error, force_redownload = 0 WHERE id = $id;";
         command.Parameters.AddWithValue("$status", status.ToString());
         command.Parameters.AddWithValue("$taskIds", (object?)taskIdsJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$error", (object?)error ?? DBNull.Value);
@@ -1289,6 +1385,94 @@ public sealed partial class StationDb
             reader.GetString(0),
             Enum.Parse<VideoStatus>(reader.GetString(1)),
             reader.IsDBNull(2) ? null : reader.GetString(2));
+    }
+
+    /// <summary>
+    /// Skipped 出口给站长按的那一下：给这馆挂上「这次真要重下」的旗，下一轮提交会带 RedownloadCompleted 入引擎。
+    /// 只挂牌不动状态（状态回 Pending 与入队由调用方一手包办），免得一个写口分两处、中间挂个半拉子状态。
+    /// </summary>
+    public void MarkForceRedownload(long id)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE videos SET force_redownload = 1 WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", id);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 销档前递绐引擎的对账料：这馆在引擎那边留下过的全部任务号 + 全部 cid。
+    /// 任务号三处取并集：videos.engine_task_ids（到站那一刻被 MarkArrived 清成 NULL，单靠它必漏）、
+    /// pages.task_id（提交时逐分 P 落账、NOT NULL，最稳的一路）、video_codecs.engine_task_ids（加档历史与在途都算）。
+    /// cid 只从 pages 取（引擎历史行的键就是它）；脏 JSON 当没得销，不拦删档。
+    /// </summary>
+    public (IReadOnlyList<string> TaskIds, IReadOnlyList<long> Cids) GetEngineTraceForVideo(long id)
+    {
+        var taskIds = new List<string>();
+        var cids = new List<long>();
+        using var connection = Open(_dbPath);
+
+        using (var tasks = connection.CreateCommand())
+        {
+            tasks.CommandText = """
+                SELECT engine_task_ids FROM videos WHERE id = $id
+                UNION ALL SELECT engine_task_ids FROM video_codecs WHERE video_id = $id;
+                """;
+            tasks.Parameters.AddWithValue("$id", id);
+            using var reader = tasks.ExecuteReader();
+            while (reader.Read())
+            {
+                if (reader.IsDBNull(0))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var parsed = System.Text.Json.JsonSerializer.Deserialize<List<string>>(reader.GetString(0));
+                    foreach (var taskId in parsed ?? new List<string>())
+                    {
+                        if (!string.IsNullOrWhiteSpace(taskId))
+                        {
+                            taskIds.Add(taskId);
+                        }
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // 账本里那入不了手的 JSON 就当没留过任务号
+                }
+            }
+        }
+
+        using (var pages = connection.CreateCommand())
+        {
+            // 分 P 行上的 task_id 就是提交时逐路落账的引擎任务号（NOT NULL）：到站后 videos 那一列被清空，
+            // 只剩这里还能把历史行的主键对上号，所以它必须进并集。
+            pages.CommandText = "SELECT task_id, cid FROM pages WHERE video_id = $id ORDER BY idx;";
+            pages.Parameters.AddWithValue("$id", id);
+            using var reader = pages.ExecuteReader();
+            while (reader.Read())
+            {
+                if (!reader.IsDBNull(0) && !string.IsNullOrWhiteSpace(reader.GetString(0)))
+                {
+                    taskIds.Add(reader.GetString(0));
+                }
+
+                if (!reader.IsDBNull(1))
+                {
+                    var cid = reader.GetInt64(1);
+                    if (cid > 0)
+                    {
+                        cids.Add(cid);
+                    }
+                }
+            }
+        }
+
+        return (
+            taskIds.Distinct(StringComparer.Ordinal).ToList(),
+            cids.Distinct().ToList());
     }
 
     /// <summary>
@@ -1628,7 +1812,9 @@ public sealed partial class StationDb
             if (existing == "Failed")
             {
                 using var retry = connection.CreateCommand();
-                retry.CommandText = "UPDATE video_codecs SET status = 'Downloading', last_error = NULL, engine_task_ids = NULL WHERE video_id = $id AND page_idx = $page AND codec = $codec;";
+                // 手动重试算重新开局：让路历史（retry_count）与上一轮探测的账（实测编码/码率/防抖戳）一并归零，
+                // 不然老账一上来就踩满放弃上限，或新文件还没探就先挂着上一轮的实测编码骗人。
+                retry.CommandText = "UPDATE video_codecs SET status = 'Downloading', last_error = NULL, engine_task_ids = NULL, retry_at_utc = NULL, retry_count = 0, measured_codec = NULL, video_kbps = NULL, audio_kbps = NULL, stream_probed = NULL, shape_probed = NULL, width = NULL, height = NULL, fps = NULL, audio_codec = NULL, quality_id = NULL, quality_name = NULL, audio_quality_id = NULL WHERE video_id = $id AND page_idx = $page AND codec = $codec;";
                 retry.Parameters.AddWithValue("$id", videoId);
                 retry.Parameters.AddWithValue("$page", pageIdx);
                 retry.Parameters.AddWithValue("$codec", normalized);
@@ -1674,7 +1860,8 @@ public sealed partial class StationDb
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE video_codecs SET engine_task_ids = $taskIds, base_path = $base WHERE id = $id;";
+        // 真拿到引擎任务了，让路 saga 就此结束：排队标记与让路次数一起销账（不然下次重新排队又从老账算起）。
+        command.CommandText = "UPDATE video_codecs SET engine_task_ids = $taskIds, base_path = $base, retry_at_utc = NULL, retry_count = 0 WHERE id = $id;";
         command.Parameters.AddWithValue("$taskIds", System.Text.Json.JsonSerializer.Serialize(taskIds));
         command.Parameters.AddWithValue("$base", (object?)basePath ?? DBNull.Value);
         command.Parameters.AddWithValue("$id", id);
@@ -1703,15 +1890,15 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
     }
 
-    public IReadOnlyList<(long Id, int PageIdx, string Codec, string Status, string? RelPath, string? LastError)> GetCodecVersions(long videoId)
+    public IReadOnlyList<(long Id, int PageIdx, string Codec, string Status, string? RelPath, string? LastError, int RetryCount)> GetCodecVersions(long videoId)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id, page_idx, codec, status, rel_path, last_error FROM video_codecs WHERE video_id = $id ORDER BY page_idx, codec;";
+        command.CommandText = "SELECT id, page_idx, codec, status, rel_path, last_error, retry_count FROM video_codecs WHERE video_id = $id ORDER BY page_idx, codec;";
         command.Parameters.AddWithValue("$id", videoId);
 
         using var reader = command.ExecuteReader();
-        var list = new List<(long, int, string, string, string?, string?)>();
+        var list = new List<(long, int, string, string, string?, string?, int)>();
         while (reader.Read())
         {
             list.Add((
@@ -1720,7 +1907,362 @@ public sealed partial class StationDb
                 reader.GetString(2),
                 reader.GetString(3),
                 reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? 0 : reader.GetInt32(6)));
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 撞车让路：行保持在途（不判死），只挂一个到期回炉时间 + 累加让路次数，把引擎给的原因留在 last_error 供站长室看。
+    /// 只动还没分到引擎任务的行（engine_task_ids IS NULL）——已挂真任务的行归同步员盯，不该被这里插一脚。
+    /// </summary>
+    public void MarkCodecDeferred(long id, DateTimeOffset retryAtUtc, string reason)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE video_codecs
+            SET retry_at_utc = $at, retry_count = retry_count + 1, last_error = $reason
+            WHERE id = $id AND status = 'Downloading' AND engine_task_ids IS NULL;
+            """;
+        command.Parameters.AddWithValue("$at", retryAtUtc.ToString("O"));
+        command.Parameters.AddWithValue("$reason", reason);
+        command.Parameters.AddWithValue("$id", id);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 本轮真要提交了：销掉排队标记（站长室队列快照的 waiting 就认这一列），retry_count 留着算退避。
+    /// 销成 NULL 后这行对 <see cref="GetDueCodecRetries"/> 隐身，提交途中不会被重复拾起。
+    /// </summary>
+    public void ClearCodecRetry(long videoId, string codec)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE video_codecs SET retry_at_utc = NULL WHERE video_id = $id AND codec = $codec AND status = 'Downloading';";
+        command.Parameters.AddWithValue("$id", videoId);
+        command.Parameters.AddWithValue("$codec", codec.Trim().ToLowerInvariant());
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 到期该回炉的加档行（在途 + 有排队标记且时间已到）；nowUtc 要传 UTC（比较走 ISO 文本字典序）。
+    /// 拾到后要拿 <see cref="TakeCodecRetryLease"/> 抢租约，防同一条被相邻两轮连投两次。
+    /// </summary>
+    public IReadOnlyList<(long Id, long VideoId, int PageIdx, string Codec)> GetDueCodecRetries(DateTimeOffset nowUtc)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, video_id, page_idx, codec
+            FROM video_codecs
+            WHERE status = 'Downloading' AND retry_at_utc IS NOT NULL AND retry_at_utc <= $now
+            ORDER BY retry_at_utc, id;
+            """;
+        command.Parameters.AddWithValue("$now", nowUtc.ToString("O"));
+
+        using var reader = command.ExecuteReader();
+        var list = new List<(long, long, int, string)>();
+        while (reader.Read())
+        {
+            list.Add((reader.GetInt64(0), reader.GetInt64(1), reader.GetInt32(2), reader.GetString(3)));
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 抢回炉租约：把到期时间前移到 leaseUntilUtc（典型为 now + 90s），抢不到（已被别的轮次接走 / 已销账）返回 false。
+    /// 租约期内这行不会再次到期，提交途中也就不会被重复入队。
+    /// </summary>
+    public bool TakeCodecRetryLease(long id, DateTimeOffset nowUtc, DateTimeOffset leaseUntilUtc)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE video_codecs
+            SET retry_at_utc = $until
+            WHERE id = $id AND status = 'Downloading' AND retry_at_utc IS NOT NULL AND retry_at_utc <= $now;
+            """;
+        command.Parameters.AddWithValue("$until", leaseUntilUtc.ToString("O"));
+        command.Parameters.AddWithValue("$now", nowUtc.ToString("O"));
+        command.Parameters.AddWithValue("$id", id);
+        return command.ExecuteNonQuery() > 0;
+    }
+
+    /// <summary>
+    /// 加档行的分轨码率落库：probed=false 时只销防抖戳（留着下次重探），探不到值也置 probed=true 不再扰盘。
+    /// measuredCodec 写的是「盘上这个文件实测是什么编码」，与 codec（点单值）分家，COALESCE 只补不擦。
+    /// </summary>
+    public void SetCodecStreams(
+        long id,
+        int? videoKbps,
+        int? audioKbps,
+        bool probed,
+        string? measuredCodec = null,
+        int? width = null,
+        int? height = null,
+        double? fps = null,
+        string? audioCodec = null)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE video_codecs
+            SET video_kbps = COALESCE($vkbps, video_kbps),
+                audio_kbps = COALESCE($akbps, audio_kbps),
+                measured_codec = COALESCE($measured, measured_codec),
+                width = COALESCE($width, width),
+                height = COALESCE($height, height),
+                fps = COALESCE($fps, fps),
+                audio_codec = COALESCE($audioCodec, audio_codec),
+                stream_probed = $probed,
+                shape_probed = $probed
+            WHERE id = $id;
+            """;
+        command.Parameters.AddWithValue("$vkbps", (object?)videoKbps ?? DBNull.Value);
+        command.Parameters.AddWithValue("$akbps", (object?)audioKbps ?? DBNull.Value);
+        command.Parameters.AddWithValue("$measured", (object?)measuredCodec ?? DBNull.Value);
+        command.Parameters.AddWithValue("$width", (object?)width ?? DBNull.Value);
+        command.Parameters.AddWithValue("$height", (object?)height ?? DBNull.Value);
+        command.Parameters.AddWithValue("$fps", (object?)fps ?? DBNull.Value);
+        command.Parameters.AddWithValue("$audioCodec", (object?)audioCodec ?? DBNull.Value);
+        command.Parameters.AddWithValue("$probed", probed ? 1 : (object)DBNull.Value);
+        command.Parameters.AddWithValue("$id", id);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 这一稿里「正片已落盘但还没探过分轨码率」的分 P：到站归档那一刻给 worker 取一次。
+    /// 存量没人探的行另有补员兼顶：见 <see cref="GetPagesAwaitingStreamProbeBackfill"/>。
+    /// </summary>
+    public IReadOnlyList<(int PageIdx, string Rel)> GetPagesAwaitingStreamProbe(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT idx, local_video_path
+            FROM pages
+            WHERE video_id = $id AND local_video_path IS NOT NULL
+              AND (stream_probed IS NULL OR shape_probed IS NULL)
+            ORDER BY idx;
+            """;
+        command.Parameters.AddWithValue("$id", videoId);
+
+        using var reader = command.ExecuteReader();
+        var list = new List<(int, string)>();
+        while (reader.Read())
+        {
+            list.Add((reader.GetInt32(0), reader.GetString(1)));
+        }
+
+        return list;
+    }
+
+    /// <summary>补员巡视用：全库「正片已落盘但从没探过分轨码率」的行（探过的都盖了 stream_probed 戳）。
+    /// 新货优先，每轮封顶免得扰盘风暴。</summary>
+    public IReadOnlyList<(long VideoId, int PageIdx, string Rel)> GetPagesAwaitingStreamProbeBackfill(int limit)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT video_id, idx, local_video_path
+            FROM pages
+            WHERE local_video_path IS NOT NULL AND local_video_path != ''
+              AND (stream_probed IS NULL OR shape_probed IS NULL)
+            ORDER BY video_id DESC
+            LIMIT $n;
+            """;
+        command.Parameters.AddWithValue("$n", limit);
+
+        using var reader = command.ExecuteReader();
+        var list = new List<(long, int, string)>();
+        while (reader.Read())
+        {
+            list.Add((reader.GetInt64(0), reader.GetInt32(1), reader.GetString(2)));
+        }
+
+        return list;
+    }
+
+    /// <summary>补员巡视用：全库「加档已定档但从没探过分轨码率」的行（同样靠 stream_probed 防抖）。</summary>
+    public IReadOnlyList<(long Id, long VideoId, int PageIdx, string Codec, string Rel)> GetCodecsAwaitingStreamProbeBackfill(int limit)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, video_id, page_idx, codec, rel_path
+            FROM video_codecs
+            WHERE rel_path IS NOT NULL AND rel_path != ''
+              AND (stream_probed IS NULL OR shape_probed IS NULL)
+            ORDER BY id DESC
+            LIMIT $n;
+            """;
+        command.Parameters.AddWithValue("$n", limit);
+
+        using var reader = command.ExecuteReader();
+        var list = new List<(long, long, int, string, string)>();
+        while (reader.Read())
+        {
+            list.Add((reader.GetInt64(0), reader.GetInt64(1), reader.GetInt32(2), reader.GetString(3), reader.GetString(4)));
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 主版本的分轨实测落库（到站那一刻由 worker 探完写）：codec 只在探到时补（COALESCE，
+    /// 不拿 null 去擦已有的编码名——播放页版本区块拿它决定整块显不显），双轨码率照写，
+    /// 无论如何都盖 stream_probed=1：一个文件只扰盘一趟，探不到就留 null。
+    /// </summary>
+    public void SetPageStreams(
+        long videoId,
+        int pageIdx,
+        string? codec,
+        int? videoKbps,
+        int? audioKbps,
+        int? width = null,
+        int? height = null,
+        double? fps = null,
+        string? audioCodec = null)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE pages
+            SET codec = COALESCE($codec, codec),
+                video_kbps = COALESCE($vkbps, video_kbps),
+                audio_kbps = COALESCE($akbps, audio_kbps),
+                width = COALESCE($width, width),
+                height = COALESCE($height, height),
+                fps = COALESCE($fps, fps),
+                audio_codec = COALESCE($audioCodec, audio_codec),
+                stream_probed = 1,
+                shape_probed = 1
+            WHERE video_id = $id AND idx = $idx;
+            """;
+        command.Parameters.AddWithValue("$codec", (object?)codec ?? DBNull.Value);
+        command.Parameters.AddWithValue("$vkbps", (object?)videoKbps ?? DBNull.Value);
+        command.Parameters.AddWithValue("$akbps", (object?)audioKbps ?? DBNull.Value);
+        command.Parameters.AddWithValue("$width", (object?)width ?? DBNull.Value);
+        command.Parameters.AddWithValue("$height", (object?)height ?? DBNull.Value);
+        command.Parameters.AddWithValue("$fps", (object?)fps ?? DBNull.Value);
+        command.Parameters.AddWithValue("$audioCodec", (object?)audioCodec ?? DBNull.Value);
+        command.Parameters.AddWithValue("$id", videoId);
+        command.Parameters.AddWithValue("$idx", pageIdx);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 引擎实发画质档真值落库（到站那一刻由同步员从在途任务 Metadata 拄下来）：
+    /// COALESCE 只补不擦——引擎报过的真相比后补的实测硬，但也不拿 null 去擦已有真值。
+    /// 一份稿全部 P 同档（提交时整稿一个清晰度选项），逐页同值盖。
+    /// </summary>
+    public void SetPageQuality(long videoId, int? qualityId, string? qualityName, int? audioQualityId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE pages
+            SET quality_id = COALESCE($qid, quality_id),
+                quality_name = COALESCE($qname, quality_name),
+                audio_quality_id = COALESCE($aqid, audio_quality_id)
+            WHERE video_id = $id;
+            """;
+        command.Parameters.AddWithValue("$qid", (object?)qualityId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$qname", (object?)qualityName ?? DBNull.Value);
+        command.Parameters.AddWithValue("$aqid", (object?)audioQualityId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$id", videoId);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>加档行的引擎实发规格落库：与 <see cref="SetPageQuality"/> 同一口径，COALESCE 只补不擦。</summary>
+    public void SetCodecQuality(long id, int? qualityId, string? qualityName, int? audioQualityId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE video_codecs
+            SET quality_id = COALESCE($qid, quality_id),
+                quality_name = COALESCE($qname, quality_name),
+                audio_quality_id = COALESCE($aqid, audio_quality_id)
+            WHERE id = $id;
+            """;
+        command.Parameters.AddWithValue("$qid", (object?)qualityId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$qname", (object?)qualityName ?? DBNull.Value);
+        command.Parameters.AddWithValue("$aqid", (object?)audioQualityId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$id", id);
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 站长室队列快照用的加档行：在途的加档账都在 video_codecs，不在 videos，
+    /// 原来那块面板只认 videos 表、所以一直看不见它们。waiting=true 是「判重让路、排队等回炉」，
+    /// measured 是盘上实测编码（还没探过给 null）——与点单的 codec 呲牙时一眼就能看出来。
+    /// 尾巴四个字段给面板透实况：让路次数/让路缘由/引擎任务清单/回炉倒计时（元组超 7 元自动嵌进 Rest）。
+    /// </summary>
+    public IReadOnlyList<(long VideoId, string Bvid, string? Title, string Codec, int PageIdx, bool Waiting, string? Measured, (int RetryCount, string? LastError, string? TaskIdsJson, DateTimeOffset? RetryAtUtc) Extra)> GetCodecQueueRows()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT c.video_id, v.bvid, v.title, c.codec, c.page_idx, c.retry_at_utc, c.measured_codec,
+                   c.retry_count, c.last_error, c.engine_task_ids
+            FROM video_codecs c
+            JOIN videos v ON v.id = c.video_id
+            WHERE c.status = 'Downloading'
+            ORDER BY c.video_id, c.page_idx, c.codec;
+            """;
+
+        using var reader = command.ExecuteReader();
+        var list = new List<(long, string, string?, string, int, bool, string?, (int, string?, string?, DateTimeOffset?))>();
+        while (reader.Read())
+        {
+            DateTimeOffset? retryAt = null;
+            if (!reader.IsDBNull(5)
+                && DateTimeOffset.TryParse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out var parsed))
+            {
+                retryAt = parsed;
+            }
+
+            list.Add((
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetString(3),
+                reader.GetInt32(4),
+                !reader.IsDBNull(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6),
+                (reader.IsDBNull(7) ? 0 : reader.GetInt32(7),
+                    reader.IsDBNull(8) ? null : reader.GetString(8),
+                    reader.IsDBNull(9) ? null : reader.GetString(9),
+                    retryAt)));
+        }
+
+        return list;
+    }
+
+    /// <summary>全站台账引用过的引擎任务清单（不分相位）：开机孤儿清扫用——
+    /// 引擎判重不看相位，没主的人（重试点单时行里旧任务号被清过）躺在在途表里
+    /// 会被当成「未完成的同名任务」拦掉同视频的重试点单。</summary>
+    public IReadOnlyList<string> GetReferencedEngineTaskIds()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT engine_task_ids FROM videos WHERE engine_task_ids IS NOT NULL
+            UNION
+            SELECT engine_task_ids FROM video_codecs WHERE engine_task_ids IS NOT NULL;
+            """;
+
+        using var reader = command.ExecuteReader();
+        var list = new List<string>();
+        while (reader.Read())
+        {
+            list.Add(reader.GetString(0));
         }
 
         return list;
@@ -2098,7 +2640,10 @@ public sealed partial class StationDb
     }
 
     /// <summary>
-    /// 接下来播放：同 UP 主优先、新入站补齐，排除自身；列形状与列表一致，前端卡片直接复用。
+    /// 接下来播放：同 UP 主优先、层内随机抽取，排除自身；列形状与列表一致，前端卡片直接复用。
+    /// 层内为什么走 RANDOM() 而不是 v.id DESC：馆藏里有 143 支同 UP 主稿件，按 id 倒序取 8 支就永远是
+    /// 最新那 8 支，刷新多少次都是同几张脸，本地分站最该干的「把沉在库底的旧稿递到手边」一件没干。
+    /// 只打乱层内顺序，同 UP 优先这一层留着（一屏里掺进不相干的 UP 反而不像「接下来播放」）。
     /// </summary>
     public List<VideoEntry> GetRelatedVideos(long videoId, int take = 8)
     {
@@ -2118,7 +2663,7 @@ public sealed partial class StationDb
             ORDER BY (CASE WHEN $mid IS NOT NULL AND m.up_mid = $mid THEN 0
                            WHEN $up IS NOT NULL AND m.up_name = $up THEN 0
                            ELSE 1 END),
-                     v.id DESC
+                     RANDOM()
             LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$status", VideoStatus.Arrived.ToString());
@@ -2364,10 +2909,10 @@ public sealed partial class StationDb
             upFans ??= sharedFace.Fans;
         }
 
-        var pages = new List<(int Index, string Title, long? Cid, string? Duration, string? VideoRel, string? Codec)>();
+        var pages = new List<(int Index, string Title, long? Cid, string? Duration, string? VideoRel, string? Codec, int? VideoKbps, int? AudioKbps, int? Height, double? Fps, string? AudioCodec, string? QualityName, int? AudioQualityId)>();
         using (var pageCmd = connection.CreateCommand())
         {
-            pageCmd.CommandText = "SELECT idx, title, cid, duration_text, local_video_path, codec FROM pages WHERE video_id = $id ORDER BY idx;";
+            pageCmd.CommandText = "SELECT idx, title, cid, duration_text, local_video_path, codec, video_kbps, audio_kbps, height, fps, audio_codec, quality_name, audio_quality_id FROM pages WHERE video_id = $id ORDER BY idx;";
             pageCmd.Parameters.AddWithValue("$id", id);
             using var reader = pageCmd.ExecuteReader();
             while (reader.Read())
@@ -2375,8 +2920,18 @@ public sealed partial class StationDb
                 var idx = reader.GetInt32(0);
                 var videoRel = reader.IsDBNull(4) ? null : reader.GetString(4);
                 var codec = reader.IsDBNull(5) ? null : reader.GetString(5);
+                int? videoKbps = reader.IsDBNull(6) ? null : reader.GetInt32(6);
+                int? audioKbps = reader.IsDBNull(7) ? null : reader.GetInt32(7);
+                int? height = reader.IsDBNull(8) ? null : reader.GetInt32(8);
+                double? fps = reader.IsDBNull(9) ? null : reader.GetDouble(9);
+                string? audioCodec = reader.IsDBNull(10) ? null : reader.GetString(10);
+                string? qualityName = reader.IsDBNull(11) ? null : reader.GetString(11);
+                int? audioQualityId = reader.IsDBNull(12) ? null : reader.GetInt32(12);
 
-                // 懒测：老档案或入站时未探到的，首次打开时 ffprobe 实测一次并回填，此后永不再探。
+                // 老档案的编码名懒测（仓库原有行为，原语义不动）：只补 codec 一个字段。
+                // 播放页版本区块拿 props.page.codec 决定整块显不显，这条腿不能拆；
+                // 但分轨码率不在这里探——开观看页是热路径，不为码率起 ffprobe，
+                // 码率只从写入侧来（到站/定档那一刻），探不到就 null，前端按设计省略码率段。
                 if (codec is null && videoRel is not null)
                 {
                     codec = Ffprobe.ProbeVideoCodec(Path.Combine(_paths.Videos, videoRel));
@@ -2397,7 +2952,14 @@ public sealed partial class StationDb
                     reader.IsDBNull(2) ? null : reader.GetInt64(2),
                     reader.IsDBNull(3) ? null : reader.GetString(3),
                     videoRel,
-                    codec));
+                    codec,
+                    videoKbps,
+                    audioKbps,
+                    height,
+                    fps,
+                    audioCodec,
+                    qualityName,
+                    audioQualityId));
             }
         }
 
@@ -2416,20 +2978,29 @@ public sealed partial class StationDb
             }
         }
 
-        var codecRows = new List<(int PageIdx, string Codec, string Status, string? Rel, string? Err)>();
+        var codecRows = new List<(int PageIdx, string Codec, string Status, string? Rel, string? Err, int? VideoKbps, int? AudioKbps, int? Height, double? Fps, string? AudioCodec, string? QualityName, int? AudioQualityId)>();
         using (var codecCmd = connection.CreateCommand())
         {
-            codecCmd.CommandText = "SELECT page_idx, codec, status, rel_path, last_error FROM video_codecs WHERE video_id = $id;";
+            codecCmd.CommandText = "SELECT page_idx, codec, status, rel_path, last_error, video_kbps, audio_kbps, height, fps, audio_codec, quality_name, audio_quality_id FROM video_codecs WHERE video_id = $id;";
             codecCmd.Parameters.AddWithValue("$id", id);
             using var reader = codecCmd.ExecuteReader();
             while (reader.Read())
             {
+                // 码率只吃写入侧（同步员定档那一刻探完落库），读侧不补探：这条是每次开观看页都走的热路径。
+                // 历史遗留没探过的就是 null：不回填、不自愈（存量馆藏会整体重新下，不值得扰盘）。
                 codecRows.Add((
                     reader.GetInt32(0),
                     reader.GetString(1),
                     reader.GetString(2),
                     reader.IsDBNull(3) ? null : reader.GetString(3),
-                    reader.IsDBNull(4) ? null : reader.GetString(4)));
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                    reader.IsDBNull(6) ? null : reader.GetInt32(6),
+                    reader.IsDBNull(7) ? null : reader.GetInt32(7),
+                    reader.IsDBNull(8) ? null : reader.GetDouble(8),
+                    reader.IsDBNull(9) ? null : reader.GetString(9),
+                    reader.IsDBNull(10) ? null : reader.GetString(10),
+                    reader.IsDBNull(11) ? null : reader.GetInt32(11)));
             }
         }
 
@@ -2449,9 +3020,24 @@ public sealed partial class StationDb
                 c.Codec,
                 c.Status,
                 c.Rel is { } rel ? "/media/" + rel : null,
-                SizeOfVideoFile(c.Rel))).ToList(),
+                SizeOfVideoFile(c.Rel),
+                c.Err,
+                c.VideoKbps,
+                c.AudioKbps,
+                AudioCodec: c.AudioCodec,
+                Fps: c.Fps,
+                Height: c.Height,
+                QualityName: c.QualityName,
+                AudioQualityId: c.AudioQualityId)).ToList(),
             p.Codec,
-            SizeOfVideoFile(p.VideoRel)
+            SizeOfVideoFile(p.VideoRel),
+            p.VideoKbps,
+            p.AudioKbps,
+            AudioCodec: p.AudioCodec,
+            Fps: p.Fps,
+            Height: p.Height,
+            QualityName: p.QualityName,
+            AudioQualityId: p.AudioQualityId
         )).ToList();
 
         return new WatchData(

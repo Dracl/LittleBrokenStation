@@ -24,6 +24,10 @@ public sealed class DownloadOrchestrator : IDownloadRuntime
     private readonly IDownloadTaskSchedulerService _tasks;
     private readonly int _workerCount;
     private readonly ILogger<DownloadOrchestrator> _logger;
+
+    // LBS fork: worker 常驻循环不继承提交链的 AsyncLocal（B 站 cookie 按调用链现取），
+    // 每个任务的执行包进宿主给的环境（采集号上下文）才能带着凭据请求。
+    private readonly IDownloadWorkerAmbient _workerAmbient;
     private readonly ConcurrentDictionary<DownloadTaskId, byte> _scheduledTasks = new();
     private readonly ConcurrentDictionary<DownloadTaskId, ActiveDownloadExecution> _activeExecutions = new();
     private readonly Lock _schedulerSync = new();
@@ -46,13 +50,15 @@ public sealed class DownloadOrchestrator : IDownloadRuntime
         DownloadTaskStateWriter stateWriter,
         IDownloadTaskSchedulerService tasks,
         int workerCount,
-        ILogger<DownloadOrchestrator> logger)
+        ILogger<DownloadOrchestrator> logger,
+        IDownloadWorkerAmbient? workerAmbient = null)
     {
         _executor = executor ?? throw new ArgumentNullException(nameof(executor));
         _stateWriter = stateWriter ?? throw new ArgumentNullException(nameof(stateWriter));
         _tasks = tasks ?? throw new ArgumentNullException(nameof(tasks));
         _workerCount = Math.Max(1, workerCount);
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _workerAmbient = workerAmbient ?? NullDownloadWorkerAmbient.Instance;
     }
 
     public Task StartAsync(CancellationToken cancellationToken = default)
@@ -488,8 +494,10 @@ public sealed class DownloadOrchestrator : IDownloadRuntime
 
                     await _stateWriter.StartAsync(taskId, execution.Token).ConfigureAwait(false);
                     execution.ReportStarted();
-                    await _executor.ExecuteAsync(taskId, execution.Token).ConfigureAwait(false);
-                }
+                    // LBS fork: 执行包进宿主环境（采集号）；不带环境直跑时钩子原样直通。
+                    await _workerAmbient
+                        .RunAsync(() => _executor.ExecuteAsync(taskId, execution.Token))
+                        .ConfigureAwait(false);                }
                 catch (OperationCanceledException) when (shutdownToken.IsCancellationRequested)
                 {
                     return;
@@ -513,6 +521,16 @@ public sealed class DownloadOrchestrator : IDownloadRuntime
                     _logger.LogErrorMessage("Download worker failed.", exception);
                     await TryMarkFailedAsync(taskId).ConfigureAwait(false);
                 }
+                // LBS fork: 白名单外的异常（比如无账号 LbsNoAccountException）以前会直接炸掉
+                // worker 循环本体、无人 await 也无日志，任务永久停在 Downloading——尸检都没材料。
+                // 兜底一律记 Failed + 留日志，宁可错杀不让僵尸过夜；worker 本体永不暴卒。
+#pragma warning disable CA1031 // 兜底 catch 是有意为之：worker 不许被任何异常静默炸死
+                catch (Exception exception)
+                {
+                    _logger.LogErrorMessage("Download worker failed with an unlisted exception.", exception);
+                    await TryMarkFailedAsync(taskId).ConfigureAwait(false);
+                }
+#pragma warning restore CA1031
                 finally
                 {
                     try

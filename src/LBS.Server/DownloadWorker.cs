@@ -1,6 +1,9 @@
 using System.Threading.Channels;
+using DownKyi.Application.Downloads;
 using DownKyi.Application.FileName;
 using DownKyi.Application.Settings;
+using DownKyi.Domain.Downloads;
+using DownKyi.Services.Download;
 using DownKyi.Services.Download.Headless;
 using LBS.Domain;
 using LBS.Engine;
@@ -50,6 +53,9 @@ public sealed class DownloadWorker(
     LbsCollectPolicy collect,
     DownloadPauseBoard board,
     MediaReconcileGate mediaGate,
+    IDownloadTaskLookup lookup,
+    IDownloadTaskStateService state,
+    IDownloadTaskQueue taskQueue,
     ILogger<DownloadWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -71,7 +77,57 @@ public sealed class DownloadWorker(
             await queue.EnqueueAsync(videoId, stoppingToken);
         }
 
-        logger.LogInformation("后台提交 Worker 到站，接管 {Recovered} 条待提交视频，缺件回炉 {Returned} 条（换库开机={Swapped}）", recovered.Count, returned.Count, mediaGate.ReconcileOnBoot);
+        // 加档开机重投：加档行活在内存 channel 里，进程挂掉时遗留的 Downloading 行从此没人捾——
+        // 同步员只对空任务行挂着等，回炉只认租约到期行。开机把不让路的行全部重新入队走一遍提交链：
+        // 没任务的行直接重提；有任务的行会被引擎判重让路排队，看门狗与回炉都有出口，不留永久僵尸。
+        var codecRecovered = db.GetCodecQueueRows()
+            .Where(r => !r.Waiting)
+            .Select(r => (r.VideoId, r.Codec))
+            .Distinct()
+            .ToList();
+        foreach (var (videoId, codec) in codecRecovered)
+        {
+            await queue.EnqueueCodecAsync(videoId, codec, stoppingToken);
+        }
+
+        // 引擎孤儿任务清扫：引擎判重不看相位，躺在在途表里的死任务会把同视频的重试点单拦在让路循环
+        // （锁R&B 事故：死任务的行重试点单时清了旧任务号，尸首成了无主孤魂，台账照不到）。
+        // 开机点名引擎全部在途任务：站里台账没署名的就是孤儿，逐枚打断队列→挂起→销账。
+        // 摆在重投之前：此时绝无在途提交，不会误杀刚交账的新任务。
+        var referenced = new HashSet<string>(
+            StatusSyncWorker.ParseTaskIds(string.Join("", db.GetReferencedEngineTaskIds().SelectMany(json => StatusSyncWorker.ParseTaskIds(json).Select(id => $"\"{id}\"")))),
+            StringComparer.OrdinalIgnoreCase);
+        var swept = 0;
+        foreach (var orphan in await lookup.GetUnfinishedAsync(stoppingToken))
+        {
+            if (referenced.Contains(orphan.Id.Value))
+            {
+                continue;
+            }
+
+            try
+            {
+                await taskQueue.CancelAsync(orphan.Id);
+            }
+            catch (Exception)
+            {
+                // 本就没在跑，取消不掉无妨
+            }
+
+            try
+            {
+                await state.CancelAsync(orphan.Id, stoppingToken);
+                await state.DeleteAsync(orphan.Id, stoppingToken);
+                swept++;
+                logger.LogWarning("开机销掉无主引擎任务 {TaskId}：台账无署名，留着会拦同视频重单", orphan.Id.Value);
+            }
+            catch (Exception)
+            {
+                // 销不动留给下轮开机/看门狗，不拦开站
+            }
+        }
+
+        logger.LogInformation("后台提交 Worker 到站，接管 {Recovered} 条待提交视频，加档重投 {CodecRecovered} 组，缺件回炉 {Returned} 条，Failed 残账销 {Swept} 枚（换库开机={Swapped}）", recovered.Count, codecRecovered.Count, returned.Count, swept, mediaGate.ReconcileOnBoot);
 
         var mainLoop = Task.Run(() => ConsumeMainAsync(stoppingToken), stoppingToken);
         var codecLoop = Task.Run(() => ConsumeCodecAsync(stoppingToken), stoppingToken);
@@ -116,6 +172,9 @@ public sealed class DownloadWorker(
         // 加档同样受暂停板管。
         await board.WaitIfPausedAsync(stoppingToken);
 
+        // 本轮真要提交了：销掉排队标记（站长室那块拿它显示「排队中」），retry_count 留着算退避。
+        db.ClearCodecRetry(videoId, codec);
+
         var codecId = CodecIdOf(codec);
         if (codecId is null)
         {
@@ -150,6 +209,15 @@ public sealed class DownloadWorker(
 
             if (result.Status != HeadlessSubmissionStatus.Enqueued)
             {
+                // 引擎判重键不含编码（DuplicateKey.From(cid, NeedDownloadContent)）：同稿并发加两个编码，
+                // 后到的必被判「已存在未完成的同名任务」。这不是失败，是让路——留在途挂个到期时间，
+                // 等同步员到期回炉（前头那档一下完，重试就能真入队），而不是一票否决让站长重点。
+                if (IsInFlightDuplicate(result))
+                {
+                    DeferCodecRows(videoId, codec, JoinReasons(result));
+                    return;
+                }
+
                 FailCodecRows(videoId, codec, JoinReasons(result));
                 return;
             }
@@ -202,6 +270,36 @@ public sealed class DownloadWorker(
         }
     }
 
+    // 撞车让路的退避：30s × 已经让过的趟数，5 分钟封顶；连让 40 趟（前头那档不会走了）才按原路判失败。
+    private const int CodecRetryGiveUp = 40;
+    private const double CodecRetryStepSec = 30;
+    private const double CodecRetryCapSec = 300;
+
+    /// <summary>引擎的「在途重复工」拒绝：SkipReasons 里那句「已存在未完成的同名任务」，该让路不该判死。</summary>
+    private static bool IsInFlightDuplicate(HeadlessSubmissionResult result) =>
+        result.SkipReasons.Any(reason => reason.Contains("未完成的同名任务", StringComparison.Ordinal));
+
+    /// <summary>整批加档行让路：逐行按让路次数递增退避，踩满上限才标失败（带上引擎给的原因）。</summary>
+    private void DeferCodecRows(long videoId, string codec, string reason)
+    {
+        foreach (var row in db.GetCodecVersions(videoId)
+                     .Where(row => row.Status == "Downloading" && string.Equals(row.Codec, codec, StringComparison.Ordinal)))
+        {
+            if (row.RetryCount >= CodecRetryGiveUp)
+            {
+                db.MarkCodecFailed(row.Id, $"{reason}（已让路重试 {row.RetryCount} 次仍未放行，放弃）");
+                logger.LogWarning("编码加档 {VideoId}/P{Page}/{Codec} 让路 {Retries} 次仍被判重，判失败：{Reason}",
+                    videoId, row.PageIdx, codec, row.RetryCount, reason);
+                continue;
+            }
+
+            var backoff = TimeSpan.FromSeconds(Math.Min(CodecRetryStepSec * (row.RetryCount + 1), CodecRetryCapSec));
+            db.MarkCodecDeferred(row.Id, DateTimeOffset.UtcNow + backoff, reason);
+            logger.LogInformation("编码加档 {VideoId}/P{Page}/{Codec} 撞车让路，{Backoff} 秒后回炉（第 {Retries} 次）：{Reason}",
+                videoId, row.PageIdx, codec, (int)backoff.TotalSeconds, row.RetryCount + 1, reason);
+        }
+    }
+
     private async Task SubmitAsync(long videoId, CancellationToken stoppingToken)
     {
         // 暂停板落下时先闸住：排队可以等，提交不能偷跑。
@@ -216,7 +314,12 @@ public sealed class DownloadWorker(
         logger.LogInformation("提交进站任务 videoId={VideoId} url={Url}", videoId, candidate.Url);
         try
         {
-            var options = LbsSubmissionProfile.ForStation(paths, settingsStore.Current);
+            var options = LbsSubmissionProfile.ForStation(paths, settingsStore.Current) with
+            {
+                // 站长按过「销档重下」才置位：引擎的已完成记录只对这馆让路（判重键 = (cid, 需要下载的内容)，
+                // 不销它的话重投会在门口被原样打回 Skipped）。平时递 false，保持原有「下过就不重下」行为。
+                RedownloadCompleted = candidate.ForceRedownload,
+            };
 
             // 谁的稿谁出号：投稿人自己的活号是唯一来源，分站已无站级兑底登录态。
             // 投稿口那道闸门（SubmissionGate）已经挡过一次「素净席位」，这里兑的是

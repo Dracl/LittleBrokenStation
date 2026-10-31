@@ -1,4 +1,5 @@
-// 轻量 mp4 容器探测：Range 读头尾，解析 moov/trak，算出视频/音频分轨平均码率。
+// 轻量 mp4 容器探测：Range 读头尾，解析 moov/trak，一次取样同时算出分轨平均码率与真实编码（stsd 的 fourcc）。
+// 编码必须由容器说了算：canPlayType 问的是「浏览器放不放得了」，拿它猜编码会把 HEVC 也说成 H.264。
 // 不引任何依赖；moov 恰好跨在取样区外解析不出时返回 null，调用方如实降级「—」。
 
 async function getRange(url, from, to) {
@@ -85,6 +86,43 @@ function readMdhd(buf) {
   return { timescale: dv.getUint32(12), duration: dv.getUint32(16) }
 }
 
+// 常见 sample entry 的人话标签；没列出的 fourcc 原样当标签用，不硬套一个像样的名字骗人。
+const FOURCC_LABELS = {
+  avc1: 'H.264',
+  avc3: 'H.264',
+  hvc1: 'HEVC',
+  hev1: 'HEVC',
+  av01: 'AV1',
+  vp09: 'VP9',
+  mp4a: 'AAC',
+  'fLaC': 'FLAC',
+  'ac-3': 'AC-3',
+  'ec-3': 'E-AC-3',
+  opus: 'Opus',
+}
+
+function labelOf(fourcc) {
+  return fourcc ? FOURCC_LABELS[fourcc] ?? fourcc : null
+}
+
+function isFourcc(s) {
+  return !!s && [...s].every((ch) => ch.codePointAt(0) >= 0x20 && ch.codePointAt(0) <= 0x7e)
+}
+
+// stsd 内容区：version+flags(4) + entry_count(4)，之后每个 sample entry 头 4 字节 size、4 字节 format。
+// 只取首个 sample entry（一条 trak 一个编码），取样恰好把 entry 截断就当没探到，不猜。
+function readStsdFormat(buf) {
+  const dv = buf instanceof DataView ? buf : new DataView(buf)
+  let off = 8
+  while (off + 8 <= dv.byteLength) {
+    const size = dv.getUint32(off)
+    if (size < 8 || off + size > dv.byteLength) return null
+    const format = readType(dv, off + 4)
+    return isFourcc(format) ? format : null
+  }
+  return null
+}
+
 function readStsz(buf) {
   const dv = new DataView(buf)
   const uniform = dv.getUint32(4)
@@ -97,46 +135,70 @@ function readStsz(buf) {
   return sum
 }
 
-// 返回 { video: Kbps|null, audio: Kbps|null }，全空返回 null。
-export async function probeTrackBitrates(url, totalSize) {
+// 在同一份 moov 上把两件事一次办完：码率靠 stsz 累加，编码靠 stsd 的 sample entry fourcc。
+// 两者各自成立 —— 缺 stsz 也能报编码，缺 stsd 也能报码率，互不牵连。
+function probeTracks(moov) {
+  const out = { videoKbps: null, audioKbps: null, videoFourcc: null, audioFourcc: null }
+  forEachBox(moov, (type, trak) => {
+    if (type !== 'trak') return
+    let handler = null
+    let timescale = 0
+    let duration = 0
+    let bytes = null
+    let format = null
+    forEachBox(trak, (t2, mdia) => {
+      if (t2 !== 'mdia') return
+      forEachBox(mdia, (t3, body) => {
+        if (t3 === 'hdlr') handler = readHandler(body)
+        if (t3 === 'mdhd') {
+          const m = readMdhd(body)
+          if (m) {
+            timescale = m.timescale
+            duration = m.duration
+          }
+        }
+        if (t3 === 'minf') {
+          forEachBox(body, (t4, stbl) => {
+            if (t4 !== 'stbl') return
+            forEachBox(stbl, (t5, body5) => {
+              if (t5 === 'stsz') bytes = readStsz(body5)
+              if (t5 === 'stsd' && !format) format = readStsdFormat(body5)
+            })
+          })
+        }
+      })
+    })
+    if (handler !== 'vide' && handler !== 'soun') return
+    const kbps = timescale && duration > 0 && bytes != null ? Math.round((bytes * 8) / (duration / timescale) / 1000) : null
+    if (handler === 'vide') {
+      if (kbps != null) out.videoKbps = kbps
+      if (format) out.videoFourcc = format
+    } else {
+      if (kbps != null) out.audioKbps = kbps
+      if (format) out.audioFourcc = format
+    }
+  })
+  return out
+}
+
+// 返回 { videoKbps, audioKbps, videoFourcc, videoLabel, audioFourcc, audioLabel }（拿不到的字段为 null），
+// 全探不出返回 null。totalSize 由调用方从 HEAD 的 content-length 提供，没有就只取样头部。
+export async function probeMp4(url, totalSize) {
   try {
     const moov = await headAndTail(url, totalSize)
     if (!moov) return null
-    const out = { video: null, audio: null }
-    forEachBox(moov, (type, trak) => {
-      if (type !== 'trak') return
-      let handler = null
-      let timescale = 0
-      let duration = 0
-      let bytes = null
-      forEachBox(trak, (t2, mdia) => {
-        if (t2 !== 'mdia') return
-        forEachBox(mdia, (t3, body) => {
-          if (t3 === 'hdlr') handler = readHandler(body)
-          if (t3 === 'mdhd') {
-            const m = readMdhd(body)
-            if (m) {
-              timescale = m.timescale
-              duration = m.duration
-            }
-          }
-          if (t3 === 'minf') {
-            forEachBox(body, (t4, stbl) => {
-              if (t4 !== 'stbl') return
-              forEachBox(stbl, (t5, stsz) => {
-                if (t5 === 'stsz') bytes = readStsz(stsz)
-              })
-            })
-          }
-        })
-      })
-      if (!handler || !timescale || duration <= 0 || bytes == null) return
-      const kbps = Math.round((bytes * 8) / (duration / timescale) / 1000)
-      if (handler === 'vide') out.video = kbps
-      else if (handler === 'soun') out.audio = kbps
-    })
-    return out.video || out.audio ? out : null
+    const t = probeTracks(moov)
+    if (t.videoKbps == null && t.audioKbps == null && !t.videoFourcc && !t.audioFourcc) return null
+    return { ...t, videoLabel: labelOf(t.videoFourcc), audioLabel: labelOf(t.audioFourcc) }
   } catch {
     return null
   }
+}
+
+// 老签名留着：只关心码率的调用方不必跟着改。内部转调 probeMp4，同一份取样、同样一次 Range。
+export async function probeTrackBitrates(url, totalSize) {
+  const r = await probeMp4(url, totalSize)
+  if (!r) return null
+  const out = { video: r.videoKbps, audio: r.audioKbps }
+  return out.video || out.audio ? out : null
 }

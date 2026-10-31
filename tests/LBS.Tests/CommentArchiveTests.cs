@@ -183,6 +183,60 @@ public sealed class CommentArchiveTests : IDisposable
     }
 
     [Fact]
+    public void 表情元数据_没给url的那批也留档_回填时有把手()
+    {
+        // B 站对 UP 专属表情停发的现场形状：能给 key 的里面，有的带 url、有的 url 为空，没 key 的根本不会出现在这里。
+        var raw = Reply(1, "甲", "可爱 [UP_1802654492_打call][UP_1802654492_得意]");
+        raw.Content!.Emote = new Dictionary<string, ReplyEmote>
+        {
+            ["[UP_1802654492_打call]"] = new ReplyEmote { Url = "https://i0.hdslb.com/bfs/garb/dacall.png", Id = 113045, PackageId = 1593, Type = 10, JumpTitle = "打call" },
+            ["[UP_1802654492_得意]"] = new ReplyEmote { Url = "", Id = 113051, PackageId = 1593, Type = 10, JumpTitle = "得意" },
+            ["[UP_1802654492_空空]"] = new ReplyEmote(), // 四字段全空的占位条目：不收，别占坑
+        };
+
+        var snap = LbsCommentArchiver.MapSnapshot(
+            1, "BVx", null, [raw],
+            emoteMap: new Dictionary<string, string> { ["[UP_1802654492_打call]"] = "/emotes/dacall.png" },
+            emoteMeta: LbsCommentArchiver.CollectEmoteMeta(new[] { raw }));
+
+        // 落盘只认有 url 的，留档要连没 url 的一起收——缺图那批的包号才是日后回填的唯一把手。
+        Assert.Equal("/emotes/dacall.png", snap.Emotes!["[UP_1802654492_打call]"]);
+        Assert.False(snap.Emotes!.ContainsKey("[UP_1802654492_得意]"));
+        Assert.Equal(2, snap.EmoteMeta!.Count);
+        Assert.Equal(1593, snap.EmoteMeta["[UP_1802654492_得意]"].PackageId);
+        Assert.Equal("得意", snap.EmoteMeta["[UP_1802654492_得意]"].JumpTitle);
+        Assert.Equal(10, snap.EmoteMeta["[UP_1802654492_打call]"].Type);
+
+        // 落盘 → 回读 → 并楼，元数据一路不丢（前端失效胶囊靠 jumpTitle 念对名字）。
+        var file = Path.Combine(_videosDir, "meta", "em.comments.json");
+        CommentSnapshotOps.Save(file, snap);
+        var loaded = CommentSnapshotOps.Load(file)!;
+        Assert.Equal(1593, loaded.EmoteMeta!["[UP_1802654492_得意]"].PackageId);
+        var (merged, _) = CommentSnapshotOps.MergeSubs(loaded, 1, [], 1);
+        Assert.Equal("得意", merged.EmoteMeta!["[UP_1802654492_得意]"].JumpTitle);
+    }
+
+    [Fact]
+    public void 老快照没emoteMeta键_回读不炸_字段为空()
+    {
+        // 存量馆藏就是这个形状（null 字段全省略），读侧必须容错，不给老数据做迁移。
+        var raw = Reply(1, "甲", "老楼 [doge]");
+        var snap = LbsCommentArchiver.MapSnapshot(
+            1, "BVlegacy", null, [raw],
+            emoteMap: new Dictionary<string, string> { ["[doge]"] = "/emotes/doge.png" });
+        var json = LbsCommentArchiver.Serialize(snap);
+        Assert.DoesNotContain("emoteMeta", json);
+
+        var file = Path.Combine(_videosDir, "legacy", "em.comments.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllText(file, json);
+        var loaded = CommentSnapshotOps.Load(file);
+        Assert.NotNull(loaded);
+        Assert.Equal("/emotes/doge.png", loaded!.Emotes!["[doge]"]);
+        Assert.Null(loaded.EmoteMeta);
+    }
+
+    [Fact]
     public void 置顶依序寻址_楼中楼父名解析() 
     {
         var pinned = Reply(1, "置顶君", "公告");

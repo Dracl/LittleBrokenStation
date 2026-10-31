@@ -6,6 +6,8 @@ import LevelBadge from './LevelBadge.vue'
 import UpBadge from './UpBadge.vue'
 import MedalBadge from './MedalBadge.vue'
 import CollapsibleRichText from './CollapsibleRichText.vue'
+import BIcon from './BIcon.vue'
+import { biDynLike, biDynLikeFill } from '../assets/bicons'
 
 const props = defineProps({
   src: { type: String, default: null },
@@ -16,6 +18,7 @@ const props = defineProps({
 const snapshot = ref(null)
 const state = ref('idle') // idle | loading | ready | empty | failed
 const emoteMap = ref({}) // 转义符 → /emotes/xx.png（下载失败时为远程热链）
+const emoteMeta = ref({}) // 转义符 → { jumpTitle, packageId, … }：B 站没给 URL 那批靠它念对名字，老快照没这字段就空着
 
 // 正文渲染交给 CollapsibleRichText（它内部走 utils/emote 同一根管线 + 超行折叠）。
 
@@ -84,6 +87,7 @@ async function load(src) {
 
     snapshot.value = json
     emoteMap.value = json.emotes ?? {}
+    emoteMeta.value = json.emoteMeta ?? {}
     state.value = 'ready'
     autoLoadSmallFloors()
   } catch {
@@ -229,18 +233,20 @@ function likeCount(item) {
           <AvatarImg :face="topReply.face" :face-local="topReply.faceLocal" :name="topReply.name" class="h-11 w-11 shrink-0 rounded-full object-cover bg-white dark:bg-white/10 text-sm text-inkFaint" />
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-1.5">
-              <span class="text-[15px] text-inkMain">{{ topReply.name }}</span>
+              <span class="text-[15px]" :class="isUp(topReply) ? 'text-stationPink' : 'text-inkMain'">{{ topReply.name }}</span>
               <MedalBadge v-for="(medal, mi) in topReply.medals ?? []" :key="mi" :level="medal.level" :name="medal.name" :color="medal.color" :size="13.8" />
               <LevelBadge :level="topReply.level" />
-              <UpBadge />
+              <!-- UP 标只给视频作者本人（isUp 拿 mid 对 props.upMid）：B 站就这一枚，以前无条件渲染成了全员 UP -->
+              <UpBadge v-if="isUp(topReply)" />
             </div>
             <CollapsibleRichText
               :text="topReply.content"
               :emotes="emoteMap"
+              :emote-meta="emoteMeta"
               content-class="mt-1.5 whitespace-pre-line text-[15px] leading-7 text-inkMain"
             >
               <template #prefix>
-                <span class="mr-1.5 inline-flex h-[18px] w-[30px] items-center justify-center rounded-[3px] border border-stationPink align-text-bottom text-[12px] leading-none text-stationPink">置顶</span>
+                <span class="mr-1.5 inline-flex h-[18px] w-[30px] items-center justify-center rounded-[3px] border border-stationPink align-middle -translate-y-0.5 text-[12px] leading-none text-stationPink">置顶</span>
               </template>
             </CollapsibleRichText>
             <div v-if="topReply.pictures?.length" class="mt-2 flex flex-wrap gap-1">
@@ -250,9 +256,7 @@ function likeCount(item) {
               <span>{{ timeText(topReply.time) }}</span>
               <span v-if="topReply.ipLocation">IP属地：{{ topReply.ipLocation }}</span>
               <button class="flex items-center gap-1 transition" :class="liked.has(topReply.rpid) ? 'text-stationPink' : 'hover:text-inkMain'" @click="toggleLike(topReply)">
-                <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" :fill="liked.has(topReply.rpid) ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2">
-                  <path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3zm0 0l4-7a2.5 2.5 0 0 1 2.5 2.5V9H20a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 18.8 20H7" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
+                <BIcon :meta="liked.has(topReply.rpid) ? biDynLikeFill : biDynLike" class="h-3.5 w-3.5 shrink-0" />
                 {{ likeCount(topReply) }}
               </button>
             </div>
@@ -274,13 +278,13 @@ function likeCount(item) {
 
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-1.5">
-            <span class="text-[15px] text-inkMain">{{ reply.name }}</span>
+            <span class="text-[15px]" :class="isUp(reply) ? 'text-stationPink' : 'text-inkMain'">{{ reply.name }}</span>
             <MedalBadge v-for="(medal, mi) in reply.medals ?? []" :key="mi" :level="medal.level" :name="medal.name" :color="medal.color" :size="13.8" />
             <LevelBadge :level="reply.level" />
-            <UpBadge />
+            <UpBadge v-if="isUp(reply)" />
           </div>
 
-          <CollapsibleRichText :text="reply.content" :emotes="emoteMap" content-class="mt-1 whitespace-pre-line text-[15px] leading-7 text-inkMain" />
+          <CollapsibleRichText :text="reply.content" :emotes="emoteMap" :emote-meta="emoteMeta" content-class="mt-1 whitespace-pre-line text-[15px] leading-7 text-inkMain" />
 
           <div v-if="reply.pictures?.length" class="mt-2 flex flex-wrap gap-1">
             <img v-for="(pic, pi) in reply.pictures" :key="pi" :src="picLocal(reply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(reply, pi)" />
@@ -291,9 +295,7 @@ function likeCount(item) {
             <span>{{ timeText(reply.time) }}</span>
             <span v-if="reply.ipLocation">IP属地：{{ reply.ipLocation }}</span>
             <button class="flex items-center gap-1 transition" :class="liked.has(reply.rpid) ? 'text-stationPink' : 'hover:text-inkMain'" @click="toggleLike(reply)">
-              <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" :fill="liked.has(reply.rpid) ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2">
-                <path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3zm0 0l4-7a2.5 2.5 0 0 1 2.5 2.5V9H20a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 18.8 20H7" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
+              <BIcon :meta="liked.has(reply.rpid) ? biDynLikeFill : biDynLike" class="h-3.5 w-3.5 shrink-0" />
               {{ likeCount(reply) }}
             </button>
           </div>
@@ -307,12 +309,13 @@ function likeCount(item) {
               <AvatarImg :face="sub.face" :face-local="sub.faceLocal" :name="sub.name" class="mt-0.5 h-7 w-7 shrink-0 rounded-full object-cover bg-[#f1f2f3] dark:bg-white/10 text-[10px] text-inkFaint" />
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-1.5">
-                  <span class="text-[13px]" :class="isUp(sub) ? 'text-inkMain' : 'text-stationPink'">{{ sub.name }}</span>
+                  <!-- B 站口径：UP 主本人昵称才吃主题粉，普通观众是正文色（以前正好反着） -->
+                  <span class="text-[13px]" :class="isUp(sub) ? 'text-stationPink' : 'text-inkMain'">{{ sub.name }}</span>
                   <MedalBadge v-for="(medal, mi) in sub.medals ?? []" :key="mi" :level="medal.level" :name="medal.name" :color="medal.color" :size="12" />
                   <LevelBadge :level="sub.level" :size="10.5" />
-                  <UpBadge :size="11.9" />
+                  <UpBadge v-if="isUp(sub)" :size="11.9" />
                 </div>
-                <CollapsibleRichText :text="sub.content" :emotes="emoteMap" content-class="mt-0.5 whitespace-pre-line text-sm leading-6 text-inkMain">
+                <CollapsibleRichText :text="sub.content" :emotes="emoteMap" :emote-meta="emoteMeta" content-class="mt-0.5 whitespace-pre-line text-sm leading-6 text-inkMain">
                   <template v-if="sub.parentName" #prefix>
                     <span class="text-inkMain">回复 </span><span class="text-stationBlue">@{{ sub.parentName }}</span><span class="text-inkMain">：</span>
                   </template>
@@ -321,9 +324,7 @@ function likeCount(item) {
                   <span>{{ timeText(sub.time) }}</span>
                   <span v-if="sub.ipLocation">IP属地：{{ sub.ipLocation }}</span>
                   <button class="flex items-center gap-1 transition" :class="liked.has(sub.rpid) ? 'text-stationPink' : 'hover:text-inkMain'" @click="toggleLike(sub)">
-                    <svg viewBox="0 0 24 24" class="h-3 w-3" :fill="liked.has(sub.rpid) ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2">
-                      <path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3zm0 0l4-7a2.5 2.5 0 0 1 2.5 2.5V9H20a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 18.8 20H7" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
+                    <BIcon :meta="liked.has(sub.rpid) ? biDynLikeFill : biDynLike" class="h-3 w-3 shrink-0" />
                     {{ likeCount(sub) }}
                   </button>
                 </div>

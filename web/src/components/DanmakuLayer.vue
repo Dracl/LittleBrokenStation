@@ -1,6 +1,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { CROWN, crownPath as buildCrownPath } from '../utils/crown.js'
+import { loadAssText } from '../utils/dmHeat.js'
 
 const props = defineProps({
   src: { type: String, default: null },
@@ -23,6 +24,7 @@ const emit = defineEmits(['delete-local', 'report-local'])
 
 const canvas = ref(null)
 let items = []
+const assRes = { x: 0, y: 0 } // 当前 ass 自带的 PlayRes（缺件时 0，回退 1080 高基准）
 let rafId = 0
 let observer = null
 
@@ -44,7 +46,18 @@ function assColorToRgba(hexBgr) {
 
 function parseAss(text) {
   const result = []
+  // 引擎导出的 \move 坐标与字号同属 ass 自己的坐标系（PlayRes + Style Fontsize），
+  // 拿本站默认字号硬套会把字撑爆行距、把预排好的轨迹画挤。
+  let resX = 0
+  let resY = 0
+  let styleFs = 0
   for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith('PlayResX:')) { resX = Number(line.split(':')[1]) || 0; continue }
+    if (line.startsWith('PlayResY:')) { resY = Number(line.split(':')[1]) || 0; continue }
+    if (line.startsWith('Style:')) {
+      if (!styleFs) styleFs = Math.round(Number(line.split(',')[2])) || 0 // Name,Fontname,Fontsize,…
+      continue
+    }
     if (!line.startsWith('Dialogue: ')) continue
     const parts = line.slice(10).split(',')
     if (parts.length < 10) continue
@@ -55,6 +68,8 @@ function parseAss(text) {
     let mode = 'scroll'
     let x = null
     let y = null
+    let x2 = null
+    let y2 = null
     let color = '#ffffff'
 
     const cmds = body.match(/\{[^}]*\}/g) ?? []
@@ -67,9 +82,18 @@ function parseAss(text) {
       }
       const move = cmd.match(/\\move\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/)
       if (move) {
-        mode = 'move'
-        x = Number(move[1])
-        y = Number(move[2])
+        // 水平 \move = 导出引擎写给普通滚动弹幕的静态快照：y 按固定行距预排、没算字宽，
+        // 同 y 前后两条隔不到一秒就追尾叠字（实测档里 0.19s 间隔的实拍过）。
+        // 降级成 scroll 交给本站带防碰的轨道调度，观感对齐官方实时排轨；斜向 move 才保留原轨迹。
+        if (Number(move[4]) === Number(move[2])) {
+          mode = 'scroll'
+        } else {
+          mode = 'move'
+          x = Number(move[1])
+          y = Number(move[2])
+          x2 = Number(move[3])
+          y2 = Number(move[4])
+        }
       }
       const colorMatch = cmd.match(/\\c&H([0-9A-Fa-f]{6})/)
       if (colorMatch) color = assColorToRgba(colorMatch[1])
@@ -77,7 +101,8 @@ function parseAss(text) {
 
     body = body.replace(/\{[^}]*\}/g, '').replace(/\\N/g, ' ').trim()
     if (!body) continue
-    const item = { start, end, mode, x, y, color, text: body, lane: null, gone: false, width: null, bmp: undefined }
+    const item = { start, end, mode, x, y, x2, y2, color, text: body, lane: null, gone: false, width: null, bmp: undefined }
+    item.styleFs = mode === 'move' && styleFs > 0 ? styleFs : 0
     // B 站导出把顶/底弹幕也写成 \pos：按 y 落位归类，供显示模式开关过滤。
     if (mode === 'fixed' && typeof y === 'number') {
       item.zone = y < 324 ? 'top' : y > 756 ? 'bottom' : 'top'
@@ -85,7 +110,7 @@ function parseAss(text) {
     result.push(item)
   }
   result.sort((a, b) => a.start - b.start)
-  return result
+  return { list: result, resX, resY }
 }
 
 function itemVisible(item) {
@@ -368,20 +393,24 @@ function lowerBound(t) {
 function resetActive(t) {
   ptr = lowerBound(t)
   // seek 后回填：起点在 t 之前、窗口仍覆盖 t 的弹幕重新入场，并洗掉飞出/占轨状态。
-  active = []
+  // 必须按 start 升序：倒序会把「刚上屏的右项」先分轨，左项随后把轨道当空闲叠上去（同轨叠字元凶）。
+  const backlog = []
   for (let i = ptr - 1; i >= 0 && items[i].start > t - 30; i--) {
     if (items[i].end >= t) {
       const it = items[i]
       it.gone = false
       if (it.mode === 'scroll') it.lane = null
       it.adjY = null
-      active.push(it)
+      backlog.push(it)
     }
   }
+  backlog.sort((a, b) => a.start - b.start)
+  active = backlog
   lanes.clear()
 }
 
-const lanes = new Map() // lane -> 该轨道最右端的右边界 x
+const lanes = new Map() // lane -> { r: 该轨最右端右边界 x, v: 该弹幕屏速 px/s }
+const CHASE_T = 10 // 速度差追赶安全窗（秒）：同轨快追慢，保证这么久内不叠
 
 // 命中测试：每帧记下画出的站内弹幕矩形（设备像素），点中可删。
 let hits = []
@@ -467,6 +496,10 @@ function frame() {
   }
 
   const scale = el.height / 1080
+  // ass 坐标系 → 屏幕：move/fixed 的坐标住在文件自己的 PlayRes 里，
+  // 旧档缺 PlayRes 时跟旧 scale（1080 高基准）。
+  const sx = assRes.x > 0 ? el.width / assRes.x : scale
+  const sy = assRes.y > 0 ? el.height / assRes.y : scale
   const fontPx = Math.max(8, Math.round((props.fontSize > 0 ? props.fontSize : 50) * scale))
   const speed = props.speed > 0 ? props.speed : 1
   const areaRatio = Math.min(1, Math.max(0.25, props.area))
@@ -486,19 +519,25 @@ function frame() {
   for (const item of active) {
     if (!itemVisible(item)) continue
 
-    const entry = bitmapFor(ctx, item, fontPx)
+    // move 项的字跟 ass Style 字号走（坐标按它排的），再乘用户字号比例；
+    // 用本站默认字号会把字撑爆 50px 行距，邻行互压成一排乱码。
+    const itemFontPx =
+      item.mode === 'move' && item.styleFs
+        ? Math.max(8, Math.round(item.styleFs * sy * ((props.fontSize > 0 ? props.fontSize : 50) / 50)))
+        : fontPx
+    const entry = bitmapFor(ctx, item, itemFontPx)
     const textWidth = entry.width
     let drawX
     let drawY
 
     if (item.mode === 'fixed') {
-      drawX = item.x * scale - textWidth / 2
+      drawX = item.x * sx - textWidth / 2
       const zone = item.zone === 'bottom' ? 'bottom' : 'top'
       if (item.adjY == null) {
         // ass 导出的 y 会撞车：首次落位时先钳进保护区，再与同区已放项重叠则往屏内方向逐行找空，找不到就丢。
         const step = fontPx * 1.35
         const dir = zone === 'bottom' ? -1 : 1
-        let y = item.y * scale
+        let y = item.y * sy
         y = zone === 'bottom' ? Math.min(y, el.height - safeBottom - fontPx * 1.2) : Math.max(y, safeTop)
         let tries = 0
         const conflict = (yy) =>
@@ -517,17 +556,26 @@ function frame() {
       const dur = Math.max(0.1, (item.end - item.start) / (1 + 0.35 * (textWidth / el.width)))
       const progress = Math.min(1, Math.max(0, ((t - item.start) * speed) / dur))
       if (item.mode === 'move') {
-        drawX = (item.x + (0 - item.x) * progress) * scale
+        // 引擎的 move 是绝对时间线性匀速：x1,y1 → x2,y2（含屏外退场点）。
+        // 不能拿 0 当终点：飞到左缘就停驻，后面的弹幕全追上这一坨叠字（本档叠字元凶）；
+        // 也不掺「越长越快」：那会打乱 ass 预排坐标的配速。
+        const p = Math.min(1, Math.max(0, ((t - item.start) * speed) / (item.end - item.start)))
+        drawX = (item.x + ((item.x2 ?? 0) - item.x) * p) * sx
         // ass 自带 y 的滚动弹幕同样钳进保护区，不拿边缘当轨道。
-        drawY = Math.min(Math.max((item.y ?? 0) * scale, safeTop), Math.max(safeTop, el.height - safeBottom - fontPx))
+        drawY = Math.min(Math.max((item.y ?? 0) * sy, safeTop), Math.max(safeTop, el.height - safeBottom - fontPx))
       } else {
         drawX = el.width - (el.width + textWidth) * progress
         if (item.lane === null) {
           if (drawn >= MAX_DRAWN) continue // 名额满：新项不上轨，下帧再试
-          // 上一项的右边界必须完全驶出屏幕，才允许新项上轨；全忙则本轮不画，绝不叠字。
+          // 上轨判定拿新项自己的左缘比较，不拿屏宽：同轨前项右缘 + 基础间距
+          // + 「速度差在未来 CHASE_T 秒内的追赶量」不得越过新项左缘。
+          // 时长 14/15s 混排与越长越快都有速度差，只比 el.width 时快项会追上慢项叠字；
+          // 装不下就宁可等下一帧（官方超载也是丢弹幕），绝不叠。
+          const vx = (el.width + textWidth) / dur
           let lane = -1
           for (let candidate = 0; candidate < laneCount; candidate++) {
-            if ((lanes.get(candidate) ?? -Infinity) < el.width) {
+            const prev = lanes.get(candidate)
+            if (!prev || prev.r + fontPx * 1.2 + Math.max(0, vx - prev.v) * CHASE_T <= drawX) {
               lane = candidate
               break
             }
@@ -535,7 +583,7 @@ function frame() {
           if (lane < 0) continue
           item.lane = lane
         }
-        lanes.set(item.lane, drawX + textWidth)
+        lanes.set(item.lane, { r: drawX + textWidth, v: (el.width + textWidth) / dur })
         drawY = safeTop + item.lane * fontPx * 1.4 + 2
         if (drawX + textWidth < 0) item.gone = true
       }
@@ -637,11 +685,17 @@ async function load() {
     return
   }
   try {
-    const res = await fetch(props.src)
-    if (!res.ok) return
-    items = parseAss(await res.text())
+    // 同一份 .ass 高能条也在读：走共享缓存，每 P 只走一发网络
+    const text = await loadAssText(props.src)
+    if (text === null) return
+    const parsed = parseAss(text)
+    items = parsed.list
+    assRes.x = parsed.resX
+    assRes.y = parsed.resY
   } catch {
     items = []
+    assRes.x = 0
+    assRes.y = 0
   }
   injectLocal(true)
 }

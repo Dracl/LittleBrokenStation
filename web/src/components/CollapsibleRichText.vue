@@ -12,6 +12,8 @@ const props = defineProps({
   text: { type: String, default: '' },
   // 「转义符 → 图片地址」，原样交给 richHtml
   emotes: { type: Object, default: null },
+  // 「转义符 → { jumpTitle, packageId, … }」：只有 B 站未下发 URL 的那批用得上（失效胶囊里念名字），老快照可为空
+  emoteMeta: { type: Object, default: null },
   lines: { type: Number, default: 15 },
   contentClass: { type: String, default: 'whitespace-pre-line break-words' },
   buttonClass: { type: String, default: 'mt-0.5 block text-[12px] text-stationPink transition hover:underline' },
@@ -24,7 +26,7 @@ const shownText = computed(() => {
   if (!collapsible.value || open.value) return props.text ?? ''
   return rows.value.slice(0, props.lines).join('\n')
 })
-const html = computed(() => richHtml(shownText.value, props.emotes))
+const html = computed(() => richHtml(shownText.value, props.emotes, props.emoteMeta))
 
 function toggle() {
   open.value = !open.value

@@ -21,7 +21,9 @@ public sealed class MemberGate(StationDb db)
     /// <summary>这条请求是不是会员事务（要过门）。</summary>
     public static bool RequiresMember(HttpRequest request)
     {
-        var path = request.Path.Value ?? "";
+        // 查牌前先剪掉尾部多余斜杠：路由层把 /x 与 /x/ 当同一扇门，门闸照原串点名时，
+        // 精确匹配与 EndsWith 型的口（/related、/download、投稿）会被一枚斜杠穿过去。
+        var path = (request.Path.Value ?? "").TrimEnd('/');
         if (!path.StartsWith("/api/", StringComparison.Ordinal))
         {
             return false;

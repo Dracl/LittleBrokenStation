@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { colonTime } from '../utils/time'
+import { colonTime, publishedDate } from '../utils/time'
 import { coverThumb } from '../utils/cover'
 import { claimPreview, previewHoverEnter, previewHoverLeave, releasePreview } from '../utils/previewHover'
 
@@ -45,19 +45,8 @@ function fmtCount(n) {
 }
 
 // B 站口径的相对时间：刚刚 / N分钟前 / N小时前 / N天前，满月之后给日期。
-// 展示的是真正的 B 站投稿时间：首取导入源自带的 publishedAtUtc，其次到站归档的 publishText，
-// 两个都没就整段不显（入站时间是站长台账的概念，不上首页）。
-function publishedDate(v) {
-  if (v.publishedAtUtc) {
-    const d = new Date(v.publishedAtUtc)
-    if (!Number.isNaN(d.getTime())) return d
-  }
-  if (v.publishText) {
-    const d = new Date(String(v.publishText).replace(' ', 'T'))
-    if (!Number.isNaN(d.getTime())) return d
-  }
-  return null
-}
+// 取数走 utils/time.js 的 publishedDate（与「接下来播放」卡共用一份口径）：
+// 两个源都没就给空，整段不显（入站时间是站长台账的概念，不上首页）。
 
 function relTime(d) {
   if (!d) return ''

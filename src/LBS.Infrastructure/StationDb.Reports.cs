@@ -31,7 +31,10 @@ public sealed partial class StationDb
         string? Reason,
         string Status,
         string CreatedAtUtc,
-        string? HandledAtUtc);
+        string? HandledAtUtc,
+        // 片子现在还在不在架：只决定「去放映厅看这条弹幕」那条链给不给点，
+        // 上面那些快照列一个字不改（单子落库那一刻定格，删片不拖它下水）。
+        bool VideoInStation = false);
 
     /// <summary>被举报弹幕的定格素材：举报那一刻要抄进台账的字段（连弹幕自己的发送时间，删了也还查得到）。</summary>
     public sealed record LocalDanmakuSnapshot(
@@ -130,7 +133,10 @@ public sealed partial class StationDb
         command.CommandText = $"""
             SELECT id, dm_id, video_id, bvid, page_idx, t_sec, text,
                    sender_member_id, sender_dmid, sender_name, dm_created_at_utc,
-                   reporter_member_id, reporter_name, reason, status, created_at_utc, handled_at_utc
+                   reporter_member_id, reporter_name, reason, status, created_at_utc, handled_at_utc,
+                   -- 按 bvid 判死活，与用户点的那条 /watch/ 链逐字同口径（/api/watch 就是按 bvid 查的）：
+                   -- 片进回收站时链死，捐回或重新投同一部时链活。不改动任何快照列，不算破「直读本表」那条铁规。
+                   EXISTS (SELECT 1 FROM videos v WHERE v.bvid = danmaku_reports.bvid AND v.status = 'Arrived')
             FROM danmaku_reports{statusFilter}
             ORDER BY created_at_utc DESC, id DESC
             LIMIT $limit;
@@ -163,7 +169,8 @@ public sealed partial class StationDb
                 reader.IsDBNull(13) ? null : reader.GetString(13),
                 reader.GetString(14),
                 reader.GetString(15),
-                reader.IsDBNull(16) ? null : reader.GetString(16)));
+                reader.IsDBNull(16) ? null : reader.GetString(16),
+                reader.GetInt32(17) == 1));
         }
 
         return list;

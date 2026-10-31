@@ -2,9 +2,12 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
+import PeerPicker from '../components/PeerPicker.vue'
+import ShareCard from '../components/ShareCard.vue'
 import { member, loaded, unread, dmUnread, loginDialogOpen, loginDialogMode, load as loadMember, refreshUnread } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
+import { VIDEO_GONE_HINT } from '../utils/gone.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,19 +22,25 @@ function gotoSharedVideo(dyn) {
   if (dyn?.bvid) router.push(`/watch/${dyn.bvid}`)
 }
 
-function sharedSummary(dyn) {
-  const raw = (dyn.text || '').split('\n\n转发自')[0].trim()
-  return raw.length > 80 ? `${raw.slice(0, 80)}…` : raw || '（一条动态）'
-}
-
 // ─── 页签 ───
-const activeTab = ref('inbox') // inbox | dm
+// 上次停在哪个页签就开哪个（浏览器本地小账，同点赞一个路子）；没记过默认信箱
+const TAB_KEY = 'lbs-msg-tab'
+const lastTab = (() => {
+  try {
+    const v = localStorage.getItem(TAB_KEY)
+    return v === 'dm' || v === 'inbox' ? v : 'inbox'
+  } catch {
+    return 'inbox'
+  }
+})()
+const activeTab = ref(lastTab) // inbox | dm
 
 // ─── 信箱（M5.2 原样）───
 const items = ref([])
 const loading = ref(true)
 const inboxUnread = ref(0)
-const expandedId = ref(null)
+// 展开的信件集合：打开就一直摊着，再点一下才折回；多封可同时敞开
+const expandedIds = ref(new Set())
 const notice = ref(null)
 
 const kindMeta = {
@@ -76,8 +85,12 @@ function flashNotice(text) {
 }
 
 async function toggle(item) {
-  expandedId.value = expandedId.value === item.id ? null : item.id
-  if (expandedId.value !== item.id || item.readAtUtc) return
+  const open = !expandedIds.value.has(item.id)
+  const next = new Set(expandedIds.value)
+  if (open) next.add(item.id)
+  else next.delete(item.id)
+  expandedIds.value = next
+  if (!open || item.readAtUtc) return
   try {
     const res = await fetch(`/api/member/messages/${item.id}/read`, { method: 'POST' })
     if (res.ok) {
@@ -113,7 +126,6 @@ const activePeer = ref(null) // {memberId, nickname, username, displayName, face
 const conversation = ref([])
 const convoLoading = ref(false)
 const directoryOpen = ref(false)
-const directory = ref(null)
 const draft = ref('')
 const sending = ref(false)
 const dmToast = ref(null)
@@ -165,11 +177,50 @@ async function openThread(peerMemberId, peerHint = null) {
   }
 }
 
+// 撤回：发件人销自己那句，真删——双方账本同时没（轮询追新时对方那头自然消失）。
+// 二次确认防手滑；销成当场从本地会话里拔掉，不等下拍轮询。
+async function recallMessage(m) {
+  if (!window.confirm('撤回这句？真删，对方那边也看不见了。')) return
+  try {
+    const res = await fetch(`/api/dm/message/${m.id}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => null)
+    if (res.ok) {
+      conversation.value = conversation.value.filter((x) => x.id !== m.id)
+      flashDm('已撤回，烟消云散')
+    } else {
+      flashDm(data?.message ?? '这句没撤回成')
+    }
+  } catch {
+    flashDm('分站后端没有应答')
+  }
+}
+
 function closeThread() {
   activePeer.value = null
   conversation.value = []
   loadThreads()
   restartDmPoll() // 不彻底停：退出会话后列表继续慢拍，新私信不至于要重开页面才现身
+}
+
+// 清空聊天记录：二次确认后走单边销账端点（自己这侧抹掉，对方账本不动），
+// 销完当场清屏收场；对方再发信，会话自会复活。
+async function clearThread() {
+  const peer = activePeer.value
+  if (!peer || !conversation.value.length) return
+  if (!window.confirm(`清空与「${peerLabel(peer)}」的聊天记录？只销自己这侧，对方那边不受影响。`)) return
+  try {
+    const res = await fetch(`/api/dm/thread/${peer.memberId}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => null)
+    if (res.ok) {
+      conversation.value = []
+      closeThread()
+      flashDm('记录销了，再聊再记')
+    } else {
+      flashDm(data?.message ?? '记录没销成')
+    }
+  } catch {
+    flashDm('分站后端没有应答')
+  }
 }
 
 async function refreshConversation(silent = true) {
@@ -232,14 +283,8 @@ async function syncThreads() {
   refreshUnread()
 }
 
-async function openDirectory() {
+function openDirectory() {
   directoryOpen.value = true
-  try {
-    const res = await fetch('/api/dm/directory')
-    directory.value = res.ok ? (await res.json()).people ?? [] : []
-  } catch {
-    directory.value = []
-  }
 }
 
 async function sendDm() {
@@ -291,6 +336,11 @@ function onDraftKeydown(e) {
 function switchTab(tab) {
   if (activeTab.value === tab) return
   activeTab.value = tab
+  try {
+    localStorage.setItem(TAB_KEY, tab)
+  } catch {
+    // 本地存不进也不拦切页，大不了下次从头开信箱
+  }
   if (tab === 'dm') {
     loadThreads()
     refreshUnread()
@@ -303,6 +353,12 @@ function switchTab(tab) {
 onMounted(async () => {
   if (!loaded.value) await loadMember()
   await loadInbox()
+  // 上次停在私信：开机直接落私信页签（列表、未读、追新心跳一并接上）
+  if (activeTab.value === 'dm') {
+    loadThreads()
+    refreshUnread()
+    restartDmPoll()
+  }
   // 站长室「发私信」跳转：/messages?dm={memberId} 预开会话（M5.4 起锁席位 id）
   const dmPeer = typeof route.query.dm === 'string' ? Number(route.query.dm) : null
   if (dmPeer && Number.isFinite(dmPeer)) {
@@ -430,14 +486,15 @@ function peerLabel(p) {
                   <span v-if="!item.readAtUtc" class="h-2 w-2 shrink-0 rounded-full bg-stationPink" title="未读"></span>
                 </button>
 
-                <div v-if="expandedId === item.id" class="px-5 pb-4">
-                  <div class="rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
+                <div v-if="expandedIds.has(item.id)" class="px-5 pb-4">
+                  <div class="mt-2.5 rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
                     <p class="whitespace-pre-wrap text-[13px] leading-relaxed text-inkMain">{{ item.body }}</p>
                     <RouterLink
-                      v-if="item.link"
+                      v-if="item.link && !item.videoGone"
                       :to="item.link"
                       class="mt-2.5 inline-block text-xs text-stationPink transition hover:underline"
                     >去看 →</RouterLink>
+                    <span v-else-if="item.link" class="mt-2.5 inline-block text-xs text-inkFaint">{{ VIDEO_GONE_HINT }}</span>
                   </div>
                 </div>
               </li>
@@ -450,23 +507,23 @@ function peerLabel(p) {
         <!-- ═══ 私信页签 ═══ -->
         <template v-else>
           <div class="flex gap-4">
-            <!-- 左：会话列表 -->
-            <section class="w-[290px] shrink-0 overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
-              <div class="flex items-center justify-between border-b border-lineSoft px-4 py-3">
+            <!-- 左：会话列表（与右栏同高，内部滚动；整卡跟着视口长，底下不垫空白） -->
+            <section class="flex h-[max(500px,min(68vh,900px))] w-[290px] shrink-0 flex-col overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
+              <div class="flex shrink-0 items-center justify-between border-b border-lineSoft px-4 py-3">
                 <span class="text-[13px] text-inkSub">会话</span>
                 <button
                   class="rounded-full border border-lineSoft px-2.5 py-0.5 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink"
                   @click="openDirectory"
                 >
-                  ＋ 发起私聊
+                  ＋ 发起私信
                 </button>
               </div>
 
               <p v-if="threads === null" class="px-4 py-8 text-center text-sm text-inkFaint">正在翻记录…</p>
               <div v-else-if="!threads.length" class="px-4 py-10 text-center">
-                <p class="text-sm text-inkFaint">还没有人来敲门。<br />点「发起私聊」找位分站伙伴聊聊。</p>
+                <p class="text-sm text-inkFaint">还没有人来敲门。<br />点「发起私信」找位分站伙伴聊聊。</p>
               </div>
-              <ul v-else>
+              <ul v-else class="min-h-0 flex-1 overflow-y-auto">
                 <li v-for="t in threads" :key="t.peerMemberId">
                   <button
                     class="flex w-full items-center gap-2.5 border-b border-lineSoft/60 px-4 py-3 text-left transition hover:bg-stationPink/5"
@@ -496,8 +553,8 @@ function peerLabel(p) {
               </ul>
             </section>
 
-            <!-- 右：聊天面板 -->
-            <section class="flex min-h-[420px] min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
+            <!-- 右：聊天面板（同左栏随视口长，消息区 flex-1 滚动，不再卡 480px 短腰） -->
+            <section class="flex h-[max(500px,min(68vh,900px))] min-w-[400px] flex-1 flex-col overflow-hidden rounded-2xl border border-lineSoft bg-cardBg">
               <template v-if="activePeer">
                 <div class="flex items-center justify-between border-b border-lineSoft bg-gradient-to-r from-stationPink/10 via-stationPink/5 to-transparent px-4 py-3">
                   <span class="flex items-center gap-2 text-[13px] font-medium text-inkMain">
@@ -507,10 +564,24 @@ function peerLabel(p) {
                       <template v-if="activePeer.username">{{ activePeer.username }} · </template>UID #{{ activePeer.memberId }}
                     </span>
                   </span>
-                  <button class="text-xs text-inkFaint transition hover:text-stationPink" @click="closeThread">收起</button>
+                  <span class="flex shrink-0 items-center gap-3">
+                    <!-- 清空聊天记录：单边抹掉自己这侧的账（微信式），对方账本不动；二次确认才落刀 -->
+                    <button
+                      v-if="conversation.length"
+                      class="flex items-center gap-1 text-xs text-inkFaint transition hover:text-stationPink"
+                      title="你这边清空，对方不受影响"
+                      @click="clearThread"
+                    >
+                      <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.8">
+                        <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13h8l1-13" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                      清空
+                    </button>
+                    <button class="text-xs text-inkFaint transition hover:text-stationPink" @click="closeThread">收起</button>
+                  </span>
                 </div>
 
-                <div class="flex-1 space-y-2.5 overflow-y-auto bg-[#f8f9fa] dark:bg-[#23262e] px-4 py-4" style="max-height: 480px">
+                <div class="min-h-0 flex-1 space-y-2.5 overflow-y-auto bg-[#f8f9fa] dark:bg-[#23262e] px-4 py-4">
                   <p v-if="convoLoading && !conversation.length" class="py-8 text-center text-sm text-inkFaint">正在翻记录…</p>
                   <div v-else-if="!conversation.length" class="flex flex-col items-center justify-center gap-2.5 py-12 text-center">
                     <span class="flex h-11 w-11 items-center justify-center rounded-full bg-stationPink/10">
@@ -523,71 +594,41 @@ function peerLabel(p) {
                   <div
                     v-for="m in conversation"
                     :key="m.id"
-                    class="flex"
+                    class="group flex items-center"
                     :class="m.fromMemberId === member.memberId ? 'justify-end' : 'justify-start'"
                   >
-                    <!-- 动态分享卡：安利语在上，定格卡在下游走橱窗 -->
-                    <div v-if="m.msgType === 'dynamic' && m.dyn" class="max-w-[78%] min-w-0">
-                      <span
-                        v-if="m.body"
-                        class="mb-1.5 block w-fit max-w-full whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed"
-                        :class="m.fromMemberId === member.memberId
-                          ? 'rounded-br-md bg-stationPink text-white'
-                          : 'rounded-bl-md bg-lineSoft text-inkMain'"
-                      >{{ m.body }}</span>
-                      <button
-                        class="block w-full rounded-xl border border-lineSoft bg-cardBg p-2.5 text-left transition hover:border-stationPink/50 hover:shadow-sm"
-                        @click="gotoSharedDynamic(m.dyn)"
-                      >
-                        <div class="flex items-center gap-2">
-                          <img
-                            :src="m.dyn.authorFace || defaultAvatar"
-                            referrerpolicy="no-referrer"
-                            class="h-7 w-7 shrink-0 rounded-full object-cover"
-                            alt=""
-                            @error="onAvatarError"
-                          />
-                          <span class="min-w-0 flex-1">
-                            <span class="block truncate text-[12.5px] font-medium text-inkMain">{{ m.dyn.authorName || 'B站作者' }}</span>
-                            <span class="block text-[10.5px] text-inkFaint">{{ friendlyTime(m.dyn.publishedAtUtc) }}</span>
-                          </span>
-                          <span class="shrink-0 rounded bg-stationPink/10 px-1.5 py-0.5 text-[10px] text-stationPink">动态</span>
-                        </div>
-                        <div class="mt-2 flex gap-2">
-                          <span v-if="m.dyn.cover" class="relative block h-[46px] w-[68px] shrink-0 overflow-hidden rounded-md bg-[#eef0f2] dark:bg-[#23262e]">
-                            <img :src="m.dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
-                          </span>
-                          <p class="min-w-0 flex-1 text-[12.5px] leading-relaxed text-inkSub" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ sharedSummary(m.dyn) }}</p>
-                        </div>
-                        <span class="mt-1.5 block text-[11px] text-stationPink">去橱窗看这条 →</span>
-                      </button>
-                    </div>
-                    <!-- 放映厅分享卡：安利语在上，定格卡点着直落 /watch/bvid（与动态卡同族同构） -->
-                    <div v-else-if="m.msgType === 'video' && m.dyn" class="max-w-[78%] min-w-0">
-                      <span
-                        v-if="m.body"
-                        class="mb-1.5 block w-fit max-w-full whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed"
-                        :class="m.fromMemberId === member.memberId
-                          ? 'rounded-br-md bg-stationPink text-white'
-                          : 'rounded-bl-md bg-lineSoft text-inkMain'"
-                      >{{ m.body }}</span>
-                      <button
-                        class="block w-full rounded-xl border border-lineSoft bg-cardBg p-2.5 text-left transition hover:border-stationPink/50 hover:shadow-sm"
-                        @click="gotoSharedVideo(m.dyn)"
-                      >
-                        <div class="flex gap-2">
-                          <span v-if="m.dyn.cover" class="relative block h-[46px] w-[68px] shrink-0 overflow-hidden rounded-md bg-[#eef0f2] dark:bg-[#23262e]">
-                            <img :src="m.dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
-                          </span>
-                          <span class="min-w-0 flex-1">
-                            <span class="block truncate text-[12.5px] font-medium text-inkMain">{{ m.dyn.title || m.dyn.bvid }}</span>
-                            <span class="mt-0.5 block truncate text-[10.5px] text-inkFaint">{{ [m.dyn.upName, m.dyn.durationText].filter(Boolean).join(' · ') || m.dyn.bvid }}</span>
-                          </span>
-                          <span class="shrink-0 self-start rounded bg-stationPink/10 px-1.5 py-0.5 text-[10px] text-stationPink">视频</span>
-                        </div>
-                        <span class="mt-1.5 block text-[11px] text-stationPink">去放映厅看这个 →</span>
-                      </button>
-                    </div>
+                    <!-- 自己发的：悬停浮出撤回（真删，双方同灭）；平时隐形不扰阅读 -->
+                    <button
+                      v-if="m.fromMemberId === member.memberId"
+                      class="mr-1.5 shrink-0 invisible flex h-6 w-6 items-center justify-center rounded-full text-inkFaint transition hover:bg-black/5 hover:text-stationPink group-hover:visible"
+                      title="撤回"
+                      @click="recallMessage(m)"
+                    >
+                      <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.8">
+                        <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-8 0 1 13h8l1-13" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                    <!-- 动态分享：C2 融合气泡（安利语/来源/内容/动作一泡装下，点泡走橱窗） -->
+                    <ShareCard
+                      v-if="m.msgType === 'dynamic' && m.dyn"
+                      kind="dynamic"
+                      :dyn="m.dyn"
+                      :note="m.body || ''"
+                      :mine="m.fromMemberId === member.memberId"
+                      class="max-w-[78%] min-w-0"
+                      @open="gotoSharedDynamic(m.dyn)"
+                    />
+                    <!-- 放映厅分享：同族同款 C2 融合气泡，点泡直落 /watch/bvid -->
+                    <ShareCard
+                      v-else-if="m.msgType === 'video' && m.dyn"
+                      kind="video"
+                      :dyn="m.dyn"
+                      :note="m.body || ''"
+                      :video-gone="!!m.videoGone"
+                      :mine="m.fromMemberId === member.memberId"
+                      class="max-w-[78%] min-w-0"
+                      @open="gotoSharedVideo(m.dyn)"
+                    />
                     <span
                       v-else
                       class="max-w-[72%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed"
@@ -626,7 +667,7 @@ function peerLabel(p) {
                     <path d="M21 12a8 8 0 0 1-8 8c-1.2 0-2.3-.2-3.3-.6L5 21l1.2-3.4A8 8 0 1 1 21 12Z" stroke-linecap="round" stroke-linejoin="round" />
                   </svg>
                 </span>
-                <p class="text-sm text-inkFaint">左边挑个会话，或「＋ 发起私聊」认识位分站伙伴。</p>
+                <p class="text-sm text-inkFaint">左边挑个会话，或「＋ 发起私信」认识位分站伙伴。</p>
               </div>
             </section>
           </div>
@@ -646,35 +687,13 @@ function peerLabel(p) {
                       <path d="M17 9h5M19.5 6.5v5" stroke-linecap="round" />
                     </svg>
                   </span>
-                  发起私聊
+                  发起私信
                 </span>
                 <button class="flex h-7 w-7 items-center justify-center rounded-full text-inkFaint transition hover:bg-black/5 hover:text-inkMain" @click="directoryOpen = false">✕</button>
               </div>
-              <p v-if="directory === null" class="px-4 py-8 text-center text-sm text-inkFaint">在点名…</p>
-              <div v-else-if="!directory.length" class="px-4 py-8 text-center text-sm text-inkFaint">站上没别人可聊。</div>
-              <ul v-else class="max-h-[320px] overflow-y-auto p-1.5">
-                <li v-for="p in directory" :key="p.memberId">
-                  <button
-                    class="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-stationPink/10"
-                    @click="openThread(p.memberId, { memberId: p.memberId, nickname: p.nickname, username: p.username, displayName: p.displayName, faceUrl: p.faceUrl })"
-                  >
-                    <img
-                      :src="p.faceUrl || defaultAvatar"
-                      :alt="p.nickname || p.username || ''"
-                      referrerpolicy="no-referrer"
-                      class="h-9 w-9 shrink-0 rounded-full object-cover"
-                      @error="onAvatarError"
-                    />
-                    <span class="min-w-0 flex-1">
-                      <span class="block truncate text-[13px] text-inkMain">{{ peerLabel(p) }}</span>
-                      <span class="block text-[11px] text-inkFaint">
-                        <template v-if="p.username">{{ p.username }} · </template>UID #{{ p.peerMemberId ?? p.memberId }}
-                      </span>
-                    </span>
-                    <span class="shrink-0 rounded-full bg-stationPink/10 px-2.5 py-1 text-[11px] text-stationPink">开聊</span>
-                  </button>
-                </li>
-              </ul>
+              <div class="px-3 pb-3 pt-3">
+                <PeerPicker mode="open" @pick="p => openThread(p.memberId, p)" />
+              </div>
             </div>
           </template>
         </template>

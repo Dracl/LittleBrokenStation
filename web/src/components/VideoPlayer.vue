@@ -2,8 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import DanmakuLayer from './DanmakuLayer.vue'
 import BIcon from './BIcon.vue'
-import { biPlay, biVolume, biSetting, biPip, biFull, biDmOn, biDmSet } from '../assets/bicons'
-import { probeTrackBitrates } from '../utils/mp4Meta'
+import { biPlay, biVolume, biSetting, biPip, biFull, biDmOn, biDmOff, biDmSet, biHiRes } from '../assets/bicons'
+import { probeMp4 } from '../utils/mp4Meta'
+import { loadAssText, buildHeat, HEAT } from '../utils/dmHeat'
 
 const props = defineProps({
   page: { type: Object, default: null }, // { videoUrl, danmakuUrl, subtitleUrls, index }
@@ -17,8 +18,9 @@ const props = defineProps({
   autoRelated: { type: Boolean, default: false }, // 自动连播：本页最后一 P 播完跳接下来播放首条
   danmakuCount: { type: Number, default: null }, // 全站已归档弹幕总数（watch 顶层字段）
   localItems: { type: Array, default: () => [] }, // 站内弹幕 [{id, pageIdx, t, text}]（已按当前 P 筛好）
+  pendingRevoke: { type: Object, default: null }, // { codec, seq }：观看页的加档请求被驳回，来把乐观态撤回来
 })
-const emit = defineEmits(['next', 'request-codec', 'shell-width', 'next-video', 'codec-change', 'send-danmaku', 'delete-danmaku', 'report-danmaku'])
+const emit = defineEmits(['next', 'request-codec', 'shell-width', 'next-video', 'codec-change', 'send-danmaku', 'delete-danmaku', 'report-danmaku', 'codec-arrived'])
 
 const root = ref(null)
 const video = ref(null)
@@ -149,6 +151,60 @@ const muted = ref(volume.value === 0)
 const currentTime = ref(0)
 const duration = ref(0)
 const bufferedEnd = ref(0)
+
+// ─── 弹幕高能条：本 P 馆藏 .ass 数桶，5s 平滑抹缓坡，轨道正上方画直方图 ───
+// 数据走共享缓存每 P 只一发；切页/时长到货都重算，旧响应凭序号作废不塞新页。
+const heat = ref(null)
+let heatSeq = 0
+async function refreshHeat() {
+  const url = props.page?.danmakuUrl ?? null
+  const dur = duration.value
+  const seq = ++heatSeq
+  if (!url || !(dur > 0) || !Number.isFinite(dur)) {
+    heat.value = null
+    return
+  }
+  const text = await loadAssText(url)
+  if (seq !== heatSeq) return
+  heat.value = text ? buildHeat(text, dur) : null
+}
+watch([() => props.page?.danmakuUrl, duration], refreshHeat)
+// 直方图画成填充曲线而非逐桶矩形：稀疏归档（几十发弹幕）数值只剩几档离散值，
+// 硬边矩形会搭成楼梯。笔法照官方密度线经典套路：曲线走相邻点中点、真点当控制点，
+// 所有转角都圆滑；两端沿基线入出，首尾弹幕也有起落坡；控制点 y 钉 [0,100] 不穿底。
+const heatPath = computed(() => {
+  const v = heat.value
+  if (!v || !v.length) return ''
+  const n = v.length
+  const clampY = (y) => Math.max(0, Math.min(100, y))
+  const r2 = (x) => Math.round(x * 100) / 100
+  const pts = [[0, 100]]
+  for (let i = 0; i < n; i++) {
+    const hgt = v[i] > 0 ? Math.max(2, v[i] * 100) : 0
+    pts.push([i + 0.5, clampY(100 - hgt)])
+  }
+  pts.push([n, 100])
+  const len = pts.length
+  let d = `M${r2(pts[0][0])} ${r2(pts[0][1])}`
+  for (let i = 1; i < len - 2; i++) {
+    const xc = (pts[i][0] + pts[i + 1][0]) / 2
+    const yc = clampY((pts[i][1] + pts[i + 1][1]) / 2)
+    d += ` Q${r2(pts[i][0])} ${r2(pts[i][1])} ${r2(xc)} ${r2(yc)}`
+  }
+  const prev = pts[len - 2]
+  const last = pts[len - 1]
+  d += ` Q${r2(prev[0])} ${r2(clampY(prev[1]))} ${r2(last[0])} ${r2(last[1])} Z`
+  return d
+})
+// 官方同款「扫过即点亮」：同一条路径 clip 到已播段再叠一层白，播放头推到哪亮到哪。
+// clip 宽用 viewBox 桶单位（1 桶 = 1 秒），和路径同一坐标系，不随轨道宽度飘。
+// id 带随机后缀：一页一实例够用，多实例同屏也不串台。
+const heatClipId = 'lbs-heat-' + Math.random().toString(36).slice(2, 8)
+const heatPlayedUnits = computed(() => {
+  const n = heat.value?.length || 0
+  if (!n || !(duration.value > 0)) return 0
+  return Math.min(1, Math.max(0, currentTime.value / duration.value)) * n
+})
 const showControls = ref(true)
 const isFs = ref(false)
 const rate = ref(1)
@@ -157,13 +213,19 @@ const qualityMenu = ref(false)
 const videoHeight = ref(0)
 
 // 只展示不切换：本地馆藏单档，菜单里当前档高亮、其他置灰（B 站样式）。
-const QUALITIES = ['8K 超高清', '4K 超高清', '1080P 60帧', '1080P 高清', '720P 准高清', '480P 标清', '360P 流畅']
+// 两枚 60帧 档不是摆设：引擎实发规格（qualityName）或实测帧率判到 50+ 就点亮（见 qualityLabel）。
+const QUALITIES = ['8K 超高清', '4K 超高清', '1080P 60帧', '1080P 高清', '720P 60帧', '720P 准高清', '480P 标清', '360P 流畅']
 const qualityLabel = computed(() => {
-  const h = videoHeight.value
+  // 真值优先：引擎实发档位（DownloadTask.Metadata.Resolution，如「1080P 60帧」）到站那一刻盖章，
+  // 与 B 站页面菜单同源；没盖章的老货退回实测链：宽高/帧率先吃 ffprobe 回填，再退回前端实测。
+  const f = activeFile.value
+  if (f?.qualityName) return f.qualityName
+  const h = f?.height || videoHeight.value
+  const fps = f?.fps ?? measuredFps.value
   if (h >= 4320) return '8K 超高清'
   if (h >= 2160) return '4K 超高清'
-  if (h >= 1080) return '1080P 高清'
-  if (h >= 720) return '720P 准高清'
+  if (h >= 1080) return fps >= 50 ? '1080P 60帧' : '1080P 高清'
+  if (h >= 720) return fps >= 50 ? '720P 60帧' : '720P 准高清'
   if (h >= 480) return '480P 标清'
   if (h >= 360) return '360P 流畅'
   return '清晰度'
@@ -172,9 +234,12 @@ const gearPanel = ref(false)
 const playPanel = ref(false)
 const holdingSpeed = ref(false)
 
-// 播放设定：分站自己的精简版（循环/连播/比例/长按倍速/关灯）。v2 键：长按倍速改为默认开。
-const play = reactive({ ...{ loop: false, autoNext: true, fit: 'contain', holdSpeed: 1.5, lightsOff: false }, ...(JSON.parse(localStorage.getItem('lbs.player.playPrefs.v2') || 'null') ?? {}) })
-watch(play, (v) => localStorage.setItem('lbs.player.playPrefs.v2', JSON.stringify(v)), { deep: true })
+// 播放设定：分站自己的精简版（自动播放/循环/连播/比例/长按倍速/关灯）。v3 键：自动播放经站长定夺默认关，
+// 旧 v2 配置除自动播放外原样搬迁（它试点期默认过开，留着会冒充站长自己的选择）。
+const legacyPlay = JSON.parse(localStorage.getItem('lbs.player.playPrefs.v2') || 'null') ?? {}
+delete legacyPlay.autoplay
+const play = reactive({ ...{ autoplay: false, loop: false, autoNext: true, fit: 'contain', holdSpeed: 1.5, lightsOff: false }, ...legacyPlay, ...(JSON.parse(localStorage.getItem('lbs.player.playPrefs.v3') || 'null') ?? {}) })
+watch(play, (v) => localStorage.setItem('lbs.player.playPrefs.v3', JSON.stringify(v)), { deep: true })
 
 // ─── 多编码版本（播放页点单加档）───
 // 播放源 = 激活版本的文件或主版本；换源重建 video 元素，进度与播放态随 restorePlan 接力。
@@ -185,6 +250,65 @@ const versions = computed(() => props.page?.codecVersions ?? [])
 const currentSrc = computed(() => {
   const hit = activeCodec.value && versions.value.find((c) => c.codec === activeCodec.value && c.status === 'Arrived')
   return hit ? hit.relPath : props.page?.videoUrl
+})
+
+// 自动播放只认「还没被人为暂停过」：进页/换 P/换版本都算新开张（userPaused 清零），
+// 暂停键按下去就别再自作主张续播（缓冲回调会反复报 canplay，不设这道闸会暂停后偷跑）。
+let userPaused = false
+watch(currentSrc, () => { userPaused = false })
+
+// 激活文件 = 当前播放源对应的台账行（加档行或主版本页）：清晰度/徽记判据全认它，
+// 切版本不许拿上一档的形态冒充（qualityName/fps/audioCodec 各归各行）。
+const activeFile = computed(() =>
+  (activeCodec.value && versions.value.find((c) => c.codec === activeCodec.value && c.status === 'Arrived')) || props.page)
+
+// 前端实测帧率兜底：后端既没实发档也没实测形态（没探过的老货）才轮得到，
+// 开播那一刻用 requestVideoFrameCallback 数 15 帧；暂停时数不到（回调不动），等下次开播再试，
+// 一个源只试一发不反复扰盘。统计面板那发实测（openStats）另走自己的路，这里只喂清晰度判据。
+const measuredFps = ref(null)
+let fpsTriedSrc = null
+watch(playing, (on) => {
+  if (!on) return
+  const src = video.value?.currentSrc
+  if (!src || fpsTriedSrc === src) return
+  const f = activeFile.value
+  if (f?.qualityName || f?.fps != null) {
+    fpsTriedSrc = src // 后端备齐了判据，不必实测
+    return
+  }
+  fpsTriedSrc = src
+  measureFps((v) => { if (v) measuredFps.value = v })
+})
+
+// Hi-Res 徽记判据（从硬到软三层，碰到哪层算哪层）：ffprobe 实测音频编码 flac →
+// 引擎实发音频档 id（30251 杜比系那条线 / 31251 Hi-Res 无损，官方 PlaybackQualityCatalog 同源）→
+// 前端容器 fourcc 实测兜底（fLaC）。引擎设置里勾了 Hi-Res 不算数，盘上真躺着 flac 才算数；
+// 后端判据齐了就不发容器探测，一个源只探一发。官方控件同款：npd-ctrl-flac 只在 flac 流上桌时亮。
+const audioFourccProbe = ref(null)
+let fourccTriedSrc = null
+watch(currentSrc, () => {
+  audioFourccProbe.value = null
+  fourccTriedSrc = null
+})
+watch(playing, (on) => {
+  if (!on) return
+  const src = video.value?.currentSrc
+  if (!src || fourccTriedSrc === src) return
+  const f = activeFile.value
+  if (f?.audioCodec || f?.audioQualityId != null) {
+    fourccTriedSrc = src // 后端备齐判据，不为徽记多发 Range
+    return
+  }
+  fourccTriedSrc = src
+  probeMp4(src).then((m) => {
+    if (video.value?.currentSrc === src) audioFourccProbe.value = m?.audioFourcc ?? null
+  })
+})
+const hiResActive = computed(() => {
+  const f = activeFile.value
+  if (f?.audioCodec) return f.audioCodec === 'flac'
+  if (f?.audioQualityId != null) return f.audioQualityId === 30251 || f.audioQualityId === 31251
+  return audioFourccProbe.value === 'fLaC'
 })
 
 // 版本展示规则（B 站风）：一个编码一行，主版本编码与加档同列；在库的直接摆出，
@@ -201,21 +325,112 @@ function versionInfo(codec) {
   const isMain = props.page?.codec === codec
   if (isMain || row?.status === 'Arrived') {
     // 主版本的大小由后端扫盘带出（mainBytes）；加档行Arrived 后自带 bytes。拿不到就显空，不编数。
-    const bytes = row?.status === 'Arrived' ? row.bytes : isMain ? props.page?.mainBytes ?? null : null
-    return { state: 'stock', fromMain: isMain, bytes: bytes ?? null }
+    const extra = row?.status === 'Arrived'
+    const bytes = extra ? row.bytes : isMain ? props.page?.mainBytes ?? null : null
+    // 分轨码率只读后端落库的实测值（ffprobe 回填）：主版本在 page 上，加档行自带。前端不为此再发 Range。
+    const src = extra ? row : props.page
+    return {
+      state: 'stock',
+      fromMain: isMain,
+      bytes: bytes ?? null,
+      videoKbps: src?.videoKbps ?? null,
+      audioKbps: src?.audioKbps ?? null,
+    }
   }
   if (row?.status === 'Downloading') return { state: 'downloading' }
   if (row?.status === 'Failed') return { state: 'failed' }
+  // 刚点完加档、服务端还没报回这一行：本地乐观态先顶上，免得点了像没点
+  if (pendingCodecs.value.has(codec)) return { state: 'downloading' }
   return { state: 'missing' }
 }
 
-// 在库行右侧标签：文件大小（采得到才显）+ 正在播的那条标「播放中」；未下载的不占位。
+// 乐观态：从「点点单加档」到服务端报回这一行之间总有几秒到几分钟的空窗，先本地记着「进站中」，
+// 这一行立刻从折叠区搬进主列表。服务端一报行就交权（下面 watch 摘除），此后一切以服务端状态为准（回 Failed 就显「失败」）。
+const pendingCodecs = ref(new Set())
+
+watch(
+  versions,
+  (rows) => {
+    for (const codec of [...pendingCodecs.value]) {
+      if (rows.some((r) => r.codec === codec)) pendingCodecs.value.delete(codec)
+    }
+  },
+  { immediate: true },
+)
+
+// 加档请求被驳回（409 已在站/已在途、后端没应答等）：把刚许出去的「进站中」收回来，别让用户对着假状态干等
+watch(
+  () => props.pendingRevoke,
+  (v) => {
+    if (v?.codec) pendingCodecs.value.delete(v.codec)
+  },
+)
+
+// 进站中的引擎实况：有 Downloading 行时每 5 秒拉一发轻量进度端点（与站长室队列同一本账），
+// 「进站中」后缀上百分比/已下/速度；某编码从进度表消失而版本行还报 Downloading = 十有八九定档了，
+// 请父页重拉 watch（@codec-arrived），行自己会换成 Arrived 并带出大小与码率。
+// 块子必须摆在 pendingCodecs/versionInfo 之后：immediate 首评就会碰这两家，摆前面是自爆 TDZ（盐系少女事故）。
+const codecProg = ref({})
+let progTimer = null
+async function pullCodecProg() {
+  if (!props.videoId) return
+  try {
+    const res = await fetch(`/api/videos/${props.videoId}/codecs/progress`)
+    if (!res.ok) return
+    const rows = await res.json()
+    const map = {}
+    for (const r of rows) if (!map[r.codec]) map[r.codec] = r
+    const vanished = Object.keys(codecProg.value).filter((c) => !map[c])
+    codecProg.value = map
+    if (vanished.some((c) => versionInfo(c).state === 'downloading')) emit('codec-arrived')
+  } catch {
+    // 拉不到进度维持原样，不拿猜测冒充实况
+  }
+}
+const hasDownloading = computed(() => CODEC_ROWS.some(([c]) => versionInfo(c).state === 'downloading'))
+watch(hasDownloading, (on) => {
+  if (on && !progTimer) {
+    progTimer = setInterval(pullCodecProg, 5000)
+    pullCodecProg()
+  } else if (!on && progTimer) {
+    clearInterval(progTimer)
+    progTimer = null
+    codecProg.value = {}
+  }
+}, { immediate: true })
+
+function progTail(codec) {
+  const p = codecProg.value[codec]
+  if (!p) return ''
+  const bits = []
+  if (p.percent > 0) bits.push(`${Math.round(p.percent)}%`)
+  if (p.got) bits.push(p.got)
+  if (p.speed && p.speed !== '—' && p.speed !== '0 B/s') bits.push(p.speed)
+  return bits.length ? ` · ${bits.join(' · ')}` : ''
+}
+
+// 在库行右侧标签：分轨码率（有数才显）+ 文件大小（采得到才显）；未下载的不占位。
+// 「播放中」不占字位——当前条蓝底 + 版本名旁的 ▶ 小灯已把话说完。
 function stockBadge(codec) {
   const info = versionInfo(codec)
   const bits = []
+  const kbps = trackKbpsText(info)
+  if (kbps) bits.push(kbps)
   if (info.bytes != null) bits.push(fmtVersionSize(info.bytes))
-  if (playingCodec() === codec) bits.push('播放中')
   return bits.join(' · ')
+}
+
+// 分轨码率只留数字不带 kbps 字样（站长要求；单位在统计面板里看）：「视频 2,814 / 音频 184」，
+// 音频为空省成「视频 1,195」，两个都 null 整段不占位。
+// 数据只来自后端落库值：downloading / failed 行文件还没落盘，不探、也不拿主版本的数糊，直接空着。
+function trackKbpsText(info) {
+  if (info.state !== 'stock') return ''
+  const v = info.videoKbps
+  const a = info.audioKbps
+  if (v == null && a == null) return ''
+  if (v != null && a != null) return `视频 ${v.toLocaleString()} / 音频 ${a.toLocaleString()}`
+  if (v != null) return `视频 ${v.toLocaleString()}`
+  return `音频 ${a.toLocaleString()}`
 }
 
 const presentRows = computed(() => CODEC_ROWS.filter(([c]) => versionInfo(c).state !== 'missing'))
@@ -235,7 +450,10 @@ function clickVersion(codec) {
     setCodec(info.fromMain ? null : codec)
     return
   }
-  if (info.state === 'failed' || info.state === 'missing') emit('request-codec', codec)
+  if (info.state === 'failed' || info.state === 'missing') {
+    pendingCodecs.value.add(codec)
+    emit('request-codec', codec)
+  }
 }
 
 // 版本账按分 P 记，切 P 回主版本
@@ -571,12 +789,22 @@ function togglePlay() {
   const v = video.value
   if (!v || !props.page?.videoUrl) return
   if (v.paused) {
+    userPaused = false
     logEvent('播放')
     v.play().catch(() => {})
   } else {
+    userPaused = true
     logEvent('暂停')
     v.pause()
   }
+}
+
+// canplay 时分两件事：收尾缓冲态；若开了自动播放且没人按下过暂停，就自己开跑。
+// 浏览器不给有声放行时 play() 会被拒，中央大按钮接着，不白屏干等。
+function onCanplay() {
+  waiting.value = false
+  stuckRecover.value = false
+  if (play.autoplay && !userPaused && !playing.value) video.value?.play().catch(() => {})
 }
 
 function fmt(sec) {
@@ -795,17 +1023,27 @@ async function toggleFullscreen() {
   else await root.value?.requestFullscreen().catch(() => {})
 }
 
-function probeCodec(v) {
-  const probes = [
-    ['avc1.640033', 'H.264'],
-    ['avc1.64E01F', 'H.264'],
-    ['hev1.1.6.L93.b0', 'HEVC'],
-    ['av01.0.08M.08', 'AV1'],
-  ]
-  for (const [tag, label] of probes) {
-    if (v.canPlayType(`video/mp4;codecs="${tag}"`)) return { tag, label }
-  }
-  return { tag: 'avc1.640033', label: 'H.264' }
+// 统计面板的编码只认容器实测。旧做法拿 canPlayType 猜：它问的是「浏览器放不放得了」，
+// Chrome 对第一项 avc1 就回 probably，循环第一次就 return，无论实际封的什么都说 H.264 —— 那是骗人。
+// 实测探不到 fourcc 才退回数据库标称，并且明标「(标称)」，让用户分得清哪个是量的、哪个是登记的。
+const NOMINAL_CODEC = {
+  avc: { label: 'H.264', fourcc: 'avc1' },
+  hevc: { label: 'HEVC', fourcc: 'hvc1' },
+  av1: { label: 'AV1', fourcc: 'av01' },
+}
+
+// 当前在放的是哪个编码：跟 currentSrc 用同一套判据（加档行 Arrived 才算真在播加档），别说一套、播另一套
+function nominalCodec() {
+  const hit = activeCodec.value && versions.value.find((c) => c.codec === activeCodec.value && c.status === 'Arrived')
+  return NOMINAL_CODEC[hit ? activeCodec.value : props.page?.codec] ?? null
+}
+
+// 把实测 fourcc 拼成统计面板那行 mime；哪一路没探到就缺哪一路，两条都没有整行显「—」（绝不写死 mp4a.40.2）
+function mimeText(videoFourcc, audioFourcc, suffix = '') {
+  const parts = []
+  if (videoFourcc) parts.push(`video/mp4;codecs="${videoFourcc}"`)
+  if (audioFourcc) parts.push(`audio/mp4;codecs="${audioFourcc}"`)
+  return parts.length ? `${parts.join(', ')}${suffix}` : '—'
 }
 
 function measureFps(done) {
@@ -931,13 +1169,16 @@ function fmtBytes(bytes) {
   return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(0)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+let statsProbe = 0 // 面板探测的代次：关面板、换源后迟到的那份结果不许再往面板上写
+
 async function openStats() {
   const v = video.value
   ctx.visible = false
   statsOpen.value = true
   logEvent('打开统计信息')
   if (!v) return
-  const codec = probeCodec(v)
+  const src = v.currentSrc
+  const seq = ++statsProbe
   const host = (() => {
     try {
       return new URL(v.currentSrc).host
@@ -947,24 +1188,33 @@ async function openStats() {
   })()
   const size = await probeTotalBytes()
   const totalKbps = size && duration.value ? Math.round((size * 8) / duration.value / 1000) : null
+  // 先把标称版摆上去，实测回来再盖：面板不该为了等一发 Range 探测而空着字段。
+  const nominal = nominalCodec()
+  const nominalTag = nominal ? `${nominal.label} (标称)` : '—'
   stats.value = {
-    'Mime Type': `video/mp4;codecs="${codec.tag}", audio/mp4;codecs="mp4a.40.2"`,
+    'Mime Type': mimeText(nominal?.fourcc ?? null, null, nominal ? ' (标称)' : ''),
     'Player Type': 'LocalPlayer',
     'File Size': size ? fmtBytes(size) : '—',
     Resolution: '—',
-    'Video DataRate': totalKbps ? `${totalKbps.toLocaleString()} Kbps [${codec.label}]` : '—',
+    'Video DataRate': totalKbps ? `${totalKbps.toLocaleString()} Kbps [${nominalTag}]` : '—',
     'Audio DataRate': '—',
     Segments: `${v.buffered.length || 0} / 1`,
     'Dropped Frames': '—',
     'Video Host': host,
     'Audio Host': host,
   }
-  // 真·分轨码率：探 mp4 容器的 moov/trak，算出视频、音频各自的平均码率。
-  probeTrackBitrates(v.currentSrc, size).then((tr) => {
-    if (!tr || !statsOpen.value) return
-    if (tr.video) stats.value['Video DataRate'] = `${tr.video.toLocaleString()} Kbps [${codec.label}]`
-    if (tr.audio) stats.value['Audio DataRate'] = `${tr.audio.toLocaleString()} Kbps`
-    logEvent(`分轨码率 视频${tr.video ?? '?'} / 音频${tr.audio ?? '?'} Kbps`)
+  // 一次 moov 取样同时拿编码与分轨码率：每开一次面板只探一发，切版本后重开面板会重探（不拿旧缓存糊）。
+  probeMp4(src, size).then((m) => {
+    if (seq !== statsProbe || !statsOpen.value || video.value?.currentSrc !== src) return
+    const videoLabel = m?.videoLabel ?? nominalTag
+    if (m?.videoKbps) stats.value['Video DataRate'] = `${m.videoKbps.toLocaleString()} Kbps [${videoLabel}]`
+    else if (m) stats.value['Video DataRate'] = totalKbps ? `${totalKbps.toLocaleString()} Kbps [${videoLabel}]` : '—'
+    // 括号里跟视频一样用人话标签（AAC / E-AC-3…），裸 fourcc 只留在 Mime Type 那行给愿意看的人
+    if (m?.audioKbps) stats.value['Audio DataRate'] = `${m.audioKbps.toLocaleString()} Kbps [${m.audioLabel ?? m.audioFourcc ?? '—'}]`
+    if (m?.videoFourcc || m?.audioFourcc) {
+      stats.value['Mime Type'] = mimeText(m.videoFourcc ?? null, m.audioFourcc ?? null)
+    }
+    logEvent(`容器实测 视频${m?.videoLabel ?? '?'} / 音频${m?.audioFourcc ?? '?'} 分轨码率 视频${m?.videoKbps ?? '?'} / 音频${m?.audioKbps ?? '?'} Kbps`)
   })
   if (v.videoWidth) {
     const apply = (fps) => {
@@ -987,6 +1237,7 @@ async function openStats() {
 
 function closeStats() {
   statsOpen.value = false
+  statsProbe += 1 // 在飞的探测结果就此作废，别等下次打开时把上一份糊上来
   clearInterval(statsTimer)
 }
 
@@ -1208,7 +1459,7 @@ const STROKE_ITEMS = [
       @pause="onMediaPause"
       @waiting="onMediaWait"
       @stalled="onMediaWait"
-      @canplay="waiting = false; stuckRecover = false"
+      @canplay="onCanplay"
       @ended="onEnded"
       @volumechange="muted = video.muted; volume = video.muted ? volume : video.volume"
     >
@@ -1256,10 +1507,10 @@ const STROKE_ITEMS = [
       ⏩ {{ play.holdSpeed }}× 快进中
     </div>
 
-    <!-- 暂停时的中央大按钮 -->
+    <!-- 暂停时的大按钮：站长钦点右下角，不再堵画面正中（小电视只在 playing 缓冲时报到，与它错峰不同台）。 -->
     <button
       v-if="!playing && page?.videoUrl"
-      class="absolute left-1/2 top-1/2 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur transition hover:bg-stationPink"
+      class="absolute bottom-16 right-4 flex h-14 w-14 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur transition hover:bg-stationPink"
       @click.stop="togglePlay"
     >
       <BIcon :meta="biPlay" class="ml-1 h-8 w-8" />
@@ -1275,6 +1526,8 @@ const STROKE_ITEMS = [
     >
       缓冲停滞，点击恢复播放
     </button>
+
+    <!-- 缓冲加载小电视已拆：它和右下角暂停大按钮同角同家，状态机摆动的瞬间会叠在一起闪（站长令删）。 -->
 
     <!-- 底部控制条：淡背与续播气泡同源，opacity 缓进缓出 500ms（v-show 只能 display 硬切不淡，改 pointer-events-none 兼管隐藏时不挡点）-->
     <div
@@ -1293,6 +1546,25 @@ const STROKE_ITEMS = [
         @pointerup="trackUp"
         @pointerleave="hover.show = false"
       >
+        <!-- 弹幕高能条：官方口径的直方图贴轨道正上方（峰 48px 白 15% 平滑 5s，站长定稿）。
+             stretch viewBox 与轨道同宽免 ResizeObserver，pointer-events-none 不挡 seek，
+             住在控制条里随它淡入淡出（官方同款显隐）；无弹幕时整条不存在，零视觉负担 -->
+        <svg
+          v-if="heatPath"
+          class="pointer-events-none absolute inset-x-0 bottom-[calc(50%+2px)] w-full"
+          :style="{ height: HEAT.peakPx + 'px' }"
+          :viewBox="'0 0 ' + heat.length + ' 100'"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <clipPath :id="heatClipId">
+              <rect x="0" y="0" :width="heatPlayedUnits" height="100" />
+            </clipPath>
+          </defs>
+          <path :d="heatPath" fill="#fff" :opacity="HEAT.alpha" />
+          <path :d="heatPath" fill="#fff" :opacity="HEAT.playedAlpha" :clip-path="'url(#' + heatClipId + ')'" />
+        </svg>
         <div class="relative h-1 w-full rounded-full bg-white/25 transition-[height] group-hover/track:h-1.5">
           <div class="absolute inset-y-0 left-0 rounded-full bg-white/45" :style="{ width: duration ? (bufferedEnd / duration) * 100 + '%' : '0%' }"></div>
           <div class="absolute inset-y-0 left-0 rounded-full bg-stationPink" :style="{ width: duration ? (currentTime / duration) * 100 + '%' : '0%' }"></div>
@@ -1319,18 +1591,17 @@ const STROKE_ITEMS = [
 
         <span class="mx-1.5 text-xs tabular-nums text-white/90">{{ fmt(currentTime) }} / {{ fmt(duration) }}</span>
 
-        <!-- 缓冲素圈：14px 贴时间戳身后 5px，无底无框透出控制条渐变（从正中 40px 大圈搬来，站长定稿） -->
-        <span
-          v-if="waiting && playing && !stuckRecover"
-          class="ml-[5px] h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white"
-          title="缓冲中"
-        ></span>
-
         <span class="flex-1"></span>
 
         <!-- 音量：悬停弹 B 站同款竖条（深底圆角盒：数字 28 + 轨道 60 + 留白，骑在音量钮正上方）。
              可见性走 volVisible 状态机（hover+拖拽锁+收起宽限），不用 CSS group-hover：
              弹层与按钮间那 8px 是 :hover 死区，穿越瞬间会把弹层抽走、拖拽腰断。 -->
+        <!-- Hi-Res 无损音质徽记（B 站官方 npd-ctrl-flac 控件徽记同源：path 直抄官方播放器包 c586 模块 780，
+             无 fill 靠 currentColor 上色）：坐在音量钮旁，官方也是这个位置；只在音频真是 flac 时上桌。 -->
+        <span v-if="hiResActive" class="flex h-8 items-center px-1 text-white" title="Hi-Res 无损音质">
+          <BIcon :meta="biHiRes" class="h-[20px] w-auto" />
+        </span>
+
         <div ref="volZoneEl" class="relative flex h-8 items-center gap-1 rounded px-1 hover:bg-white/10" @mouseenter="volEnter" @mouseleave="volLeave">
           <button class="flex h-6 w-6 items-center justify-center" :title="muted ? '取消静音（M）' : '静音（M）'" @click="muted ? (applyVolume(volume || 1)) : applyVolume(0)">
             <span class="relative flex h-5 w-5 items-center justify-center">
@@ -1442,7 +1713,7 @@ const STROKE_ITEMS = [
     <!-- 播放设定面板：分站精简版 -->
     <div
       v-if="playPanel"
-      class="absolute bottom-14 right-3 z-20 w-64 rounded-xl bg-[#222]/95 p-3.5 text-xs text-white/90 shadow-xl backdrop-blur"
+      class="absolute bottom-14 right-3 z-20 w-[300px] rounded-xl bg-[#222]/95 p-3.5 text-xs text-white/90 shadow-xl backdrop-blur"
       @click.stop
       @mousemove="wakeControls"
     >
@@ -1451,6 +1722,12 @@ const STROKE_ITEMS = [
         <button class="absolute right-0 top-0 text-white/50 transition hover:text-white" @click="playPanel = false">✕</button>
       </p>
 
+      <div class="mb-2.5 flex items-center justify-between">
+        <span class="text-white/85">自动播放</span>
+        <button class="relative h-5 w-9 rounded-full transition" :class="play.autoplay ? 'bg-stationBlue' : 'bg-white/25'" @click="play.autoplay = !play.autoplay">
+          <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" :class="play.autoplay ? 'left-[18px]' : 'left-0.5'"></span>
+        </button>
+      </div>
       <div class="mb-2.5 flex items-center justify-between">
         <span class="text-white/85">单集循环</span>
         <button class="relative h-5 w-9 rounded-full transition" :class="play.loop ? 'bg-stationBlue' : 'bg-white/25'" @click="play.loop = !play.loop">
@@ -1500,17 +1777,25 @@ const STROKE_ITEMS = [
         <button
           v-for="c in presentRows"
           :key="c[0]"
-          class="flex items-center justify-between rounded px-2 py-1.5 transition"
+          class="relative flex items-center justify-between rounded px-2 py-1.5 transition"
           :class="playingCodec() === c[0] ? 'bg-stationBlue text-white' : versionInfo(c[0]).state === 'stock' ? 'bg-white/10 hover:bg-white/20' : 'bg-white/5 text-white/50 hover:bg-white/10'"
           :title="c[0] === 'hevc' ? 'HEVC 在部分浏览器可能放不动' : ''"
           @click="clickVersion(c[0])"
         >
-          <span>{{ c[1] }} 版</span>
-          <span class="text-[10px] tabular-nums">
+          <span class="shrink-0 whitespace-nowrap">
+            <span v-if="playingCodec() === c[0]" class="mr-1 text-[9px]">▶</span>{{ c[1] }} 版
+          </span>
+          <span class="ml-2 min-w-0 truncate text-right text-[10px] tabular-nums whitespace-nowrap">
             <template v-if="versionInfo(c[0]).state === 'stock'">{{ stockBadge(c[0]) }}</template>
-            <template v-else-if="versionInfo(c[0]).state === 'downloading'">进站中…</template>
+            <template v-else-if="versionInfo(c[0]).state === 'downloading'">进站中{{ progTail(c[0]) }}</template>
             <template v-else-if="versionInfo(c[0]).state === 'failed'">失败 · 重点重试</template>
           </span>
+          <!-- 进站中的行底细进度条：与站长室队列同款，不占字位也能看出在动 -->
+          <span
+            v-if="versionInfo(c[0]).state === 'downloading' && codecProg[c[0]] && codecProg[c[0]].percent > 0"
+            class="absolute bottom-0 left-0 h-0.5 rounded-full bg-white/50 transition-all"
+            :style="{ width: `${Math.min(100, Math.round(codecProg[c[0]].percent))}%` }"
+          ></span>
         </button>
       </div>
       <button v-if="missingRows.length" class="mb-2 px-1 text-left text-[10px] text-white/40 transition hover:text-white/70" @click="showMore = !showMore">
@@ -1697,17 +1982,17 @@ const STROKE_ITEMS = [
         </span>
         <span v-if="localItems.length > 0" class="hidden text-inkFaint/70 sm:inline">站内弹幕 +{{ localItems.length }}</span>
         <!-- 弹幕开关与设定：从控制栏搬来计数右边（B 站把弹幕设定也放弹幕栏一带） -->
-        <button class="flex h-7 w-7 items-center justify-center rounded hover:bg-black/5" title="弹幕（D）" @click="danmaku.on = !danmaku.on">
-          <!-- 官方弹幕枚：开启时对勾（第二条 path）染 B 站蓝，关闭态整枚灰掉 -->
-          <BIcon :meta="biDmOn" class="h-[20px] w-[20px] transition" :class="danmaku.on ? 'dm-on text-inkSub' : 'text-inkFaint/50'" />
+        <button class="flex h-8 w-8 items-center justify-center rounded hover:bg-black/5" title="弹幕（D）" @click="danmaku.on = !danmaku.on">
+          <!-- 官方弹幕枚：开启对勾（第二条 path）染 B 站蓝；关闭态换官方同款「弹+右下禁止符」枚，整体灰掉 -->
+          <BIcon :meta="danmaku.on ? biDmOn : biDmOff" class="h-6 w-6 transition" :class="danmaku.on ? 'dm-on text-inkSub' : 'text-inkFaint/50'" />
         </button>
         <button
-          class="flex h-7 w-7 items-center justify-center rounded hover:bg-black/5"
+          class="flex h-8 w-8 items-center justify-center rounded hover:bg-black/5"
           :class="gearPanel ? 'bg-stationBlue/10' : ''"
           title="弹幕设定"
           @click.stop="gearPanel = !gearPanel; playPanel = false; rateMenu = false; qualityMenu = false; wakeControls()"
         >
-          <BIcon :meta="biDmSet" class="h-[20px] w-[20px] text-inkSub" />
+          <BIcon :meta="biDmSet" class="h-6 w-6 text-inkSub" />
         </button>
       </div>
       <div class="flex min-w-0 flex-1 items-center gap-2 rounded-full bg-[#f1f2f3] px-3.5 py-1.5">

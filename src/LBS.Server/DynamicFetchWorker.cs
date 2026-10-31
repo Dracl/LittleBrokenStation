@@ -68,6 +68,9 @@ public sealed class DynamicFetchWorker(
         }
     }
 
+    /// <summary>单条动态评论的手动补采防重入闸（前端刷新钮连点只放行一个）。</summary>
+    private readonly HashSet<string> commentRefreshBusy = [];
+
     /// <summary>站长手动催一轮：进不来闸就回 false（防重入），成功起跑回 true。</summary>
     public bool TryStartOnce(long? onlyMid)
     {
@@ -283,7 +286,7 @@ public sealed class DynamicFetchWorker(
                                 localPics.Select(u => pictureMap.TryGetValue(u, out var picLocal) ? picLocal : null).ToList(),
                                 AssetJson)
                             : null,
-                        c.Level))
+                        c.Level, c.IpLocation))
                     .ToList());
                 if (outcome.Ok)
                 {
@@ -315,6 +318,76 @@ public sealed class DynamicFetchWorker(
         {
             logger.LogInformation("动态评论巡捕：本轮回货 {Comments} 条，盖章 {Finished}/{Queued} 条动态",
                 totalComments, finished, queue.Count);
+        }
+    }
+
+    /// <summary>
+    /// 单条动态的评论即时补采（前端抽屉刷新钮）：拉 B 站 → 资产落盘 → UpsertComments 增量写（rpid 只更不删）
+    /// → 重新盖章。同一时刻同一条只放行一个；风控/失败不盖章不改账，留下轮巡捕。
+    /// </summary>
+    public async Task<(bool Ok, bool Busy, string? Reason, int Total)> RefreshCommentsOnceAsync(string dynamicId, CancellationToken cancellationToken)
+    {
+        lock (commentRefreshBusy)
+        {
+            if (!commentRefreshBusy.Add(dynamicId))
+            {
+                return (false, true, null, 0);
+            }
+        }
+
+        try
+        {
+            var coord = db.GetPendingCommentCoords(dynamicId);
+            if (coord is null)
+            {
+                return (false, false, "not_found", 0);
+            }
+
+            var outcome = await policy.RunForActivityAsync(() => fetcher.FetchCommentsAsync(dynamicId, coord.CommentType, coord.CommentOid, cancellationToken));
+            if (!outcome.Ok)
+            {
+                return (false, false, outcome.RiskControlled ? "B 站风控中，改日再催" : outcome.Error ?? "B 站没回货", 0);
+            }
+
+            // 资产落盘与巡捕同一套：存不下的前端热链兑底。
+            var faceMap = await assetCache.CacheAvatarUrlsAsync(outcome.Comments.Select(c => c.Face), cancellationToken);
+            var emoteMap = outcome.Emotes is { Count: > 0 } emotePairs
+                ? await assetCache.CacheEmoteUrlsAsync(emotePairs, cancellationToken)
+                : null;
+            var pictureMap = await assetCache.CachePictureUrlsAsync(
+                outcome.Comments.SelectMany(c => c.Pictures ?? (IReadOnlyList<string>)[]), cancellationToken);
+
+            db.UpsertComments(dynamicId, outcome.Comments
+                .Select(c => new StationDb.DynamicCommentRow(c.Rpid, c.RootRpid, c.ParentRpid, c.Mid, c.Name, c.Face, c.Message, c.Like, c.CtimeUtc,
+                    c.Face is not null && faceMap.TryGetValue(c.Face, out var local) ? local : null,
+                    c.Pictures is { Count: > 0 } remotePics ? JsonSerializer.Serialize(remotePics, AssetJson) : null,
+                    c.Pictures is { Count: > 0 } localPics
+                        ? JsonSerializer.Serialize(
+                            localPics.Select(u => pictureMap.TryGetValue(u, out var picLocal) ? picLocal : null).ToList(),
+                            AssetJson)
+                        : null,
+                    c.Level, c.IpLocation))
+                .ToList());
+            db.MarkCommentsFetched(dynamicId, outcome.TotalCount > 0 ? outcome.TotalCount : null,
+                emoteMap is { Count: > 0 } ? JsonSerializer.Serialize(emoteMap) : null);
+            logger.LogInformation("动态评论手动补采：{DynamicId} 回货 {Comments} 条", dynamicId, outcome.Comments.Count);
+            return (true, false, null, outcome.TotalCount);
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, false, "客户端提前走了，本轮作废", 0);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "动态评论手动补采：{DynamicId} 翻车", dynamicId);
+            return (false, false, "补采翻车，等巡捕下轮再试", 0);
+        }
+        finally
+        {
+            lock (commentRefreshBusy)
+            {
+                commentRefreshBusy.Remove(dynamicId);
+            }
         }
     }
 

@@ -53,12 +53,13 @@ public sealed class WeeklyReportWorker(StationDb db, ILogger<WeeklyReportWorker>
     }
 
     /// <summary>
-    /// 该不该发（纯函数）：候选周 = 相对 now 的最近一个完整周；发报窗口 = 该周收尾（本地周一 00:00）之后的 SendHourLocal 小时起。
+    /// 该不该发（纯函数）：候选周 = 相对 now 的最近一个**已过完**的整周（就是周报的 0 桶，同一把尺）；
+    /// 发报窗口 = 该周收尾（本地周一 00:00）之后的 SendHourLocal 小时起。
     /// 已进窗口且水位落后候选周 → 回该发周的标识；否则 null（没到点、或这周早就发过）。
     /// </summary>
     internal static string? DueWeekKey(DateTimeOffset nowUtc, string? watermark)
     {
-        var bucket = StationDb.LocalWeekBucket(1, nowUtc);
+        var bucket = StationDb.LocalWeekBucket(0, nowUtc);
         if (nowUtc < bucket.UntilUtc.AddHours(SendHourLocal))
         {
             return null;
@@ -109,6 +110,36 @@ public sealed class WeeklyReportWorker(StationDb db, ILogger<WeeklyReportWorker>
         return true;
     }
 
+    /// <summary>这一周是不是真的什么都没干过（只看周内的流水，不看全站家底——家底永远有数，不算这周的动静）。</summary>
+    internal static bool IsQuietWeek(StationDb.WeeklyReport report) =>
+        report.NewsCount == 0
+        && report.DanmakuAdded == 0
+        && report.WatchOpens == 0
+        && report.WatchPlays == 0
+        && report.Duration.Shots == 0
+        && report.Searches == 0
+        && report.Submissions == 0
+        && report.CommentsArchived == 0
+        && report.DynamicsArchived == 0
+        && report.DmSent == 0
+        && report.NewMembers == 0;
+
+    /// <summary>时行人话：够一小时报「2 小时 13 分」，不够报「35 分钟」，十分种以下报「40 秒」（短到零秒也报零秒，不拿空白冒充没看）。</summary>
+    internal static string HumanDuration(long seconds)
+    {
+        if (seconds < 60)
+        {
+            return $"{seconds} 秒";
+        }
+
+        var h = seconds / 3600;
+        var m = seconds % 3600 / 60;
+        return h > 0 ? (m > 0 ? $"{h} 小时 {m} 分" : $"{h} 小时") : $"{m} 分钟";
+    }
+
+    /// <summary>公告里的标题截短：超 24 字加省略号，不让一条长标题把整行顶坏。</summary>
+    internal static string ShortTitle(string title) => title.Length <= 24 ? title : title[..24] + "…";
+
     /// <summary>
     /// 一轮巡检（now 给死版供直测）：该发 → 聚合上周数、BroadcastToActive 播全站公告、盖水位，回已发周标识；不该发 → null。
     /// 先播后盖：播砸了水位不动，下轮补发；播成功盖水位前进程没了才会重播一次——公告重发一条，不伤台账。
@@ -121,14 +152,53 @@ public sealed class WeeklyReportWorker(StationDb db, ILogger<WeeklyReportWorker>
             return null;
         }
 
-        var report = db.GetWeeklyReport(1, nowUtc);
+        var report = db.GetWeeklyReport(0, nowUtc); // 0 = 上一个已过完的整周（周桶语义改过：不给看未过完的本周）
+
+        // 整周零动静就不打扰：分站常有闲着的一周，播一条「新增 0 件、弹幕 +0 条」的公告只是噪音
+        // （家底那行永远有数，不能拿它当动静看）。水位照样盖上，免得下周回头又把同一周重播一遍。
+        if (IsQuietWeek(report))
+        {
+            db.SetSetting(WatermarkKey, target);
+            logger?.LogInformation("周报 {Week} 整周零动静，跳过播送只盖水位", target);
+            return target;
+        }
+
         var highlight = report.Hottest.Count > 0
             ? $"上周新增稿件 {report.NewsCount} 件，弹幕 +{report.DanmakuAdded} 条，最多人看的一条有 {report.Hottest[0].Viewers} 位观众。"
             : $"上周新增稿件 {report.NewsCount} 件，弹幕 +{report.DanmakuAdded} 条。";
-        var body = string.Join('\n',
+
+        // 流水账一行：把一周的动静扫完——放映、搜索、投稿、入库、私信，有动静才报数，全是台账真数。
+        var ledger = string.Join(" · ",
+            $"播放 {report.WatchPlays} 次", $"观众 {report.UniqueViewers} 人", $"搜索 {report.Searches} 回",
+            $"投稿 {report.Submissions} 次", $"评论入库 {report.CommentsArchived} 条", $"动态入库 {report.DynamicsArchived} 条",
+            $"私信 {report.DmSent} 封", report.NewMembers > 0 ? $"新席位 +{report.NewMembers}" : "没新人入席");
+        // 站外游客一行：有游客才拼（零游客不摆空账）；只报去重人数与次数，绝不外发 IP 本体。
+        var lines = new List<string>
+        {
             highlight,
-            $"全站家底：{report.Totals.Videos} 件稿件 · {report.Totals.Members} 位成员 · {report.Totals.Danmaku} 条弹幕。",
-            "去站里看 /weekly");
+            $"上周流水：{ledger}。",
+            $"全站家底：{report.Totals.Videos} 件稿件 · {report.Totals.Members} 位成员 · {report.Totals.Danmaku} 条弹幕 · {report.Totals.Dynamics} 条动态 · {report.Totals.DynamicComments} 条存档评论 · {report.Totals.DmMessages} 封私信。",
+        };
+        if (report.Guest.Heads > 0)
+        {
+            lines.Add($"站外游客：{report.Guest.Heads} 位未登录逛了站，进厅 {report.Guest.Opens} 次、播放 {report.Guest.Plays} 次"
+                + (report.Guest.BlockedWatch > 0 ? $"，{report.Guest.BlockedWatch} 回想进片页被门挡住。" : "。"));
+        }
+
+        // 时长一行：只报成员心跳换算的墙钟秒（游客看不了片，一枪不入账），零心跳就不摆空账。
+        if (report.Duration.Shots > 0)
+        {
+            var topTimeVideo = report.Duration.TopVideos.Count > 0 ? report.Duration.TopVideos[0] : null;
+            var topTimeUp = report.Duration.TopUps.Count > 0 ? report.Duration.TopUps[0] : null;
+            lines.Add($"时长账：真看了 {HumanDuration(report.Duration.Seconds)}（心跳 {report.Duration.Shots} 枪），看完 {report.Duration.Finished} 部"
+                + (topTimeVideo is not null
+                    ? $"，最耗时的是《{ShortTitle(topTimeVideo.Title ?? topTimeVideo.Bvid)}》（{HumanDuration(topTimeVideo.Seconds)}）"
+                    : "")
+                + (topTimeUp is not null ? $"；看得最多的 UP 是 {topTimeUp.Key}（{HumanDuration(topTimeUp.Seconds)}）。" : "。"));
+        }
+
+        lines.Add("去站里看 /weekly");
+        var body = string.Join('\n', lines);
 
         var sent = db.BroadcastToActive(MemberMail.KindAnnounce, $"分站周报 · {target}", body);
         db.SetSetting(WatermarkKey, target);
