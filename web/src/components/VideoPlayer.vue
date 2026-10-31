@@ -14,6 +14,7 @@ const props = defineProps({
   aid: { type: Number, default: 0 },
   videoId: { type: Number, default: 0 }, // 分站台账里的馆藏 id（进度上报的钥匙；没它就无处可报）
   resumeSec: { type: Number, default: 0 }, // 观看页算好的续播点（只在进页那一份，手动切 P 不再打断）
+  restartTick: { type: Number, default: 0 }, // 续播泡上「从头开始」的指令计数：逢增跳 0
   hasNextPage: { type: Boolean, default: false },
   autoRelated: { type: Boolean, default: false }, // 自动连播：本页最后一 P 播完跳接下来播放首条
   danmakuCount: { type: Number, default: null }, // 全站已归档弹幕总数（watch 顶层字段）
@@ -866,6 +867,15 @@ watch(() => props.resumeSec, (v) => {
   const el = video.value
   if (resumePending && el && el.readyState >= 1) flushResume()
 }, { immediate: true })
+
+// 从头开始：续播泡上的反悔钮——收到增量就跳 0 接着播；元数据没就位时 seekTo 自己会碎，
+// 而那会儿本来就还没离开片头，不亏
+watch(() => props.restartTick, (v) => {
+  if (Number(v) > 0) {
+    resumePending = 0 // 撤回还没落地的续播点，别让它在 seek 之后又把片子拽回去
+    seekTo(0)
+  }
+})
 
 function flushResume() {
   if (!resumePending) return

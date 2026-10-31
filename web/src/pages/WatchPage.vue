@@ -105,6 +105,13 @@ function clearResumeTip() {
   resumeTipFading.value = false
 }
 
+// 续播泡上的反悔钮：报一个计数给播放器，它收到就跳 0 接着播；泡同时收掉，不留下次的悬念
+const restartTick = ref(0)
+function restartFromStart() {
+  restartTick.value += 1
+  clearResumeTip()
+}
+
 async function loadResumePoint(videoId, pageIndex) {
   resumeSec.value = 0
   clearResumeTip()
@@ -628,6 +635,7 @@ const playerShellW = ref(0)
             :aid="data.aid"
             :video-id="data.id"
             :resume-sec="resumeSec"
+            :restart-tick="restartTick"
             :danmaku-count="data.danmakuCount"
             :has-next-page="hasNextPage"
             :auto-related="autoRelated"
@@ -654,6 +662,13 @@ const playerShellW = ref(0)
             :style="playerShellW ? { left: `calc(50% - ${playerShellW / 2 - 15}px)` } : undefined"
           >
             上次看到 <span class="font-mono text-white/95">{{ clockOf(resumeTip.sec) }}</span>，已为你继续
+            <!-- 反悔钮：外层 pointer-events-none 不挡画面，这颗自己把手伸回来（子元素可重新开点） -->
+            <button
+              class="pointer-events-auto ml-2 cursor-pointer font-medium text-stationPink transition hover:opacity-80 active:scale-95"
+              @click="restartFromStart"
+            >
+              从头开始
+            </button>
           </div>
           </div>
 
