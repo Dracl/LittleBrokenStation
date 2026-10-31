@@ -281,57 +281,55 @@ function openLogin(mode) {
             </span>
           </div>
 
-          <!-- 全量列座（选中时段内）：页面自然滚，不再挤 440px 的内滚窗口 -->
-          <ul v-if="filteredHistory.length" class="space-y-2">
-            <li
+          <!-- 格子阵列（选中时段内）：封面大头卡自适应列宽，一屏装得下的比长条多得多 -->
+          <div v-if="filteredHistory.length" class="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3">
+            <div
               v-for="item in filteredHistory"
               :key="item.videoId"
-            :data-video-id="item.videoId"
-            class="hist-row flex items-start gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
-            :class="{ 'hist-row-out': historyExiting.has(item.videoId) }"
-          >
-            <RouterLink :to="`/watch/${item.bvid}`" class="group flex min-w-0 flex-1 items-start gap-3 no-underline">
-              <span class="relative block h-[76px] w-[124px] shrink-0 overflow-hidden rounded-lg bg-black/[0.06]">
-                <img
-                  v-if="historyCover(item)"
-                  :src="historyCover(item)"
-                  :alt="item.title || item.bvid"
-                  loading="lazy"
-                  decoding="async"
-                  referrerpolicy="no-referrer"
-                  class="hist-cover h-full w-full object-cover"
-                  @load="onCoverLoad"
-                />
-                <span v-else class="flex h-full w-full select-none items-center justify-center font-mono text-sm text-inkFaint" aria-hidden="true">
-                  {{ (item.title || item.bvid || '?').slice(0, 1) }}
-                </span>
-              </span>
-              <span class="min-w-0 flex-1">
-                <span class="block truncate text-sm text-inkMain transition group-hover:text-stationPink" :title="item.title || item.bvid">
-                  {{ item.title || item.bvid }}
-                </span>
-                <!-- 进度条：位置/时长的百分比（看完的也留档，条满格配「已看完」戳）-->
-                <span class="mt-2 block h-1 w-full overflow-hidden rounded-full bg-black/[0.08]">
-                  <span class="block h-full rounded-full bg-stationPink/70" :style="{ width: `${progressPct(item)}%` }"></span>
-                </span>
-                <span class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-inkFaint">
-                  <span>看到 {{ historyClock(item.positionSec) }}</span>
-                  <span>第 {{ item.pageIdx ?? 0 }} P</span>
-                  <span>{{ friendlyTime(item.updatedAtUtc) }}</span>
-                  <span v-if="progressPct(item) >= 95" class="rounded bg-emerald-500/10 px-1 text-emerald-600">已看完</span>
-                </span>
-              </span>
-            </RouterLink>
-            <button
-              class="shrink-0 rounded-lg border border-lineSoft bg-cardBg px-3 py-1 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:opacity-40"
-              :disabled="historyBusy"
-              title="从历史里抹掉这部（下次从头放）"
-              @click="deleteHistory(item)"
+              :data-video-id="item.videoId"
+              class="hist-cell group relative overflow-hidden rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e]"
+              :class="{ 'hist-cell-out': historyExiting.has(item.videoId) }"
             >
-              删除
-            </button>
-          </li>
-        </ul>
+              <RouterLink :to="`/watch/${item.bvid}`" class="block no-underline">
+                <span class="relative block aspect-video w-full overflow-hidden bg-black/[0.06]">
+                  <img
+                    v-if="historyCover(item)"
+                    :src="historyCover(item)"
+                    :alt="item.title || item.bvid"
+                    loading="lazy"
+                    decoding="async"
+                    referrerpolicy="no-referrer"
+                    class="hist-cover h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]"
+                    @load="onCoverLoad"
+                  />
+                  <span v-else class="flex h-full w-full select-none items-center justify-center font-mono text-sm text-inkFaint" aria-hidden="true">
+                    {{ (item.title || item.bvid || '?').slice(0, 1) }}
+                  </span>
+                  <!-- 进度条贴在封面底：满格配「已看完」戳 -->
+                  <span class="absolute inset-x-0 bottom-0 h-[3px] bg-black/25">
+                    <span class="block h-full bg-stationPink" :style="{ width: `${progressPct(item)}%` }"></span>
+                  </span>
+                  <span v-if="progressPct(item) >= 95" class="absolute left-1.5 top-1.5 rounded bg-emerald-500/90 px-1 py-px text-[10px] leading-4 text-white">已看完</span>
+                </span>
+                <span class="block px-2 pb-2 pt-1.5">
+                  <span class="line-clamp-2 block text-[13px] leading-[19px] text-inkMain transition group-hover:text-stationPink" :title="item.title || item.bvid">
+                    {{ item.title || item.bvid }}
+                  </span>
+                  <span class="mt-1 block truncate font-mono text-[10.5px] text-inkFaint">
+                    看到 {{ historyClock(item.positionSec) }} · 第 {{ item.pageIdx ?? 0 }} P · {{ friendlyTime(item.updatedAtUtc) }}
+                  </span>
+                </span>
+              </RouterLink>
+              <button
+                class="absolute right-1.5 top-1.5 z-10 rounded-md bg-black/50 px-1.5 py-0.5 text-[11px] leading-4 text-white transition hover:bg-rose-500 focus-visible:opacity-100 disabled:opacity-0 md:opacity-0 md:group-hover:opacity-100"
+                :disabled="historyBusy"
+                title="从历史里抹掉这部（下次从头放）"
+                @click="deleteHistory(item)"
+              >
+                删除
+              </button>
+            </div>
+          </div>
         <p v-else-if="history === null" class="py-8 text-center text-sm text-inkFaint">
           {{ historyBusy ? '正在翻你的历史……' : '历史没打开：分站后端没有应答' }}
         </p>
@@ -368,33 +366,18 @@ function openLogin(mode) {
 </template>
 
 <style scoped>
-/* 历史行退场：删除先演收合淡出（高度/边距/内边距一起收），网络在背后跑；回滚的行淡入归位。
+/* 格子卡退场：删前先演淡出缩身，网络在背后跑；回滚的卡淡入归位。
+   格子阵没有高度收合可演，摘卡时后排顺位补上，浏览器锚定自会稳视野。
    入场用无 both 的动画，演完即卸，免得 fill 状态压住后续的退场过渡 */
-.hist-row {
-  max-height: 140px;
-  overflow: hidden;
+.hist-cell {
+  animation: hist-in 0.55s ease-out 0.12s backwards;
   transition:
     opacity 0.26s ease,
-    transform 0.26s ease,
-    max-height 0.3s ease,
-    margin-top 0.3s ease,
-    margin-bottom 0.3s ease,
-    padding-top 0.3s ease,
-    padding-bottom 0.3s ease,
-    border-top-width 0.3s ease,
-    border-bottom-width 0.3s ease;
-  animation: hist-in 0.55s ease-out 0.12s backwards;
+    transform 0.26s ease;
 }
-.hist-row-out {
+.hist-cell-out {
   opacity: 0;
-  transform: translateX(16px) scale(0.98);
-  max-height: 0;
-  margin-top: 0;
-  margin-bottom: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  border-top-width: 0;
-  border-bottom-width: 0;
+  transform: scale(0.92);
 }
 @keyframes hist-in {
   from {
@@ -481,7 +464,7 @@ function openLogin(mode) {
   font-weight: 600;
 }
 @media (prefers-reduced-motion: reduce) {
-  .hist-row {
+  .hist-cell {
     animation: none;
     transition: none;
   }
