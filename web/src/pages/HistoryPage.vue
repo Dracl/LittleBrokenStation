@@ -326,7 +326,7 @@ function openLogin(mode) {
                     {{ item.title || item.bvid }}
                   </span>
                   <span class="mt-1 block truncate font-mono text-[10.5px] text-inkFaint">
-                    看到 {{ historyClock(item.positionSec) }} · 第 {{ item.pageIdx ?? 0 }} P · {{ friendlyTime(item.updatedAtUtc) }}
+                    {{ friendlyTime(item.updatedAtUtc) }} · 看到 {{ historyClock(item.positionSec) }} · 第 {{ item.pageIdx ?? 0 }} P
                   </span>
                 </span>
               </RouterLink>
