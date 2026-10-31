@@ -417,6 +417,7 @@ app.MapDanmakuReportEndpoints();
 app.MapAdminDanmakuReportEndpoints();
 app.MapWeeklyReportEndpoints(); // 分站周报：成员登录后 /api/weekly 看本周战报（/weekly 页）
 app.MapWatchHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
+app.MapMemberWallApi(); // 会员墙（馆藏壁）：投稿+历史聚合，喂个人空间顶上的画布窗口
 app.MapZonesEndpoints(); // 站内分区：顶级清单与卡阵公开，改派在站长门内
 app.MapCollectionsEndpoints(); // 站内合集：清单与详情公开，开集/销集/加减片子在 /api/member/collections 下端点自防
 

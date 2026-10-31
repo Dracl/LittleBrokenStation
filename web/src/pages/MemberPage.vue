@@ -1,24 +1,27 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import TopBar from '../components/TopBar.vue'
 import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
 import { member, loaded, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember } from '../memberStore'
+import { requestConfirm } from '../confirmStore'
 import { friendlyTime } from '../utils/time'
 import { coverThumb } from '../utils/cover'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
+import WallWindow from '../components/WallWindow.vue'
 
 const busy = ref(false)
 const notice = ref(null) // { kind, text }
+const settingsOpen = ref(false) // 账号与登录设置弹层：登录方式 + 外部账号绑定两块收在这里
 
 // ─── 观看历史：记所有不只没看完（2026-10-29 站长改口：看完的也盖戳留档），卡面滚动展最近十档 ───
 const history = ref(null) // null = 没拉到（在飞或后端没应答），[] = 确实没看过东西
 const historyBusy = ref(false)
 const historyNotice = ref(null) // { kind, text }
 
-async function loadHistory() {
+async function loadHistory({ silent = false } = {}) {
   if (historyBusy.value) return
-  historyBusy.value = true
+  if (!silent) historyBusy.value = true
   try {
     const res = await fetch('/api/member/history')
     if (!res.ok) {
@@ -47,10 +50,9 @@ function historyCover(item) {
   return item.localCover || (item.coverUrl ? coverThumb(item.coverUrl, 480) : '')
 }
 
-// 卡面只展最近十档（接口本就在按 updated_at 倒序）；「没看完」角标数的是全量，不被十档窗口遮蔽。
+// 卡面只展最近十档（接口本就在按 updated_at 倒序）。
 const HISTORY_SHOW_COUNT = 10
 const historyRecent = computed(() => (history.value ?? []).slice(0, HISTORY_SHOW_COUNT))
-const unfinishedCount = computed(() => (history.value ?? []).filter((it) => progressPct(it) < 95).length)
 
 // 片内时间点：分:秒，过小时补时。
 function historyClock(sec) {
@@ -60,42 +62,162 @@ function historyClock(sec) {
   return h > 0 ? `${h}:${pad(Math.floor((n % 3600) / 60))}:${pad(n % 60)}` : `${pad(Math.floor(n / 60))}:${pad(n % 60)}`
 }
 
+// 封面淡入：新补进来的行封面是首次加载的图，先隐身等 load，省得灰底上「啪」地糊上图闪一下
+function onCoverLoad(e) {
+  e.target.classList.add('is-on')
+}
+
+const historyList = ref(null) // 滚动容器：删除全程由我们按帧接管 scrollTop，浏览器只负责老实渲染
+
 async function deleteHistory(item) {
-  if (historyBusy.value) return
-  historyBusy.value = true
+  if (historyBusy.value || historyExiting.value.has(item.videoId)) return
   historyNotice.value = null
+  const snapshot = (history.value ?? []).slice()
+  // 滚动治理（删最后一行「来回抽」的正解）：开场先定策——
+  //   · 贴底态：逐帧追新底部。收合时浏览器会把 scrollTop 硬夹紧（overflow-anchor 管不住它），
+  //     补货后高度恢复又空出一截——只要每帧都贴住 max，全程就是连续滑动，没有回弹
+  //   · 删的是视口上方的整行：顶下排布会把下方内容顶上去，逐帧按「已收合量」同步缩 scrollTop，视口里的行钉死不动
+  //   · 其余情形：按原 top 钉位（夹到合法区间即可）
+  const el = historyList.value
+  let keepTop = 0
+  let wasAtBottom = false
+  let wasAbove = false
+  let rowH = 0
+  let liveRow = null
+  if (el) {
+    keepTop = el.scrollTop
+    wasAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8
+    liveRow = el.querySelector(`[data-video-id="${item.videoId}"]`)
+    if (liveRow) {
+      const rowTop = liveRow.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+      rowH = liveRow.offsetHeight
+      wasAbove = rowTop + rowH <= el.scrollTop + 2
+    }
+  }
+  const pin = () => {
+    if (!el) return
+    const max = el.scrollHeight - el.clientHeight
+    let target = keepTop
+    if (wasAtBottom) target = max
+    else if (wasAbove) {
+      // 行还在 DOM 里就按当下收合了多少补多少，被摘掉后按全高补齐，过渡连续不跳档
+      const shrink = liveRow ? Math.max(0, rowH - liveRow.offsetHeight) : rowH
+      target = keepTop - shrink
+    }
+    el.scrollTop = Math.max(0, Math.min(target, max))
+  }
+  let rafId = 0
+  let frozen = null // 摘行瞬间封盘：之后的贴底跟随到此为止，补货长底不再拖着视野跑
+  if (el) {
+    const loop = () => {
+      if (frozen !== null) {
+        const m = el.scrollHeight - el.clientHeight
+        el.scrollTop = Math.max(0, Math.min(frozen, m))
+      } else {
+        pin()
+      }
+      rafId = requestAnimationFrame(loop)
+    }
+    loop()
+  }
+  historyBusy.value = true
+  markExiting(item.videoId, true)
+  const req = fetch('/api/member/history/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ videoId: item.videoId }),
+  })
+  await sleep(300) // 等退场演完再摘行，高度收起不 snaps
+  history.value = (history.value ?? []).filter((x) => x.videoId !== item.videoId)
+  markExiting(item.videoId, false)
+  await nextTick()
+  if (el) frozen = el.scrollTop // 此刻收合已落定：从这里开始视野完全静止
   try {
-    const res = await fetch('/api/member/history/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videoId: item.videoId }),
-    })
+    const res = await req
     const data = await res.json().catch(() => null)
-    historyNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '已抹掉' : '没抹成') }
-    if (res.ok) await loadHistory()
+    // 成功不喧宾：退场动画本身就是交代，只留失败时的错牌
+    if (res.ok) {
+      historyNotice.value = null
+      await loadHistory({ silent: true }) // 静默补货：不动 busy，免得按钮集体半透明闪一下
+    } else {
+      history.value = snapshot
+      historyNotice.value = { kind: 'err', text: data?.message ?? '没抹成' }
+    }
   } catch {
+    history.value = snapshot
     historyNotice.value = { kind: 'err', text: '分站后端没有应答' }
   } finally {
     historyBusy.value = false
+    // 收尾只守封盘位，不再追底：补货行在视线下方静悄悄长出来就好
+    const settle = () => {
+      if (!el) return
+      const m = el.scrollHeight - el.clientHeight
+      el.scrollTop = Math.max(0, Math.min(frozen ?? el.scrollTop, m))
+    }
+    await nextTick()
+    settle()
+    await sleep(150)
+    settle()
+    if (rafId) cancelAnimationFrame(rafId)
   }
 }
 
 async function clearHistory() {
   if (historyBusy.value) return
   if (!history.value?.length) return
-  if (!window.confirm(`清空观看历史：${history.value.length} 部。\n清完再进片子都从头放，确定？`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '清空观看历史',
+        sub: `${history.value.length} 部`,
+        message: '看过的记录整叠抹掉，之后进片子都从头放起。馆藏一根毛都不会掉。',
+        confirmText: '清空',
+        cancelText: '再留留',
+        danger: true,
+        icon: 'trash',
+      })
+    )
+  ) {
+    return
+  }
   historyBusy.value = true
   historyNotice.value = null
+  // 整叠退场：一行行收合淡出后清空，请求背后跑；没清成就连夜请回来
+  const snapshot = (history.value ?? []).slice()
+  markExiting(snapshot.map((x) => x.videoId), true)
+  const req = fetch('/api/member/history/clear', { method: 'POST' })
+  await sleep(300)
+  history.value = []
+  markExiting([], false)
   try {
-    const res = await fetch('/api/member/history/clear', { method: 'POST' })
+    const res = await req
     const data = await res.json().catch(() => null)
-    historyNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '历史已清空' : '没清成') }
-    if (res.ok) await loadHistory()
+    // 清空同理：整叠收合的动画就是回执，只留错牌
+    if (res.ok) {
+      historyNotice.value = null
+    } else {
+      history.value = snapshot
+      historyNotice.value = { kind: 'err', text: data?.message ?? '没清成' }
+    }
   } catch {
+    history.value = snapshot
     historyNotice.value = { kind: 'err', text: '分站后端没有应答' }
   } finally {
     historyBusy.value = false
   }
+}
+
+// 退场中的行（videoId 集）：带集合让整叠清空也能逐行收合
+const historyExiting = ref(new Set())
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+function markExiting(ids, on) {
+  const list = Array.isArray(ids) ? ids : [ids]
+  const next = new Set(historyExiting.value)
+  for (const id of list) {
+    if (on) next.add(id)
+    else next.delete(id)
+  }
+  historyExiting.value = next
 }
 
 const displayName = computed(() => {
@@ -150,7 +272,22 @@ async function createCollection() {
 
 async function removeCollection(c) {
   if (collBusy.value) return
-  if (!window.confirm(`拆除抽屉「${c.name}」？里面的货回货架，不受损伤。`)) return
+  // 措辞与抽屉正面页（CollectionDetailPage）的「拆除整个抽屉」一字不差：同一个活两个入口，不能两种说法。
+  if (
+    !(
+      await requestConfirm({
+        title: '拆除整个抽屉',
+        sub: '货回货架不受损伤，但抽屉本身连同名字、简介一起消失',
+        message: `拆掉抽屉「${c.name}」？${c.itemCount ?? 0} 件货会回到货架，想收回来得重建一座抽屉。`,
+        confirmText: '拆掉它',
+        cancelText: '再想想',
+        danger: true,
+        icon: 'trash',
+      })
+    )
+  ) {
+    return
+  }
   collBusy.value = true
   collNotice.value = null
   try {
@@ -248,7 +385,22 @@ function fmtBytes(b) {
 async function accountAction(action, acc) {
   if (busy.value) return
   const who = acc.accountName || `B站账号 ${acc.accountMid}`
-  if (action === 'delete' && !window.confirm(`确定解绑「${who}」？解绑后这个号不再替分站出力。`)) return
+  if (
+    action === 'delete' &&
+    !(
+      await requestConfirm({
+        title: '解绑这个账号',
+        sub: who,
+        message: '这个 B 站号从账号池里销掉，存的 Cookie 也跟着没，之后不再替分站出力；要再出力得重新粘一次。',
+        confirmText: '解绑',
+        cancelText: '再想想',
+        danger: true,
+        icon: 'out',
+      })
+    )
+  ) {
+    return
+  }
   busy.value = true
   notice.value = null
   try {
@@ -307,6 +459,9 @@ async function doLogout() {
       </section>
 
       <template v-else>
+        <!-- 馆藏壁：个人空间的门面——投稿与观看历史铺成一面可拖的画布墙，喂料三档记在本地 -->
+        <WallWindow class="mb-4" />
+
         <!-- 身份卡 -->
         <section class="rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
           <div class="flex flex-wrap items-center gap-5">
@@ -356,6 +511,14 @@ async function doLogout() {
                 ♛ 进站长室
               </RouterLink>
               <button
+                class="flex items-center gap-1.5 rounded-full border border-lineSoft px-4 py-1.5 text-xs text-inkSub transition hover:border-stationPink/40 hover:text-stationPink"
+                aria-haspopup="dialog"
+                @click="settingsOpen = true"
+              >
+                设置
+                <span v-if="member.hasPassword === false" class="h-1.5 w-1.5 rounded-full bg-stationPink" title="还没设密码，点进来补一把门钥匙"></span>
+              </button>
+              <button
                 class="rounded-full border border-lineSoft px-4 py-1.5 text-xs text-inkSub transition hover:border-stationPink/40 hover:text-stationPink"
                 @click="doLogout"
               >
@@ -384,15 +547,7 @@ async function doLogout() {
         <!-- 观看历史：记所有不只没看完（看完的也盖戳留档），卡面滚动展最近十档，点行进放映厅接着放 -->
         <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
           <div class="mb-4 flex items-center justify-between gap-3">
-            <h3 class="text-sm font-semibold text-inkMain">
-              观看历史
-              <span
-                v-if="history?.length && unfinishedCount"
-                class="ml-1.5 rounded-full border border-stationPink/30 bg-stationPink/5 px-2 py-0.5 text-[11px] font-normal text-stationPink"
-              >
-                {{ unfinishedCount }} 部没看完
-              </span>
-            </h3>
+            <h3 class="text-sm font-semibold text-inkMain">观看历史</h3>
             <button
               class="rounded-full border border-lineSoft px-3.5 py-1.5 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
               :disabled="historyBusy || !history?.length"
@@ -403,11 +558,13 @@ async function doLogout() {
           </div>
 
           <!-- 固定高滚动区：十档叠起来比半屏还高，让列表自己内部滚，不把个人空间顶成无限长 -->
-          <ul v-if="history?.length" class="max-h-[440px] space-y-2 overflow-y-auto pr-1">
+          <ul v-if="history?.length" ref="historyList" class="hist-list max-h-[440px] space-y-2 overflow-y-auto overflow-x-hidden pr-1">
             <li
               v-for="item in historyRecent"
               :key="item.videoId"
-              class="flex items-start gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
+              :data-video-id="item.videoId"
+              class="hist-row flex items-start gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
+              :class="{ 'hist-row-out': historyExiting.has(item.videoId) }"
             >
               <RouterLink :to="`/watch/${item.bvid}`" class="group flex min-w-0 flex-1 items-start gap-3 no-underline">
                 <span class="relative block h-[76px] w-[124px] shrink-0 overflow-hidden rounded-lg bg-black/[0.06]">
@@ -418,7 +575,8 @@ async function doLogout() {
                     loading="lazy"
                     decoding="async"
                     referrerpolicy="no-referrer"
-                    class="h-full w-full object-cover"
+                    class="hist-cover h-full w-full object-cover"
+                    @load="onCoverLoad"
                   />
                   <span v-else class="flex h-full w-full select-none items-center justify-center font-mono text-sm text-inkFaint" aria-hidden="true">
                     {{ (item.title || item.bvid || '?').slice(0, 1) }}
@@ -495,6 +653,29 @@ async function doLogout() {
           </div>
           <p v-if="collNotice" class="mt-2 text-[12px]" :class="collNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">{{ collNotice.text }}</p>
         </section>
+
+        <!-- 账号与登录设置弹层：登录方式与外部账号绑定两块收在这里，门口那枚「设置」钮开合；
+             弹层就长在两块料原来的位置，没搬 DOM，展开时浮在全页之上 -->
+        <div
+          v-if="settingsOpen"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="账号与登录设置"
+          @click.self="settingsOpen = false"
+        >
+          <div class="max-h-[85vh] w-full max-w-[640px] overflow-y-auto rounded-2xl border border-lineSoft bg-cardBg shadow-2xl">
+            <div class="sticky top-0 z-10 flex items-center justify-between border-b border-lineSoft/70 bg-cardBg px-6 py-4">
+              <h3 class="text-sm font-semibold text-inkMain">账号与登录设置</h3>
+              <button
+                class="grid h-7 w-7 place-items-center rounded-full border border-lineSoft text-inkSub transition hover:border-stationPink/60 hover:text-stationPink"
+                aria-label="收起设置"
+                @click="settingsOpen = false"
+              >
+                ✕
+              </button>
+            </div>
+            <div class="px-6 pb-6">
 
         <!-- 登录方式：分站自己的门钥匙（M5.4）——站名、密码照面；防锁死警示条钉在卡顶 -->
         <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
@@ -662,6 +843,9 @@ async function doLogout() {
             {{ notice.text }}
           </p>
         </section>
+            </div>
+          </div>
+        </div>
       </template>
     </main>
 
@@ -669,3 +853,62 @@ async function doLogout() {
     <LoginDialog instance-mode="bind" @bind-success="onBindSuccess" />
   </div>
 </template>
+
+<style scoped>
+/* 历史行退场：删除先演收合淡出（高度/边距/内边距一起收），网络在背后跑；新行淡入不抢戏。
+   入场用无 both 的动画，演完即卸，免得 fill 状态压住后续的退场过渡 */
+.hist-row {
+  max-height: 140px;
+  overflow: hidden;
+  transition:
+    opacity 0.26s ease,
+    transform 0.26s ease,
+    max-height 0.3s ease,
+    margin-top 0.3s ease,
+    margin-bottom 0.3s ease,
+    padding-top 0.3s ease,
+    padding-bottom 0.3s ease,
+    border-top-width 0.3s ease,
+    border-bottom-width 0.3s ease;
+  animation: hist-in 0.55s ease-out 0.12s backwards;
+}
+.hist-row-out {
+  opacity: 0;
+  transform: translateX(16px) scale(0.98);
+  max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-width: 0;
+  border-bottom-width: 0;
+}
+@keyframes hist-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 关掉浏览器滚动锚定：内容变矮变高时它会自动改 scrollTop，与我们的手动钉位叠在一起就是「来回抽」 */
+.hist-list {
+  overflow-anchor: none;
+}
+/* 封面图先透着（底下的灰垫子顶位），load 到了再淡进来接管，杜绝图到的那一下白闪 */
+.hist-cover {
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+.hist-cover.is-on {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hist-row {
+    animation: none;
+    transition: none;
+  }
+}
+</style>
