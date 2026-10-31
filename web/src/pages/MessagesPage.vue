@@ -5,6 +5,7 @@ import TopBar from '../components/TopBar.vue'
 import PeerPicker from '../components/PeerPicker.vue'
 import ShareCard from '../components/ShareCard.vue'
 import { member, loaded, unread, dmUnread, loginDialogOpen, loginDialogMode, load as loadMember, refreshUnread } from '../memberStore'
+import { requestConfirm } from '../confirmStore'
 import { friendlyTime } from '../utils/time'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 import { VIDEO_GONE_HINT } from '../utils/gone.js'
@@ -180,7 +181,21 @@ async function openThread(peerMemberId, peerHint = null) {
 // 撤回：发件人销自己那句，真删——双方账本同时没（轮询追新时对方那头自然消失）。
 // 二次确认防手滑；销成当场从本地会话里拔掉，不等下拍轮询。
 async function recallMessage(m) {
-  if (!window.confirm('撤回这句？真删，对方那边也看不见了。')) return
+  if (
+    !(
+      await requestConfirm({
+        title: '撤回这句',
+        sub: '真删，不是只遮自己这边',
+        message: '这句私信从你俩的会话里一起消失，对方那边也翻不回来了。',
+        confirmText: '撤回',
+        cancelText: '留着吧',
+        danger: true,
+        icon: 'trash',
+      })
+    )
+  ) {
+    return
+  }
   try {
     const res = await fetch(`/api/dm/message/${m.id}`, { method: 'DELETE' })
     const data = await res.json().catch(() => null)
@@ -207,7 +222,21 @@ function closeThread() {
 async function clearThread() {
   const peer = activePeer.value
   if (!peer || !conversation.value.length) return
-  if (!window.confirm(`清空与「${peerLabel(peer)}」的聊天记录？只销自己这侧，对方那边不受影响。`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '清空这段对话',
+        sub: '只销自己这侧，对方那边的记录不动',
+        message: `与「${peerLabel(peer)}」的聊天记录整段抹掉，翻不回来。对方再发信，会话自会复活。`,
+        confirmText: '清空',
+        cancelText: '再留留',
+        danger: true,
+        icon: 'trash',
+      })
+    )
+  ) {
+    return
+  }
   try {
     const res = await fetch(`/api/dm/thread/${peer.memberId}`, { method: 'DELETE' })
     const data = await res.json().catch(() => null)

@@ -479,13 +479,16 @@ public sealed partial class StationDb
         if (viewerMemberId is long viewer)
         {
             // 双键集齐时消息已真删，这里盖到一半的章才会生效；ISO-8601 同时区，字符串序即时间序。
-            // 章永远挂在「查看者 ↔ 对方（$b）」这对键上，与每条消息的行方向无关
+            // 章永远挂在「查看者 ↔ 对方（$b）」这对键上，与每条消息的行方向无关。
+            // 这里绝不能带分号：本串拼在 ORDER BY / LIMIT 之前，SQLite 只预备首个分号前的那一串，
+            // 带上分号就等于静默丢掉排序与条数上限（行回 rowid 升序，再被下面的 Reverse 翻成倒序，
+            // 会话就成了「新的压在上面」）。
             viewerFilter = """
                 AND NOT EXISTS (
                     SELECT 1 FROM dm_thread_cleared c
                     WHERE c.member_id = $viewer AND c.peer_member_id = $b
                       AND dm_messages.created_at_utc <= c.cleared_at_utc
-                );
+                )
                 """;
         }
 

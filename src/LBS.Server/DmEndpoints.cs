@@ -67,7 +67,8 @@ public static class DmEndpoints
             title = snap.Title,
             cover = snap.Cover,
             upName = snap.UpName,
-            durationText = snap.DurationText,
+            // 时长与动态分享同口径：定格时就收成 B 站冒号制（3:45），库里那三种方言（4m45s / 03:45 / 243）不进 JSON。
+            durationText = snap.DurationText is { } dur ? DurationText.Normalize(dur) : null,
             watchUrl = $"/watch/{snap.Bvid}",
         });
         return (null, target, note, dynJson);

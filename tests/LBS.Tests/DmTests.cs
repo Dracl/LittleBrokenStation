@@ -473,4 +473,26 @@ public sealed class DmTests : IDisposable
         Assert.Equal("丙甲话", kept.Body);
         Assert.Single(_db.ListDmThreads(jia));
     }
+
+    [Fact]
+    public void 会话带查看者章时_仍按时间升序_且条数上限生效()
+    {
+        // 回归：盖过章的那串过滤 SQL 曾以分号收尾，而它拼在 ORDER BY / LIMIT 之前——
+        // SQLite 只预备首个分号前的半句，排序与上限双双静默失效，行按 rowid 进来再被
+        // list.Reverse 翻成倒序（会话变成新的压在上面）。旧测试只在不传 viewer 时验过顺序，没到这条路。
+        var me = AdmitSeat(8251, "排序甲");
+        var peer = AdmitSeat(8252, "排序乙");
+        var ids = new long[5];
+        for (var i = 0; i < 5; i++)
+        {
+            ids[i] = i % 2 == 0 ? _db.SendDm(me, peer, $"第{i + 1}句") : _db.SendDm(peer, me, $"第{i + 1}句");
+        }
+
+        var convo = _db.ListDmConversation(me, peer, viewerMemberId: me);
+        Assert.Equal(ids, convo.Select(m => m.Id)); // 旧的在上、新的在下
+        Assert.True(convo[0].Id < convo[^1].Id);
+
+        var capped = _db.ListDmConversation(me, peer, viewerMemberId: me, limit: 2);
+        Assert.Equal(new long[] { ids[3], ids[4] }, capped.Select(m => m.Id)); // 上限生效，且截的是最新一批
+    }
 }

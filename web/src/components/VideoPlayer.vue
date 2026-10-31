@@ -573,6 +573,10 @@ function refreshLights() {
 }
 // B 站宽屏式高度驱动：先给顶栏/留白/弹幕条/与正文的间隔让出竖向空间，播放器高度吃满剩余视口，宽度按 16:9 反推居中
 const SHELL_V_RESERVE = 170
+// 站长嫌画面小了一圈，高度驱动的结果整体再放大 6%（2026-10-31；1.1 → 1.08 → 1.06 一路试下来的）。
+// 代价说在明处：现在的高度本来就刚好吃满视口，乘上去会比视口高出一截（约 40~60px），
+// 全屏看片得滚一点点才够着控制条。嫌滚得慌就把这个数改回 1.0，或者改削上面的 SHELL_V_RESERVE。
+const SHELL_SCALE = 1.06
 const shellEl = ref(null)
 const shellWidth = ref(0)
 function measureShell() {
@@ -581,7 +585,7 @@ function measureShell() {
     emit('shell-width', 0)
     return
   }
-  const availH = window.innerHeight - SHELL_V_RESERVE
+  const availH = (window.innerHeight - SHELL_V_RESERVE) * SHELL_SCALE
   shellWidth.value = Math.max(360, Math.min(window.innerWidth - 32, Math.floor((availH * 16) / 9)))
   emit('shell-width', shellWidth.value)
 }

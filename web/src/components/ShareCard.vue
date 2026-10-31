@@ -1,9 +1,10 @@
 <script setup>
 // 私信里的分享融合气泡（C2 定案）：安利语、来源行、内容、通栏动作条一泡装下，
 // 不再「气泡里套卡」。我发的右下带尾、对方来的左下带尾；点整泡跳转。
-// kind='dynamic' 走定格动态卡（封面通栏），kind='video' 走馆藏片卡（封面并排）。
+// kind='dynamic' 与 kind='video' 同副视觉：都是「来源行 + 通栏封面 + 粉三角标题 + 通栏动作条」。
+// 动态那副多了报头（UP 正文）与图集两段；片卡没正文可报，就把 UP 名提到来源行当报头，时长退成 chip。
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
-import { friendlyTime } from '../utils/time'
+import { colonTime, friendlyTime } from '../utils/time'
 import { VIDEO_GONE_HINT } from '../utils/gone.js'
 
 const props = defineProps({
@@ -43,7 +44,7 @@ function summary(dyn) {
         alt=""
         @error="onAvatarError"
       />
-      <span class="truncate text-[11px] font-semibold text-inkSub">{{ kind === 'dynamic' ? (dyn.authorName || 'B站作者') : '站内放映厅' }}</span>
+      <span class="truncate text-[11px] font-semibold text-inkSub">{{ kind === 'dynamic' ? (dyn.authorName || 'B站作者') : (dyn.upName || '站内放映厅') }}</span>
       <span class="shrink-0 rounded bg-stationPink/10 px-1 text-[9.5px] leading-[15px] text-stationPink">{{ kind === 'dynamic' ? '动态' : '馆藏' }}</span>
       <span class="shrink-0 text-[10.5px] text-inkFaint">· {{ kind === 'dynamic' ? friendlyTime(dyn.publishedAtUtc) : dyn.bvid }}</span>
     </div>
@@ -79,18 +80,19 @@ function summary(dyn) {
       <div v-if="dyn.videoTitle" class="mt-2 flex items-start gap-1.5">
         <span class="mt-[5px] h-0 w-0 shrink-0 border-y-[4.5px] border-l-[7px] border-y-transparent border-l-stationPink"></span>
         <p class="min-w-0 flex-1 text-[13px] font-semibold leading-[1.45] text-inkMain" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ dyn.videoTitle }}</p>
-        <span v-if="dyn.videoDuration" class="mt-[2px] shrink-0 rounded bg-black/5 px-1.5 text-[10.5px] leading-4 text-inkFaint dark:bg-white/10">{{ dyn.videoDuration }}</span>
+        <span v-if="dyn.videoDuration" class="mt-[2px] shrink-0 rounded bg-black/5 px-1.5 text-[10.5px] leading-4 text-inkFaint dark:bg-white/10">{{ colonTime(dyn.videoDuration) }}</span>
       </div>
     </template>
     <template v-else>
-      <div class="mt-1.5 flex gap-2">
-        <span v-if="dyn.cover" class="relative block h-[36px] w-[64px] shrink-0 overflow-hidden rounded-md bg-[#eef0f2] dark:bg-[#23262e]">
-          <img :src="dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
-        </span>
-        <span class="min-w-0 flex-1">
-          <span class="block truncate text-[12.5px] font-medium text-inkMain">{{ dyn.title || dyn.bvid }}</span>
-          <span class="mt-0.5 block truncate text-[10.5px] text-inkFaint">{{ [dyn.upName, dyn.durationText].filter(Boolean).join(' · ') || dyn.bvid }}</span>
-        </span>
+      <!-- 封面通栏 16:9（与动态卡的定格封面同尺寸）；定格时没封面就整段缺席，泡不空转。 -->
+      <span v-if="dyn.cover" class="relative mt-2 block aspect-video overflow-hidden rounded-lg bg-[#eef0f2] dark:bg-[#23262e]">
+        <img :src="dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
+      </span>
+      <!-- 标题跟封面：粉三角 + 两行截断 + 时长 chip，与动态卡的 videoTitle 行同规格；没定格到标题就退回 BV 号。 -->
+      <div class="mt-2 flex items-start gap-1.5">
+        <span class="mt-[5px] h-0 w-0 shrink-0 border-y-[4.5px] border-l-[7px] border-y-transparent border-l-stationPink"></span>
+        <p class="min-w-0 flex-1 text-[13px] font-semibold leading-[1.45] text-inkMain" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">{{ dyn.title || dyn.bvid }}</p>
+        <span v-if="dyn.durationText" class="mt-[2px] shrink-0 rounded bg-black/5 px-1.5 text-[10.5px] leading-4 text-inkFaint dark:bg-white/10">{{ colonTime(dyn.durationText) }}</span>
       </div>
     </template>
 

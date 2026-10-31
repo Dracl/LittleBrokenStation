@@ -1,8 +1,10 @@
 <script setup>
 // 站长室「回收站」卡：删档后的馆藏先落这里，捞回复架或连本地文件一起销账。
 // 数据源 GET /api/admin/recycle（按 deletedAtUtc 倒序）；三键 = 单件恢复 / 单件彻底删 / 一键清空，
-// 两颗破坏键走 window.confirm 二次确认。通知沿用站长室各卡自持 { kind, text } 那套（AdminPage 同款），不另起样式。
+// 两颗破坏键走全站那张自制确认窗（confirmStore），不再顶浏览器原生外壳；通知沿用站长室各卡自持 { kind, text } 那套（AdminPage 同款），不另起样式。
+// 措辞口径向 askDeleteVideo 看齐：只有这一卡上的才是真没了，得说透；往回收站里抖的那类（抖进回收站可捞）不拉玫红。
 import { computed, onMounted, ref } from 'vue'
+import { requestConfirm } from '../confirmStore'
 import { coverThumb } from '../utils/cover'
 import { friendlyTime } from '../utils/time'
 
@@ -98,7 +100,21 @@ async function restore(item) {
 async function destroy(item) {
   if (busy.value) return
   const label = item.title || item.bvid
-  if (!window.confirm(`彻底删除「${label}」（${item.bvid}）？\n连本地文件（视频、封面、弹幕、评论存档）一起清掉，不可恢复。`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '彻底销毁这一件',
+        sub: `${label} · ${item.bvid}`,
+        message: '连本地文件（视频、封面、弹幕、评论存档）一起清掉，回收站里的清单也一并抹掉。这一步没有回头路，之后一件都捞不回来。',
+        confirmText: '彻底销毁',
+        cancelText: '再留留',
+        danger: true,
+        icon: 'trash',
+      })
+    )
+  ) {
+    return
+  }
   busyId.value = item.id
   notice.value = null
   let ok = false
@@ -117,7 +133,21 @@ async function destroy(item) {
 
 async function clearAll() {
   if (busy.value || !items.value?.length) return
-  if (!window.confirm(`清空回收站：${items.value.length} 件 · ${fmtBytes(totalBytes.value)}。\n连本地文件一起清掉，不可恢复，确定？`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '清空回收站',
+        sub: `${items.value.length} 件 · ${fmtBytes(totalBytes.value)}`,
+        message: '连本地文件一起清掉，回收站里的清单也一并抹掉。这一步没有回头路，之后一件都捞不回来。',
+        confirmText: '全部销毁',
+        cancelText: '再留留',
+        danger: true,
+        icon: 'trash',
+      })
+    )
+  ) {
+    return
+  }
   clearing.value = true
   notice.value = null
   let ok = false

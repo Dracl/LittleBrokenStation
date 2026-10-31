@@ -61,6 +61,10 @@ cd web && pnpm install && pnpm dev
 dotnet test --filter "FullyQualifiedName!~DownKyi"
 ```
 
+数据目录按 `LBS_DATA_DIR` → 工作目录下 `./data`（有库才算）→ 往上找最近一座 `data/station.db` 的顺序定，
+都没才新建。`dotnet run` 会把工作目录切到 `src/LBS.Server`，靠这条兜底才不会在 `src/LBS.Server/` 下自举出一座空站；
+真要不放心，起站前 `$env:LBS_DATA_DIR = "<绝对路径>"` 钉死，开站日志那一行也会把数据目录的来路念出来。
+
 ## 命名词源
 
 「破站」一词源自早年 A 站用户自嘲 B 站服务器不稳定，后来被 B 站用户自嘲时笑纳，成了社区昵称。

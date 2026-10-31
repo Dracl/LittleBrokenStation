@@ -201,7 +201,11 @@ public sealed partial class StationDb
         return list;
     }
 
-    /// <summary>把一件馆藏原样请回分站：文件搬回原位，六张表的行按原主键塞回去。</summary>
+    /// <summary>
+    /// 把一件馆藏原样请回分站：文件搬回原位，六张表的行按原主键塞回去。
+    /// 文件搬运与台账回写同在一个事务作用域里，中途任何一处炸都整笔作废（行回滚 + 已搬文件退回回收站），
+    /// 分站里不会留下「有文件没台账」的半件馆藏。
+    /// </summary>
     public RecycleRestoreOutcome RestoreFromRecycle(long id, string videosRoot, string recycleRoot)
     {
         using var connection = Open(_dbPath);
@@ -245,8 +249,13 @@ public sealed partial class StationDb
             }
         }
 
+        // SQLite 管不着文件系统，就把搬文件整个放进事务的作用域里：一旦台账回写失败，
+        // 已经挪出去的文件还能原路退回回收站。延迟事务（DEFERRED）到第一条写语句才取写锁，
+        // 所以搬文件的这段时间不占着库；恢复是站长手点的低频活，锁窗口比老写法（文件全搬完再开事务）还窄。
         var payloadRoot = RecyclePayloadDir(recycleRoot, id);
         var moved = new List<(string From, string To)>();
+        var restoredRows = 0;
+        using var transaction = connection.BeginTransaction();
         try
         {
             foreach (var file in manifest.Files)
@@ -259,19 +268,12 @@ public sealed partial class StationDb
 
                 var to = Path.Combine(videosRoot, file.Rel.Replace('/', Path.DirectorySeparatorChar));
                 Directory.CreateDirectory(Path.GetDirectoryName(to)!);
-                File.Move(from, to);
+                // overwrite：上一轮恢复搬到一半炸过、或回滚时那份没搬回去，这一轮得能盖过去接着捞，
+                // 否则这一件会永远卡在「文件搬不回去」。回收站里那份才是封存的原件，盖它没错。
+                File.Move(from, to, true);
                 moved.Add((from, to));
             }
-        }
-        catch (IOException ex)
-        {
-            RollbackStaged(moved);
-            return new RecycleRestoreOutcome(false, $"文件搬不回去，可能被占用（{ex.Message}）", 0, 0);
-        }
 
-        var restoredRows = 0;
-        using (var transaction = connection.BeginTransaction())
-        {
             InsertRow(connection, "videos", manifest.Video);
             restoredRows++;
             foreach (var row in manifest.Rows)
@@ -284,6 +286,30 @@ public sealed partial class StationDb
 
             DeleteRecycleRow(connection, id);
             transaction.Commit();
+        }
+        catch (Exception ex)
+        {
+            // Commit 失败时事务还挂在连接上，得先放掉写锁；回滚本身再炸不掩原错（Dispose 会连带回滚）。
+            try
+            {
+                transaction.Rollback();
+            }
+            catch (SqliteException)
+            {
+                // 连接都废了，交给 using var connection 的 Dispose
+            }
+
+            RollbackStaged(moved);
+            restoredRows = 0;
+
+            // 只把「搬不动 / 写不进」这一类当业务失败报给站长，其余异常照原样抛出去：
+            // 拿「可能被占用」糊弄真正的 bug，比让它炸出来更误事。
+            if (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException or SqliteException)
+            {
+                return new RecycleRestoreOutcome(false, $"「{bvid}」没能回到分站，已经搬走的文件都退回回收站了（{ex.Message}）", 0, 0);
+            }
+
+            throw;
         }
 
         DeletePayloadQuiet(recycleRoot, id);

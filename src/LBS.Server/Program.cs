@@ -1658,6 +1658,11 @@ if (File.Exists(Path.Combine(webRoot, "index.html")))
 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("LBS");
 
 logger.LogInformation("小破分站开站：{Urls}，数据目录 {DataDir}，前端 {WebRoot}", urls, dataPaths.Root, webRoot);
+if (dataPaths.RootHint is { } dataHint)
+{
+    // 数据根是往上翻出来的：把来路说破，别让人把开错库当成数据没了。
+    logger.LogWarning("数据目录是推出来的：{Hint}", dataHint);
+}
 app.Run();
 
 internal sealed record HealthInfo(bool Ok, string Name, string Version, string DataDir, DateTimeOffset ServerTimeUtc);

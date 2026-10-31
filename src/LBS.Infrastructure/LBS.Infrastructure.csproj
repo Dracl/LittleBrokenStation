@@ -12,4 +12,9 @@
     <ProjectReference Include="..\LBS.Domain\LBS.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 数据根解析这类纯函数拆出来给测试直接拿（与 LBS.Server 同款做法） -->
+    <InternalsVisibleTo Include="LBS.Tests" />
+  </ItemGroup>
+
 </Project>

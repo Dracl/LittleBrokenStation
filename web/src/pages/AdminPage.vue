@@ -6,6 +6,7 @@ import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
 import RecycleBinCard from '../components/RecycleBinCard.vue'
 import { member, loginDialogOpen, loginDialogMode } from '../memberStore'
+import { requestConfirm } from '../confirmStore'
 import { friendlyTime } from '../utils/time'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 import { VIDEO_GONE_HINT } from '../utils/gone.js'
@@ -757,7 +758,20 @@ async function dlToggle() {
 async function dlCancelAll() {
   const n = dlQueue.value?.pending?.length ?? 0
   if (!n || dlBusy.value) return
-  if (!window.confirm(`确定取消排队区全部 ${n} 件？取消后还能从首页卡阵重新排队。`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '取消整个排队区',
+        sub: `${n} 件在排`,
+        message: `把排队区里 ${n} 件整批撤下。反悔容易：从首页卡阵重新排队就行。`,
+        confirmText: '全部取消',
+        cancelText: '再想想',
+        icon: 'warn',
+      })
+    )
+  ) {
+    return
+  }
   dlBusy.value = true
   try {
     const res = await fetch('/api/downloads/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
@@ -773,7 +787,20 @@ async function dlCancelAll() {
 async function dlPurgeCanceled() {
   const n = dlQueue.value?.canceledCount ?? 0
   if (!n || dlBusy.value) return
-  if (!window.confirm(`确定清理全部 ${n} 件「已取消」馆藏？会存进回收站，可从回收站随时找回。`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '清理「已取消」',
+        sub: `${n} 件遗留`,
+        message: `卡阵里的 ${n} 件「已取消」遗留整批抖进回收站。抖进去的都躺在那儿，随时能捐回来。`,
+        confirmText: '抖进去',
+        cancelText: '再想想',
+        icon: 'trash',
+      })
+    )
+  ) {
+    return
+  }
   dlBusy.value = true
   try {
     const res = await fetch('/api/admin/canceled/purge', { method: 'POST' })
@@ -810,7 +837,20 @@ function codecDetail(item) {
 // 取消一件编码加档：后端销引擎账+判 Failed，反悔在首页重点；卡死的僵尸行也可以这样手动超度。
 async function codecCancel(item) {
   if (dlBusy.value) return
-  if (!window.confirm(`取消「${item.title || item.bvid}」的 ${codecLabel(item.codec)}${item.pageIdx != null ? ` P${item.pageIdx}` : ''} 加档？可在首页重新点单。`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '取消这份加档',
+        sub: `${item.title || item.bvid} · ${codecLabel(item.codec)}${item.pageIdx != null ? ` P${item.pageIdx}` : ''}`,
+        message: '撤下这份编码加档：引擎账销掉，这一路不再下。想再要，回首页重新点单就行。',
+        confirmText: '取消加档',
+        cancelText: '再想想',
+        icon: 'warn',
+      })
+    )
+  ) {
+    return
+  }
   dlBusy.value = true
   try {
     const res = await fetch(`/api/videos/${item.videoId}/codecs/cancel`, {
@@ -907,12 +947,38 @@ async function copyInvite() {
 
 async function memberAction(action, item) {
   if (membersBusy.value) return
-  const verbs = { ban: '封禁', unban: '解封', delete: '撤席位' }
-  const hint =
+  const seat = seatLabel(item)
+  // 三颗钮三种后果，分开说：封禁只动进站资格（馆藏、弹幕、历史原地留着），撤席位才是把人请出站。
+  const ask =
     action === 'delete'
-      ? `确定撤掉「${seatLabel(item)}」的席位？历史事件保留，想回来得重新领邀请码。`
-      : `确定${verbs[action]}「${seatLabel(item)}」？`
-  if (!window.confirm(hint)) return
+      ? {
+          title: '撤掉这个席位',
+          sub: seat,
+          message: '席位收回，人请出站；历史事件原样留着。想回来得重新领一次邀请码。',
+          confirmText: '撤席位',
+          cancelText: '再想想',
+          danger: true,
+          icon: 'out',
+        }
+      : action === 'ban'
+        ? {
+            title: '封禁这位旅人',
+            sub: seat,
+            message: '封掉的只是进站资格：即刻请出分站，再扫码也不收。馆藏、弹幕、历史都原地留着，解禁就复原。',
+            confirmText: '封禁',
+            cancelText: '再想想',
+            danger: true,
+            icon: 'warn',
+          }
+        : {
+            title: '解禁这位旅人',
+            sub: seat,
+            message: '解除封禁，他可以重新进站逛了。',
+            confirmText: '解禁',
+            cancelText: '再想想',
+            icon: 'warn',
+          }
+  if (!(await requestConfirm(ask))) return
   membersBusy.value = true
   memberText.value = ''
   try {
@@ -935,7 +1001,21 @@ async function memberAction(action, item) {
 async function memberAccountDelete(acc, item) {
   if (membersBusy.value) return
   const who = acc.accountName || `B站账号 ${acc.accountMid}`
-  if (!window.confirm(`确定从「${seatLabel(item)}」的席位上解绑「${who}」？`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '从席位上解绑这个号',
+        sub: `${seatLabel(item)} · ${who}`,
+        message: '这个 B 站号从账号池里销掉，存的 Cookie 也跟着没，不再替这位旅人出力；要再出力得重新粘一次。',
+        confirmText: '解绑',
+        cancelText: '再想想',
+        danger: true,
+        icon: 'out',
+      })
+    )
+  ) {
+    return
+  }
   membersBusy.value = true
   memberText.value = ''
   try {
@@ -996,7 +1076,21 @@ async function backupConfig() {
 
 async function backupDelete(name) {
   if (backupBusy.value) return
-  if (!window.confirm(`确定销掉快照「${name}」？`)) return
+  if (
+    !(
+      await requestConfirm({
+        title: '销掉这份快照',
+        sub: name,
+        message: '这份 station.db 快照从档案柜里抹掉，销了就翻不回来。柜里其它快照与当下这座分站都不受影响。',
+        confirmText: '销掉',
+        cancelText: '再想想',
+        danger: true,
+        icon: 'trash',
+      })
+    )
+  ) {
+    return
+  }
   const res = await fetch(`/api/backups/${name}`, { method: 'DELETE' })
   const body = await res.json().catch(() => null)
   backupText.value = body?.message ?? '已销'

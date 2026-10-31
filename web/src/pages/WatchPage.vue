@@ -8,6 +8,7 @@ import CommentSection from '../components/CommentSection.vue'
 import UpCard from '../components/UpCard.vue'
 import PageList from '../components/PageList.vue'
 import VideoActions from '../components/VideoActions.vue'
+import ShareDialog from '../components/ShareDialog.vue'
 import DanmakuList from '../components/DanmakuList.vue'
 import UpNextList from '../components/UpNextList.vue'
 import EmptyTv from '../components/EmptyTv.vue'
@@ -397,6 +398,30 @@ function showNotice(kind, text) {
   noticeTimer = setTimeout(() => (notice.value = null), 7000)
 }
 
+// ─── 安利这个片子：与动态橱窗共用一副 ShareDialog（视频形态），登录门槛在钮上就把关。
+// 封面拿馆藏本地图优先，本地没图才退热链（与卡阵同一口径）；站内安利不动 B 站分享计数（那数是 view 接口真采快照）。
+const shareFor = ref(null)
+
+function openShare() {
+  if (!member.value) {
+    loginDialogOpen.value = true
+    return
+  }
+  if (!data.value) return
+  shareFor.value = {
+    type: 'video',
+    bvid: data.value.bvid,
+    title: data.value.title || data.value.bvid,
+    cover: data.value.localCover || data.value.coverUrl || '',
+    upName: data.value.upName,
+  }
+}
+
+function onShared(message) {
+  shareFor.value = null
+  showNotice('ok', message ?? '已塞进对方信箱')
+}
+
 onBeforeUnmount(() => {
   if (noticeTimer) clearTimeout(noticeTimer)
 })
@@ -704,7 +729,7 @@ const playerShellW = ref(0)
 
               <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」；右侧访客下载 -->
               <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 dark:border-white/10 py-2">
-                <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" :store-key="data.bvid" />
+                <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" :store-key="data.bvid" @share="openShare" />
                 <div class="relative flex shrink-0 items-center gap-2">
                   <!-- 投稿人自管两钮（往左提一位，让「合集」紧贴下载胶囊的左侧）：白底描边，hover 才上色，不抢下载胶囊的风头 -->
                   <template v-if="data.canManage">
@@ -822,7 +847,6 @@ const playerShellW = ref(0)
       </template>
 
       <ShareDialog v-if="shareFor" :target="shareFor" @close="shareFor = null" @done="onShared" />
-      <p v-if="shareToast" class="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-inkMain/85 px-4 py-2 text-xs text-white shadow-lg">{{ shareToast }}</p>
       <p
         v-if="notice"
         class="fixed bottom-6 left-1/2 z-50 max-w-[80vw] -translate-x-1/2 truncate rounded-full px-4 py-2 text-xs text-white shadow-lg"

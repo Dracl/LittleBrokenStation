@@ -1,5 +1,6 @@
 using LBS.Domain;
 using LBS.Infrastructure;
+using Microsoft.Data.Sqlite;
 
 namespace LBS.Tests;
 
@@ -203,6 +204,91 @@ public sealed class RecycleBinTests : IDisposable
         Assert.NotNull(cover);
         Assert.Equal("cover-bytes", System.Text.Encoding.UTF8.GetString(cover));
         Assert.Null(_db.ReadRecycleCover(999_999, _recycleDir));
+    }
+
+    [Fact]
+    public void 捞档搬到一半炸了_已经搬走的文件全数退回回收站()
+    {
+        var videoId = SeedArrived("BV1recycle08", out var basePath);
+        _db.MoveVideoToRecycle(videoId, _videosDir, _recycleDir, "站长", 0);
+        var entry = Assert.Single(_db.ListRecycle());
+
+        // 目标位置让一个同名目录占着：File.Move 到这儿必炸（Windows 报没权限、*nix 报 IO）。
+        // 目录名与文件名同形，Windows 上合法（判重按完整路径与大小写，不像 macOS 那样撞不上）。
+        // 拿它挡在清单末尾那件上，前面的文件都已搬出去，正好验回滚这一段。
+        Directory.CreateDirectory(basePath + ".danmaku.json");
+
+        var restored = _db.RestoreFromRecycle(entry.Id, _videosDir, _recycleDir);
+
+        Assert.False(restored.Ok);
+        Assert.Contains("没能回到分站", restored.Message);
+        Assert.Equal(0, restored.Files);
+        Assert.Equal(0, restored.Rows);
+
+        // 分站侧一个文件都不许留下（只剩那颗挡路的目录）。
+        Assert.Empty(Directory.GetFiles(Path.Combine(_videosDir, "BV1recycle08"), "*", SearchOption.AllDirectories));
+
+        // 四件文件一件不少地还躺在回收站分间里，回收站那行也还在，改日能再捞。
+        var payload = Path.Combine(_recycleDir, entry.Id.ToString(), "files", "BV1recycle08");
+        Assert.Equal(4, Directory.GetFiles(payload, "*", SearchOption.AllDirectories).Length);
+        Assert.Equal(entry.Id, Assert.Single(_db.ListRecycle()).Id);
+
+        // 坑填上就能接着捞，不被上一轮的残件卡死。
+        Directory.Delete(basePath + ".danmaku.json");
+        var retried = _db.RestoreFromRecycle(entry.Id, _videosDir, _recycleDir);
+        Assert.True(retried.Ok, retried.Message);
+        Assert.Equal(4, retried.Files);
+        Assert.True(File.Exists(basePath + ".mp4"));
+        Assert.True(File.Exists(basePath + ".danmaku.json"));
+    }
+
+    [Fact]
+    public void 捞档时台账写不进去_文件不留在分站()
+    {
+        var videoId = SeedArrived("BV1recycle09", out var basePath);
+        _db.MoveVideoToRecycle(videoId, _videosDir, _recycleDir, "站长", 0);
+        var entry = Assert.Single(_db.ListRecycle());
+        var payload = Path.Combine(_recycleDir, entry.Id.ToString(), "files", "BV1recycle09");
+
+        // 让台账主行的 INSERT 撞主键：塞一行同 id 不同 bvid 的馆藏进去。
+        // 「撞号让路」那道检查只认 bvid，这道坑它能绕过去，正好逼出「四个文件已搬完、台账写不进」那条路。
+        var dbFile = Path.Combine(_tempDir, "station.db");
+        using (var connection = new SqliteConnection($"Data Source={dbFile}"))
+        {
+            connection.Open();
+            using var insert = connection.CreateCommand();
+            insert.CommandText = "INSERT INTO videos (id, url, bvid, title, status, created_at_utc) VALUES ($id, $u, $b, '占位的', 'Arrived', $at);";
+            insert.Parameters.AddWithValue("$id", videoId);
+            insert.Parameters.AddWithValue("$u", "https://www.bilibili.com/video/BV1phantom99");
+            insert.Parameters.AddWithValue("$b", "BV1phantom99");
+            insert.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+            insert.ExecuteNonQuery();
+        }
+
+        var restored = _db.RestoreFromRecycle(entry.Id, _videosDir, _recycleDir);
+
+        Assert.False(restored.Ok);
+        Assert.Equal(0, restored.Files);
+        Assert.Equal(0, restored.Rows);
+
+        // 老写法在这儿会把四个文件丢在 /media 下无主游荡；现在得跟着事务一起退回回收站。
+        Assert.Empty(Directory.GetFiles(Path.Combine(_videosDir, "BV1recycle09"), "*", SearchOption.AllDirectories));
+        Assert.Equal(4, Directory.GetFiles(payload, "*", SearchOption.AllDirectories).Length);
+        Assert.Equal(entry.Id, Assert.Single(_db.ListRecycle()).Id);
+
+        // 台账里的尖儿拔掉，再捞一次就成。
+        using (var connection = new SqliteConnection($"Data Source={dbFile}"))
+        {
+            connection.Open();
+            using var purge = connection.CreateCommand();
+            purge.CommandText = "DELETE FROM videos WHERE bvid = 'BV1phantom99';";
+            purge.ExecuteNonQuery();
+        }
+
+        var retried = _db.RestoreFromRecycle(entry.Id, _videosDir, _recycleDir);
+        Assert.True(retried.Ok, retried.Message);
+        Assert.True(File.Exists(basePath + ".mp4"));
+        Assert.NotNull(_db.GetVideoBrief(videoId));
     }
 
     [Fact]

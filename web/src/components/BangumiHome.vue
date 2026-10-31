@@ -18,7 +18,7 @@ const props = defineProps({
   commentBusy: { type: Object, default: () => new Set() },
 })
 
-// 投稿人自管两钮（补采评论 / 删档）：大封面模式以前没这两枚，投稿人切到这个模式就动不了自己的稿。
+// 投稿人自管两钮（补采评论 / 删档）只挂在分区横滚行与网格卡阵上；大幕右上角的两钮已按站长要求收起。
 // 能不能按由服务端算好的 canManage 说话：分区行那口 /api/zones/videos 没这列，按 id 从全集认领（与时长/播放数同一套路）。
 defineEmits(['fetch-comments', 'remove'])
 const byId = computed(() => new Map(props.videos.map((v) => [v.id, v])))
@@ -352,28 +352,8 @@ onBeforeUnmount(() => {
       >
         <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 5.5 16 12l-6.5 6.5" /></svg>
       </button>
-      <!-- 投稿人自管两钮（hover 大幕才现身，与左右圆箭头同一套互动）：大封面模式也要能删稿与补采 -->
-      <button
-        v-if="heroCur && canManageOf(heroCur) && isArrived(heroCur)"
-        class="absolute right-12 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/45 p-1.5 text-white/75 opacity-0 backdrop-blur transition hover:bg-stationBlue hover:text-white group-hover:opacity-100 disabled:opacity-30"
-        :disabled="commentBusy.has(heroCur.id)"
-        :title="HINT_FETCH_COMMENTS"
-        @click.prevent.stop="$emit('fetch-comments', heroCur)"
-      >
-        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
-      <button
-        v-if="heroCur && canManageOf(heroCur)"
-        class="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/45 p-1.5 text-white/75 opacity-0 backdrop-blur transition hover:bg-rose-500 hover:text-white group-hover:opacity-100"
-        :title="HINT_DELETE_VIDEO"
-        @click.prevent.stop="$emit('remove', heroCur)"
-      >
-        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-1 13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1L6 7" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
+      <!-- 大幕右上角的投稿人自管两钮已按站长要求收起（大幕保持干净）：
+           补采评论与删档在分区横滚行的卡片上仍有同款入口，网格卡阵也照常能操作 -->
     </section>
     <!-- ═══ 小图 tab 排：压住大幕下缘，选中放大浮起、名字落到卡下 ═══ -->
     <!-- ═══ 小图 tab 排：五颗居中放大（186px，较 124 放大一半），压住大幕下缘，选中再浮起、名字落到卡下 ═══ -->
