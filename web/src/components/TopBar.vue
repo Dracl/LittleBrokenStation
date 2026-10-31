@@ -207,16 +207,6 @@ function goMessages() {
 
               <div class="border-t border-lineSoft/70 p-1.5">
                 <button
-                  class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
-                  @click="go('/me')"
-                >
-                  <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <circle cx="12" cy="8.5" r="3.5" />
-                    <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
-                  </svg>
-                  个人空间
-                </button>
-                <button
                   v-if="member.role === 'owner'"
                   class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
                   @click="go('/admin')"
@@ -225,6 +215,16 @@ function goMessages() {
                     <path d="M3 17.5h18L22.5 8l-5.7 4L12 3.5 7.2 12 1.5 8 3 17.5Z" stroke-linejoin="round" />
                   </svg>
                   站长室
+                </button>
+                <button
+                  class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+                  @click="go('/me')"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <circle cx="12" cy="8.5" r="3.5" />
+                    <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
+                  </svg>
+                  个人空间
                 </button>
                 <button
                   class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
