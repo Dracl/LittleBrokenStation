@@ -156,7 +156,65 @@ async function clearHistory() {
   }
 }
 
-const historyAll = computed(() => history.value ?? [])
+// ─── 左侧时间轨：按自然日切段筛片（今天/昨天/前天/近一周/近一月/更早），段间互斥不重影；
+// 选段记进 localStorage，下次推门还站在上次那段上
+const RAIL_BUCKETS = [
+  { key: 'all', label: '全部', test: () => true },
+  { key: 'today', label: '今天', test: (d) => d === 0 },
+  { key: 'yesterday', label: '昨天', test: (d) => d === 1 },
+  { key: 'dayBefore', label: '前天', test: (d) => d === 2 },
+  { key: 'week', label: '近一周', test: (d) => d >= 3 && d <= 7 },
+  { key: 'month', label: '近一月', test: (d) => d >= 8 && d <= 30 },
+  { key: 'older', label: '更早', test: (d) => d > 30 },
+]
+
+// 自然日距：拿本地历法日相减，不拿 24h 窗口硬除——晚上十一点看的片不该被午夜踢出「今天」
+function daysAgo(iso) {
+  const t = new Date(iso)
+  if (!Number.isFinite(t.getTime())) return null
+  const now = new Date()
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const that0 = new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime()
+  return Math.round((today0 - that0) / 86400000)
+}
+
+const histFilter = ref('all')
+try {
+  const saved = localStorage.getItem('lbs.history.filter')
+  if (saved && RAIL_BUCKETS.some((b) => b.key === saved)) histFilter.value = saved
+} catch {
+  /* 隐私模式读不到就算了，用默认档 */
+}
+function setHistFilter(key) {
+  histFilter.value = key
+  try {
+    localStorage.setItem('lbs.history.filter', key)
+  } catch {
+    /* 存不上不拦筛片 */
+  }
+}
+
+function inBucket(item, bucket) {
+  const d = daysAgo(item.updatedAtUtc)
+  if (d === null) return bucket.key === 'all' // 时间戳读不懂的只认全部，不乱塞进哪段
+  return bucket.test(d)
+}
+
+const activeBucket = computed(() => RAIL_BUCKETS.find((b) => b.key === histFilter.value) ?? RAIL_BUCKETS[0])
+const filteredHistory = computed(() => {
+  const all = history.value ?? []
+  const bucket = activeBucket.value
+  return bucket.key === 'all' ? all : all.filter((x) => inBucket(x, bucket))
+})
+// 每段计数：空段淡显不可点，一眼看清哪几天真看过东西
+const railCounts = computed(() => {
+  const map = {}
+  const all = history.value ?? []
+  for (const b of RAIL_BUCKETS) {
+    map[b.key] = b.key === 'all' ? all.length : all.filter((x) => inBucket(x, b)).length
+  }
+  return map
+})
 
 function openLogin(mode) {
   loginDialogMode.value = mode
@@ -195,18 +253,39 @@ function openLogin(mode) {
         </p>
       </section>
 
-      <!-- 观看历史全量页：席位制一人一片一行，看到一半走了它记得你的位子 -->
-      <section v-else class="rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
-        <div class="mb-4 flex items-center justify-between gap-3">
-          <h2 class="text-[15px] font-semibold text-inkMain">观看历史</h2>
-          <span v-if="history" class="text-xs tabular-nums text-inkFaint">共 {{ history.length }} 条历史记录</span>
-        </div>
+      <!-- 观看历史全量页：左侧时间轨选段，右侧席位制一人一片一行，看到一半走了它记得你的位子 -->
+      <div v-else class="flex items-start gap-5">
+        <aside class="w-[104px] shrink-0">
+          <div class="hist-rail sticky top-[76px]">
+            <button
+              v-for="b in RAIL_BUCKETS"
+              :key="b.key"
+              class="hist-rail-item group"
+              :class="{ 'is-active': histFilter === b.key, 'is-empty': !railCounts[b.key] }"
+              :disabled="!railCounts[b.key] && histFilter !== b.key"
+              :title="railCounts[b.key] ? `${b.label}：${railCounts[b.key]} 条` : `${b.label}：没有记录`"
+              @click="setHistFilter(b.key)"
+            >
+              <span class="hist-rail-label text-xs leading-4 text-inkSub transition group-hover:text-stationPink">{{ b.label }}</span>
+              <span class="hist-rail-dot"></span>
+            </button>
+          </div>
+        </aside>
 
-        <!-- 全量列座：页面自然滚，不再挤 440px 的内滚窗口 -->
-        <ul v-if="history?.length" class="space-y-2">
-          <li
-            v-for="item in historyAll"
-            :key="item.videoId"
+        <section class="min-w-0 flex-1 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+          <div class="mb-4 flex items-center justify-between gap-3">
+            <h2 class="text-[15px] font-semibold text-inkMain">观看历史</h2>
+            <span v-if="history" class="text-xs tabular-nums text-inkFaint">
+              <template v-if="histFilter !== 'all'">{{ activeBucket.label }} {{ filteredHistory.length }} 条 · 共 {{ history.length }} 条</template>
+              <template v-else>共 {{ history.length }} 条历史记录</template>
+            </span>
+          </div>
+
+          <!-- 全量列座（选中时段内）：页面自然滚，不再挤 440px 的内滚窗口 -->
+          <ul v-if="filteredHistory.length" class="space-y-2">
+            <li
+              v-for="item in filteredHistory"
+              :key="item.videoId"
             :data-video-id="item.videoId"
             class="hist-row flex items-start gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
             :class="{ 'hist-row-out': historyExiting.has(item.videoId) }"
@@ -256,6 +335,9 @@ function openLogin(mode) {
         <p v-else-if="history === null" class="py-8 text-center text-sm text-inkFaint">
           {{ historyBusy ? '正在翻你的历史……' : '历史没打开：分站后端没有应答' }}
         </p>
+        <p v-else-if="histFilter !== 'all'" class="py-8 text-center text-sm text-inkFaint">
+          {{ activeBucket.label }}没有看过的片子——换个时段看看，或点左轨「全部」观所有留档。
+        </p>
         <p v-else class="py-8 text-center text-sm text-inkFaint">
           还没有观看记录——去大厅抽一部，看过的都会在这里留档；看到一半走了它也会记得你的位子。
         </p>
@@ -280,6 +362,7 @@ function openLogin(mode) {
           </button>
         </div>
       </section>
+      </div>
     </main>
   </div>
 </template>
@@ -330,6 +413,72 @@ function openLogin(mode) {
 }
 .hist-cover.is-on {
   opacity: 1;
+}
+/* 左轨时间筛：一条竖线穿珠——选中段换空心粉环（#fb7299 即 tailwind 的 stationPink），空段淡到不可点 */
+.hist-rail {
+  display: flex;
+  flex-direction: column;
+}
+.hist-rail::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  right: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: rgb(var(--line-soft) / 1);
+}
+.hist-rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-height: 36px;
+  cursor: pointer;
+}
+.hist-rail-item:disabled {
+  cursor: default;
+}
+.hist-rail-item.is-empty {
+  opacity: 0.35;
+}
+.hist-rail-dot {
+  position: relative;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
+}
+.hist-rail-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #c3c8d1;
+  transition: opacity 0.15s ease;
+}
+.dark .hist-rail-dot::after {
+  background: #565b66;
+}
+.hist-rail-item.is-active .hist-rail-dot {
+  border-color: #fb7299;
+  transform: scale(1.08);
+}
+.hist-rail-item.is-active .hist-rail-dot::after {
+  opacity: 0;
+}
+.hist-rail-item.is-active .hist-rail-label {
+  color: #fb7299;
+  font-weight: 600;
 }
 @media (prefers-reduced-motion: reduce) {
   .hist-row {
