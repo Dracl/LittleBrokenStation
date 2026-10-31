@@ -275,10 +275,20 @@ function openLogin(mode) {
         <section class="min-w-0 flex-1 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
           <div class="mb-4 flex items-center justify-between gap-3">
             <h2 class="text-[15px] font-semibold text-inkMain">观看历史</h2>
-            <span v-if="history" class="text-xs tabular-nums text-inkFaint">
-              <template v-if="histFilter !== 'all'">{{ activeBucket.label }} {{ filteredHistory.length }} 条 · 共 {{ history.length }} 条</template>
-              <template v-else>共 {{ history.length }} 条历史记录</template>
-            </span>
+            <div class="flex items-center gap-3">
+              <span v-if="history" class="text-xs tabular-nums text-inkFaint">
+                <template v-if="histFilter !== 'all'">{{ activeBucket.label }} {{ filteredHistory.length }} 条 · 共 {{ history.length }} 条</template>
+                <template v-else>共 {{ history.length }} 条历史记录</template>
+              </span>
+              <!-- 清空是重锤，坐在右上角数数旁边，与页头同席 -->
+              <button
+                class="rounded-full border border-lineSoft px-3.5 py-1.5 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
+                :disabled="historyBusy || !history?.length"
+                @click="clearHistory"
+              >
+                清空
+              </button>
+            </div>
           </div>
 
           <!-- 格子阵列（选中时段内）：封面大头卡自适应列宽，一屏装得下的比长条多得多 -->
@@ -340,26 +350,17 @@ function openLogin(mode) {
           还没有观看记录——去大厅抽一部，看过的都会在这里留档；看到一半走了它也会记得你的位子。
         </p>
 
-        <div class="mt-3 flex items-end justify-between gap-4">
           <p
             v-if="historyNotice"
-            class="flex-1 text-xs leading-5"
+            class="mt-3 text-xs leading-5"
             :class="historyNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'"
           >
             {{ historyNotice.text }}
           </p>
-          <p v-else class="flex-1 text-[11px] leading-4 text-inkFaint">
+          <p v-else class="mt-3 text-[11px] leading-4 text-inkFaint">
             历史按席位存，一人一片只占一行，看完的也留档；这里全量列座，退场只认手动删除与清空。
           </p>
-          <button
-            class="shrink-0 rounded-full border border-lineSoft px-3.5 py-1.5 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="historyBusy || !history?.length"
-            @click="clearHistory"
-          >
-            清空
-          </button>
-        </div>
-      </section>
+        </section>
       </div>
     </main>
   </div>
