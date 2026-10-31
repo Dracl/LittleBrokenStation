@@ -548,13 +548,8 @@ async function doLogout() {
         <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
           <div class="mb-4 flex items-center justify-between gap-3">
             <h3 class="text-sm font-semibold text-inkMain">观看历史</h3>
-            <button
-              class="rounded-full border border-lineSoft px-3.5 py-1.5 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="historyBusy || !history?.length"
-              @click="clearHistory"
-            >
-              清空
-            </button>
+            <!-- 原清空的位置改报总数（接口全量回，数现成的就行）；加载前空着不拿假数字充数 -->
+            <span v-if="history" class="text-xs tabular-nums text-inkFaint">共 {{ history.length }} 条历史记录</span>
           </div>
 
           <!-- 固定高滚动区：十档叠起来比半屏还高，让列表自己内部滚，不把个人空间顶成无限长 -->
@@ -615,16 +610,26 @@ async function doLogout() {
             还没有观看记录——去大厅抽一部，看过的都会在这里留档；看到一半走了它也会记得你的位子。
           </p>
 
-          <p
-            v-if="historyNotice"
-            class="mt-3 text-xs leading-5"
-            :class="historyNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'"
-          >
-            {{ historyNotice.text }}
-          </p>
-          <p v-else class="mt-3 text-[11px] leading-4 text-inkFaint">
-            历史按席位存，一人一片只占一行，看完的也留档；卡面滚动展最近 {{ HISTORY_SHOW_COUNT }} 条，退场只认手动删除与清空。
-          </p>
+          <div class="mt-3 flex items-end justify-between gap-4">
+            <p
+              v-if="historyNotice"
+              class="flex-1 text-xs leading-5"
+              :class="historyNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'"
+            >
+              {{ historyNotice.text }}
+            </p>
+            <p v-else class="flex-1 text-[11px] leading-4 text-inkFaint">
+              历史按席位存，一人一片只占一行，看完的也留档；卡面滚动展最近 {{ HISTORY_SHOW_COUNT }} 条，退场只认手动删除与清空。
+            </p>
+            <!-- 清空是重锤，挪去右下角与提示同排，不再在页头对着一排小字耀武扬威 -->
+            <button
+              class="shrink-0 rounded-full border border-lineSoft px-3.5 py-1.5 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="historyBusy || !history?.length"
+              @click="clearHistory"
+            >
+              清空
+            </button>
+          </div>
         </section>
 
         <!-- 我的合集：成员自管的抽屉（建/拆在这，装货去放映厅的「合集」钮） -->
