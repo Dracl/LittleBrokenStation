@@ -350,15 +350,13 @@ function openLogin(mode) {
           还没有观看记录——去大厅抽一部，看过的都会在这里留档；看到一半走了它也会记得你的位子。
         </p>
 
+          <!-- 只剩错牌位：平时页脚不再说书，出错才亮一句 -->
           <p
             v-if="historyNotice"
             class="mt-3 text-xs leading-5"
             :class="historyNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'"
           >
             {{ historyNotice.text }}
-          </p>
-          <p v-else class="mt-3 text-[11px] leading-4 text-inkFaint">
-            历史按席位存，一人一片只占一行，看完的也留档；这里全量列座，退场只认手动删除与清空。
           </p>
         </section>
       </div>
