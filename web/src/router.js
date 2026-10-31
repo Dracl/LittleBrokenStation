@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomePage from './pages/HomePage.vue'
 import AdminPage from './pages/AdminPage.vue'
 import MemberPage from './pages/MemberPage.vue'
+import HistoryPage from './pages/HistoryPage.vue'
 import MessagesPage from './pages/MessagesPage.vue'
 import WatchPage from './pages/WatchPage.vue'
 import SearchPage from './pages/SearchPage.vue'
@@ -25,6 +26,7 @@ const router = createRouter({
     { path: '/weekly', name: 'weekly', component: WeeklyPage, meta: { title: '分站周报 - 小破分站' } },
     { path: '/admin', name: 'admin', component: AdminPage, meta: { title: '站长室 - 小破分站' } },
     { path: '/me', name: 'me', component: MemberPage, meta: { title: '个人空间 - 小破分站' } },
+    { path: '/history', name: 'history', component: HistoryPage, meta: { title: '观看历史 - 小破分站' } },
     { path: '/messages', name: 'messages', component: MessagesPage, meta: { title: '站内信箱 - 小破分站' } },
     { path: '/register', name: 'register', component: RegisterPage, meta: { title: '落籍进站 - 小破分站' } },
   ],

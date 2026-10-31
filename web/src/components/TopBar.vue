@@ -226,6 +226,16 @@ function goMessages() {
                   </svg>
                   站长室
                 </button>
+                <button
+                  class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+                  @click="go('/history')"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <circle cx="12" cy="12" r="8.5" />
+                    <path d="M12 7.5V12l3 2" stroke-linecap="round" />
+                  </svg>
+                  历史记录
+                </button>
               </div>
 
               <div class="border-t border-lineSoft/70 p-1.5">
