@@ -72,6 +72,10 @@ public sealed class SubmitterManageTests : IDisposable
     // /api/member/history 那三条不在两张门视野里（两端都 false），端点自己查 MemberGate.Current 回 401。
     [InlineData("POST", "/api/videos/9/progress", false, true)]
     [InlineData("GET", "/api/videos/9/progress", false, true)]
+    // 加档前的预估规格：表面只读，其实每一发都替分站出去打 playurl（风控敏感口、吃的是采集号）→ 访客不给。
+    [InlineData("GET", "/api/videos/9/codecs/estimates", false, true)]
+    // 加档实况：形状压在 /progress 那条规则上（同样吃会员门），一并钉住免得哪天改门改飘。
+    [InlineData("GET", "/api/videos/9/codecs/progress", false, true)]
     [InlineData("GET", "/api/member/history", false, false)]
     [InlineData("POST", "/api/member/history/delete", false, false)]
     [InlineData("POST", "/api/member/history/clear", false, false)]

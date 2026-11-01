@@ -31,15 +31,52 @@ const VISIBILITIES = [
 ]
 // 档案动作：与放映厅互动栏那两枚走的是 utils/videoActions.js 里同一份逻辑，这里只是第二个入口。
 // media 这一枚按站长批的摆在投稿人也看得见这一段（不进 OWNER_ACTIONS）：封面件与档案回 B 站重采。
+// 每枚两句话：hint 说这一下去 B 站干什么，note 只补一句「站内那部分动还是不动」这类跑完才会发生的事。
+// 摆序按「最常按的那枚在上」：评论补采是日常活，弹幕留档重拉与封面回炉都属偶发。
 const ARCHIVE_ACTIONS = [
-  { key: 'danmaku', idle: '重拉弹幕快照', busy: '弹幕重拉中…', done: '已重拉', hint: '回 B 站把那份弹幕留档重拉一遍；分站朋友发的站内弹幕不碰一个字节' },
-  { key: 'comments', idle: '补采评论', busy: '评论采集中…', done: '已补采', hint: '回 B 站把评论快照再采一遍，站内评论不动' },
-  { key: 'media', idle: '重拉封面与媒体', busy: '拉取中…', done: '已重拉', hint: '回 B 站把封面件与稿件档案重采一遍；媒体缺件就回炉重下（拉完左侧那颗「看封面」跟着换脸）' },
+  {
+    key: 'comments',
+    idle: '补采评论',
+    busy: '评论采集中…',
+    done: '已补采',
+    hint: '回 B 站把评论快照再采一遍',
+    note: '站内已有的评论原样留着',
+  },
+  {
+    key: 'danmaku',
+    idle: '重拉弹幕快照',
+    busy: '弹幕重拉中…',
+    done: '已重拉',
+    hint: '回 B 站把这份弹幕留档重拉一遍',
+    note: '分站朋友发的弹幕',
+  },
+  {
+    key: 'media',
+    idle: '重拉封面与媒体',
+    busy: '拉取中…',
+    done: '已重拉',
+    hint: '回 B 站重采封面件与稿件档案',
+    note: '缺件的媒体顺带回炉重下',
+  },
 ]
 // 站长那一组：会员根本看不见这一段（真门在端点里，这里只是不摆钮）
 const OWNER_ACTIONS = [
-  { key: 'requeue', idle: '重新排队', busy: '排队中…', done: '已排队', hint: '被取消的馆藏捐回下载队列，下一班进站' },
-  { key: 'revive', idle: '强制重下', busy: '重下中…', done: '已重下', hint: '救活卡死的下载：能软续就软续，打不动就删行重投' },
+  {
+    key: 'requeue',
+    idle: '重新排队',
+    busy: '排队中…',
+    done: '已排队',
+    hint: '把被取消的馆藏捐回下载队列',
+    note: '下一班进站，已有的件不重下',
+  },
+  {
+    key: 'revive',
+    idle: '强制重下',
+    busy: '重下中…',
+    done: '已重下',
+    hint: '救活卡死的下载',
+    note: '能软续就软续，实在打不动才删行重投',
+  },
 ]
 
 const title = ref('')
@@ -196,6 +233,16 @@ function labelOf(item) {
 }
 function actText(item) {
   return act.value[item.key]?.text || item.hint
+}
+
+// 两组的行同款（钮同宽、同一套脸），类串只在这一处写，免得两组越改越不像。
+// 固定宽度是为了三颗钮的右缘对齐成一条线，右边那两行说明也跟着对齐，不再长长短短。
+const ACT_BTN_BASE =
+  'w-[124px] shrink-0 rounded-lg border px-3 py-1.5 text-center text-[12px] transition disabled:cursor-not-allowed disabled:opacity-40'
+function actBtnClass(item) {
+  return act.value[item.key]?.state === 'done'
+    ? `${ACT_BTN_BASE} border-stationPink/40 bg-stationPink/5 text-stationPink`
+    : `${ACT_BTN_BASE} border-lineSoft text-inkSub hover:border-stationPink/50 hover:text-stationPink`
 }
 
 // 弹幕 / 评论 / 封面与媒体各走 refetchArchive 那一份逻辑，只是每颗钮只点自己那一样（放映厅那枚是两个一起点）。
@@ -377,22 +424,24 @@ const OVERRIDE_CHIP = 'rounded-full border border-stationBlue/30 px-1.5 py-px te
         <!-- ③ 档案动作：与放映厅互动栏那两枚同源（utils/videoActions.js），成功后各回一句人话 -->
         <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
           <h4 class="text-[13px] font-medium text-inkMain">档案动作</h4>
-          <div class="mt-3 space-y-2.5">
-            <div v-for="item in ARCHIVE_ACTIONS" :key="item.key" class="flex flex-wrap items-center gap-2.5">
+          <div class="mt-2">
+            <div
+              v-for="item in ARCHIVE_ACTIONS"
+              :key="item.key"
+              class="flex items-start gap-3 border-b border-lineSoft/50 py-2.5 last:border-b-0 last:pb-0"
+            >
               <button
                 type="button"
-                class="rounded-lg border px-3 py-1.5 text-[12px] transition disabled:cursor-not-allowed disabled:opacity-40"
-                :class="
-                  act[item.key]?.state === 'done'
-                    ? 'border-stationPink/40 bg-stationPink/5 text-stationPink'
-                    : 'border-lineSoft text-inkSub hover:border-stationPink/50 hover:text-stationPink'
-                "
+                :class="actBtnClass(item)"
                 :disabled="busy || removing || anyActBusy"
                 @click="runArchive(item)"
               >
                 {{ labelOf(item) }}
               </button>
-              <span class="min-w-0 flex-1 text-[11px] leading-5 text-inkFaint">{{ actText(item) }}</span>
+              <div class="min-w-0 flex-1">
+                <p class="text-[12px] leading-5 text-inkSub">{{ actText(item) }}</p>
+                <p v-if="item.note" class="mt-0.5 text-[11px] leading-4 text-inkFaint">{{ item.note }}</p>
+              </div>
             </div>
           </div>
 
@@ -402,32 +451,37 @@ const OVERRIDE_CHIP = 'rounded-full border border-stationBlue/30 px-1.5 py-px te
               <h5 class="text-[11px] uppercase tracking-widest text-inkFaint">站长专用</h5>
               <span class="text-[11px] text-inkFaint">这几枚只有站长按得动</span>
             </div>
-            <div class="mt-2.5 space-y-2.5">
-              <div v-for="item in OWNER_ACTIONS" :key="item.key" class="flex flex-wrap items-center gap-2.5">
+            <div class="mt-2.5">
+              <div
+                v-for="item in OWNER_ACTIONS"
+                :key="item.key"
+                class="flex items-start gap-3 border-b border-lineSoft/50 py-2.5"
+              >
                 <button
                   type="button"
-                  class="rounded-lg border px-3 py-1.5 text-[12px] transition disabled:cursor-not-allowed disabled:opacity-40"
-                  :class="
-                    act[item.key]?.state === 'done'
-                      ? 'border-stationPink/40 bg-stationPink/5 text-stationPink'
-                      : 'border-lineSoft text-inkSub hover:border-stationPink/50 hover:text-stationPink'
-                  "
+                  :class="actBtnClass(item)"
                   :disabled="busy || removing || anyActBusy"
                   @click="runOwner(item)"
                 >
                   {{ labelOf(item) }}
                 </button>
-                <span class="min-w-0 flex-1 text-[11px] leading-5 text-inkFaint">{{ actText(item) }}</span>
+                <div class="min-w-0 flex-1">
+                  <p class="text-[12px] leading-5 text-inkSub">{{ actText(item) }}</p>
+                  <p v-if="item.note" class="mt-0.5 text-[11px] leading-4 text-inkFaint">{{ item.note }}</p>
+                </div>
               </div>
-              <div class="flex flex-wrap items-center gap-2.5">
+              <div class="flex items-start gap-3 py-2.5">
                 <RouterLink
                   :to="{ path: '/admin', hash: '#grp-harvest' }"
-                  class="shrink-0 rounded-lg border border-lineSoft px-3 py-1.5 text-center text-[12px] text-inkSub transition hover:border-stationPink/50 hover:text-stationPink"
+                  class="w-[124px] shrink-0 rounded-lg border border-lineSoft px-3 py-1.5 text-center text-[12px] text-inkSub transition hover:border-stationPink/50 hover:text-stationPink"
                   title="清晰度选择在站长室的进货口里点单，这里不重做一份"
                 >
                   去站长室加档
                 </RouterLink>
-                <span class="min-w-0 flex-1 text-[11px] leading-5 text-inkFaint">挑哪几档清晰度在站长室的进货口里点单，这里不重做一份。</span>
+                <div class="min-w-0 flex-1">
+                  <p class="text-[12px] leading-5 text-inkSub">挑哪几档清晰度，去站长室的进货口点单</p>
+                  <p class="mt-0.5 text-[11px] leading-4 text-inkFaint">这一窗不重做一份清晰度 UI</p>
+                </div>
               </div>
             </div>
           </div>

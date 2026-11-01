@@ -51,7 +51,10 @@ public sealed class MemberGate(StationDb db)
             && (path.Contains("/danmaku", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/related", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/download", StringComparison.OrdinalIgnoreCase)
-                || path.EndsWith("/progress", StringComparison.OrdinalIgnoreCase)))
+                || path.EndsWith("/progress", StringComparison.OrdinalIgnoreCase)
+                // 加档前的预估规格：看着像只读情报，其实每一发都替分站出去打 playurl（风控敏感口、吃的是采集号），
+                // 不挡就等于让访客拿站里的号去探 B 站。
+                || path.EndsWith("/estimates", StringComparison.OrdinalIgnoreCase)))
         {
             return true;
         }

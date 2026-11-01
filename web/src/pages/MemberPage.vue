@@ -217,7 +217,8 @@ function fmtBytes(b) {
   return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
 }
 
-// 账号池操作：id 传 accountMid（/me 的 accounts 行没给别的 id）；后端 message 原样展示
+// 账号池操作：传的是那一行的行 id（/me 的 accounts 每行都带 id；不是 accountMid —— 后端拿它与自己池里的 a.Id 核，
+// 对不上就 404「这个号不在你的池里」，拿 mid 传进去只会打空，伤不到别人的行）。后端 message 原样展示。
 async function accountAction(action, acc) {
   if (busy.value) return
   const who = acc.accountName || `B站账号 ${acc.accountMid}`

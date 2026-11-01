@@ -447,6 +447,69 @@ function trackKbpsText(info) {
 const presentRows = computed(() => CODEC_ROWS.filter(([c]) => versionInfo(c).state !== 'missing'))
 const missingRows = computed(() => CODEC_ROWS.filter(([c]) => versionInfo(c).state === 'missing'))
 
+// ─── 加档前的「预估」规格（后端代问 B 站 playurl 的标称值）───
+// 只给没到货的那几行用：到货的行吃 ffprobe 实测，两者绝不混显。拿不到就整段不显 —— 宁空不假。
+// 按需才发：人得先点开「▸ 点单加档其他版本」才问（不展开就不替分站打 playurl），而且三档全在库时不发。
+const estimates = ref({})
+const estimatesPage = ref(null) // 正为哪个分 P 发着这一发（只防同一次展开重发，不当「问过就不问」的账）
+
+async function loadEstimates() {
+  if (!props.videoId || !missingRows.value.length) return
+  const page = props.page?.index ?? 1
+  if (estimatesPage.value === page) return
+  estimatesPage.value = page
+  try {
+    const res = await fetch(`/api/videos/${props.videoId}/codecs/estimates?page=${page}`)
+    if (!res.ok) {
+      estimatesPage.value = null // 没问成，下次再试；也不拿空的顶掉已有的行情
+      return
+    }
+    const list = (await res.json()).items ?? []
+    if (list.length) {
+      const map = {}
+      for (const it of list) map[it.codec] = it
+      estimates.value = map
+    } else {
+      // 拉不到就空着：预估而已，没义务必须拉到。不记「问过」，下次点开折叠区再拉一次就好。
+      estimatesPage.value = null
+    }
+  } catch {
+    estimatesPage.value = null
+  }
+}
+
+// 展开折叠区（真要挑档位的那一刻）或版本清单变动后按需问一次；没展开就一发出网都不该有。
+watch([showMore, () => props.page?.index, versions], () => {
+  if (showMore.value) loadEstimates()
+}, { immediate: true })
+
+// 数字格式拄上面那行实测的一模一样（千分位、「视频 X / 音频 Y · 48.3 MB」），只在前面顶个「预估」二字。
+// 不拿 trackKbpsText 是因为它开头就卡 state === 'stock'，而预估行恰恰不是 stock。
+function estBadge(codec) {
+  const it = estimates.value[codec]
+  if (!it) return ''
+  const bits = []
+  const v = it.videoKbps ?? null
+  const a = it.audioKbps ?? null
+  if (v != null && a != null) bits.push(`视频 ${v.toLocaleString()} / 音频 ${a.toLocaleString()}`)
+  else if (v != null) bits.push(`视频 ${v.toLocaleString()}`)
+  else if (a != null) bits.push(`音频 ${a.toLocaleString()}`)
+  if (it.bytes != null) bits.push(fmtVersionSize(it.bytes))
+  return bits.length ? `预估 ${bits.join(' · ')}` : ''
+}
+
+function estTitle(codec) {
+  const it = estimates.value[codec]
+  if (!it) return ''
+  const bits = [
+    '这是 B 站给的标称值，不是本地实测：B 站只给平均带宽，体积按（视频 + 音频）× 时长 ÷ 8 算的',
+    '三档编码共用同一条音轨，所以音频那一栏三行会是同一个数',
+    '到货后以 ffprobe 实测为准',
+  ]
+  if (it.qn != null) bits.unshift(`按 qn=${it.qn}${it.height ? `（${it.height}p）` : ''} 这一档估`)
+  return bits.join('；')
+}
+
 function playingCodec() {
   return activeCodec.value ?? props.page?.codec ?? null
 }
@@ -1822,7 +1885,7 @@ const STROKE_ITEMS = [
           @click="clickVersion(c[0])"
         >
           <span class="shrink-0 whitespace-nowrap">
-            <span v-if="playingCodec() === c[0]" class="mr-1 text-[9px]">▶</span>{{ c[1] }} 版
+            <span v-if="playingCodec() === c[0]" class="mr-1 text-[9px]">▶</span>{{ c[1] }}
           </span>
           <span class="ml-2 min-w-0 truncate text-right text-[10px] tabular-nums whitespace-nowrap">
             <template v-if="versionInfo(c[0]).state === 'stock'">{{ stockBadge(c[0]) }}</template>
@@ -1838,7 +1901,7 @@ const STROKE_ITEMS = [
         </button>
       </div>
       <button v-if="missingRows.length" class="mb-2 px-1 text-left text-[10px] text-white/40 transition hover:text-white/70" @click="showMore = !showMore">
-        {{ showMore ? '▾ 收起其他版本' : '▸ 点单加档其他版本' }}
+        {{ showMore ? '▾ 收起其他版本' : '▸ 加档其他版本' }}
       </button>
       <div v-if="showMore && missingRows.length" class="mb-2 flex flex-col gap-1">
         <button
@@ -1848,8 +1911,12 @@ const STROKE_ITEMS = [
           :title="c[0] === 'hevc' ? 'HEVC 在部分浏览器可能放不动' : ''"
           @click="clickVersion(c[0])"
         >
-          <span>{{ c[1] }} 版</span>
-          <span class="text-[10px]">点单加档</span>
+          <span class="shrink-0 whitespace-nowrap">{{ c[1] }}</span>
+          <!-- 三段各不缩、各自不折行：以前三个元素挤在一行又都能压缩，数字一长就堆成三行（站长 11-02 那张图）。 -->
+          <span class="flex min-w-0 items-center justify-end gap-2">
+            <span v-if="estBadge(c[0])" class="min-w-0 truncate text-[10px] tabular-nums whitespace-nowrap text-white/35" :title="estTitle(c[0])">{{ estBadge(c[0]) }}</span>
+            <span class="shrink-0 text-[10px] whitespace-nowrap">加档</span>
+          </span>
         </button>
       </div>
 

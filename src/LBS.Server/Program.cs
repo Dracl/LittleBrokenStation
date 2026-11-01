@@ -40,6 +40,8 @@ builder.Services.AddSingleton<CommentArchiveService>();
 builder.Services.AddSingleton<DanmakuArchiveService>();
 builder.Services.AddSingleton<MediaRefreshService>(); // 稿件设置窗那枚「重拉封面与媒体」（档案重取 + 封面重抓 + 缺件回炉）
 builder.Services.AddSingleton<LbsCollectPolicy>();
+// 加档前的「预估」探子（playurl 标称码率与体积）：无状态，单例就够；出号与节流都交给现成那一套。
+builder.Services.AddSingleton<CodecEstimateService>();
 builder.Services.AddHostedService<DownloadWorker>();
 // 分轨码率探子：起进程的事集中在这一个类，同步员在「主片到站」与「加档定档」两个事件点叫它，
 // StationDb 只管写台账、不起进程，热路径（开观看页）也不探。
@@ -1197,6 +1199,22 @@ app.MapPost("/api/videos/{id:long}/codecs", async (long id, CodecVersionRequest 
     return Results.Ok(new { message = $"{codec.ToUpperInvariant()} 版本已排队进站（{added} 个分 P）" });
 });
 
+// 加档前的「预估」规格（放映厅那排「点单加档」用）：一个字节不下，只问 B 站要各编码的标称码率与大概体积。
+// 两道门：MemberGate 先挡匿名（这一口替分站出去打 playurl，烧的是采集号，不能让访客使），
+// 再过看客钥匙 —— 私有稿的规格也是内容情报，与查无此片同一张 404 脸。
+app.MapGet("/api/videos/{id:long}/codecs/estimates", async (long id, int? page, StationDb db,
+    CodecEstimateService estimates, HttpContext http, CancellationToken cancellationToken) =>
+{
+    var brief = db.GetVideoBrief(id);
+    if (brief is null || !CanViewVideo(http, db, id))
+    {
+        return Results.NotFound(new { message = "馆藏里没这个视频" });
+    }
+
+    var items = await estimates.GetAsync(id, brief.Value.Bvid, page ?? 1, cancellationToken);
+    return Results.Ok(new { items });
+});
+
 // 加档实况轻端点（会员可读）：放映厅的版本面板把「进站中…」报成带百分比/字节/速度的实况，
 // 与站长室队列同一本账——引擎在途表逐枚现查，进度的真伪以引擎为准。
 // 先过看客钥匙：码率版本清单（哪个编码在途、进度多少、下到多少字节）也是内容情报，
@@ -1422,9 +1440,19 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
         return Results.BadRequest(new { message = $"可见性只认 {VisibilityCodec.Public} / {VisibilityCodec.Private}（不填算公开）" });
     }
 
+    // 投稿受理只有一条顺序：先验人、再验号、最后才落台账（顺序颠倒过的代价写在 SubmissionIntake 的注释里：
+    // 闸门拒收时台账已落行，那条 BV 号就被无主空壳永久占死，同链再投永远 409）。
     // 单链投稿也走批量那一口：它是写侧唯一能把可见性正门正写进台账的出口（AddVideo 不带这栏），
     // 手搓 UPDATE 翻档是数据层禁路，这里不绕。撞重照样只补档案，不碰已有行的 visibility。
-    var outcome = db.AddVideosBulk(new[] { new NewVideo(request.Url, bvid, null, null, null, visibility) });
+    var submitter = MemberGate.Current(http);
+    if (SubmissionIntake.Deny(db, submitter) is { } denial)
+    {
+        return denial; // 401 / 403：一行台账都没写
+    }
+
+    // Deny 放行即席位非空（空的那张脸就是 401），下面不再判。
+    var outcome = SubmissionIntake.Accept(db, submitter!,
+        new[] { new NewVideo(request.Url, bvid, null, null, null, visibility) });
     if (outcome.Added == 0)
     {
         return Results.Conflict(new { message = "这个视频已经到过了" });
@@ -1432,29 +1460,7 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
 
     var videoId = outcome.InsertedIds[0];
 
-    // 投稿定人：谁投的归谁，下载提交时走他自己的账号池（M5.4：定的是站内席位 id）。
-    var submitter = MemberGate.Current(http);
-    // 投稿必留名：查不出席位的匿名稿一律拒收——门闸按路径点名，历史上尾斜杠就能穿到这里白灌台账；
-    // 就算门修好，这道死规也留着：宁可多拒一票，台账不养无主行。
-    if (submitter is null)
-    {
-        return Results.Json(new { error = "member-required", message = "投稿要留名：登录进站再丢链接" },
-            statusCode: StatusCodes.Status401Unauthorized);
-    }
-
-    // 投稿闸门（M5.4）：素净席位能看能聊不能投稿——得有一个未过期的 B 站号才烧得起别人的登录态；站长拿引擎登录态投稿，不受此闸。
-    if (!SubmissionGate.Allows(db, submitter))
-    {
-        return Results.Json(new
-        {
-            error = "no-bilibili-account",
-            message = "还没绑 B 站号，先去何处？用户控制室——绑定后就能投稿，看片私信不耽误",
-        }, statusCode: StatusCodes.Status403Forbidden);
-    }
-
-    db.SetVideoSubmitterMember(videoId, submitter.Id);
-
-    events.RecordWithPayload(EventActors.Member, submitter.Mid, EventNames.VideoSubmit, "video", bvid,
+    events.RecordWithPayload(EventActors.Member, submitter!.Mid, EventNames.VideoSubmit, "video", bvid,
         new { url = request.Url, via = "link", visibility = VisibilityCodec.ToColumn(visibility) },
         http.Connection.RemoteIpAddress?.ToString(), submitter.Id);
 
@@ -1494,25 +1500,26 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
         }
     }
 
-    var bookmarkSeat = MemberGate.Current(http)?.Id;
-    var outcome = db.AddVideosBulk(videos);
+    // 收藏夹文件也要过投稿闸：以前它连席位都不问，素净席位能整批灌进台账还不定归属（幽灵行的另一条来路）。
+    // 位置在解析之后、写库之前 —— 解析是本地活，不烧 B 站请求，放前面还能顺手报「忽略 N 条」。
+    var importer = MemberGate.Current(http);
+    if (SubmissionIntake.Deny(db, importer) is { } denial)
+    {
+        return denial;
+    }
+
+    var outcome = SubmissionIntake.Accept(db, importer!, videos);
     foreach (var videoId in outcome.InsertedIds)
     {
-        if (bookmarkSeat is long seatId)
-        {
-            db.SetVideoSubmitterMember(videoId, seatId);
-        }
-
         await queue.EnqueueAsync(videoId, cancellationToken);
     }
 
     if (outcome.Added > 0)
     {
-        var actor = MemberGate.Current(http);
-        events.RecordWithPayload(actor is null ? EventActors.Guest : EventActors.Member, actor?.Mid,
+        events.RecordWithPayload(EventActors.Member, importer!.Mid,
             EventNames.VideoSubmit, "batch", "bookmarks",
             new { via = "bookmarks", added = outcome.Added, duplicated = outcome.Duplicated, ignored },
-            http.Connection.RemoteIpAddress?.ToString(), actor?.Id);
+            http.Connection.RemoteIpAddress?.ToString(), importer.Id);
     }
 
     return Results.Ok(new
@@ -1540,6 +1547,13 @@ app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest reques
         return Results.Json(new { message = $"分站正在风控冷却中，约 {Math.Ceiling(left.TotalMinutes)} 分钟后自动回暖，稍后再投" }, statusCode: StatusCodes.Status423Locked);
     }
 
+    // 投稿闸放在出去翻页之前：素净席位连 B 站请求都不该替分站烧（这一口整架翻页，一趟几十发）。
+    var importer = MemberGate.Current(http);
+    if (SubmissionIntake.Deny(db, importer) is { } denial)
+    {
+        return denial;
+    }
+
     // 整架导入不挂具体视频，按采集偏好出号。
     var outcome = await policy.RunForActivityAsync(() => favorites.ImportAsync(request.Url, cancellationToken));
     if (!outcome.Success)
@@ -1547,26 +1561,20 @@ app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest reques
         return Results.BadRequest(new { message = outcome.Error });
     }
 
-    var favSeat = MemberGate.Current(http)?.Id;
     // 整批共用一个档位：导入器不认可见性（它只管抽链接），入库前在这一行套上（只改内存里的 NewVideo，不碰已有行）。
-    var bulk = db.AddVideosBulk(outcome.Videos.Select(v => v with { Visibility = visibility }).ToList());
+    var bulk = SubmissionIntake.Accept(db, importer!,
+        outcome.Videos.Select(v => v with { Visibility = visibility }).ToList());
     foreach (var videoId in bulk.InsertedIds)
     {
-        if (favSeat is long seatId)
-        {
-            db.SetVideoSubmitterMember(videoId, seatId);
-        }
-
         await queue.EnqueueAsync(videoId, cancellationToken);
     }
 
     if (bulk.Added > 0)
     {
-        var actor = MemberGate.Current(http);
-        events.RecordWithPayload(actor is null ? EventActors.Guest : EventActors.Member, actor?.Mid,
+        events.RecordWithPayload(EventActors.Member, importer!.Mid,
             EventNames.VideoSubmit, "batch", "fav_url",
             new { via = "fav_url", added = bulk.Added, duplicated = bulk.Duplicated, ignored = outcome.Ignored },
-            http.Connection.RemoteIpAddress?.ToString());
+            http.Connection.RemoteIpAddress?.ToString(), importer.Id);
     }
 
     var message = $"整架签收：收到 {outcome.Videos.Count + outcome.Ignored} 个条目，新进站 {bulk.Added} 条，来过 {bulk.Duplicated} 条";
@@ -1601,6 +1609,13 @@ app.MapPost("/api/up/import", async (UpImportRequest request,
     {
         var left = throttle.CooldownRemaining ?? TimeSpan.Zero;
         return Results.Json(new { message = $"分站正在风控冷却中，约 {Math.Ceiling(left.TotalMinutes)} 分钟后自动回暖，稍后再投" }, statusCode: StatusCodes.Status423Locked);
+    }
+
+    // 投稿闸放在翻整架之前（同收藏夹链接那一口）：素净席位不该替分站翻上几十页空跑一趟。
+    var importer = MemberGate.Current(http);
+    if (SubmissionIntake.Deny(db, importer) is { } denial)
+    {
+        return denial;
     }
 
     var mid = SubscriptionCrawler.ParseMid(request.Url);
@@ -1655,25 +1670,18 @@ app.MapPost("/api/up/import", async (UpImportRequest request,
         return Results.Ok(new { total = 0, added = 0, duplicated = 0, message = "这位 UP 主名下没翻到视频（或空间设了权限）" });
     }
 
-    var upSeat = MemberGate.Current(http)?.Id;
-    var upBulk = db.AddVideosBulk(videos);
+    var upBulk = SubmissionIntake.Accept(db, importer!, videos);
     foreach (var videoId in upBulk.InsertedIds)
     {
-        if (upSeat is long seatId)
-        {
-            db.SetVideoSubmitterMember(videoId, seatId);
-        }
-
         await queue.EnqueueAsync(videoId, cancellationToken);
     }
 
     if (upBulk.Added > 0)
     {
-        var actor = MemberGate.Current(http);
-        events.RecordWithPayload(actor is null ? EventActors.Guest : EventActors.Member, actor?.Mid,
+        events.RecordWithPayload(EventActors.Member, importer!.Mid,
             EventNames.VideoSubmit, "batch", "up",
             new { via = "up", added = upBulk.Added, duplicated = upBulk.Duplicated },
-            http.Connection.RemoteIpAddress?.ToString());
+            http.Connection.RemoteIpAddress?.ToString(), importer.Id);
     }
 
     var truncated = videos.Count >= maxVideos ? "，先到 500 条为止（想补老货再投一次）" : string.Empty;

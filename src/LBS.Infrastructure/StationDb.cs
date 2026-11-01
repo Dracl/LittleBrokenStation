@@ -118,6 +118,22 @@ public sealed partial class StationDb
                     text           TEXT NOT NULL,
                     created_at_utc TEXT NOT NULL
                 );
+                -- 加档前的「预估」规格（B 站 playurl 标称值，不是实测）：按（稿件, 分P, 编码）存一行。
+                -- 与 video_codecs 分开两张：那张是「点单与到货的台账」，这张只是探子抄回来的行情，
+                -- 随时可清可覆盖，不该跟下载台账绑在一起。
+                CREATE TABLE IF NOT EXISTS video_codec_estimates (
+                    video_id       INTEGER NOT NULL,
+                    page_idx       INTEGER NOT NULL,
+                    codec          TEXT NOT NULL,
+                    video_kbps     INTEGER,
+                    audio_kbps     INTEGER,
+                    est_bytes      INTEGER,
+                    qn             INTEGER,
+                    width          INTEGER,
+                    height         INTEGER,
+                    fetched_at_utc TEXT NOT NULL,
+                    PRIMARY KEY (video_id, page_idx, codec)
+                );
                 """;
             archive.ExecuteNonQuery();
         }
