@@ -76,11 +76,17 @@ public static class WatchHistoryEndpoints
     public static void MapWatchHistoryEndpoints(this WebApplication app)
     {
         // 报进度：路径以 /progress 收尾，MemberGate 的 /api/videos/ 那一块认它（GET/POST 都吃会员门）。
+        // 两道门各管一头：会员门拿「是不是自己人」，看客钥匙拿「这部你看不得」——后者一律 404（与查无同一张脸）。
         app.MapPost("/api/videos/{id:long}/progress", (long id, ProgressRequest? request, StationDb db, HttpContext http) =>
         {
             if (MemberGate.Current(http) is not { } me)
             {
                 return Results.Json(new { message = "登录后才记你的看到哪了" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            if (!ViewerGate.CanView(http, db, id))
+            {
+                return Results.Json(new { message = "馆藏里没这个视频" }, statusCode: StatusCodes.Status404NotFound);
             }
 
             var (error, outcome) = ValidateProgress(db, me.Id, id, request?.PageIdx, request?.PositionSec, request?.DurationSec);
@@ -109,6 +115,12 @@ public static class WatchHistoryEndpoints
                 return Results.Json(new { message = "登录后才查得到你的续播点位" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
+            // 藏着的稿子与查无同一张脸：不借「没看过」/「有进度」两种回话验出那稿在不在。
+            if (!ViewerGate.CanView(http, db, id))
+            {
+                return Results.Json(new { message = "馆藏里没这个视频" }, statusCode: StatusCodes.Status404NotFound);
+            }
+
             var progress = db.GetWatchHistoryOne(me.Id, id);
             return progress is null
                 ? Results.Json((object?)null)
@@ -123,7 +135,8 @@ public static class WatchHistoryEndpoints
                 return Results.Json(new { message = "还没登录，历史无从谈起" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            var items = db.GetWatchHistory(me.Id).Select(r => new
+            // 历史是个人足迹，本人全见：递 Of(自己) 而不是访客尺子，自己藏着的货在自己历史里照旧露面。
+            var items = db.GetWatchHistory(me.Id, 100, ViewerGate.Scope(http)).Select(r => new
             {
                 videoId = r.VideoId,
                 bvid = r.Bvid,

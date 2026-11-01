@@ -23,7 +23,15 @@ public enum VideoStatus
 }
 
 /// <summary>入库一条新视频的最小描述。</summary>
-public sealed record NewVideo(string Url, string Bvid, string? Title, string? CoverUrl = null, string? PublishedAtUtc = null);
+/// <param name="Visibility">这稿进站的可见性：代投/导入链一律不传，天然 public；
+/// 只有「我自己交东西、先藏起来」那条路会带 private 进来。尾追可选参数，老调用点不受影响。</param>
+public sealed record NewVideo(
+    string Url,
+    string Bvid,
+    string? Title,
+    string? CoverUrl = null,
+    string? PublishedAtUtc = null,
+    VideoVisibility Visibility = VideoVisibility.Public);
 
 /// <summary>下载队列卡片的一行（排队/下载中同形）。</summary>
 public sealed record DownloadQueueItem(long Id, string Bvid, string? Title, string? CoverUrl);
@@ -62,4 +70,7 @@ public sealed record VideoEntry(
     bool CanManage = false,
     // 首页卡片悬停预览（与封面同形：/previews/ + previews.rel_path，rel 相对 data/previews）；
     // 没生成过预览的行留 null，前端不摆悬停。
-    string? PreviewUrl = null);
+    string? PreviewUrl = null,
+    // 这稿的可见性：读侧已经拿尺子滤过一轮，能出现在列表里的都是「这位看得着的」，
+    // 这里带出来只给前端画那枚「锁」徽记（尾追具名传参，不动既有位置）。
+    VideoVisibility Visibility = VideoVisibility.Public);

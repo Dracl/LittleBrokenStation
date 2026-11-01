@@ -8,6 +8,7 @@ import { submitDialogOpen } from '../submitStore'
 import { askDeleteVideo } from '../confirmStore'
 import { isDark, toggleTheme } from '../theme'
 import BangumiHome from '../components/BangumiHome.vue'
+import { guardGuestNav } from '../utils/guestGate'
 
 // ─── 视图开关：番剧模式（大幕轮播 + 分区横滚行，照 B 站番剧区）为默认，网格卡阵是另一档。
 // 选择存 localStorage，下次进站还是上次的样子；没选过的新客默认落番剧模式。右下三颗圆钮最下面那颗切换。
@@ -309,7 +310,11 @@ watch(sentinelEl, (el) => {
 </script>
 
 <template>
-  <div class="min-h-screen">
+  <!-- 根上挂一道捕获拦：访客（member 为空）点卡片进放映厅、点分区行、点合集入口这些一律不跳页，
+       改成开现成那扇登录窗（utils/guestGate.js，与顶栏「登录 / 注册」同一扇）。只认落在 /watch · /zones ·
+       /collections · /collection · /dynamics 那些 <a> 上的点击，卡面、悬停预览、翻页箭头与站长那几枚 hover 钮一概不碰；
+       番剧模式（BangumiHome）就挂在下面，一并罩住，成员则整个放行。 -->
+  <div class="min-h-screen" @click.capture="guardGuestNav">
     <TopBar />
 
     <main class="mx-auto max-w-[1400px] px-6 py-6">

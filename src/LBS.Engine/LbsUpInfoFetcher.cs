@@ -8,8 +8,20 @@ namespace LBS.Engine;
 /// <summary>采集到的 UP 主名片：faceRel 优先本地化（/avatars/...），下载失败回退 B 站热链；拿不到的字段为 null。</summary>
 public sealed record UpProfile(string? Name, string? FaceRel, string? Sign, long? Fans);
 
-/// <summary>B 站互动数据快照（view 接口 stat 字段）：全部真采，拿不到给 null。</summary>
-public sealed record VideoStat(long? Like, long? Coin, long? Favorite, long? Share, long? Reply);
+/// <summary>B 站互动数据快照（view 接口 stat 字段）：全部真采，拿不到给 null。
+/// Staff 是同一次 view 响应顺带带回的创作团队（联合创作稿才有，普通稿是空列表）——
+/// 同一次出号拿两件事，不为团队单开一趟请求（采集算法就按这条定，不要拆成 FetchStaffAsync）。</summary>
+public sealed record VideoStat(
+    long? Like,
+    long? Coin,
+    long? Favorite,
+    long? Share,
+    long? Reply,
+    IReadOnlyList<VideoStaffItem>? Staff = null);
+
+/// <summary>创作团队一员（view 接口 staff 数组）：Role 是 B 站给的角色文本（UP主/作词/视频制作…），主 UP 本人也在数组里。
+/// FaceRel 本地优先（/avatars/...，与 up_face 同一套 sha1 命名与幂等），拉不到回退热链。</summary>
+public sealed record VideoStaffItem(long? Mid, string? Name, string? Role, string? FaceRel);
 
 /// <summary>
 /// UP 主名片采集器：走官方 web-interface/card 拿头像、简介、粉丝数（复用引擎登录态客户端），
@@ -159,7 +171,8 @@ public sealed class LbsUpInfoFetcher(
         }
     }
 
-    /// <summary>互动数据：走公开 view 接口，点赞/投币/收藏/分享/回复五维真数。</summary>
+    /// <summary>互动数据与创作团队：走公开 view 接口一发拿齐——点赞/投币/收藏/分享/回复五维真数，
+    /// 加上 data.staff 那串联合创作名单（B 站的「创作团队 N 人」就来自它）。</summary>
     public async Task<VideoStat?> FetchStatAsync(string bvid, CancellationToken cancellationToken)
     {
         try
@@ -174,12 +187,24 @@ public sealed class LbsUpInfoFetcher(
                 return null;
             }
 
-            if (!doc.RootElement.TryGetProperty("data", out var data) || !data.TryGetProperty("stat", out var stat))
+            // stat 缺了不再整段作废：staff 与 stat 同一次拿，只缺一个就交另一半，另一些字段由调用方销账。
+            if (!doc.RootElement.TryGetProperty("data", out var data))
             {
                 return null;
             }
 
-            return new VideoStat(Num(stat, "like"), Num(stat, "coin"), Num(stat, "favorite"), Num(stat, "share"), Num(stat, "reply"));
+            long? like = null, coin = null, favorite = null, share = null, reply = null;
+            if (data.TryGetProperty("stat", out var stat))
+            {
+                like = Num(stat, "like");
+                coin = Num(stat, "coin");
+                favorite = Num(stat, "favorite");
+                share = Num(stat, "share");
+                reply = Num(stat, "reply");
+            }
+
+            var staff = await FetchStaffAsync(data, bvid, cancellationToken);
+            return new VideoStat(like, coin, favorite, share, reply, staff);
         }
         catch (OperationCanceledException)
         {
@@ -190,6 +215,73 @@ public sealed class LbsUpInfoFetcher(
             logger.LogWarning(ex, "{Bvid} 互动数据采集失败（不致命）", bvid);
             return null;
         }
+    }
+
+    /// <summary>创作团队（联合创作稿的 data.staff 数组）：普通稿没这个字段，给空列表（不是 null，免得调用方分不清「没采」与「没团队」）。
+    /// 头像一次批量交给评论资产缓存本地化（与 UP 名片/评论区同一个 sha1 库，同图天然不重下）；单张拉不到只退回热链，不整队作废。</summary>
+    private async Task<IReadOnlyList<VideoStaffItem>> FetchStaffAsync(JsonElement data, string bvid, CancellationToken cancellationToken)
+    {
+        if (!data.TryGetProperty("staff", out var staff) || staff.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<VideoStaffItem>();
+        }
+
+        var rows = new List<VideoStaffItem>();
+        var faces = new List<string>();
+        foreach (var item in staff.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var name = Str(item, "name");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue; // 连名字都没有的条目显不出来，不如不收
+            }
+
+            long? mid = item.TryGetProperty("mid", out var m) && m.TryGetInt64(out var mv) ? mv : null;
+            var face = Str(item, "face");
+            if (face is { Length: > 0 })
+            {
+                faces.Add(face);
+            }
+
+            rows.Add(new VideoStaffItem(mid, name.Trim(), Str(item, "title"), face));
+        }
+
+        if (rows.Count == 0 || faces.Count == 0)
+        {
+            return rows;
+        }
+
+        try
+        {
+            var map = await assetCache.CacheAvatarUrlsAsync(faces, cancellationToken);
+            if (map.Count > 0)
+            {
+                for (var i = 0; i < rows.Count; i++)
+                {
+                    if (rows[i].FaceRel is { Length: > 0 } hot && map.TryGetValue(hot, out var local))
+                    {
+                        rows[i] = rows[i] with { FaceRel = local };
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "{Bvid} 创作团队头像本地化没走通，整队留热链", bvid);
+        }
+
+        logger.LogInformation("馆藏 {Bvid} 创作团队 {Count} 人：{Team}", bvid, rows.Count,
+            string.Join(" / ", rows.Select(r => $"{r.Name}·{r.Role ?? "?"}")));
+        return rows;
     }
 
     private static long? Num(JsonElement el, string prop) =>

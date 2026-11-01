@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import TopBar from '../components/TopBar.vue'
 import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
@@ -8,10 +8,42 @@ import { requestConfirm } from '../confirmStore'
 import { friendlyTime } from '../utils/time'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 import WallWindow from '../components/WallWindow.vue'
+import CollectionSettingsDialog from '../components/CollectionSettingsDialog.vue'
 
 const busy = ref(false)
 const notice = ref(null) // { kind, text }
 const settingsOpen = ref(false) // 账号与登录设置弹层：登录方式 + 外部账号绑定两块收在这里
+
+// ─── 「没绑 B 站号」那枚气泡：「外部账号绑定」藏在抽屉里，新人打开个人空间根本看不见，在头像右边递一句。
+// 判据不拿 member.hasBilibili 当唯一依据：那个布尔出自 PickMemberAccountForDownload，SQL 带 expired = 0，
+// 「绑过但号全失效」会被说成「没绑」。这里吃 /me 现成的 accounts 逐行看 expired。
+const bindAccounts = computed(() => member.value?.accounts ?? [])
+const bindNeed = computed(
+  () => !!member.value && (bindAccounts.value.length === 0 || bindAccounts.value.every((a) => a.expired)),
+)
+// 两张脸分开：一个号都没绑过 / 绑过但全失效
+const bindNever = computed(() => bindNeed.value && bindAccounts.value.length === 0)
+// 「知道了」只收这一屏：不写本机记忆。切走再进个人空间（组件重挂）就又摆出来，直到号真绑上为止。
+// 站长要的就是「一直显示」：新人漏绑的代价是稿件卡在门口出不去，多问一句不值钱。
+// （原先往 localStorage 存了一笔 lbs.bindHint.v1.<席位> 「按过就不再烦人」，现已拆掉。）
+const bindHintDismissed = ref(false)
+const bindFlash = ref(false)
+const bindSectionRef = ref(null)
+let bindFlashTimer = 0
+
+function dismissBindHint() {
+  bindHintDismissed.value = true
+}
+
+// 「去绑定」：掀开抽屉、滚到那块、闪它一下。这一发也不记账（绑成后 onBindSuccess 重拉 accounts，气泡自己就消失）。
+async function goBindFromHint() {
+  settingsOpen.value = true
+  await nextTick()
+  bindSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  bindFlash.value = true
+  if (bindFlashTimer) clearTimeout(bindFlashTimer)
+  bindFlashTimer = setTimeout(() => (bindFlash.value = false), 1400)
+}
 
 const displayName = computed(() => {
   const m = member.value
@@ -25,6 +57,18 @@ const myCollections = ref(null) // null = 没拉到；[] = 确实没建过
 const collBusy = ref(false)
 const collNotice = ref(null)
 const newColl = ref({ name: '', intro: '' })
+const settingsFor = ref(null) // 非空 = 这座抽屉的「抽屉设置」弹层开着
+
+function openCollectionSettings(c) {
+  if (collBusy.value) return
+  settingsFor.value = c
+}
+
+// 存完不自己接 brief，重拉一次清单：名、件数、私有角标一并跟着后端的事实归位
+async function onCollectionSettingsSaved() {
+  settingsFor.value = null
+  await loadMyCollections()
+}
 
 async function loadMyCollections() {
   collBusy.value = true
@@ -302,14 +346,54 @@ async function doLogout() {
               >
                 ♛ 进站长室
               </RouterLink>
-              <button
-                class="flex items-center gap-1.5 rounded-full border border-lineSoft px-4 py-1.5 text-xs text-inkSub transition hover:border-stationPink/40 hover:text-stationPink"
-                aria-haspopup="dialog"
-                @click="settingsOpen = true"
-              >
-                设置
-                <span v-if="member.hasPassword === false" class="h-1.5 w-1.5 rounded-full bg-stationPink" title="还没设密码，点进来补一把门钥匙"></span>
-              </button>
+              <div class="relative">
+                <!-- 提醒挂在「设置」这颗钮上方：它指的就是你要点的那里，比在左边空地里开一块屏实在。
+                     两张脸（一个号都没绑 / 绑了但全失效）；按「知道了」只收这一屏（切走再进来就又摆出来），按「去绑定」只掀抽屉。 -->
+                <div
+                  v-if="bindNeed && !bindHintDismissed"
+                  class="absolute bottom-full right-0 z-20 mb-2.5 w-[272px] max-w-[72vw] rounded-2xl border border-stationPink/40 bg-cardBg p-3 text-left shadow-[0_2px_10px_rgba(0,0,0,0.06)]"
+                >
+                  <span class="absolute -bottom-[5px] right-7 h-2.5 w-2.5 rotate-45 border-b border-r border-stationPink/40 bg-cardBg"></span>
+                  <p class="text-[13px] font-medium text-inkMain">{{ bindNever ? '还没绑 B 站号' : 'B 站号都登录失效了' }}</p>
+                  <p class="mt-1 text-[11.5px] leading-5 text-inkSub">
+                    {{
+                      bindNever
+                        ? '投稿、采集这些活得用你自己的号出力。绑一个，分站才能替你把它拉回来。'
+                        : '补一次扫码，分站才拉得动投稿、采集这些活。'
+                    }}
+                  </p>
+                  <div class="mt-2 flex items-center gap-2">
+                    <button
+                      class="rounded-full border border-stationPink px-3 py-1 text-xs text-stationPink transition hover:bg-stationPink hover:text-white"
+                      @click="goBindFromHint"
+                    >
+                      去绑定
+                    </button>
+                    <button
+                      class="rounded-full border border-lineSoft px-3 py-1 text-xs text-inkSub transition hover:border-stationPink/40 hover:text-stationPink"
+                      @click="dismissBindHint"
+                    >
+                      知道了
+                    </button>
+                  </div>
+                </div>
+                <button
+                  class="flex items-center gap-1.5 rounded-full border border-lineSoft px-4 py-1.5 text-xs text-inkSub transition hover:border-stationPink/40 hover:text-stationPink"
+                  aria-haspopup="dialog"
+                  @click="settingsOpen = true"
+                >
+                  设置
+                  <span v-if="member.hasPassword === false" class="h-1.5 w-1.5 rounded-full bg-stationPink" title="还没设密码，点进来补一把门钥匙"></span>
+                  <!-- 提醒被「知道了」关掉后退成一颗小点接着指路。颜色与上面那颗密码点拉开（琥珀 vs 粉），
+                       两枚同色就分不清谁是谁了 -->
+                  <span
+                    v-if="bindNeed && bindHintDismissed"
+                    class="h-1.5 w-1.5 rounded-full bg-amber-400"
+                    title="B 站号还没绑 / 都失效了，点进来补一个"
+                    aria-label="B 站号还没绑 / 都失效了，点进来补一个"
+                  ></span>
+                </button>
+              </div>
               <button
                 class="rounded-full border border-lineSoft px-4 py-1.5 text-xs text-inkSub transition hover:border-stationPink/40 hover:text-stationPink"
                 @click="doLogout"
@@ -342,15 +426,84 @@ async function doLogout() {
             <h2 class="text-[15px] font-semibold text-inkMain">我的合集</h2>
             <RouterLink to="/collections" class="text-[12px] text-stationPink transition hover:opacity-80">逛全站的抽屉</RouterLink>
           </div>
-          <ul v-if="myCollections?.length" class="space-y-2">
-            <li v-for="c in myCollections" :key="c.id" class="flex items-center gap-3 rounded-xl border border-lineSoft px-3.5 py-2.5">
-              <RouterLink :to="`/collection/${c.id}`" class="min-w-0 flex-1">
-                <p class="truncate text-[13.5px] font-medium text-inkMain transition hover:text-stationPink">{{ c.name }}</p>
-                <p class="mt-0.5 truncate text-[11.5px] text-inkFaint">
-                  {{ c.itemCount }} 件 · {{ friendlyTime(c.createdAtUtc) }}建{{ c.intro ? ` · ${c.intro}` : '' }}
-                </p>
+          <!-- 抽屉做成 B 站收藏夹那种「一叠照片」：封面底下垫两张白卡，从左下右上探出一点边、微微八字，
+               鼠标扫过来才张开一点。装裱照逗站页 CollectionsPage，只是 16/10 改成 16/9（照站长给的基准图）。
+               名字与副行仍旧在块下方，正方形里挤两行字不好看。 -->
+          <ul v-if="myCollections?.length" class="grid grid-cols-2 gap-x-5 gap-y-8 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            <li v-for="c in myCollections" :key="c.id" class="group/coll relative">
+              <RouterLink :to="`/collection/${c.id}`" class="block">
+                <div class="relative pt-2.5">
+                  <!-- 垫卡：只露上缘一条，转角走八字；z 序靠 DOM 顺序，不需要 z-index -->
+                  <span
+                    class="pointer-events-none absolute inset-x-1 top-0 aspect-[16/9] -rotate-2 rounded-xl bg-white shadow-[0_3px_10px_-4px_rgba(0,0,0,0.22)] ring-1 ring-black/5 transition duration-300 group-hover/coll:-translate-y-0.5 group-hover/coll:-rotate-3 dark:bg-[#2a2d34] dark:ring-white/10"
+                    aria-hidden="true"
+                  ></span>
+                  <span
+                    class="pointer-events-none absolute inset-x-2 top-1 aspect-[16/9] rotate-1 rounded-xl bg-white shadow-[0_2px_8px_-4px_rgba(0,0,0,0.18)] ring-1 ring-black/5 transition duration-300 group-hover/coll:rotate-2 dark:bg-[#262a31] dark:ring-white/10"
+                    aria-hidden="true"
+                  ></span>
+                  <div class="relative aspect-[16/9] overflow-hidden rounded-xl bg-[#f1f2f3] shadow-[0_2px_10px_-4px_rgba(0,0,0,0.25)] ring-1 ring-black/5 dark:bg-[#23262e] dark:ring-white/10">
+                    <img
+                      v-if="c.cover"
+                      :src="c.cover"
+                      :alt="c.name"
+                      loading="lazy"
+                      referrerpolicy="no-referrer"
+                      class="h-full w-full object-cover transition duration-300 group-hover/coll:scale-105"
+                    />
+                    <!-- 集里还没到货（或货没到站）：占一块纯色，不摆破图 -->
+                    <span v-else class="flex h-full flex-col items-center justify-center gap-1.5 text-inkFaint">
+                      <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+                        <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h3l1.7 2h6.3A2.5 2.5 0 0 1 20 9.5v8A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5v-10Z" />
+                      </svg>
+                      <span class="text-[11.5px]">先占着，等货入集</span>
+                    </span>
+                    <span class="absolute bottom-1.5 right-1.5 flex items-center gap-1 rounded bg-black/55 px-1.5 py-0.5 font-mono text-[10px] text-white/90 backdrop-blur">
+                      <svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="currentColor">
+                        <path d="M4 6h4v14H4zM10 6h4v14h-4zM16.5 6.6l3.8 1-3.5 13.2-3.8-1z" />
+                      </svg>
+                      {{ c.itemCount }} 件
+                    </span>
+                    <span
+                      v-if="c.visibility === 'private'"
+                      class="absolute bottom-1.5 left-1.5 flex items-center gap-1 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white/90 backdrop-blur"
+                      title="只有你自己看得见这座抽屉"
+                    >
+                      <svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                        <rect x="5" y="10.5" width="14" height="9.5" rx="2" />
+                        <path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7" />
+                      </svg>
+                      私有
+                    </span>
+                    <span class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 transition duration-200 group-hover/coll:opacity-100"></span>
+                  </div>
+                </div>
               </RouterLink>
-              <button class="shrink-0 text-[12px] text-inkFaint transition hover:text-rose-500 disabled:opacity-40" :disabled="collBusy" @click="removeCollection(c)">拆除</button>
+              <!-- 设置 / 拆除：共用同一套 hover 才浮右上角的语法并排站着（与后台卡阵那两同一脾气），
+                   不 hover 时仍旧只剩一叠图 -->
+              <div class="absolute right-1.5 top-3.5 z-10 flex items-center gap-1">
+                <button
+                  class="rounded-full border border-white/15 bg-black/60 px-2 py-0.5 text-[10.5px] text-white/80 opacity-0 backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink focus-visible:opacity-100 group-hover/coll:opacity-100 disabled:opacity-40"
+                  :disabled="collBusy"
+                  title="改名字、简介与可见性"
+                  aria-haspopup="dialog"
+                  @click="openCollectionSettings(c)"
+                >
+                  设置
+                </button>
+                <button
+                  class="rounded-full border border-white/15 bg-black/60 px-2 py-0.5 text-[10.5px] text-white/80 opacity-0 backdrop-blur transition hover:border-rose-400/60 hover:text-rose-300 focus-visible:opacity-100 group-hover/coll:opacity-100 disabled:opacity-40"
+                  :disabled="collBusy"
+                  title="拆除这个抽屉"
+                  @click="removeCollection(c)"
+                >
+                  拆除
+                </button>
+              </div>
+              <p class="mt-2.5 truncate text-[14px] font-medium text-inkMain transition group-hover/coll:text-stationPink" :title="c.name">{{ c.name }}</p>
+              <p class="mt-1 truncate text-[11.5px] text-inkFaint" :title="c.intro || ''">
+                {{ c.itemCount }} 件 · {{ friendlyTime(c.createdAtUtc) }}建{{ c.intro ? ` · ${c.intro}` : '' }}
+              </p>
             </li>
           </ul>
           <p v-else-if="myCollections === null" class="py-6 text-center text-sm text-inkFaint">{{ collBusy ? '正在翻你的抽屉……' : '抽屉清单没拉回来' }}</p>
@@ -396,7 +549,9 @@ async function doLogout() {
           </p>
           <h3 class="mb-4 text-sm font-semibold text-inkMain">登录方式</h3>
 
-          <dl class="grid gap-3 sm:grid-cols-2">
+          <!-- 原先这里还有第二栏「B 站号（只出力）」，与下方「外部账号绑定」那块重复，已拆；
+               剩下站名一栏独占整宽，不必再撑双列。 -->
+          <dl class="grid gap-3">
             <div class="rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
               <dt class="text-[11px] text-inkFaint">站名（账密登录用）</dt>
               <dd class="mt-1 truncate text-sm text-inkMain">
@@ -404,23 +559,6 @@ async function doLogout() {
                 <template v-else>
                   <span class="text-inkFaint">未设——这是个纯扫码席位</span>
                   <p class="mt-1 text-[11px] leading-4 text-inkFaint">在下方补设密码，就能用密码开门（需先登录着）。</p>
-                </template>
-              </dd>
-            </div>
-            <div class="rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
-              <dt class="text-[11px] text-inkFaint">B 站绑定</dt>
-              <dd class="mt-1 flex flex-wrap items-center gap-2 text-sm text-inkMain">
-                <template v-if="member.hasBilibili">
-                  已绑 <span class="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-600">{{ member.accounts?.length ?? 0 }} 个号</span>
-                </template>
-                <template v-else>
-                  <span class="text-inkFaint">未绑——素净席位可逛可看可私信，就是不能投稿</span>
-                  <button
-                    class="rounded-full border border-stationPink px-3 py-0.5 text-[11px] text-stationPink transition hover:bg-stationPink hover:text-white"
-                    @click="openLogin('bind')"
-                  >
-                    扫码绑一个
-                  </button>
                 </template>
               </dd>
             </div>
@@ -479,7 +617,11 @@ async function doLogout() {
         </section>
 
         <!-- 外部账号绑定：登录与平台绑定分离（M5.4）——卡形不焊死任何平台，行戴平台徽 -->
-        <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+        <section
+          ref="bindSectionRef"
+          class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
+          :class="bindFlash ? 'ring-2 ring-stationPink/50 transition' : ''"
+        >
           <div class="mb-4 flex items-center justify-between gap-3">
             <h3 class="text-sm font-semibold text-inkMain">
               外部账号绑定
@@ -504,6 +646,17 @@ async function doLogout() {
               :key="acc.accountMid"
               class="flex flex-wrap items-center gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
             >
+              <!-- 这枚脸以前画不出来：/me 的 accounts 交付把 faceUrl 漏在投影里（数据早就在库里），现已补上。
+                   B 站图床挡外链，no-referrer 不能省；早期粘 cookie 进来的号可能没脸，退回默认图。 -->
+              <span class="block h-7 w-7 shrink-0">
+                <img
+                  :src="acc.faceUrl || defaultAvatar"
+                  :alt="acc.accountName || `B站账号 ${acc.accountMid}`"
+                  referrerpolicy="no-referrer"
+                  class="h-full w-full rounded-full object-cover ring-1 ring-stationPink/20"
+                  @error="onAvatarError"
+                />
+              </span>
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-2 text-sm text-inkMain">
                   <span class="shrink-0 rounded-md bg-[#fb7299]/10 px-1.5 py-0.5 text-[10px] font-medium text-[#fb7299]">B 站</span>
@@ -511,7 +664,7 @@ async function doLogout() {
                   <span v-if="acc.isPrimary" class="shrink-0 rounded-full bg-stationPink px-1.5 py-0.5 text-[10px] leading-none text-white">主号</span>
                   <span v-if="acc.expired" class="shrink-0 rounded-full border border-rose-300 px-1.5 py-0.5 text-[10px] leading-none text-rose-500">登录已失效</span>
                 </p>
-                <p class="mt-1 font-mono text-xs text-inkFaint">B站号 {{ acc.accountMid }}</p>
+                <p class="mt-1 font-mono text-xs text-inkFaint">UID {{ acc.accountMid }}</p>
               </div>
               <div class="flex shrink-0 items-center gap-2">
                 <button
@@ -560,6 +713,14 @@ async function doLogout() {
 
     <!-- bind 实例：只管「绑定 B 站账号」的弹层，成功后喊这里重拉账号池 -->
     <LoginDialog instance-mode="bind" @bind-success="onBindSuccess" />
+
+    <!-- 抽屉设置：东家自己改名字 / 简介 / 公私，存完重拉我的合集 -->
+    <CollectionSettingsDialog
+      v-if="settingsFor"
+      :collection="settingsFor"
+      @saved="onCollectionSettingsSaved"
+      @close="settingsFor = null"
+    />
   </div>
 </template>
 

@@ -26,8 +26,11 @@ public static class DmEndpoints
     /// 错误给状态码与文案，null = 放行；DynJson 是随信落库的视频族卡面（与动态分享 dyn_json 同族），
     /// 带 watchUrl = /watch/bvid，对方点卡直落站内放映厅。
     /// </summary>
+    /// <param name="viewerCanView">这位能不能看这部（调用方拿 <see cref="ViewerGate.CanView"/> 算好递进来，
+    /// 必传不给默认值）：藏着的稿子安利不出去，否则任何人都能借安利把别人的私稿端回全站眼前。
+    /// 安全判据的默认值不许落在放行那一侧（fail-open）：哪天有人加个调用点忘了传，就静默把私有稿的安利卡放出去了。</param>
     internal static ((int Status, string Message)? Error, long ToMemberId, string Note, string? DynJson) ValidateVideoShare(
-        StationDb db, long fromMemberId, long? toMemberId, string bvid, string? rawNote)
+        StationDb db, long fromMemberId, long? toMemberId, string bvid, string? rawNote, bool viewerCanView)
     {
         if (toMemberId is not long target)
         {
@@ -58,6 +61,13 @@ public static class DmEndpoints
         if (db.GetVideoShareSnapshot(bvid) is not { } snap)
         {
             return ((StatusCodes.Status404NotFound, "分站馆藏里没有这个片子，安利不了空气"), 0, string.Empty, null);
+        }
+
+        // 藏着的稿子安利不出去。这道门排在「在不在馆」之后（查无那句话得原样留着），拒词照本函数的形制给一句人话，
+        // 也不提「私有」二字：回执里说漏了「它藏着」，等于替人验了那稿存在。
+        if (!viewerCanView)
+        {
+            return ((StatusCodes.Status404NotFound, "这部片子站里没摆着，安利不了"), 0, string.Empty, null);
         }
 
         var dynJson = JsonSerializer.Serialize(new
@@ -290,7 +300,9 @@ public static class DmEndpoints
                 return Results.Json(new { message = "登录后才能给朋友安利" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            var (error, target, note, dynJson) = ValidateVideoShare(db, me.Id, request?.ToMemberId, bvid, request?.Note);
+            // 安利也得过看客钥匙（bvid 为键，先反查 id）：私有稿只有东家本人与站长塞得进别人信箱。
+            var canView = db.GetVideoIdByBvid(bvid.Trim()) is { } videoId && ViewerGate.CanView(http, db, videoId);
+            var (error, target, note, dynJson) = ValidateVideoShare(db, me.Id, request?.ToMemberId, bvid, request?.Note, canView);
             if (error is not null)
             {
                 return Results.Json(new { message = error.Value.Message }, statusCode: error.Value.Status);

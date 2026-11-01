@@ -142,6 +142,27 @@ public sealed class CollectionsTests : IDisposable
     }
 
     [Fact]
+    public void 卡阵那几件齐着给_播放量时长预览一个不许缺()
+    {
+        var owner = Seat("集主");
+        var id = _db.CreateCollection("有数的", null, owner);
+        var video = _db.AddVideo("https://www.bilibili.com/video/BVcoll000009", "BVcoll000009").VideoId;
+        _db.SaveSubmissionMetadata(
+            video,
+            new VideoMetaDraft("测试UP", 123, "音乐>翻唱", "2026-05-20 18:00:00", "简介", "3.4万"),
+            new[] { new PageDraft("task-9", 1, "正片", 111, "04:12", "有数的/正片") });
+        _db.MarkSubmitted(video, new[] { "task-9" }, "有数的一首", null);
+        _db.MarkArrived(video);
+        Assert.True(_db.AddItem(id, video));
+
+        var item = Assert.Single(_db.GetCollection(id)!.Items);
+        Assert.Equal("3.4万", item.ViewCountText); // 卡上的播放量（首页同一口口径：video_meta.view_count）
+        Assert.Equal("04:12", item.DurationText); // 封面右下角那格时长（取首 P）
+        Assert.Null(item.DanmakuCount); // 没弹幕档案：宁缺毋假，不给个 0 上去
+        Assert.Null(item.PreviewUrl); // 没生成过悬停预览：前端不摆悬停
+    }
+
+    [Fact]
     public void 封面取最新入集那条_本地件优先热链兑底()
     {
         var owner = Seat("集主");

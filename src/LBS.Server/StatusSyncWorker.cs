@@ -212,6 +212,9 @@ public sealed class StatusSyncWorker(
                             // 到站那一刻不探就得等开片，而前端不现探，错过这个事件点就一直没码率。
                             streams.ProbeArrivedVideo(videoId);
                             await TryFetchUpAsync(videoId);
+                            // 互动数据与创作团队单独走一趟：同站名下的稿 UP 名片会提前 return，
+                            // 挂在它后面那些稿就永远采不到 staff。
+                            await TryFetchStatAsync(videoId);
                             var outcome = await commentArchive.TryArchiveAsync(videoId, force: false, CancellationToken.None);
                             if (!outcome.Ok)
                             {
@@ -571,16 +574,49 @@ public sealed class StatusSyncWorker(
                 profile.Fans?.ToString() ?? "?");
         }
 
-        // 互动数据同趟顺路采：失败不在这里硬试，观看页懒补自会接手。
-        var brief = db.GetVideoBrief(videoId);
-        if (brief is not null)
+        // 互动数据与创作团队不再挂在本方法尾上：它们自己有一趟（TryFetchStatAsync），
+        // 不至于因为 UP 名片同站蹭成而跟着没采。
+    }
+
+    /// <summary>
+    /// 互动数据与创作团队：到站时单独走一趟，一次 view 同时拿五维真数与联合创作名单（B 站「创作团队 N 人」那份）。
+    /// 采不到不销账，观看页懒补（BackfillStat）自会接手；要重采删 video_meta 对应行即可。
+    /// </summary>
+    private async Task TryFetchStatAsync(long videoId)
+    {
+        if (!db.ShouldBackfillStat(videoId))
         {
-            var stat = await upInfo.FetchStatAsync(brief.Value.Bvid, CancellationToken.None);
-            if (stat is not null)
-            {
-                db.SetVideoStat(videoId, stat.Like, stat.Coin, stat.Favorite, stat.Share, stat.Reply);
-                logger.LogInformation("馆藏 {VideoId} 互动数据入库：赞{Like} 币{Coin} 藏{Fav}", videoId, stat.Like, stat.Coin, stat.Favorite);
-            }
+            return;
         }
+
+        // 同 UP 名片那条规矩：没号就不出门，空手出去只会被 -101 打回，还把设备指纹递进风控。
+        if (!policy.HasAccount())
+        {
+            logger.LogDebug("互动数据与创作团队本轮跳过 videoId={VideoId}：站里没有可用的采集号", videoId);
+            return;
+        }
+
+        var brief = db.GetVideoBrief(videoId);
+        if (brief is null)
+        {
+            return;
+        }
+
+        using var _owner = policy.BeginForVideo(videoId);
+        var stat = await upInfo.FetchStatAsync(brief.Value.Bvid, CancellationToken.None);
+        if (stat is null)
+        {
+            return; // 不销账：让观看页那一发懒补接手
+        }
+
+        db.SetVideoStat(videoId, stat.Like, stat.Coin, stat.Favorite, stat.Share, stat.Reply);
+        db.SetVideoStaff(videoId, WatchStaffCodec.ToJson(StaffMap.ToWatch(stat.Staff)));
+        logger.LogInformation(
+            "馆藏 {VideoId} 互动数据入库：赞{Like} 币{Coin} 藏{Fav}（创作团队 {Team} 人）",
+            videoId,
+            stat.Like,
+            stat.Coin,
+            stat.Favorite,
+            stat.Staff?.Count ?? 0);
     }
 }

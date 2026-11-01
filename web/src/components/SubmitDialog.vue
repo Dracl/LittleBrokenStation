@@ -9,12 +9,20 @@ const TABS = [
   { key: 'favfile', label: '收藏夹文件' },
 ]
 
+const VISIBILITIES = [
+  { key: 'public', label: '公开' },
+  { key: 'private', label: '私有' },
+]
+
 const activeTab = ref('video')
 const videoUrl = ref('')
 const favUrl = ref('')
 const upUrl = ref('')
 const busy = ref(false)
 const notice = ref(null) // { kind, text }
+// 可见性四档共用一档（批量档也是整批同一个），默认公开；
+// 切 tab 不动它，关窗重开才复位。
+const visibility = ref('public')
 
 function close() {
   submitDialogOpen.value = false
@@ -27,6 +35,7 @@ function onKeydown(event) {
 watch(submitDialogOpen, (open) => {
   if (open) {
     notice.value = null
+    visibility.value = 'public'
     window.addEventListener('keydown', onKeydown)
   } else {
     window.removeEventListener('keydown', onKeydown)
@@ -55,7 +64,7 @@ async function submitVideo() {
   const url = videoUrl.value.trim()
   if (!url || busy.value) return
   busy.value = true
-  const result = settle(await postJson('/api/videos', { url }))
+  const result = settle(await postJson('/api/videos', { url, visibility: visibility.value }))
   busy.value = false
   notice.value = result
   if (result.kind === 'ok') videoUrl.value = ''
@@ -65,7 +74,7 @@ async function submitFavUrl() {
   const url = favUrl.value.trim()
   if (!url || busy.value) return
   busy.value = true
-  const result = settle(await postJson('/api/favorites/import-url', { url }))
+  const result = settle(await postJson('/api/favorites/import-url', { url, visibility: visibility.value }))
   busy.value = false
   notice.value = result
   if (result.kind === 'ok') favUrl.value = ''
@@ -75,7 +84,7 @@ async function submitUpUrl() {
   const url = upUrl.value.trim()
   if (!url || busy.value) return
   busy.value = true
-  const result = settle(await postJson('/api/up/import', { url }))
+  const result = settle(await postJson('/api/up/import', { url, visibility: visibility.value }))
   busy.value = false
   notice.value = result
   if (result.kind === 'ok') upUrl.value = ''
@@ -100,7 +109,7 @@ async function submitFavFile(event) {
   busy.value = true
   try {
     const content = await file.text()
-    const result = settle(await postJson('/api/favorites/import', { content }))
+    const result = settle(await postJson('/api/favorites/import', { content, visibility: visibility.value }))
     notice.value = result
   } catch {
     notice.value = { kind: 'err', text: '读不动这个文件' }
@@ -207,6 +216,27 @@ async function submitFavFile(event) {
               <input type="file" accept=".html,.htm,text/html" class="hidden" :disabled="busy" @change="submitFavFile" />
             </label>
           </template>
+
+          <!-- 谁能看见：分段钮形状照抄墙上「喂料三档」（WallWindow），白卡上直接摆，日夜同一套颜色。
+               四档共用这一枚：摆在输入区之下、回执之上，favfile 没底栏也照样容得下。 -->
+          <div class="mt-4 flex flex-wrap items-center gap-2">
+            <span class="text-[11.5px] text-inkFaint">谁能看见</span>
+            <div class="flex items-center rounded-full border border-lineSoft p-0.5" role="group" aria-label="这条投稿谁能看见">
+              <button
+                v-for="v in VISIBILITIES"
+                :key="v.key"
+                type="button"
+                class="rounded-full px-2.5 py-0.5 text-[11.5px] transition"
+                :class="visibility === v.key ? 'bg-stationPink text-white' : 'text-inkSub hover:text-stationPink'"
+                :aria-pressed="visibility === v.key"
+                :disabled="busy"
+                @click="visibility = v.key"
+              >
+                {{ v.label }}
+              </button>
+            </div>
+            <span v-if="visibility === 'private'" class="text-[11.5px] text-inkFaint">只有你自己看得见，别处搜不到</span>
+          </div>
 
           <p
             v-if="notice"

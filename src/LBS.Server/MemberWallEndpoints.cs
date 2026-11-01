@@ -48,8 +48,11 @@ public static class MemberWallEndpoints
             var wantHistory = scope != "submissions";
             var items = new List<WallItem>();
             var seen = new HashSet<long>();
-            // 全表只拉一次：投稿从这里筛，历史行找它补齐悬停预览切片（百来行代价，不单独再问一趟）
-            var allVideos = db.ListVideos();
+            // 全表只拉一次：投稿从这里筛，历史行找它补齐悬停预览切片（百来行代价，不单独再问一趟）。
+            // 递看客尺子：墙上只挂这位看得着的货（自己的私有稿照挂，别人的私货连封面切片都不许露）。
+            // 变量名不叫 scope —— 那个名字已被这口的「只看投稿/只看历史」选择子占走（别拿两把尺子同名混人）。
+            var viewer = ViewerGate.Scope(http);
+            var allVideos = db.ListVideos(viewer);
             var previewById = new Dictionary<long, string?>();
             foreach (var v in allVideos)
             {
@@ -74,7 +77,7 @@ public static class MemberWallEndpoints
             // 历史随后：GetWatchHistory 本就按 updated_at 倒序，最近看的排前头。
             if (wantHistory)
             {
-                foreach (var r in db.GetWatchHistory(me.Id, WallCap))
+                foreach (var r in db.GetWatchHistory(me.Id, WallCap, viewer))
                 {
                     if (seen.Add(r.VideoId))
                     {

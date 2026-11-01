@@ -8,6 +8,9 @@ const props = defineProps({
   upFace: { type: String, default: null },
   upSign: { type: String, default: null },
   upFans: { type: Number, default: null },
+  // 创作团队（B 站 view 接口 data.staff 的归档）：{ mid, name, role, face }[]，没采过为 null。
+  // 非空 = 联合创作稿，画团队；空 = 普通稿，画原来那张 UP 名片。
+  staff: { type: Array, default: null },
 })
 
 const faceFailed = ref(false)
@@ -28,12 +31,76 @@ function fmtFans(n) {
   }
   return n.toString()
 }
+
+// 联合创作名单：本人也算一员（B 站自己就把他列在头一个，角色写「UP主」），名字外链 B 站空间。
+const team = computed(() =>
+  (props.staff ?? [])
+    .filter((p) => p && (p.name || p.mid))
+    .map((p) => ({
+      mid: p.mid ?? null,
+      name: (p.name || '').trim() || `席位 ${p.mid ?? '?'}`,
+      role: (p.role || '').trim() || null,
+      face: p.face || null,
+    })),
+)
+const isTeam = computed(() => team.value.length > 0)
+
+// 成员头像单独记失败：某一张拉不到只顶它自己那颗默认小人，不把整队一起打回。
+// 索引作键而不是图 URL：同一个人理论上可能在名单里出现两次，B 站 staff 不保证不重复。
+const mateFailed = ref({})
+watch(() => props.staff, () => (mateFailed.value = {}))
+
+function mateFace(p, i) {
+  return p.face && !mateFailed.value[i] ? p.face : defaultAvatar
+}
+
+function onMateError(i) {
+  mateFailed.value = { ...mateFailed.value, [i]: true }
+}
+
+// 没 mid 的成员（B 站偶尔给不出）就不套外链，省得点开一个空白空间。
+function spaceHref(p) {
+  return p.mid != null ? `https://space.bilibili.com/${p.mid}` : undefined
+}
 </script>
 
 <template>
-  <!-- B 站同款结构：左头像，右三行（名字+发消息 / 签名 / 关注钮通栏）；充电钮按站长旨意不做 -->
-  <div class="rounded-xl bg-cardBg p-4">
-    <div class="flex gap-3.5">
+  <!-- 站长定的两套脸：B 站给了联合创作名单（staff 非空）就画「创作团队」那块；普通稿还是原来那张 UP 名片。
+       别给没有团队的稿子硬套团队皮 —— 分站九成稿子都是普通稿。 -->
+  <div v-if="isTeam || upName || upMid || upFace" class="rounded-xl bg-cardBg p-4">
+    <!-- ① 联合创作：版式照 B 站，标题带人数，横排头像 + 粉色名字 + 灰角色。
+         B 站头像上那颗蓝加号是「关注」动作，站内没有关注体系，点了没处落，就不拄一个假钮上来。 -->
+    <template v-if="isTeam">
+      <div class="flex items-baseline gap-1.5">
+        <span class="text-sm font-semibold text-inkMain">创作团队</span>
+        <span class="text-xs text-inkFaint">{{ team.length }}人</span>
+      </div>
+      <div class="mt-2.5 grid grid-cols-3 gap-x-2 gap-y-3">
+        <a
+          v-for="(p, i) in team"
+          :key="`${p.mid ?? 'x'}-${i}`"
+          :href="spaceHref(p)"
+          :target="p.mid != null ? '_blank' : undefined"
+          rel="noreferrer"
+          class="group/mate flex min-w-0 flex-col items-center text-center"
+          :title="p.role ? `${p.name} · ${p.role}` : p.name"
+        >
+          <img
+            :src="mateFace(p, i)"
+            :alt="p.name"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+            class="h-12 w-12 rounded-full bg-white/5 object-cover ring-1 ring-black/5 dark:ring-white/10"
+            @error="onMateError(i)"
+          />
+          <span class="mt-1.5 w-full truncate text-xs text-stationPink transition group-hover/mate:underline">{{ p.name }}</span>
+          <span class="mt-0.5 w-full truncate text-[11px] text-inkFaint">{{ p.role || '创作' }}</span>
+        </a>
+      </div>
+    </template>
+
+    <!-- ② 普通稿：B 站同款结构，左头像，右三行（名字+发消息 / 签名 / 关注钮通栏）；充电钮按站长旨意不做 -->
+    <div v-else class="flex gap-3.5">
       <img
         :src="faceSrc"
         :alt="upName ?? 'UP 主头像'"

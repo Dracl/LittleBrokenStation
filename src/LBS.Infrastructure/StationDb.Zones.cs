@@ -26,17 +26,21 @@ public sealed partial class StationDb
         string? PublishText,
         string Zone);
 
-    /// <summary>有效分区表达式（全站唯一口径）：改派优先，其次 B 站归档 zone，两头皆空就没有户口。</summary>
-    private const string EffZoneExpr = "COALESCE(NULLIF(v.site_zone, ''), vm.zone)";
+    /// <summary>
+    /// 有效分区表达式（全站唯一口径）：改派优先，其次 B 站归档 zone，两头皆空就没有户口。
+    /// 本体在 StationDb.VideoSettings.cs 的 <c>EffZoneExprWith</c>（与简介那一对同族），这里只是 vm 那一枚的简写——
+    /// 搜索那条 LEFT JOIN 给 video_meta 起的是 m，它得递别名，不能多养一份本体。
+    /// </summary>
+    private static string EffZoneExpr => EffZoneExprWith(VideoMetaAlias);
 
     /// <summary>
     /// 顶级分区清单：全量拉有效分区，在 C# 里掰顶级段聚合。
     /// 库里就几百行，不拿 SQL 的 LIKE 玩前缀匹配——分区名里的 '%' '_' 反咬一口不值得。
     /// </summary>
-    public IReadOnlyList<ZoneEntry> ListZones()
+    public IReadOnlyList<ZoneEntry> ListZones(VisibilityScope? scope = null)
     {
         var tally = new Dictionary<string, long>(StringComparer.Ordinal);
-        foreach (var zone in EnumEffectiveZones())
+        foreach (var zone in EnumEffectiveZones(scope ?? VisibilityScope.PublicOnly))
         {
             if (TopOf(zone) is { Length: > 0 } top)
             {
@@ -54,9 +58,9 @@ public sealed partial class StationDb
     /// <summary>
     /// 某顶级分区的稿件（到站时间倒序）。name 空或查无 → 空表不报 404：
     /// 分区页靠换瓷砖刷新下半屏，空手而归是常态，不该挨一脚。
-    /// 同 ListZones 的理由，顶级段比对放在 C# 里做。
+    /// 同 ListZones 的理由，顶级段比对放在 C# 里做；尺子量在取数那一刻，页面上的货与 ListZones 那个数字同一口径。
     /// </summary>
-    public IReadOnlyList<ZoneVideo> ListZoneVideos(string? topZone)
+    public IReadOnlyList<ZoneVideo> ListZoneVideos(string? topZone, VisibilityScope? scope = null)
     {
         var want = topZone?.Trim();
         if (string.IsNullOrEmpty(want))
@@ -64,17 +68,19 @@ public sealed partial class StationDb
             return [];
         }
 
+        var (visSql, bindVis) = VisibilityFilter(scope ?? VisibilityScope.PublicOnly, "v");
         var list = new List<ZoneVideo>();
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT v.id, v.bvid, v.title, v.cover_url,
+            SELECT v.id, v.bvid, {EffTitleExpr}, v.cover_url,
                    (SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    vm.up_name, v.published_at_utc, vm.publish_text, {EffZoneExpr}
             FROM videos v LEFT JOIN video_meta vm ON vm.video_id = v.id
-            WHERE v.status = 'Arrived' AND {EffZoneExpr} IS NOT NULL
+            WHERE v.status = 'Arrived' AND {visSql} AND {EffZoneExpr} IS NOT NULL
             ORDER BY v.created_at_utc DESC, v.id DESC;
             """;
+        bindVis(command);
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
@@ -155,23 +161,28 @@ public sealed partial class StationDb
     /// 与周报「最多人看」的去重口径有意分开：那边数观众人数，这边数热度。
     /// 只认在站的货，与 ListZones 同一口径；顶级分区仍旧在 C# 里掰，不去 SQL 玩 LIKE。
     /// 按日固定：快照存 settings（日期 + 中选 bvid），当日命中就直接复用，免得站长自己每放一条视频首页就当场跳图。
+    /// 尺子判在取数这一刻：快照钉着的那条今天转私，对没钥匙的人就当它已下架、重算一张，
+    /// 不给「转私当天还露一天」留缝。
     /// </summary>
-    public ZoneEntryCover GetZoneEntryCover(DateTimeOffset nowUtc)
+    public ZoneEntryCover GetZoneEntryCover(DateTimeOffset nowUtc, VisibilityScope? scope = null)
     {
+        var effective = scope ?? VisibilityScope.PublicOnly;
         var today = nowUtc.ToOffset(LocalWeekOffset).ToString("yyyyMMdd");
         var pinned = GetSetting(ZoneEntryDayKey) == today ? GetSetting(ZoneEntryVideoKey) : null;
         if (!string.IsNullOrWhiteSpace(pinned))
         {
-            var kept = ReadZoneEntryOf(pinned!);
+            var kept = ReadZoneEntryOf(pinned!, effective);
             if (kept != null)
             {
                 return kept;
             }
-            // 快照那条已下架或封面丢了：重新算一次，下面会把新结果盖回快照
+            // 快照那条已下架、封面丢了、或对这位藏着：重新算一次，下面会把新结果盖回快照
         }
 
-        var picked = PickZoneEntry();
-        if (picked.Bvid != null)
+        var (picked, pinnable) = PickZoneEntry(effective);
+        // 只把人人看得着的那张钉进快照：私有那枚只是本人这一趟的现算结果，钉下去访客来一趟就把它抹了，
+        // 共用一枚钥匙互相盖没意思，所以私有的一律不钉（现算现给）。
+        if (picked.Bvid != null && pinnable)
         {
             SetSetting(ZoneEntryDayKey, today);
             SetSetting(ZoneEntryVideoKey, picked.Bvid);
@@ -180,10 +191,12 @@ public sealed partial class StationDb
         return picked;
     }
 
-    /// <summary>台账里每条在站稿件的实况次数（形状与 ListZoneVideos 同路：封面子查询、有效分区、顶级段留 C# 剔）。</summary>
-    private ZoneEntryCover PickZoneEntry()
+    /// <summary>台账里每条在站稿件的实况次数（形状与 ListZoneVideos 同路：封面子查询、有效分区、顶级段留 C# 剔）。
+    /// 带回来一枚 Pinnable：中选那条是不是人人看得着（私有那条只回给本人，不进按日快照）。</summary>
+    private (ZoneEntryCover Cover, bool Pinnable) PickZoneEntry(VisibilityScope scope)
     {
-        var rows = new List<(string Bvid, string? Cover, string? Zone, long Shots, long LastId)>();
+        var (visSql, bindVis) = VisibilityFilter(scope, "v");
+        var rows = new List<(string Bvid, string? Cover, string? Zone, long Shots, long LastId, bool Public)>();
         using (var connection = Open(_dbPath))
         using (var command = connection.CreateCommand())
         {
@@ -193,15 +206,17 @@ public sealed partial class StationDb
                                 v.cover_url),
                        {EffZoneExpr},
                        COUNT(*),
-                       MAX(e.id)
+                       MAX(e.id),
+                       v.visibility
                 FROM events e
                 JOIN videos v ON v.bvid = e.subject_id
                 LEFT JOIN video_meta vm ON vm.video_id = v.id
-                WHERE e.event IN ($play, $beat) AND e.subject_type = 'video' AND v.status = 'Arrived'
+                WHERE e.event IN ($play, $beat) AND e.subject_type = 'video' AND v.status = 'Arrived' AND {visSql}
                 GROUP BY v.id, v.bvid, v.title;
                 """;
             command.Parameters.AddWithValue("$play", WatchPlayEvent);
             command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+            bindVis(command);
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
@@ -210,7 +225,8 @@ public sealed partial class StationDb
                     reader.IsDBNull(1) ? null : reader.GetString(1),
                     reader.IsDBNull(2) ? null : reader.GetString(2),
                     reader.GetInt64(3),
-                    reader.GetInt64(4)));
+                    reader.GetInt64(4),
+                    VisibilityCodec.FromColumn(reader.IsDBNull(5) ? null : reader.GetString(5)) == VideoVisibility.Public));
             }
         }
 
@@ -224,19 +240,21 @@ public sealed partial class StationDb
 
         if (champion.Items is null)
         {
-            return new ZoneEntryCover(null, null, null);
+            return (new ZoneEntryCover(null, null, null), false);
         }
 
         // 冠军区内从最火往下找到第一条有封面的为止；整区都没图就交 null，入口卡回落深渐变
         var hit = champion.Items.FirstOrDefault(r => r.Cover != null);
         return hit.Cover is null
-            ? new ZoneEntryCover(champion.Zone, null, null)
-            : new ZoneEntryCover(champion.Zone, hit.Bvid, hit.Cover);
+            ? (new ZoneEntryCover(champion.Zone, null, null), false)
+            : (new ZoneEntryCover(champion.Zone, hit.Bvid, hit.Cover), hit.Public);
     }
 
-    /// <summary>按 bvid 取入口卡底图一摄（走按日快照时用它）；已下架或无封面 → null，让上层重算。</summary>
-    private ZoneEntryCover? ReadZoneEntryOf(string bvid)
+    /// <summary>按 bvid 取入口卡底图一摄（走按日快照时用它）；已下架、无封面、或对这位藏着 → null，让上层重算。
+    /// 可见性判在这条取数上，不拿快照的旧账当令：转私当天就不该再露。</summary>
+    private ZoneEntryCover? ReadZoneEntryOf(string bvid, VisibilityScope scope)
     {
+        var (visSql, bindVis) = VisibilityFilter(scope, "v");
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -244,9 +262,10 @@ public sealed partial class StationDb
                    COALESCE((SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                             v.cover_url)
             FROM videos v LEFT JOIN video_meta vm ON vm.video_id = v.id
-            WHERE v.bvid = $bvid AND v.status = 'Arrived';
+            WHERE v.bvid = $bvid AND v.status = 'Arrived' AND {visSql};
             """;
         command.Parameters.AddWithValue("$bvid", bvid);
+        bindVis(command);
         using var reader = command.ExecuteReader();
         if (!reader.Read() || reader.IsDBNull(1))
         {
@@ -263,15 +282,17 @@ public sealed partial class StationDb
         return top.Length == 0 ? null : top;
     }
 
-    private IEnumerable<string> EnumEffectiveZones()
+    private IEnumerable<string> EnumEffectiveZones(VisibilityScope scope)
     {
+        var (visSql, bindVis) = VisibilityFilter(scope, "v");
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = $"""
             SELECT {EffZoneExpr}
             FROM videos v LEFT JOIN video_meta vm ON vm.video_id = v.id
-            WHERE v.status = 'Arrived' AND {EffZoneExpr} IS NOT NULL;
+            WHERE v.status = 'Arrived' AND {visSql} AND {EffZoneExpr} IS NOT NULL;
             """;
+        bindVis(command);
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {

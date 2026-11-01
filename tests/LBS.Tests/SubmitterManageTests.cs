@@ -79,11 +79,22 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/zones", false, false)]
     [InlineData("GET", "/api/zones/videos", false, false)]
     [InlineData("POST", "/api/admin/zones/set", true, false)]
-    // 合集：清单与详情与首页同级公开；开集/销集/加减片子挂在 /api/member/collections 下，
-    // 这个前缀不在两张门视野里（两端都 false），端点自己查 MemberGate.Current 回 401（与 /api/member/history 同一防法）。
+    // 合集：名录与首页同级公开（首页番剧模式那排入口卡靠它摆封面）；但「点进某一架」是进站待遇，
+    // /api/collections/{id} 已被会员门拿下（详情里是稿件清单与简介，不是张封面）。
+    // 开集/销集/加减片子挂在 /api/member/collections 下，这个前缀不在两张门视野里（两端都 false），端点自己查 MemberGate.Current 回 401（与 /api/member/history 同一防法）。
     [InlineData("GET", "/api/collections", false, false)]
     [InlineData("GET", "/api/member/collections", false, false)]
     [InlineData("POST", "/api/member/collections", false, false)]
+    // 访客只看主页（2026-11-02 站长定）：动态整页与合集详情吃会员门；分区两口与合集名录照旧公开，
+    // 站长要留的正是首页那份封面预览 —— 可以看见，不可以点进去。
+    [InlineData("GET", "/api/collections/9", false, true)]
+    [InlineData("GET", "/api/collections/9/", false, true)]  // 尾斜杠不许穿门
+    [InlineData("PATCH", "/api/collections/9", false, true)]  // 合集抽屉那口从「两张门外面自防」收进门里（归属仍归端点里的 ManageGate 核）
+    [InlineData("GET", "/api/dynamics", false, true)]
+    [InlineData("GET", "/api/dynamics/targets", false, true)]
+    [InlineData("GET", "/api/dynamics/1234567890/comments", false, true)]
+    [InlineData("POST", "/api/dynamics/1234567890/comments/refresh", false, true)]
+    [InlineData("GET", "/api/dynamics/1234567890/comments/", false, true)]  // 同样不许拿斜杠穿
     public void 两张门的归属矩阵(string method, string path, bool expectAdmin, bool expectMember)
     {
         var request = Request(method, path);
@@ -113,8 +124,11 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/settings/", true, false)]
     // 公开门面不被剪子误封：带斜杠照样放行访客。
     [InlineData("GET", "/api/videos/", false, false)]
-    [InlineData("GET", "/api/dynamics/targets/", false, false)]
     [InlineData("GET", "/api/collections/", false, false)]
+    // 动态已从公开门面收进门里（2026-11-02 站长定：访客只看主页），这一格钉的仍是同一件事：
+    // 带不带斜杠都得落在门里，不能一斜杠就漏到公开那侧。
+    [InlineData("GET", "/api/dynamics/targets/", false, true)]
+    [InlineData("GET", "/api/collections/9/", false, true)]
     public void 尾斜杠穿门回归(string method, string path, bool expectAdmin, bool expectMember)
     {
         var request = Request(method, path);

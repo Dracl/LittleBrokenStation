@@ -6,15 +6,20 @@ import TopBar from '../components/TopBar.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import CommentSection from '../components/CommentSection.vue'
 import UpCard from '../components/UpCard.vue'
+import CoverPeek from '../components/CoverPeek.vue'
+import SideHandle from '../components/SideHandle.vue'
+import VideoSettingsDialog from '../components/VideoSettingsDialog.vue'
 import PageList from '../components/PageList.vue'
 import VideoActions from '../components/VideoActions.vue'
 import ShareDialog from '../components/ShareDialog.vue'
 import DanmakuList from '../components/DanmakuList.vue'
 import UpNextList from '../components/UpNextList.vue'
 import EmptyTv from '../components/EmptyTv.vue'
+import VisibilityPill from '../components/VisibilityPill.vue'
 import { member, loginDialogOpen } from '../memberStore'
 import { submitDialogOpen } from '../submitStore'
-import { askDeleteVideo, HINT_DELETE_VIDEO, HINT_FETCH_COMMENTS } from '../confirmStore'
+import { HINT_DELETE_VIDEO, HINT_FETCH_COMMENTS } from '../confirmStore'
+import { refetchArchive, removeVideoEntry } from '../utils/videoActions'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +27,8 @@ const data = ref(null)
 const gateState = ref(null) // null=正常 | 'login'=访客挡在放映厅门外 | 'missing'=馆藏确无此片
 const loading = ref(true)
 const activeIndex = ref(0)
+
+// 可见性那枚小徽标抽成了 VisibilityPill（放映厅与合集页头共用一份形状），这里只管递档位。
 
 const currentPage = computed(() => {
   const pages = data.value?.pages ?? []
@@ -412,7 +419,7 @@ function openShare() {
     type: 'video',
     bvid: data.value.bvid,
     title: data.value.title || data.value.bvid,
-    cover: data.value.localCover || data.value.coverUrl || '',
+    cover: coverSrc.value,
     upName: data.value.upName,
   }
 }
@@ -437,48 +444,62 @@ function bumpDanmaku() {
 async function refreshSnapshots() {
   if (manageBusy.value || !data.value) return
   manageBusy.value = true
-  const id = data.value.id
-  const parts = []
-  try {
-    const [cmt, dm] = await Promise.all([
-      fetch(`/api/videos/${id}/comments`, { method: 'POST' }).then((r) => r.json().catch(() => null).then((b) => ({ ok: r.ok, body: b }))),
-      fetch(`/api/videos/${id}/danmaku-refresh`, { method: 'POST' }).then((r) => r.json().catch(() => null).then((b) => ({ ok: r.ok, body: b }))),
-    ])
-    parts.push(cmt.body?.message ?? (cmt.ok ? '评论已归档' : '评论采集失败'))
-    parts.push(dm.body?.message ?? (dm.ok ? 'B 站弹幕已重拉' : '弹幕重拉失败'))
-    if (cmt.ok) commentsRev.value += 1
-    if (dm.ok) bumpDanmaku()
-    const fails = [cmt.ok, dm.ok].filter((ok) => !ok).length
-    showNotice(fails === 2 ? 'err' : fails ? 'warn' : 'ok', parts.join('；'))
-  } catch {
-    showNotice('err', '分站后端没有应答')
-  } finally {
-    manageBusy.value = false
-  }
+  // 两个动作都挤在这枚钮上（补采评论 + 重拉弹幕）。逻辑住在 utils/videoActions.js 的 refetchArchive，
+  // 稿件设置面板里拆成两颗各点一样，走的也是那一份 —— 一处逻辑、两处入口，不抄第二遍。
+  const res = await refetchArchive(data.value.id)
+  if (res.commentsOk) commentsRev.value += 1
+  if (res.danmakuOk) bumpDanmaku()
+  showNotice(res.kind, res.text)
+  manageBusy.value = false
 }
 
 async function removeSubmission() {
   if (!data.value || removing.value) return
-  const label = data.value.title || data.value.bvid
-  if (!(await askDeleteVideo(label))) {
+  removing.value = true
+  // 问那一句（confirmStore 的措辞单一出处）+ DELETE 都在 removeVideoEntry 里，与设置面板同一条
+  const res = await removeVideoEntry(data.value.id, data.value.title || data.value.bvid)
+  if (res.outcome === 'removed') {
+    // 这条馆藏已经不存在了，把用户送回首页卡阵，别留在空页面上。
+    router.push('/')
     return
   }
-  removing.value = true
-  try {
-    const res = await fetch(`/api/videos/${data.value.id}`, { method: 'DELETE' })
-    const body = await res.json().catch(() => null)
-    if (res.ok) {
-      // 这条馆藏已经不存在了，把用户送回首页卡阵，别留在空页面上。
-      router.push('/')
-      return
-    }
-    showNotice('err', body?.message ?? '删不动，稍后再试')
-  } catch {
-    showNotice('err', '分站后端没有应答')
-  } finally {
-    removing.value = false
-  }
+  removing.value = false
+  if (res.outcome === 'failed') showNotice('err', res.text)
 }
+
+// ─── 稿件设置窗：左缘第二颗把手开的（面板本体在 components/VideoSettingsDialog.vue）。
+// 摆不摆这颗钮看服务端算好的 data.canManage（与那两枚自管钮同一把钥匙），真门在端点里。
+const settingsOpen = ref(false)
+
+function openSettings() {
+  settingsOpen.value = !settingsOpen.value
+}
+
+// 面板里存好了 / 动作跑完了：重拉 /api/watch/{bvid}，改过的栏一律以服务端为准（前端不自改本地对象）。
+// 顺序要紧：bumpDanmaku 改的就是 data.pages 里那份 danmakuUrl，loadWatch 会把整页换掉它，得排在后面。
+async function onSettingsSaved(res) {
+  await loadWatch(true)
+  if (res?.commentsOk) commentsRev.value += 1
+  if (res?.danmakuOk) bumpDanmaku()
+  // 重拉落地之后才打戳：拿服务端那份新 coverUrl 拼，不拿旧的拼一半。
+  // 只有 media 那一发真把封面换掉了才打（mediaReplaced 是共享层按 body.cover === 'replaced' 算好的）；
+  // kept / failed / 补采评论 / 重拉弹幕 / 存好 —— 一律不打，不该白刷一次图。
+  if (res?.mediaReplaced) coverStamp.value = Date.now()
+}
+
+// 窗开着的时候钥匙被服务端收走（重拉发现 canManage 变假：稿件转了归属、席位改了）：窗跟着关，
+// 不留在里按什都吃 403 的一窗灰。左缘那颗把手本来就随 canManage 收起，两处得同进退 ——
+// 同脾气的先例是加档被驳回时 revokePendingCodec 把乐观态催回来（以服务端那份为准）。
+// 只认 `=== false`：data 换血中途是 undefined（未载入 / 吃门禁），那时不该动手。
+watch(
+  () => data.value?.canManage,
+  (can) => {
+    if (settingsOpen.value && can === false) {
+      settingsOpen.value = false
+      showNotice('warn', '这篇稿子已经不归你管了，设置窗先收起来')
+    }
+  },
+)
 
 // ─── 编码加档：点单后轮询 watch，直到该编码所有分 P 都脱离 Downloading ───
 let codecPoll = null
@@ -591,11 +612,32 @@ onMounted(() => {
 })
 watch(() => route.params.bvid, () => {
   openReported = false
+  coverStamp.value = 0 // 换一部片子：上一部的戳不该跟着新的走（普通浏览就该是条干净的 URL）
   loadWatch()
 })
 
 // 播放器壳宽（VideoPlayer 量好的）：两栏内容用它封顶，保证不超出视频卡片
 const playerShellW = ref(0)
+
+// 封面唯一取数口：watch 载荷里的 coverUrl 已是读侧拼好的「本地原图优先」成品（/media/… 或 B 站直链），
+// 播放器开场、封面浮窗、安利卡三处共用这一份。曾经这里写的是 data.localCover || data.coverUrl，
+// 但 watch 载荷压根不下发 localCover（那是列表用的 VideoEntry 字段），前半支永远轮不到。
+const coverSrc = computed(() => data.value?.coverUrl || '')
+
+// ─── 换完封面得真让屏上那张重请一次 ───
+// 封面件是原地覆盖同一个 rel：/media/...jpg 这个 URL 一个字不变，data.coverUrl 字符串也没变，
+// Vue 就不会重设 <img> 的 src —— 元素根本不重新发请求，后端那个 /media 的 no-cache 也就无从生效
+// （no-cache 管的是「下次发了要不要问服务器」，不是「逼它发」）。于是明明换掉了、屏上还是旧图，
+// 非得 F5。所以只给「这一发真换掉了封面」那一回打一枚时间戳，让 src 换个字串、逼它复核一次。
+// stamp 为 0（从没见过 cover === 'replaced'）时不拼查询串：URL 与改动前逐字节相同，普通浏览不带查询串。
+// 只喂上屏的那两处（播放器开场图与封面浮窗）；安利卡与钮在不在那些判断仍走 coverSrc 那份干净 URL，
+// 不往人家分享与下载的字串里掺 ?r=。
+const coverStamp = ref(0)
+const coverFresh = computed(() => {
+  const src = coverSrc.value
+  if (!src || !coverStamp.value) return src // 没换过（或没封面）：原 URL 递出去，一个字节不多
+  return `${String(src).split('?')[0]}?r=${coverStamp.value}` // 口径照 bumpDanmaku：先把旧查询串剔干再贴新的
+})
 </script>
 
 <template>
@@ -657,6 +699,7 @@ const playerShellW = ref(0)
             :status="data.status"
             :title="data.title"
             :bvid="data.bvid"
+            :cover="coverFresh"
             :aid="data.aid"
             :video-id="data.id"
             :resume-sec="resumeSec"
@@ -676,6 +719,36 @@ const playerShellW = ref(0)
             @delete-danmaku="onDeleteDanmaku"
             @report-danmaku="onReportDanmaku"
           />
+
+          <!-- 左缘那颗「看封面」浮窗：贴视口左缘、平时只露右半颗（藏法照 B 站那两枚立方体）。
+               挂在包 VideoPlayer 的那层 relative 里而不是它肚子里：VideoPlayer 根带 isolate，子树里的 z 出不去，
+               而这张卡要 z-[60] 压弹窗。 -->
+          <CoverPeek
+            :cover="coverFresh"
+            :bvid="data.bvid"
+            :title="data.title"
+          />
+
+          <!-- 左缘第二颗把手：稿件设置。与「看封面」共用 SideHandle（那颗钮的样式全站只有一份），
+               靠 offset 往下面错开一格（一颗钮的直径 36 + 12 呼吸），两颗不打架；
+               没封面时第一颗不出现，这一颗就自己归位居中。只在 data.canManage 为真时摆 —— 
+               与后端那把自管钥匙同一个判据，前端只是藏钮，真门在端点里。 -->
+          <SideHandle
+            v-if="data.canManage"
+            label="稿件设置"
+            :offset="coverSrc ? 48 : 0"
+            :active="settingsOpen"
+            :on-click="openSettings"
+          >
+            <template #icon>
+              <!-- 调校图标（三道杆两枚旋钮）：描边 svg 直接内联，stroke 走 currentColor 跟着钮色走 -->
+              <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 7h8M17 7h3M4 17h4M13 17h7" />
+                <circle cx="14.5" cy="7" r="2.3" />
+                <circle cx="10.5" cy="17" r="2.3" />
+              </svg>
+            </template>
+          </SideHandle>
 
           <!-- 续播小泡：站长亲手拖过定位（EditHere 反馈）：贴播放器壳左缘、进度条上方一格。
                横向锁在壳子而非外层容器：播放器限宽居中，窗口越宽容器与壳的左缘裂缝越大，锚容器会出框；
@@ -704,8 +777,11 @@ const playerShellW = ref(0)
             >
             <!-- 左栏：标题→数据行→互动栏→简介→评论 -->
             <div class="min-w-0 flex-1">
-              <!-- 标题与档案：B 站同款，标题重、数据行带小图标疏朗排开 -->
-              <h1 class="text-[22px] font-semibold leading-8 text-inkMain">{{ data.title ?? data.bvid }}</h1>
+              <!-- 标题与档案：B 站同款，标题重、数据行带小图标疏朗排开；私有药丸钉在名右，标题自己换行、药丸不跟着挤没 -->
+              <h1 class="flex flex-wrap items-center gap-x-2.5 text-[22px] font-semibold leading-8 text-inkMain">
+                <span class="min-w-0">{{ data.title ?? data.bvid }}</span>
+                <VisibilityPill :visibility="data.visibility" />
+              </h1>
               <div class="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-inkFaint">
                 <span v-if="data.viewCountText" class="flex items-center gap-1.5">
                   <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.3">
@@ -825,12 +901,13 @@ const playerShellW = ref(0)
             <!-- 右栏（不吸顶，随页滚动）：UP 卡、弹幕列表、分 P 列表、接下来播放 -->
             <aside class="w-full shrink-0 space-y-3 lg:-mt-3 lg:w-[374px] xl:w-[374px]">
               <UpCard
-                v-if="data.upName"
+                v-if="data.upName || data.staff?.length"
                 :up-name="data.upName"
                 :up-mid="data.upMid"
                 :up-face="data.upFace"
                 :up-sign="data.upSign"
                 :up-fans="data.upFans"
+                :staff="data.staff"
               />
               <DanmakuList v-if="currentPage?.danmakuUrl" :src="currentPage.danmakuUrl" :count="data.danmakuCount" />
               <PageList
@@ -847,6 +924,15 @@ const playerShellW = ref(0)
       </template>
 
       <ShareDialog v-if="shareFor" :target="shareFor" @close="shareFor = null" @done="onShared" />
+
+      <!-- 稿件设置：左缘第二颗把手开的。存好 / 档案动作跑完都走 onSettingsSaved 重拉 watch，
+           面板不自己改本地对象（免得两处真相），改过的字与那几面覆写标一律等服务端那份回来 -->
+      <VideoSettingsDialog
+        v-if="settingsOpen && data"
+        :data="data"
+        @saved="onSettingsSaved"
+        @close="settingsOpen = false"
+      />
       <p
         v-if="notice"
         class="fixed bottom-6 left-1/2 z-50 max-w-[80vw] -translate-x-1/2 truncate rounded-full px-4 py-2 text-xs text-white shadow-lg"

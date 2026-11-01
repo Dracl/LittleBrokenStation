@@ -245,3 +245,12 @@
     transform: translateY(0);
   }
 }
+
+/* 藏起系统滚动条：只是不画那根条，滚轮 / 触摸 / 拖拽与 textarea 右下角把手全都还在。
+   原先这一条只住在 BangumiHome 的 scoped 里，横滚行与弹层各写一份同回事不好，提到全站一份。 */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

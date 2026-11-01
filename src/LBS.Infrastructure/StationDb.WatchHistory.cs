@@ -1,9 +1,11 @@
+using LBS.Domain;
+
 namespace LBS.Infrastructure;
 
 /// <summary>
 /// 观看历史（一人一片一行）：只存「这位朋友在这部片子上看到哪了」这一个问题。
 /// 三条口径：① 主键 (member_id, video_id)——同片再报只覆盖位置与翻 updated_at_utc，一人一片永远一行；
-/// ② 片名/封面不抄进本表，读列表时 JOIN videos 现取（封面走馆藏本地件优先，与首页卡片同口径），
+/// ② 片名/封面不抄进本表，读列表时 JOIN videos 现取（片名走有效值那张嘴：站内覆写优先，改了标题历史里挂的也是新那句）（封面走馆藏本地件优先，与首页卡片同口径），
 ///    片被删了这条历史就自然看不见，不留在库里当死行；
 /// ③ 看完的也留行——位置过 95% 由端点照常盖戳落库，历史是完整播放足迹（要不要跳回是前端的闸，过线不续播）。
 /// </summary>
@@ -48,23 +50,28 @@ public sealed partial class StationDb
     }
 
     /// <summary>某人的全部观看历史，最近看过的排前头（MemberPage 历史卡吃这个，滚动展最近十档；LIMIT 兜住别拉爆）。</summary>
-    public IReadOnlyList<WatchHistoryRow> GetWatchHistory(long memberId, int limit = 100)
+    /// <remarks>尺子量在 videos 那一侧：别人转私的稿子不该再挂在别人历史里露标题与封面（行不删，
+    /// 只是看不见，与「片被删了行就自然看不见」同一套路）。本人查自己的历史递 VisibilityScope.Of(自己)，
+    /// 自己藏的那几条照旧在。</remarks>
+    public IReadOnlyList<WatchHistoryRow> GetWatchHistory(long memberId, int limit = 100, VisibilityScope? scope = null)
     {
+        var (visSql, bindVis) = VisibilityFilter(scope ?? VisibilityScope.PublicOnly, "v");
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         // 封面口径照抄首页卡阵：kind='cover' 的本地件（/media/ + rel）优先，没归档才留 B 站直链给前端热链兑底。
-        command.CommandText = """
-            SELECT h.video_id, v.bvid, v.title,
+        command.CommandText = $"""
+            SELECT h.video_id, v.bvid, {EffTitleExpr},
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    v.cover_url, h.page_idx, h.position_sec, h.duration_sec, h.updated_at_utc
             FROM watch_history h
             JOIN videos v ON v.id = h.video_id
-            WHERE h.member_id = $m
+            WHERE h.member_id = $m AND {visSql}
             ORDER BY h.updated_at_utc DESC, h.video_id DESC
             LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$m", memberId);
         command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 500));
+        bindVis(command);
 
         using var reader = command.ExecuteReader();
         var list = new List<WatchHistoryRow>();

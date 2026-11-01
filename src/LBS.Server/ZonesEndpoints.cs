@@ -15,21 +15,23 @@ public static class ZonesEndpoints
     {
         // hot = 分区总览入口卡的底图一摄（按次数的冠军分区 + 区内最火那条的封面）。
         // 只是封面，与分区清单同口公开不上会员门；首页拉分区时顺带走，不为它另开一口。
-        app.MapGet("/api/zones", (StationDb db) =>
+        app.MapGet("/api/zones", (StationDb db, HttpContext http) =>
         {
-            var hot = db.GetZoneEntryCover(DateTimeOffset.UtcNow);
+            // 三处共用同一把看客尺子：别人藏着的货既不占分区那个数字，也不当入口卡底图。
+            var scope = ViewerGate.Scope(http);
+            var hot = db.GetZoneEntryCover(DateTimeOffset.UtcNow, scope);
             return Results.Ok(new
             {
-                zones = db.ListZones().Select(z => new { name = z.Name, count = z.Count }),
+                zones = db.ListZones(scope).Select(z => new { name = z.Name, count = z.Count }),
                 hot = new { zone = hot.Zone, bvid = hot.Bvid, cover = hot.Cover },
             });
         });
 
         // name 空/查无回空 items：分区页换瓷砖不该挨 404。
-        app.MapGet("/api/zones/videos", (string? name, StationDb db) =>
+        app.MapGet("/api/zones/videos", (string? name, StationDb db, HttpContext http) =>
             Results.Ok(new
             {
-                items = db.ListZoneVideos(name).Select(v => new
+                items = db.ListZoneVideos(name, ViewerGate.Scope(http)).Select(v => new
                 {
                     id = v.Id,
                     bvid = v.Bvid,

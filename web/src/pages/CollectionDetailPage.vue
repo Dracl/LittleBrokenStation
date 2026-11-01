@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import VideoCard from '../components/VideoCard.vue'
+import CollectionSettingsDialog from '../components/CollectionSettingsDialog.vue'
+import VisibilityPill from '../components/VisibilityPill.vue'
 import { member } from '../memberStore'
 import { requestConfirm } from '../confirmStore'
 
@@ -16,6 +18,13 @@ const notfound = ref(false)
 const loading = ref(false)
 const notice = ref(null)
 const busy = ref(false)
+const settingsFor = ref(null) // 非空 = 抽屉设置弹层开着，里面是要改的那座抽屉 brief
+
+// 存完不自己接 brief，重拉一次：顶部的私有角标、名与简介一并跟着后端的事实归位
+async function onSettingsSaved() {
+  settingsFor.value = null
+  await load()
+}
 
 const canManage = computed(() => {
   if (!member.value || !detail.value) return false
@@ -139,6 +148,8 @@ onMounted(load)
                   </svg>
                 </span>
                 <span class="min-w-0 truncate">{{ detail.name }}</span>
+                <!-- 私有角标：与放映厅标题旁同一枚组件，形状只一份 -->
+                <VisibilityPill :visibility="detail.visibility" />
               </h1>
               <p v-if="detail.intro" class="mt-2 max-w-[720px] text-[13px] leading-relaxed text-inkSub">{{ detail.intro }}</p>
               <div class="mt-2.5 flex flex-wrap items-center gap-2 text-[12px] text-inkFaint">
@@ -160,12 +171,19 @@ onMounted(load)
                 </span>
               </div>
             </div>
-            <button
-              v-if="canManage"
-              class="shrink-0 rounded-lg border border-rose-300 px-3 py-1.5 text-[12px] text-rose-500 transition hover:bg-rose-50 disabled:opacity-40 dark:border-rose-500/40 dark:text-rose-400 dark:hover:bg-rose-500/10"
-              :disabled="busy"
-              @click="dissolve"
-            >拆除抽屉</button>
+            <div v-if="canManage" class="flex shrink-0 items-center gap-2">
+              <button
+                class="rounded-lg border border-lineSoft bg-cardBg px-3 py-1.5 text-[12px] text-inkSub transition hover:border-stationPink/50 hover:text-stationPink disabled:opacity-40"
+                :disabled="busy"
+                aria-haspopup="dialog"
+                @click="settingsFor = detail"
+              >设置</button>
+              <button
+                class="rounded-lg border border-rose-300 px-3 py-1.5 text-[12px] text-rose-500 transition hover:bg-rose-50 disabled:opacity-40 dark:border-rose-500/40 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                :disabled="busy"
+                @click="dissolve"
+              >拆除抽屉</button>
+            </div>
           </div>
         </div>
 
@@ -201,5 +219,13 @@ onMounted(load)
         </div>
       </template>
     </main>
+
+    <!-- 抽屉设置：东家与站长可改名 / 改简介 / 改公私，存完重拉本页 -->
+    <CollectionSettingsDialog
+      v-if="settingsFor"
+      :collection="settingsFor"
+      @saved="onSettingsSaved"
+      @close="settingsFor = null"
+    />
   </div>
 </template>

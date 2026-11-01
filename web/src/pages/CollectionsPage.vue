@@ -99,6 +99,19 @@ onMounted(load)
               </svg>
               {{ c.itemCount }} 件
             </span>
+            <!-- 私有角标：东家在这页也能认出自己的私有抽屉（只有 visibility 为 private 才装），
+                 与左上「合集」集章、右下件数各自一角；本页仍旧只负责摆，不放行内操作钮 -->
+            <span
+              v-if="c.visibility === 'private'"
+              class="absolute bottom-1.5 left-1.5 flex items-center gap-1 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white/90 backdrop-blur"
+              title="只有你自己看得见这座抽屉"
+            >
+              <svg viewBox="0 0 24 24" class="h-2.5 w-2.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                <rect x="5" y="10.5" width="14" height="9.5" rx="2" />
+                <path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7" />
+              </svg>
+              私有
+            </span>
             <!-- 悬停起帘：右下角浮一句「打开抽屉」 -->
             <span class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/45 via-transparent to-transparent opacity-0 transition duration-200 group-hover:opacity-100"></span>
           </div>

@@ -45,8 +45,10 @@ function mulberry32(seed) {
 // 世界坐标散布（Apple Watch 菜单的蜂窝骨架）：竖直列、邻列纵向错半格互相咬合的斜切方格阵，
 // 六边螺旋环序从中心往外发——等距等隙天生不重叠，不需要松弛；第几张坐哪个巢只由序号决定，
 // 续页只在更外环筑巢，已上墙的卡铟位不动。入场顺环序，天然从中心点亮到四周。
-const PITCH_X = CARD_W + 52 // 列距：站长在调节台上定的气口
-const PITCH_Y = CARD_H + 55 // 行距：邻列错半格咬合
+const GAP_X = 44 // 列间隙：站长在调节台上定的气口（2026-11-01 从 52 收到 44，墙更密）
+const GAP_Y = 48 // 行间隙：邻列错半格咬合（同批从 55 收到 48）
+const PITCH_X = CARD_W + GAP_X
+const PITCH_Y = CARD_H + GAP_Y
 const HEX_DIRS = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]] // 轴向坐标六向
 const HEX_START = HEX_DIRS[4] // 起环方位：左下，绕环顺时针铺开
 
@@ -158,13 +160,14 @@ function syncMounted() {
 const shown = computed(() => placed.value.filter((p) => mounted.value.has(p.videoId)))
 
 // ─── 焦距连续缩放（Apple Watch 蜂窝菜单的机理，对标 Myriad 的 paintCanvasCardFocus）───
-// 每张卡按「卡心离视口中心的世界距离」算自己的 scale：圈内 1.1、圈外 0.75，smoothstep 缓动；
+// 每张卡按「卡心离视口中心的世界距离」算自己的 scale：圈内 1.2、圈外 0.6，smoothstep 缓动；
 // zIndex 跟着焦距走。测距用世界像素而非窗框归一化——同一巢位在全屏/嵌入/任意缩放下倍率恒定，
 // 不会再出现「小窗口纵向半幅浅、满屏卡被误缩、间隙显大」的窗框依赖症。
-const FOCUS_MIN = 0.8
-const FOCUS_MAX = 1.3
+// 2026-11-01 站长定档：1.2 / 0.6 / 1.3（旧值 1.3 / 0.8 / 1.65）——中心更突出、景深拉得更开。
+const FOCUS_MIN = 0.6
+const FOCUS_MAX = 1.2
 const FOCUS_UNIT = 600 // 半径标尺：EXTENT 1.0 ≈ 600 世界像素（约三个巢位）
-const FOCUS_EXTENT = 1.65
+const FOCUS_EXTENT = 1.3
 const FOCUS_WRITE_EPS = 0.004
 
 const cardEls = new Map() // videoId -> 卡片元素
@@ -367,7 +370,10 @@ function giveUpPreview(id) {
 
 function onPreviewEnter(it) {
   const id = it.videoId
-  if (!it.preview || previewGaveUp.value.has(id) || reduceMotion || dragging.value || movedFar) return
+  // movedFar 不兼这份差：它只为吞掉拖拽收尾那一发 click 而活，会一直 true 到下次按下——
+  // 拿它当预览的闸，就是「拖过一次画布，预览再也不亮」的病根（拖中的抑制交给 dragging，
+  // 松手后那一小会儿由 dragCalmUntil 收尾：指针捕获一释放常会给卡补一发 enter，别让它抢播）。
+  if (!it.preview || previewGaveUp.value.has(id) || reduceMotion || dragging.value || performance.now() < dragCalmUntil) return
   if (!hoverHeld.has(id)) {
     hoverHeld.add(id)
     previewHoverEnter()
@@ -434,8 +440,12 @@ let dragOrigin = { x: 0, y: 0 }
 let pressAt = { x: 0, y: 0 }
 let movedFar = false
 let activePointer = null
+// 松手后的“冷静期”：拖拽收尾那阵子补发的 enter 不算想看（比 PREVIEW_ARM_MS 短，不致于误伤真在看的人）
+const DRAG_CALM_MS = 220
+let dragCalmUntil = 0
 
 function onPointerDown(e) {
+  poke() // 手一伸就算「有人在用」：漫游立刻叫停，重计 10 秒
   if (e.button !== 0 || e.ctrlKey || e.metaKey) return
   dragging.value = true
   movedFar = false
@@ -445,12 +455,24 @@ function onPointerDown(e) {
 }
 
 function onPointerMove(e) {
-  if (!dragging.value || e.pointerId !== activePointer) return
+  if (!dragging.value || e.pointerId !== activePointer) {
+    // 没在拖也算有人在用：指针真的挪了一段就算一次输入（原地不动不算，否则手搭在鼠标上永远开不了漂）
+    if (!dragging.value && Math.hypot(e.clientX - lastPing.x, e.clientY - lastPing.y) > 8) poke()
+    lastPing = { x: e.clientX, y: e.clientY }
+    return
+  }
   const dx = e.clientX - pressAt.x
   const dy = e.clientY - pressAt.y
   if (!movedFar && Math.hypot(dx, dy) < 4) return
   if (!movedFar) {
     movedFar = true
+    // 拖成气候了：还在排队起播的卡一律撕队，免得拖途中某张自己唱起来
+    for (const t of previewTimers.values()) {
+      if (t.arm) {
+        clearTimeout(t.arm)
+        t.arm = null
+      }
+    }
     // 拖成气候了才捕获指针：普通点击不受捕获干扰，RouterLink 该跳就跳
     if (activePreview !== null) {
       // 一拖就走说明不是在看预览：按停当前路，也免得拖途中 pointerenter 误起新盘
@@ -470,6 +492,7 @@ function onPointerMove(e) {
 function onPointerUp(e) {
   if (!dragging.value || e.pointerId !== activePointer) return
   dragging.value = false
+  dragCalmUntil = performance.now() + DRAG_CALM_MS // 拖完就进冷静期；movedFar 继续留着吞那一发 click
   try {
     stage.value?.releasePointerCapture(activePointer)
   } catch {
@@ -490,6 +513,7 @@ function onCardClick(e) {
 function zoomAt(clientX, clientY, factor) {
   const el = stage.value
   if (!el) return
+  poke() // 滚轮缩放与工具条±都算一次输入
   const rect = el.getBoundingClientRect()
   const px = clientX - rect.left
   const py = clientY - rect.top
@@ -526,6 +550,7 @@ function onWheel(e) {
 // 墙会随续拉无限长大，「把整墙塞进窗口」在几百张规模下会把卡碎成邮票，
 // 所以家和参考站一样是「落在中心、看得清」，剩下的交给拖拽与自动补货 ───
 function fit() {
+  poke() // 复位 / 洗牌 / 进出全屏都是人在使唤起这面墙
   const el = stage.value
   const b = worldBounds.value
   // 量不到尺就不硬算：窗口没显示/尺寸没落定时量出 0，居中坐标会全歪到角上去
@@ -555,17 +580,130 @@ function onKeyDown(e) {
   const pan = pans[e.key]
   if (!pan) return
   e.preventDefault()
+  poke()
   view.value = { ...view.value, x: view.value.x + pan[0], y: view.value.y + pan[1] }
   checkEdge()
+}
+
+// ─── 闲时漫游：静置 10 秒没人碰墙，自己慢慢漂 ───
+// 脾气是「永远让位给真人」：任何一次真输入（按下、拖动、滚轮缩放、方向键、复位）当场打断本段并把计时归零；
+// 指针停在某张卡上（悬停预览正播）也不漂，别把人正在看的东西抽走；页签在后台、系统要「减少动态效果」，一律不漂。
+// 漂的时候只补挂新露脸的卡、不喊续拉：人不在看，闲时拉货太冒失。
+const IDLE_MS = 10000 // 静置多久开漂
+const DRIFT_SPEED = 42 // 名义速度（屏幕像素/秒）：慢到不抢戏，又看得出墙在走
+const DRIFT_MIN_S = 1.6 // 单段最短几秒：近处也慢慢挪，不当弹珠
+const DRIFT_MAX_S = 9 // 单段最长封顶：远端也不让人等半天
+const DRIFT_HOLD_MS = 2600 // 到点歇口气，再挑下一段
+const DRIFT_EDGE_PAD = 140 // 世界里缘至少留这么多像素在窗内：漂是巡墙，不是把墙推走
+
+let idleTimer = null
+let driftTimer = null
+let driftRaf = null
+let drifting = false
+let lastPing = { x: -9999, y: -9999 }
+
+// 真输入一律先掐掉漫游，再重新计 10 秒（未开漂时也由它续表，洗牌/复位后不会刚安家就被自己拖走）
+function poke() {
+  drifting = false
+  if (driftRaf) {
+    cancelAnimationFrame(driftRaf)
+    driftRaf = null
+  }
+  clearTimeout(driftTimer)
+  clearTimeout(idleTimer)
+  idleTimer = setTimeout(startDrift, IDLE_MS)
+}
+
+function startDrift() {
+  clearTimeout(idleTimer)
+  if (reduceMotion) return // 这把尺子文件里本来就有（悬停预览也认它），不另开一份
+  if (dragging.value || activePreview !== null || document.hidden) {
+    idleTimer = setTimeout(startDrift, 2000) // 手正搭在卡上/页签没在眼前：绕一绕再来
+    return
+  }
+  drifting = true
+  scheduleLeg(0)
+}
+
+function scheduleLeg(delay) {
+  clearTimeout(driftTimer)
+  driftTimer = setTimeout(startLeg, delay)
+}
+
+function startLeg() {
+  if (!drifting) return
+  if (dragging.value || activePreview !== null) {
+    scheduleLeg(1500)
+    return
+  }
+  const el = stage.value
+  const b = worldBounds.value
+  if (!el || !b || el.clientWidth < 10 || document.hidden) {
+    scheduleLeg(1200) // 窗口没量出尺 / 页签切走了：等下一班
+    return
+  }
+  const ps = placed.value
+  if (!ps.length) {
+    scheduleLeg(2000)
+    return
+  }
+  const w = el.clientWidth
+  const h = el.clientHeight
+  const { scale } = view.value
+  // 目标 = 随机挑一张卡当「这一眼想看的东西」，再故意偏开中心一点，漂得像人在逛而不是对准
+  const p = ps[Math.floor(Math.random() * ps.length)]
+  const raw = {
+    x: w / 2 - (p.x + CARD_W / 2) * scale + (Math.random() - 0.5) * w * 0.3,
+    y: h / 2 - (p.y + CARD_H / 2) * scale + (Math.random() - 0.5) * h * 0.3,
+  }
+  const clamp = (v, lo, hi) => (hi < lo ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v)))
+  const to = {
+    x: clamp(raw.x, DRIFT_EDGE_PAD - b.maxX * scale, w - DRIFT_EDGE_PAD - b.minX * scale),
+    y: clamp(raw.y, DRIFT_EDGE_PAD - b.maxY * scale, h - DRIFT_EDGE_PAD - b.minY * scale),
+  }
+  const from = { x: view.value.x, y: view.value.y }
+  const dist = Math.hypot(to.x - from.x, to.y - from.y)
+  if (dist < 30) {
+    scheduleLeg(DRIFT_HOLD_MS) // 已经在这附近，歇会儿重挑一个
+    return
+  }
+  const dur = Math.min(DRIFT_MAX_S, Math.max(DRIFT_MIN_S, dist / DRIFT_SPEED)) * 1000
+  const t0 = performance.now()
+  const tick = (now) => {
+    if (!drifting) return
+    if (dragging.value || activePreview !== null || document.hidden) {
+      scheduleLeg(DRIFT_HOLD_MS) // 有人先动了手 / 正盯着某张卡 / 切走了：这段作废
+      return
+    }
+    const t = Math.min(1, (now - t0) / dur)
+    const e = t * t * (3 - 2 * t) // smoothstep：起步与停步都不硬甩
+    view.value = { ...view.value, x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e }
+    syncMounted() // 只补挂新露脸的，不 checkEdge：免得一漂就顺手拉六十张回来
+    scheduleFocusPaint() // 视野一动，焦距得跟着重算
+    if (t < 1) driftRaf = requestAnimationFrame(tick)
+    else scheduleLeg(DRIFT_HOLD_MS)
+  }
+  driftRaf = requestAnimationFrame(tick)
+}
+
+function onVisibility() {
+  if (document.hidden) poke() // 切走：停漂并重新计时
+  else poke() // 切回来：给足 10 秒，别一返场就自己乱走
 }
 
 onMounted(() => {
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('resize', onResize)
+  document.addEventListener('visibilitychange', onVisibility)
+  poke() // 上桌就续表：静置满 10 秒才开始逛
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('resize', onResize)
+  document.removeEventListener('visibilitychange', onVisibility)
+  clearTimeout(idleTimer)
+  clearTimeout(driftTimer)
+  if (driftRaf) cancelAnimationFrame(driftRaf)
   releaseAllPreviews() // 拆铺前先收摊：停播、清计时器、退还悬停报备与单路令牌
 })
 

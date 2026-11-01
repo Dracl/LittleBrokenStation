@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DownKyi.Application.Downloads;
 using DownKyi.Core.BiliApi.Sign;
 using DownKyi.Core.BiliApi.Users;
@@ -37,6 +38,7 @@ builder.Services.AddSingleton<DownKyi.Application.Bilibili.IBilibiliCookieProvid
 builder.Services.AddSingleton<LbsQueryClient>();
 builder.Services.AddSingleton<CommentArchiveService>();
 builder.Services.AddSingleton<DanmakuArchiveService>();
+builder.Services.AddSingleton<MediaRefreshService>(); // 稿件设置窗那枚「重拉封面与媒体」（档案重取 + 封面重抓 + 缺件回炉）
 builder.Services.AddSingleton<LbsCollectPolicy>();
 builder.Services.AddHostedService<DownloadWorker>();
 // 分轨码率探子：起进程的事集中在这一个类，同步员在「主片到站」与「加档定档」两个事件点叫它，
@@ -85,6 +87,11 @@ builder.Services.AddHostedService<EventRecorderWorker>();
 builder.Services.AddSingleton<LbsQrLogin>();
 // 成员门闸：放映厅与橱窗的分界线（与站长锁同一套哲学，门在数据上）。
 builder.Services.AddSingleton<MemberGate>();
+// 对外形状：稿件可见性一律小写字符串（枚举直发会变成 0/1，前端拿不到 "private" 就不显那枚药丸）。
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new VideoVisibilityJsonConverter());
+});
 
 // 下载引擎（移植自 downkyicore 的 headless 运行时）：启动时拉起下载 runtime 并自检 ffmpeg
 builder.Services.AddLbsDownloadEngine(new EngineOptions(EngineOptions.DefaultUserAgent));
@@ -149,7 +156,9 @@ app.MapEngineSettingsApi();
 app.MapAdminRecycleEndpoints();
 app.MapPreviewApi();
 
-app.MapGet("/api/videos", (StationDb db, HttpContext http) => Results.Ok(TagManageable(db, db.ListVideos(), http)));
+// 卡阵与搜索都递看客尺子：站长全见 / 席位看公开 + 自己的 / 访客只看公开（递错了就是 fail-closed：私有稿连本人与站长都看不见）。
+app.MapGet("/api/videos", (StationDb db, HttpContext http) =>
+    Results.Ok(TagManageable(db, db.ListVideos(ViewerScope(http)), http)));
 
 // 站内搜索：只命中已到站视频，空格分词 AND；空查询给空结果让前端少一条错误分支。
 // 长度截断防滥用，排序白名单（plays / 缺省新到站）在 StationDb 里控制。
@@ -166,7 +175,7 @@ app.MapGet("/api/search", (string? q, string? sort, StationDb db, EventRecorder 
         trimmed = trimmed[..64];
     }
 
-    var hits = db.SearchVideos(trimmed, sort);
+    var hits = db.SearchVideos(trimmed, sort, 50, ViewerScope(http));
     // 卡阵那两枚自钮（补采/删档）只在服务端算好的 canManage 为真时露面，与放映厅同一口径。
     hits = TagManageable(db, hits, http);
     // 搜了什么、有没有搜到，服务端盖手记（不拿前端上报，不给伪造留门）。
@@ -190,6 +199,8 @@ mediaTypes.Mappings[".json"] = "application/json";
 // 而这类件是真会出现在途时窗里的：封面补员在视频库内写 <名>.jpg.part（CoverBackfillWorker:80），
 // 弹幕刷新在原地摆 <名>.json.refreshing（DanmakuArchiveService:346），预览转码写 <bvid>.mp4.part。
 // 这一道闸摆在所有静态区之前（/media 的 UseStaticFiles 在后面，后面的闸拦不住它），各区的 OnPrepareResponse 作补保。
+// 静态区反查的「件 → 稿件 id」缓存（进程内，只服这一道闸与两处补保）：首页一屏上百张封面，逐条问库不划算。
+var mediaOwnerCache = new MediaOwnerCache();
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path.Value ?? "";
@@ -199,6 +210,20 @@ app.Use(async (context, next) =>
     if (onStatic && IsStaleTransientPath(path))
     {
         context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    // 私有稿件的字节这期一起挡（与上面那道半成品闸并列，各判各的，半成品那条的语义一根手指不碰）。
+    if (PrivateMediaBlocked(context))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+
+    // 封面图的 revalidation（两道闸都放行之后才轮得着它）：命中 If-None-Match 就地 304。
+    // 只对 /media 下的图片扩展名生效，正片与音轨一个字节都不掺（那边有分轨 range 请求）。
+    if (MediaCachePolicy.TryHandleNotModified(context, dataPaths))
+    {
         return;
     }
 
@@ -220,7 +245,21 @@ app.UseStaticFiles(new StaticFileOptions
             ctx.Context.Response.StatusCode = StatusCodes.Status404NotFound;
             ctx.Context.Response.ContentType = null;
             ctx.Context.Response.Headers.ContentLength = null;
+            return;
         }
+
+        // 补保：统一闸若被绕过（将来有人再添一处伺服 data/videos 的 UseStaticFiles），这里照样挡。
+        if (PrivateMediaBlocked(ctx.Context))
+        {
+            ctx.Context.Response.StatusCode = StatusCodes.Status404NotFound;
+            ctx.Context.Response.ContentType = null;
+            ctx.Context.Response.Headers.ContentLength = null;
+            return;
+        }
+
+        // 封面图走 revalidation（与上面两处是叠加：它们把响应打成 404 就直接 return，不会给拒掉的响应贴缓存头）。
+        // 文件名是确定性推导的（换内容不换 URL），不贴 no-cache 浏览器会一直给你旧图；视频与音频一律不动。
+        MediaCachePolicy.PrepareResponse(ctx.Context, ctx.File);
     },
 });
 
@@ -270,9 +309,55 @@ app.UseStaticFiles(new StaticFileOptions
             ctx.Context.Response.StatusCode = StatusCodes.Status404NotFound;
             ctx.Context.Response.ContentType = null;
             ctx.Context.Response.Headers.ContentLength = null;
+            return;
+        }
+
+        // 补保（与 /media 那侧同形）：私有稿的悬停预览件也不许从静态区溜出去。
+        if (PrivateMediaBlocked(ctx.Context))
+        {
+            ctx.Context.Response.StatusCode = StatusCodes.Status404NotFound;
+            ctx.Context.Response.ContentType = null;
+            ctx.Context.Response.Headers.ContentLength = null;
         }
     },
 });
+
+// 静态区私有件判定（只管 /media/ 与 /previews/ 两支，其余前缀一概放行）。
+// 判定链：剥前缀 → 百分号解码（中文文件名不解码对不上台账，白挡）→ 反斜杠归一成 / → 认稿件 id →
+// 台账不认这个件（头像/表情/评论图那类根本不在这些表里）就放行 —— null 绝不能当私有，否则全站公共件一起变黑；
+// 认出来了才问 CanViewVideo，不过就 404（与半成品闸同一副面孔，不说「私有」二字）。
+// 反查走 mediaOwnerCache（参数与「转私后最多 60 秒内必须挡住」的硬约束写在类注释里）。
+bool PrivateMediaBlocked(HttpContext context)
+{
+    var path = context.Request.Path.Value ?? "";
+    string rel;
+    if (path.StartsWith("/media/", StringComparison.OrdinalIgnoreCase))
+    {
+        rel = path["/media/".Length..];
+    }
+    else if (path.StartsWith("/previews/", StringComparison.OrdinalIgnoreCase))
+    {
+        rel = path["/previews/".Length..];
+    }
+    else
+    {
+        return false;
+    }
+
+    // Kestrel 递给 Path 的串本已解过一道码；这一手是防哪一环把中文/空格原样透传过来（不解就匹配不上台账，白挡）。
+    // 文件名里真带 % 的件不多，且解不动的转义序列 Uri 会原样留着，不为这个把挡门拆了。
+    rel = Uri.UnescapeDataString(rel).Replace('\\', '/');
+    var db = context.RequestServices.GetRequiredService<StationDb>();
+    if (mediaOwnerCache.Resolve(rel, db.GetVideoIdByMediaRel) is not { } videoId)
+    {
+        return false;
+    }
+
+    // 身份得自己从 cookie 认：这道闸跑在会员盖章（下面那道 gate.Stamp）之前，MemberGate.Current 在这儿永远是 null——
+    // 直接拿 Current 问就等于把所有人都当访客，私有稿的主人连自己的封面与正片都取不回（实测踩过：站长与投稿人本人一律 404）。
+    var member = context.RequestServices.GetRequiredService<MemberGate>().Resolve(context.Request);
+    return !ViewerGate.CanView(db, videoId, member);
+}
 
 // 静态区只认成品：在途中转件（.part/.refreshing/.tmp）与点开头的隐藏件都不算「本站有的东西」。
 // 正片、封面、弹幕 json、字幕、预览件的真名字永远不会长成这些样子（预览区只认 <bvid>.mp4），所以误伤面为零。
@@ -434,8 +519,11 @@ System.Collections.Concurrent.ConcurrentDictionary<long, byte> statInFlight = ne
 app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, HttpContext http) =>
 {
     // BV 号是大小写敏感的 base62，先原样精确查，再补一记大写化兜底（照顾手打习惯）。
+    // 尺子递到这里：私有稿在别人那一趟就是 null，与「查无此片」同一张 404 脸、同一句话（不许回 403，
+    // 不给「有这稿但不给你看」的信号）；本人/站长拿到的载荷顶层带 visibility（放映厅那枚「私有」药丸读它）。
     var input = bvid.Trim();
-    var data = db.GetWatchData(input) ?? db.GetWatchData(input.ToUpperInvariant());
+    var scope = ViewerScope(http);
+    var data = db.GetWatchData(input, scope) ?? db.GetWatchData(input.ToUpperInvariant(), scope);
     if (data is not null)
     {
         BackfillUpCard(db, upInfo, policy, loggerFactory, dataPaths, data);
@@ -446,13 +534,21 @@ app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upI
         ? Results.NotFound(new { message = "馆藏里没有这个 BV 号" })
         // 能不能重拉快照/删档，服务端算好一个布尔带下去（与站内弹幕 canDelete 同一范式：
         // 前端拿不到投稿人身份，藏钮只是体验，端点里那一遭才是真门）。
-        : Results.Ok(data with { CanManage = CanManageVideo(http, db, data.Id) });
+        : Results.Ok(data with
+        {
+            // 能不能重拉快照/删档，服务端算好一个布尔带下去（与站内弹幕 canDelete 同一范式：
+            // 前端拿不到投稿人身份，藏钮只是体验，端点里那一遣才是真门）。
+            // IsStationOwner 同样在端点算（数据层不认身份）：稿件设置面板拿它决定显不显站长那一组（重新排队 / 强制重下 / 加档）。
+            CanManage = CanManageVideo(http, db, data.Id),
+            IsStationOwner = MemberGate.IsOwner(MemberGate.Current(http)),
+        });
 });
 
 // 接下来播放：同 UP 主优先、层内随机（库里同 UP 主上百支，按 id 倒序会永远只递那几张新面孔），卡片形状与列表接口一致。
-app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db) =>
+// 尺子同样递进去：补位不从这位看不着的货里挑（私有稿连「被推荐」这条缝也不留）。
+app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db, HttpContext http) =>
 {
-    var related = db.GetRelatedVideos(id);
+    var related = db.GetRelatedVideos(id, 8, ViewerScope(http));
     return Results.Ok(related.Select(v => new
     {
         v.Id,
@@ -509,7 +605,8 @@ void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy poli
     });
 }
 
-// 互动数据（点赞/投币/收藏/分享）的后补：未销账且没采过时，开页异步采一次；成败都销账，不反复扰 B 站。
+// 互动数据（点赞/投币/收藏/分享）与创作团队的后补：未销账且没采过时，开页异步采一次（一发 view 拿齐）；
+// 成败都销账，不反复扰 B 站。新货入站时 StatusSyncWorker 已先采过一轮，这里只接漏网的。
 void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, WatchData data)
 {
     if (data.Bvid is null || !db.ShouldBackfillStat(data.Id))
@@ -531,6 +628,8 @@ void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy
             if (stat is not null)
             {
                 db.SetVideoStat(data.Id, stat.Like, stat.Coin, stat.Favorite, stat.Share, stat.Reply);
+                // 同一次 view 顺带带回的创作团队一并落账（联合创作稿才有，普通稿写 null）。
+                db.SetVideoStaff(data.Id, WatchStaffCodec.ToJson(StaffMap.ToWatch(stat.Staff)));
             }
             else
             {
@@ -633,16 +732,30 @@ app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, Station
 
 // 续下：救活硬重启遗留的卡死下载（引擎任务挂在途表里纹丝不动）。
 // 软续下（Resume+Enqueue）优先，打不动就删行重投，策略见 LbsTaskReviver。
-app.MapPost("/api/videos/{id:long}/revive", async (long id, LbsTaskReviver reviver, CancellationToken cancellationToken) =>
+app.MapPost("/api/videos/{id:long}/revive", async (long id, HttpContext http, StationDb db, LbsTaskReviver reviver, CancellationToken cancellationToken) =>
 {
+    // 归属门（站长已同意收）：这口以前只吃站长门（AdminGate 点名 /revive → 非站长一律 401/403），
+    // 端点里本身不核归属——那份点名清单一旦漂走就是匿名可写。现在先核 CanManageVideo：
+    // 站长在站长室点照样握得住（IsOwner 短路为真，见 ManageGate），别人多一道门，旧账不再留。
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
+    }
+
     var (ok, message) = await reviver.ReviveAsync(id, cancellationToken);
     return ok ? Results.Ok(new { message }) : Results.BadRequest(new { message });
 });
 
 // 重新排队：站长取消过的馆藏（Canceled）从卡阵里捞回排队区；被引擎判为「已下过」的（Skipped）
 // 走另一条道：挂上重下旗再回炉，否则同一把判重键会在门口再挡一次。其它状态不响应免得误复活。
-app.MapPost("/api/videos/{id:long}/requeue", async (long id, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
+app.MapPost("/api/videos/{id:long}/requeue", async (long id, HttpContext http, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
 {
+    // 归属门（站长已同意收）：与 /revive 同一道理——先核钥匙再碰台账，站长室自己那一圈调用不受影响（站长短路）。
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
+    }
+
     var brief = db.GetVideoBrief(id);
     if (brief is null)
     {
@@ -668,6 +781,116 @@ app.MapPost("/api/videos/{id:long}/requeue", async (long id, StationDb db, Downl
     db.ResetToPending(id);
     await queue.EnqueueAsync(id, cancellationToken);
     return Results.Ok(new { message = "已重新排队，下一班进站" });
+});
+
+// ─── 稿件设置（放映厅那枚「稿件设置」窗的后端）───────────────────────────────
+// 一口 PATCH 改四栏：可见性 / 标题本地覆写 / 简介本地覆写 / 分区改派。
+// 语义（与数据层同一克制，测试同一张嘴）：这一栏没递 = 不改；递非空串 = 覆写；递 null 或空串 = 还原
+//   （落 NULL，这栏回跟 B 站档案走）。可见性没有「B 站原值」可回，null / 空 就按站内默认档 public 落。
+// 权限只用 CanManageVideo（投稿人本人 ∥ 站长）那一把，不新造；分区这一栏按站长拍板开放给投稿人本人。
+// 门：两道，与同形状的 DELETE /api/videos/{id}（投稿人自管删稿）一字不差——MemberGate 先挡匿名（RequiresMember 里
+//   IsPatch + 纯数字 id 那一条，401 与删稿同一句话；放映厅面板「先登录」那一支就读它），端点里再核 CanManageVideo
+//   （席位在、但这稿不是他的 → 403）。归属这一道必须长在端点里：不学 /revive /requeue 只靠 AdminGate 点名清单的旧账——
+//   那份清单漂一个词就是匿名可写；而 MemberGate 只认「有没有席位」，投稿人本人能进靠的正是端点这一道（站长拿席位会话进门）。
+// 成功只回 { ok = true }，不在这儿拼一份稿件 DTO：前端保存后重拉 /api/watch（那里下发的是有效值），
+//   两处真相的毛病就是这么留下来的。
+app.MapPatch("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db) =>
+{
+    // 先核钥匙再问有没有这一条：不是本人也不是站长的人问什么都是同一句 403（连「这稿存在」都问不出来），
+    // 只有真拿钥匙的人才会走到下面碰到 400 / 404（与 NotYourSubmission 那套「藏钮只是体验」同一分工）。
+    // 匿名已被 MemberGate 挡在 401（RequiresMember 的 IsPatch 那一条）：这一道管的是「席位在、稿不是他的」。
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
+    }
+
+    if (http.Request.HasFormContentType)
+    {
+        return Results.Json(new { message = "稿件设置的请求体得是一段 JSON 对象" }, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    JsonElement root;
+    try
+    {
+        // ParseAsync 不是写法讲究，是必需：Kestrel 不许同步读请求流，JsonDocument.Parse(stream) 会当场抛
+        // 「Synchronous operations are disallowed」把这一口整片打成 500（实机第一次 PATCH 就是这么炸的，
+        // 而本仓没有 HTTP harness，532 条测试一条也不会报——以这条为证：碰真实流的读法要跑一次才算验过）。
+        using var doc = await JsonDocument.ParseAsync(http.Request.Body, new JsonDocumentOptions { AllowTrailingCommas = true });
+        root = doc.RootElement.Clone(); // Clone 一份：它能活得比 doc 久，下面要拿它逐栏取值
+    }
+    catch (JsonException)
+    {
+        return Results.Json(new { message = "请求体得是一段 JSON 对象（没递 body 也算）" }, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    if (!TryReadVideoSettings(root, out var settings, out var touched, out var readMessage))
+    {
+        return Results.Json(new { message = readMessage }, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    if (touched.Count == 0)
+    {
+        // 没话说不空转（与合集 UpdateCollection 同一克制）：递一个 {} 过来不会改掉任何东西。
+        return Results.Json(new { message = "一栏都没递，这回没改任何东西（visibility / title / description / zone 递你要改的那几栏）" },
+            statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    // 校验链（四栏先全验完再落笔，不给「标题改成了、简介脏了就回炉」那种半套改动留缝）：
+    // visibility → VisibilityCodec.TryParse；title / description → StationDb.TryNormalizeTitle / TryNormalizeDesc（长度这一刀在数据层砍）；
+    // zone → StationDb.TryNormalizeZone（与站长室那口 POST /api/admin/zones/set 同一张嘴）。认不了一律 400 + 人话。
+    var writes = new List<Func<bool>>();
+    if (touched.Contains("visibility"))
+    {
+        if (!VisibilityCodec.TryParse(settings.Visibility, out var visibility))
+        {
+            return Results.Json(new { message = $"可见性只认 \"{VisibilityCodec.Public}\" / \"{VisibilityCodec.Private}\"" },
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        writes.Add(() => db.SetVideoVisibility(id, visibility));
+    }
+
+    if (touched.Contains("title"))
+    {
+        if (!StationDb.TryNormalizeTitle(settings.Title, out var title, out var titleMessage))
+        {
+            return Results.Json(new { message = titleMessage }, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        writes.Add(() => db.SetVideoTitleOverride(id, title));
+    }
+
+    if (touched.Contains("description"))
+    {
+        if (!StationDb.TryNormalizeDesc(settings.Description, out var desc, out var descMessage))
+        {
+            return Results.Json(new { message = descMessage }, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        writes.Add(() => db.SetVideoDescOverride(id, desc));
+    }
+
+    if (touched.Contains("zone"))
+    {
+        if (!StationDb.TryNormalizeZone(settings.Zone, out var zone, out var zoneMessage))
+        {
+            return Results.Json(new { message = zoneMessage }, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        writes.Add(() => db.SetVideoZoneOverride(id, zone));
+    }
+
+    // 落笔：四栏写的都是 videos 同一行，哪栏回 false 都是「查无此片」——而且只可能是第一栏就回 false，
+    // 所以不会留下半套改动（行不在，前面那些 UPDATE 也一行没碰着）。
+    foreach (var write in writes)
+    {
+        if (!write())
+        {
+            return Results.NotFound(new { message = "馆藏里没有这个编号" });
+        }
+    }
+
+    return Results.Ok(new { ok = true });
 });
 
 // 编码加档：给已到站馆藏点单另一个编码版本（avc/hevc/av1），后台整视频补货，
@@ -700,26 +923,85 @@ static string EnsureDmid(HttpContext http)
 
 // 自管钥匙：这稿子的投稿人本人或站长。归属不明的行（爬工代投、老数据反查失败）
 // 只有站长握得住，与 MemberMail「无归属不发信」同一口径。比的是站内席位 id，不绕 mid。
-static bool CanManageVideo(HttpContext http, StationDb db, long videoId)
-{
-    var member = MemberGate.Current(http);
-    if (member is null)
-    {
-        return false;
-    }
+// 正身在 ManageGate（与读侧的 ViewerGate 对称，测试能直接钉它）；这里留同名入口，老调用点一个字不用改。
+static bool CanManageVideo(HttpContext http, StationDb db, long videoId) => ManageGate.CanManage(http, db, videoId);
 
-    if (MemberGate.IsOwner(member))
-    {
-        return true;
-    }
+// 看客尺子：站长全见；会员看公开 + 自己投的；访客只看公开。与 CanManageVideo 同一把钥匙（比站内席位 id，不绕 mid）。
+// 各读接口一律 db.Xxx(..., ViewerScope(http))；正身在 ViewerGate（端点分部也要同一张嘴），这里留名就地可读。
+static VisibilityScope ViewerScope(HttpContext http) => ViewerGate.Scope(http);
 
-    return db.GetVideoSubmitterMember(videoId) is { } submitter && submitter == member.Id;
-}
+// 能不能看这把钥匙：站长短路；否则「公开」或「本人投稿」；查无此片回 false（与 CanManage 同形，别另起口径）。
+// 拿 false 一律按「查无此片」那张 404 脸回（403 就是「有这稿但不给你看」的泄密信号）。
+static bool CanViewVideo(HttpContext http, StationDb db, long videoId) => ViewerGate.CanView(http, db, videoId);
 
 // 卡阵/放映厅的自管钮共用的那一句拒绕（分站没注册认证服务，Results.Forbid() 会 500，以前提过）。
 static IResult NotYourSubmission() => Results.Json(
     new { error = "not-your-submission", message = "这枚钥匙只有投稿人本人和站长握得住" },
     statusCode: StatusCodes.Status403Forbidden);
+
+// 稿件设置那口 PATCH 的收料：请求体 → （四栏的值, 这次动了哪几栏）。
+// 为什么自己掰而不直接绑 VideoSettingsRequest：System.Text.Json 分不出「这栏没递」与「这栏递了 null」，
+// 而这两件事在稿件设置窗里正是两种操作（少递一栏 = 不动它，递 null = 还原成 B 站原值）。
+// 值只认字串与 null：「title 递个数字 123」那种手滑不当「改成 123」处理；栏名大小写不认生，但认不出的栏名当场 400——
+// 默默咽下去的话，前端拼错一栏会以为改成功了，那是最难查的一种「改了没生效」。
+static bool TryReadVideoSettings(JsonElement root, out VideoSettingsRequest settings, out HashSet<string> touched, out string message)
+{
+    touched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    message = "";
+    string? visibility = null, title = null, description = null, zone = null;
+    if (root.ValueKind != JsonValueKind.Object)
+    {
+        settings = new VideoSettingsRequest(null, null, null, null);
+        message = "请求体得是一段 JSON 对象";
+        return false;
+    }
+
+    foreach (var property in root.EnumerateObject())
+    {
+        var field = property.Name.ToLowerInvariant();
+        if (field is not ("visibility" or "title" or "description" or "zone"))
+        {
+            settings = new VideoSettingsRequest(null, null, null, null);
+            message = $"没有「{property.Name}」这一栏可改（能改的只有 visibility / title / description / zone）";
+            return false;
+        }
+
+        string? value;
+        switch (property.Value.ValueKind)
+        {
+            case JsonValueKind.Null:
+                value = null; // 显式 null = 还原这一栏（与空串同一克制）
+                break;
+            case JsonValueKind.String:
+                value = property.Value.GetString();
+                break;
+            default:
+                settings = new VideoSettingsRequest(null, null, null, null);
+                message = $"「{property.Name}」得是给字串（null 表示还原成 B 站原值）";
+                return false;
+        }
+
+        touched.Add(field);
+        switch (field)
+        {
+            case "visibility":
+                visibility = value;
+                break;
+            case "title":
+                title = value;
+                break;
+            case "description":
+                description = value;
+                break;
+            case "zone":
+                zone = value;
+                break;
+        }
+    }
+
+    settings = new VideoSettingsRequest(visibility, title, description, zone);
+    return true;
+}
 
 // 给卡阵行挂上 canManage：访客一律假，登录者按归属集合一次算完（不逐行问库）。
 static List<LBS.Domain.VideoEntry> TagManageable(StationDb db, IEnumerable<LBS.Domain.VideoEntry> entries, HttpContext http)
@@ -746,6 +1028,12 @@ static List<LBS.Domain.VideoEntry> TagManageable(StationDb db, IEnumerable<LBS.D
 // canDelete 由服务端算好随列表下发，发送者身份不外泄。无主老弹幕只有站长删得掉。
 app.MapGet("/api/videos/{id:long}/danmaku", (long id, HttpContext http, StationDb db) =>
 {
+    // 单片级挡门：藏着的稿子与查无此片同一张 404 脸（弹幕也算内容，不隔这扇门就能从弹幕列表验出「有这稿」）。
+    if (!CanViewVideo(http, db, id))
+    {
+        return Results.NotFound(new { message = "馆藏里没这个视频" });
+    }
+
     var dmid = EnsureDmid(http);
     var owner = MemberGate.IsOwner(MemberGate.Current(http));
     // 主人弹幕但当年没记席位（旧主人钥匙发的、或身份体系之前的老行）：拿站长席位那张脸兼底。
@@ -827,8 +1115,14 @@ app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, S
 
 // 访客下载：把正在看的版本存本地（codec 缺省给主版本）。开 Range 支持断点续传，
 // 文件名带标题/分 P/编码；路径死锁在 videos 库内，隔不过目录。
-app.MapGet("/api/videos/{id:long}/download", (long id, int pageIdx, string? codec, StationDb db, DataPaths paths) =>
+app.MapGet("/api/videos/{id:long}/download", (long id, int pageIdx, string? codec, StationDb db, DataPaths paths, HttpContext http) =>
 {
+    // 这条直接发字节，是静态区之外最要紧的一道门：藏着的稿子一律「没东西可搬」那张 404 脸（与下面查无同话）。
+    if (!CanViewVideo(http, db, id))
+    {
+        return Results.NotFound(new { message = "这个版本分站还没存下，没东西可搬" });
+    }
+
     var trimmed = codec?.Trim().ToLowerInvariant();
     var rel = string.IsNullOrEmpty(trimmed)
         ? db.GetPageMainRel(id, pageIdx)
@@ -903,10 +1197,18 @@ app.MapPost("/api/videos/{id:long}/codecs", async (long id, CodecVersionRequest 
     return Results.Ok(new { message = $"{codec.ToUpperInvariant()} 版本已排队进站（{added} 个分 P）" });
 });
 
-// 加档实况轻端点（匿名可读）：放映厅的版本面板把「进站中…」报成带百分比/字节/速度的实况，
+// 加档实况轻端点（会员可读）：放映厅的版本面板把「进站中…」报成带百分比/字节/速度的实况，
 // 与站长室队列同一本账——引擎在途表逐枚现查，进度的真伪以引擎为准。
-app.MapGet("/api/videos/{id:long}/codecs/progress", async (long id, StationDb db, IDownloadTaskLookup lookup, CancellationToken cancellationToken) =>
+// 先过看客钥匙：码率版本清单（哪个编码在途、进度多少、下到多少字节）也是内容情报，
+// 藏着的稿子与查无此片同一张 404 脸（与 danmaku/download 同一类泄漏，不说「私有」）。
+// 写侧（codecs 点单 / cancel / 删版本）归站长门与旧账，这期一根手指不碰。
+app.MapGet("/api/videos/{id:long}/codecs/progress", async (long id, StationDb db, IDownloadTaskLookup lookup, HttpContext http, CancellationToken cancellationToken) =>
 {
+    if (!CanViewVideo(http, db, id))
+    {
+        return Results.NotFound(new { message = "馆藏里没这个视频" });
+    }
+
     var rows = new List<object>();
     foreach (var (rowId, videoId, pageIdx, codec, taskIdsJson, basePath) in db.GetDownloadingCodecVersions())
     {
@@ -1055,9 +1357,44 @@ app.MapPost("/api/videos/{id:long}/danmaku-refresh", async (long id, HttpContext
         : Results.BadRequest(new { message = outcome.Message });
 });
 
-// 楼中楼按需补采：快照里没预配到的楼层点开时，分站现向 B 站翻这一楼并并回快照。
-app.MapPost("/api/videos/{id:long}/comments/subs", async (long id, CommentArchiveService service, SubsRequest request, CancellationToken cancellationToken) =>
+// 重拉封面与媒体（稿件设置窗那枚钮，站长批的是全量：含档案重取）。一趟三件事：
+//   ① 向 B 站要一份档案 → 只走窄口 UPDATE（绝不走 SaveSubmissionMetadata：它是 DELETE 重插，会把 UP 名片/
+//      互动数据/创作团队抹成 NULL）；标题不重取（那是站长可以站内覆写的那一栏）；
+//   ② 重抓封面件原地覆盖（与封面补员共用 CoverFileFetcher，抓不着就旧件旧行原样留着）；
+//   ③ 盘上真缺件才回炉（判据与开机全库扫同源），一件不缺就一个下载都不触发。
+// 门与上面的 danmaku-refresh 同形：MemberGate 的 POST 点名清单里有它（挡匿名 401），归属归这里的 CanManageVideo（403）。
+app.MapPost("/api/videos/{id:long}/media-refresh", async (long id, HttpContext http, StationDb db, MediaRefreshService service, CancellationToken cancellationToken) =>
 {
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
+    }
+
+    var outcome = await service.TryRefreshAsync(id, cancellationToken);
+    return outcome.Status switch
+    {
+        MediaRefreshStatus.NotFound => Results.NotFound(new { message = outcome.Message }),
+        MediaRefreshStatus.NotArrived => Results.BadRequest(new { message = outcome.Message }),
+        _ => Results.Ok(new
+        {
+            ok = true,
+            message = outcome.Message,
+            cover = outcome.Cover,
+            meta = outcome.Meta,
+            media = outcome.Media,
+        }),
+    };
+});
+
+// 楼中楼按需补采：快照里没预配到的楼层点开时，分站现向 B 站翻这一楼并并回快照。
+// 先过看客钥匙：藏着的稿子与查无同一张 404 脸——这口会替分站出去问 B 站，不能谁都能拿着别人的 bvid 使。
+app.MapPost("/api/videos/{id:long}/comments/subs", async (long id, CommentArchiveService service, SubsRequest request, HttpContext http, StationDb db, CancellationToken cancellationToken) =>
+{
+    if (!CanViewVideo(http, db, id))
+    {
+        return Results.NotFound(new { message = "馆藏里没这个视频" });
+    }
+
     var (ok, message, subs, hasMore) = await service.FetchSubsForVideoAsync(id, request.Rpid, request.Page, cancellationToken);
     return ok
         ? Results.Ok(new { replies = subs, hasMore })
@@ -1079,11 +1416,21 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
         return Results.BadRequest(new { message = "链接里没有找到 BV 号" });
     }
 
-    var outcome = db.AddVideo(request.Url, bvid);
-    if (outcome.Result == AddVideoResult.Duplicate)
+    // 投稿带可见性：认 public / private / 空（空 = 公开），其余 400 一句人话（宁拒不错档）。
+    if (!VisibilityCodec.TryParse(request.Visibility, out var visibility))
+    {
+        return Results.BadRequest(new { message = $"可见性只认 {VisibilityCodec.Public} / {VisibilityCodec.Private}（不填算公开）" });
+    }
+
+    // 单链投稿也走批量那一口：它是写侧唯一能把可见性正门正写进台账的出口（AddVideo 不带这栏），
+    // 手搓 UPDATE 翻档是数据层禁路，这里不绕。撞重照样只补档案，不碰已有行的 visibility。
+    var outcome = db.AddVideosBulk(new[] { new NewVideo(request.Url, bvid, null, null, null, visibility) });
+    if (outcome.Added == 0)
     {
         return Results.Conflict(new { message = "这个视频已经到过了" });
     }
+
+    var videoId = outcome.InsertedIds[0];
 
     // 投稿定人：谁投的归谁，下载提交时走他自己的账号池（M5.4：定的是站内席位 id）。
     var submitter = MemberGate.Current(http);
@@ -1105,13 +1452,14 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
         }, statusCode: StatusCodes.Status403Forbidden);
     }
 
-    db.SetVideoSubmitterMember(outcome.VideoId, submitter.Id);
+    db.SetVideoSubmitterMember(videoId, submitter.Id);
 
     events.RecordWithPayload(EventActors.Member, submitter.Mid, EventNames.VideoSubmit, "video", bvid,
-        new { url = request.Url, via = "link" }, http.Connection.RemoteIpAddress?.ToString(), submitter.Id);
+        new { url = request.Url, via = "link", visibility = VisibilityCodec.ToColumn(visibility) },
+        http.Connection.RemoteIpAddress?.ToString(), submitter.Id);
 
-    await queue.EnqueueAsync(outcome.VideoId, cancellationToken);
-    return Results.Ok(new { videoId = outcome.VideoId, message = $"已加入进站队列，{bvid} 正在赶来" });
+    await queue.EnqueueAsync(videoId, cancellationToken);
+    return Results.Ok(new { videoId, message = $"已加入进站队列，{bvid} 正在赶来" });
 });
 
 app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, StationDb db, DownloadQueue queue,
@@ -1120,6 +1468,12 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
     if (string.IsNullOrWhiteSpace(request.Content) || !NetscapeBookmarkParser.LooksLikeNetscapeBookmarkFile(request.Content))
     {
         return Results.BadRequest(new { message = "这看起来不是浏览器导出的收藏夹文件" });
+    }
+
+    // 整批共用一个可见性（与单链、收藏夹链接、UP 主整架同一口径）：认不了就 400，不默默归档成公开。
+    if (!VisibilityCodec.TryParse(request.Visibility, out var visibility))
+    {
+        return Results.BadRequest(new { message = $"可见性只认 {VisibilityCodec.Public} / {VisibilityCodec.Private}（不填算公开）" });
     }
 
     var candidates = NetscapeBookmarkParser.Parse(request.Content);
@@ -1132,7 +1486,7 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
             && BilibiliLink.IsBilibiliHost(uri.Host)
             && BilibiliLink.TryExtractBvid(candidate.Url, out var bvid))
         {
-            videos.Add(new NewVideo(candidate.Url, bvid, candidate.Title));
+            videos.Add(new NewVideo(candidate.Url, bvid, candidate.Title, null, null, visibility));
         }
         else
         {
@@ -1173,6 +1527,12 @@ app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, Stat
 app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest request, LbsFavoritesImport favorites, LbsCollectPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
     EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
 {
+    // 先校档位再出去翻页：坏值不该先烧一轮 B 站请求再被 400 抵回。
+    if (!VisibilityCodec.TryParse(request.Visibility, out var visibility))
+    {
+        return Results.BadRequest(new { message = $"可见性只认 {VisibilityCodec.Public} / {VisibilityCodec.Private}（不填算公开）" });
+    }
+
     // 整架导入是批量动作，冷却期直接挡回，不等它耐心到天荒地老。
     if (throttle.IsCoolingDown)
     {
@@ -1188,7 +1548,8 @@ app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest reques
     }
 
     var favSeat = MemberGate.Current(http)?.Id;
-    var bulk = db.AddVideosBulk(outcome.Videos);
+    // 整批共用一个档位：导入器不认可见性（它只管抽链接），入库前在这一行套上（只改内存里的 NewVideo，不碰已有行）。
+    var bulk = db.AddVideosBulk(outcome.Videos.Select(v => v with { Visibility = visibility }).ToList());
     foreach (var videoId in bulk.InsertedIds)
     {
         if (favSeat is long seatId)
@@ -1230,6 +1591,12 @@ app.MapPost("/api/up/import", async (UpImportRequest request,
     EventRecorder events, HttpContext http,
     CancellationToken cancellationToken) =>
 {
+    // 先校档位再出去翻页：坏值不该先烧一轮 B 站请求再被 400 抵回。
+    if (!VisibilityCodec.TryParse(request.Visibility, out var visibility))
+    {
+        return Results.BadRequest(new { message = $"可见性只认 {VisibilityCodec.Public} / {VisibilityCodec.Private}（不填算公开）" });
+    }
+
     if (throttle.IsCoolingDown)
     {
         var left = throttle.CooldownRemaining ?? TimeSpan.Zero;
@@ -1271,7 +1638,8 @@ app.MapPost("/api/up/import", async (UpImportRequest request,
             videos.Add(new NewVideo($"https://www.bilibili.com/video/{bvid}", bvid,
                 string.IsNullOrWhiteSpace(item.Title) ? null : item.Title.Trim(),
                 string.IsNullOrWhiteSpace(item.Pic) ? null : item.Pic.Trim(),
-                item.Created > 0 ? DateTimeOffset.FromUnixTimeSeconds(item.Created).ToString("O") : null));
+                item.Created > 0 ? DateTimeOffset.FromUnixTimeSeconds(item.Created).ToString("O") : null,
+                visibility));
             fresh++;
         }
 
@@ -1666,10 +2034,79 @@ if (dataPaths.RootHint is { } dataHint)
 app.Run();
 
 internal sealed record HealthInfo(bool Ok, string Name, string Version, string DataDir, DateTimeOffset ServerTimeUtc);
-internal sealed record AddVideoRequest(string Url);
-internal sealed record FavoritesImportRequest(string Content);
-internal sealed record FavoritesUrlImportRequest(string Url);
-internal sealed record UpImportRequest(string Url);
+
+// 投稿四档（单链 / 收藏夹文件 / 收藏夹链接 / UP 主整架）都能选公开或私有，整批共用一个档位；不填 = 公开。
+// 字段名跟前端 SubmitDialog 的 body 一字不差（visibility），认不出的值一律 400，不给「默默变成公开」的糊涂账。
+internal sealed record AddVideoRequest(string Url, string? Visibility);
+internal sealed record FavoritesImportRequest(string Content, string? Visibility);
+internal sealed record FavoritesUrlImportRequest(string Url, string? Visibility);
+internal sealed record UpImportRequest(string Url, string? Visibility);
+
+/// <summary>
+/// 静态区挡门的「件 → 稿件 id」反查缓存（只给那一道闸与两处补保省腿，不参与任何判据本身）。
+/// 时间约束（站长拍的，不许放宽）：稿件转私后最多 60 秒内必须挡住 —— 命中项 TTL 就钉在 60 秒；
+/// 认不出（null）只留 5 秒：刚归档的新件不该长时间卡在「台账不认」那一侧（那是放行方向，留久了等于给新私有件发通行证）。
+/// 容量上限 4096（首页一屏上百张封面，量级够用），满了整体清一次 —— 台账一直在变，这层只是省腿的，不保真。
+/// </summary>
+internal sealed class MediaOwnerCache(TimeProvider? clock = null)
+{
+    private const int Capacity = 4096;
+
+    /// <summary>认到稿件的件：60 秒。这条线就是「转私后多久挡得住」的上限，调它等于调那道闸的脉。</summary>
+    private static readonly TimeSpan KnownTtl = TimeSpan.FromSeconds(60);
+
+    /// <summary>台账不认的件：只留 5 秒（新归档件得尽快被认出来）。</summary>
+    private static readonly TimeSpan UnknownTtl = TimeSpan.FromSeconds(5);
+
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+
+    /// <summary>拿 rel 问属于哪条稿子：没过期直接用缓存，过期/没存过才问一次库。</summary>
+    public long? Resolve(string rel, Func<string, long?> readThrough)
+    {
+        var now = _clock.GetUtcNow();
+        if (_entries.TryGetValue(rel, out var hit) && hit.ExpiresUtc > now)
+        {
+            return hit.VideoId;
+        }
+
+        var videoId = readThrough(rel);
+        // 满了不逐条逐龄（这条路径上每条静态请求都可能撞上，不值得）：整层掀了重来，代价只是多问几趟库。
+        if (_entries.Count >= Capacity)
+        {
+            _entries.Clear();
+        }
+
+        _entries[rel] = new Entry(videoId, now.Add(videoId is null ? UnknownTtl : KnownTtl));
+        return videoId;
+    }
+
+    private sealed record Entry(long? VideoId, DateTimeOffset ExpiresUtc);
+}
+
+/// <summary>
+/// 对外一律小写字符串：<see cref="VideoVisibility"/> 是枚举，直接序列化会变成 0/1，
+/// 而前端（放映厅那枚「私有」药丸、抽屉角标）拿的契约是 "public" / "private"。
+/// 读写两头都从 <see cref="VisibilityCodec"/> 那一个出口出：写侧 ToColumn，读侧 TryParse（认不了当公开，
+/// 与数据层 FromColumn 同一克制，不把一列脏值顶成整页 500）。
+/// </summary>
+internal sealed class VideoVisibilityJsonConverter : JsonConverter<VideoVisibility>
+{
+    public override VideoVisibility Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        => reader.TokenType switch
+        {
+            JsonTokenType.String => VisibilityCodec.TryParse(reader.GetString(), out var parsed) ? parsed : VideoVisibility.Public,
+            // 枚举的数字化旧形（0/1）也收下：存量存档/别人手搓的 body 不该因为少了个引号就 500。
+            JsonTokenType.Number => reader.GetInt32() == (int)VideoVisibility.Private ? VideoVisibility.Private : VideoVisibility.Public,
+            JsonTokenType.Null => VideoVisibility.Public,
+            _ => throw new JsonException($"可见性只认 \"{VisibilityCodec.Public}\" / \"{VisibilityCodec.Private}\""),
+        };
+
+    public override void Write(Utf8JsonWriter writer, VideoVisibility value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(VisibilityCodec.ToColumn(value));
+}
+
 internal sealed record CancelDownloadsRequest(IReadOnlyList<long>? VideoIds);
 internal sealed record SetDownloadIntervalRequest(int Seconds);
 internal sealed record GateRequest(string? Password);
@@ -1680,5 +2117,13 @@ internal sealed record SubscriptionRequest(string Kind, string Target);
 internal sealed record LocalDanmakuRequest(int PageIdx, double T, string Text);
 internal sealed record SubsRequest(long Rpid, int Page);
 internal sealed record CodecVersionRequest(string? Codec);
+
+/// <summary>
+/// 稿件设置窗那口 PATCH /api/videos/{id} 的请求体形状。四栏都可缺省，语义三档：
+/// <b>缺省 = 这一栏不改；递非空串 = 覆写；递 null 或空串 = 还原</b>（落 NULL，这栏回跟 B 站档案走）。
+/// 可见性用字串（「public」/「private」）而不是枚举：认不出了要能回 400 + 人话，而不是被转换器掰成 public。
+/// 实际收料在 <c>TryReadVideoSettings</c>：System.Text.Json 分不出「没递」与「递 null」，得按属性名自己点齐。
+/// </summary>
+internal sealed record VideoSettingsRequest(string? Visibility, string? Title, string? Description, string? Zone);
 
 internal sealed record CancelCodecRequest(string? Codec, int? PageIdx);

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using LBS.Domain;
 using LBS.Engine;
 using LBS.Infrastructure;
@@ -15,22 +14,23 @@ public static class MemberEndpoints
 {
     private static readonly TimeSpan QrTtl = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan PollThrottle = TimeSpan.FromSeconds(1);
-    private const int MaxOpenQrPerIp = 3;
+
+    /// <summary>同一台来路同时能摊开几张码。抬到 6 是给「换一张试试」留出余地；真超了先踢自己最旧那张，不锁人。</summary>
+    private const int MaxOpenQrPerIp = 6;
+
+    /// <summary>全站活票总闸：挡的是陌生人脚本刷码，只在这一条真撞上时才说「等着的人太多」。</summary>
     private const int MaxOpenQrTotal = 64;
 
-    private sealed record QrSession(string SourceIp, string? Invite, DateTimeOffset CreatedUtc, string Mode)
-    {
-        public DateTimeOffset LastPollUtc { get; set; }
-        public QrPhase Phase { get; set; } = QrPhase.Waiting;
-    }
-
     private sealed record QrNewRequest(string? Invite, string? Mode);
+
+    /// <summary>退票只递 key：票是谁的、还在不在，都由分站对着票池核，外面问不出存在性。</summary>
+    private sealed record QrCancelRequest(string? Key);
 
     private sealed record AccountIdRequest(long Id);
 
     public static void MapMemberEndpoints(this WebApplication app)
     {
-        var sessions = new ConcurrentDictionary<string, QrSession>();
+        var jar = new QrTicketJar();
 
         // 公开探针：登录页用它挂“首位扫码者继位站长”的告示，不需要任何身份。
         app.MapGet("/api/member/status", (StationDb db) => Results.Ok(new { hasOwner = db.HasOwner() }));
@@ -39,17 +39,18 @@ public static class MemberEndpoints
             EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
         {
             var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            SweepStale();
+            jar.SweepStale(DateTimeOffset.UtcNow, QrTtl);
 
-            if (sessions.Count >= MaxOpenQrTotal
-                || sessions.Values.Count(s => string.Equals(s.SourceIp, ip, StringComparison.Ordinal)) >= MaxOpenQrPerIp)
+            // 同人换码不该吃 429：per-IP 超限改成踢他最旧那张腾坑，429 只留给总闸真满。
+            if (jar.Total >= MaxOpenQrTotal)
             {
-                return Results.Json(new { message = "排队扫码的人太多，稍候再试" }, statusCode: StatusCodes.Status429TooManyRequests);
+                return Results.Json(new { message = QrMessages.TooManyWaiting }, statusCode: StatusCodes.Status429TooManyRequests);
             }
 
             // bind 模式：已登录成员往自己账号池里再接一个 B 站号，不建新席不发新会话。
             var mode = string.Equals(request?.Mode, "bind", StringComparison.OrdinalIgnoreCase) ? "bind" : "admit";
-            if (mode == "bind" && MemberGate.Current(http) is null)
+            var binder = MemberGate.Current(http);
+            if (mode == "bind" && binder is null)
             {
                 return Results.Json(new { message = "先以会员身份进站，才能往自己池里加号" },
                     statusCode: StatusCodes.Status401Unauthorized);
@@ -61,17 +62,56 @@ public static class MemberEndpoints
                 return Results.Json(new { message = "B 站没给二维码，稍后再试" }, statusCode: StatusCodes.Status502BadGateway);
             }
 
-            sessions[challenge.QrcodeKey] = new QrSession(ip, NormalizeInvite(request?.Invite), DateTimeOffset.UtcNow, mode);
+            // 坑到这一步才真腾：取码没成就把人家手里那张好票顶掉，等于帮倒忙。
+            if (mode == "bind")
+            {
+                jar.RemoveOthersOfMember(binder!.Id);
+            }
+            else
+            {
+                while (jar.CountByIp(ip) >= MaxOpenQrPerIp && jar.RemoveOldestByIp(ip))
+                {
+                }
+            }
+
+            jar.Add(challenge.QrcodeKey, ip, NormalizeInvite(request?.Invite), mode, mode == "bind" ? binder!.Id : null,
+                DateTimeOffset.UtcNow);
             events.Record(EventActors.Guest, null, EventNames.LoginStart, "qr", challenge.QrcodeKey, ip: ip);
             return Results.Ok(new { url = challenge.Url, key = challenge.QrcodeKey });
+        });
+
+        // 退票口：关窗、换一张、扫成功都来这儿把坑还掉。匿名可达（登录页本来就在门外），
+        // 且四种结局（不存在 / 不是你的 / 已经销了 / 真销掉了）回的是同一个响应，免得拿它探谁的码还在。
+        app.MapPost("/api/member/qr/cancel", (QrCancelRequest? request, HttpContext http) =>
+        {
+            if (string.IsNullOrWhiteSpace(request?.Key) || !jar.TryGet(request.Key, out var session) || session is null)
+            {
+                return Results.Ok(new { ok = true });
+            }
+
+            var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            if (!string.Equals(session.SourceIp, ip, StringComparison.Ordinal))
+            {
+                return Results.Ok(new { ok = true });
+            }
+
+            // bind 的票只有发起人那个席位销得动，别人拿着 key 也还不了他的坑。
+            if (session.Mode == "bind" && MemberGate.Current(http)?.Id != session.OwnerMemberId)
+            {
+                return Results.Ok(new { ok = true });
+            }
+
+            jar.Remove(request.Key);
+            return Results.Ok(new { ok = true });
         });
 
         app.MapGet("/api/member/qr/poll", async (string? key, LbsQrLogin qr, StationDb db, MemberGate gate,
             EventRecorder events, ILoggerFactory loggerFactory, HttpContext http, CancellationToken cancellationToken) =>
         {
-            if (string.IsNullOrWhiteSpace(key) || !sessions.TryGetValue(key, out var session))
+            if (string.IsNullOrWhiteSpace(key) || !jar.TryGet(key, out var session) || session is null)
             {
-                return Results.Json(new { message = "二维码不存在或已过期，请重新获取" }, statusCode: StatusCodes.Status410Gone);
+                // 票池在内存里，分站一重启就空了——这话得说实话，别让人以为 B 站把码废了。
+                return Results.Json(new { message = QrMessages.TicketGone }, statusCode: StatusCodes.Status410Gone);
             }
 
             var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -81,17 +121,22 @@ public static class MemberEndpoints
             }
 
             // bind 模式的码只能发起人自己消——拿别人刚扫完的码偷号不行。
-            long? binderMid = session.Mode == "bind" ? MemberGate.Current(http)?.Mid : null;
-            if (session.Mode == "bind" && binderMid is null)
+            // 钥匙用席位 id（票上那枚 OwnerMemberId），不拿 mid 当门：站长新开的空位 mid 还是 NULL，
+            // 拿 mid 卡人恰好把「给空位绑第一个号」这一最该成的情形关在门外（401 空 body，前端只能报作废）。
+            if (session.Mode == "bind")
             {
-                return Results.Unauthorized();
+                var binderSeat = MemberGate.Current(http);
+                if (binderSeat is null || binderSeat.Id != session.OwnerMemberId)
+                {
+                    return Results.Unauthorized();
+                }
             }
 
             if (DateTimeOffset.UtcNow - session.CreatedUtc > QrTtl)
             {
-                sessions.TryRemove(key, out _);
+                jar.Remove(key);
                 events.Record(EventActors.Guest, null, EventNames.LoginExpired, "qr", key, ip: ip);
-                return Results.Ok(new { phase = "expired", message = "二维码超时，请重新获取" });
+                return Results.Ok(new { phase = "expired", message = QrMessages.TtlExpired });
             }
 
             // 上游轮询限流：同一张码 1 秒内只代问一次，第二次直接报当前状态。
@@ -117,16 +162,16 @@ public static class MemberEndpoints
                     return Results.Ok(new { phase = PhaseName(result.Phase) });
 
                 case QrPhase.Expired:
-                    sessions.TryRemove(key, out _);
+                    jar.Remove(key);
                     events.Record(EventActors.Guest, null, EventNames.LoginExpired, "qr", key, ip: ip);
-                    return Results.Ok(new { phase = "expired", message = result.Message ?? "二维码已失效" });
+                    return Results.Ok(new { phase = "expired", message = result.Message ?? QrMessages.UpstreamExpired });
 
                 case QrPhase.Success when result.CookieHeader is { Length: > 0 } cookie:
                 {
                     var identity = await qr.ProbeIdentityAsync(cookie, cancellationToken);
                     if (identity is null)
                     {
-                        sessions.TryRemove(key, out _);
+                        jar.Remove(key);
                         events.Record(EventActors.Guest, null, EventNames.LoginDenied, "qr", key,
                             "{\"reason\":\"B 站不认这份登录回执\"}", ip);
                         return Results.Json(new { message = "B 站没认下这次登录，重新扫一次试试" },
@@ -135,10 +180,18 @@ public static class MemberEndpoints
 
                     if (session.Mode == "bind")
                     {
-                        var binder = db.GetMemberByMid(binderMid!.Value)!;
+                        var binder = db.GetMemberById(session.OwnerMemberId!.Value);
+                        if (binder is null)
+                        {
+                            // 码还挂在手上时席位被逐了：不拿 null 去碰账，说清楚让他重发一次。
+                            jar.Remove(key);
+                            return Results.Json(new { message = "发起绑定的席位已经不在了，重新发起一次" },
+                                statusCode: StatusCodes.Status410Gone);
+                        }
+
                         db.UpsertMemberAccount(binder.Id, identity.Mid, identity.Name, identity.Face, cookie);
-                        sessions.TryRemove(key, out _);
-                        events.Record(EventActors.Member, binderMid, EventNames.LoginSuccess, "member",
+                        jar.Remove(key);
+                        events.Record(EventActors.Member, identity.Mid, EventNames.LoginSuccess, "member",
                             identity.Mid.ToString(), "{\"mode\":\"bind\"}", ip, binder.Id);
                         return Results.Ok(new
                         {
@@ -149,7 +202,7 @@ public static class MemberEndpoints
 
                     var outcome = AdmitMember(db, gate, identity, session.Invite, cookie,
                         loggerFactory.CreateLogger("MemberMail"));
-                    sessions.TryRemove(key, out _);
+                    jar.Remove(key);
                     if (outcome.Error is not null)
                     {
                         events.Record(EventActors.Guest, identity.Mid, EventNames.LoginDenied, "member",
@@ -226,6 +279,9 @@ public static class MemberEndpoints
                     id = a.Id,
                     accountMid = a.AccountMid,
                     accountName = a.AccountName,
+                    // 头像以前就漏在这次投影里：ListMemberAccounts 的 SQL 早把 face_url 读出来了，
+                    // 前端那行想画也没得画（账号池一行不能把 cookie 带上，故只交这三样人旺的）。
+                    faceUrl = a.FaceUrl,
                     isPrimary = a.IsPrimary,
                     expired = a.Expired,
                 }),
@@ -274,14 +330,6 @@ public static class MemberEndpoints
                 ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: member.Id);
             return Results.Ok(new { message = "号已从池中逐出" });
         });
-
-        void SweepStale()
-        {
-            foreach (var stale in sessions.Where(kv => DateTimeOffset.UtcNow - kv.Value.CreatedUtc > QrTtl))
-            {
-                sessions.TryRemove(stale.Key, out _);
-            }
-        }
     }
 
     internal static (string? Token, string? Error, int Status) AdmitMember(StationDb db, MemberGate gate,

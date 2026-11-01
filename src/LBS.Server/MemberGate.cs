@@ -63,11 +63,38 @@ public sealed class MemberGate(StationDb db)
             return true;
         }
 
+        // 稿件设置（PATCH /api/videos/{id}：可见性 / 标题 / 简介 / 分区）：与上面删稿那一口同形——
+        // 会员门挡访客（匿名拿到与删稿同一句 401），归属归端点里 CanManageVideo 再核一遗（不是自己的稿 403）。
+        // 只点纯数字 id 那一个形状，不顺手拓到其它 PATCH（合集抽屉那几口仍留在两张门外面自防）。
+        if (HttpMethods.IsPatch(request.Method) && IsVideoIdOnlyPath(path))
+        {
+            return true;
+        }
+
+        // 重拉弹幕 / 重拉封面与媒体（POST …/danmaku-refresh 与 …/media-refresh）也在这份点名清单里：
+        // 少了这一条，匿名就能拿着别人的 id 驱分站出去跑 B 站，还能把健康馆藏踢回队列重下（归属归端点里的 CanManageVideo）。
         if (HttpMethods.IsPost(request.Method)
             && path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase)
             && (path.EndsWith("/comments", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/comments/subs", StringComparison.OrdinalIgnoreCase)
-                || path.EndsWith("/danmaku-refresh", StringComparison.OrdinalIgnoreCase)))
+                || path.EndsWith("/danmaku-refresh", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/media-refresh", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        // UP 主动态整页（列表 / 评论 / 订阅对象名单）：站长定的规矩是访客只看主页。
+        // 口在这里挡死才算挡，前端那扇路由守卫只是不让人白跑一趟。
+        if (string.Equals(path, "/api/dynamics", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("/api/dynamics/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // 合集详情：名录 /api/collections 仍公开（首页番剧模式那排入口卡靠它摆封面），
+        // 但「点进某一架」是进站待遇 —— 详情里是稿件清单与简介，不是张封面。
+        // 名录本身末尾不带斜杠，所以这一条只拿得住 /api/collections/{id} 那个形状（与 IsVideoIdOnlyPath 同一思路）。
+        if (path.StartsWith("/api/collections/", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }

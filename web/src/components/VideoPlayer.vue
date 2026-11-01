@@ -20,6 +20,7 @@ const props = defineProps({
   danmakuCount: { type: Number, default: null }, // 全站已归档弹幕总数（watch 顶层字段）
   localItems: { type: Array, default: () => [] }, // 站内弹幕 [{id, pageIdx, t, text}]（已按当前 P 筛好）
   pendingRevoke: { type: Object, default: null }, // { codec, seq }：观看页的加档请求被驳回，来把乐观态撤回来
+  cover: { type: String, default: null }, // 开场封面（观看页给的「本地原图优先」成品）：没播过之前盖在画面上，起播即淡出
 })
 const emit = defineEmits(['next', 'request-codec', 'shell-width', 'next-video', 'codec-change', 'send-danmaku', 'delete-danmaku', 'report-danmaku', 'codec-arrived'])
 
@@ -252,6 +253,15 @@ const currentSrc = computed(() => {
   const hit = activeCodec.value && versions.value.find((c) => c.codec === activeCodec.value && c.status === 'Arrived')
   return hit ? hit.relPath : props.page?.videoUrl
 })
+
+// 开场封面：这层画面从没播过之前把封面盖上去（B 站同款观感），一起播就淡出再不复返（中途暂停不翻回来）。
+// 不用 <video poster>：那个属性挂不上 referrerpolicy，热链封面会被 B 站图床按 referer 挡（站内 40+ 处 img
+// 都手写 no-referrer 就是这缘故）；自绘一层还顺带拿到淡出，pointer-events-none 又不挡「点画面即播」。
+// 换分 P / 换清晰度会 :key 重建 video 元素，那时重新算「没播过」——第一眼仍是封面，不是黑屏。
+const playedOnce = ref(false)
+watch(currentSrc, () => { playedOnce.value = false })
+watch(playing, (p) => { if (p) playedOnce.value = true })
+const coverShown = computed(() => !!props.cover && !!props.page?.videoUrl && !playedOnce.value && !playing.value)
 
 // 自动播放只认「还没被人为暂停过」：进页/换 P/换版本都算新开张（userPaused 清零），
 // 暂停键按下去就别再自作主张续播（缓冲回调会反复报 canplay，不设这道闸会暂停后偷跑）。
@@ -1484,6 +1494,21 @@ const STROKE_ITEMS = [
       <span v-else-if="status === 3">这集进站失败，去首页看失败原因</span>
       <span v-else>本地还没有这个分 P 的成片</span>
     </div>
+
+    <!-- 开场封面：压在 video 之上、弹幕画布之下（两者都不带 z，靠 DOM 顺序排队），
+         object-fit 跟画面同一个值：免得「封面铺满、起播却出黑边」那样跳一下。
+         常驻不拆只控 opacity：拆了就没得淡出，而且本地文件本来就拉过一遍。 -->
+    <img
+      v-if="page?.videoUrl && cover"
+      v-show="coverShown"
+      :src="cover"
+      referrerpolicy="no-referrer"
+      decoding="async"
+      alt=""
+      class="pointer-events-none absolute inset-0 h-full w-full transition-opacity duration-500"
+      :class="coverShown ? 'opacity-100' : 'opacity-0'"
+      :style="{ objectFit: play.fit }"
+    />
 
     <DanmakuLayer
       v-if="page?.danmakuUrl || localItems.length > 0"

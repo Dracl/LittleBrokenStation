@@ -272,7 +272,9 @@ public sealed class DmTests : IDisposable
         _db.MarkSubmitted(vid, new[] { "t1" }, "好片子", "https://i0.hdslb.com/c.jpg");
         _db.MarkArrived(vid);
 
-        var (error, target, note, dynJson) = DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", "  都给我去看！  ");
+        // 下面这些直驱例验的都是收信人/安利语/在不在馆那几道，不验看客钥匙：viewerCanView 逐例显式递 true
+        // （必传无默认值，fail-open 的默认值不放行），本文件的「藏着的稿子安利不出去」那条负例在 VisibilityGateTests。
+        var (error, target, note, dynJson) = DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", "  都给我去看！  ", viewerCanView: true);
         Assert.Null(error);
         Assert.Equal(peer, target);
         Assert.Equal("都给我去看！", note);
@@ -287,7 +289,7 @@ public sealed class DmTests : IDisposable
 
         // 归档封面后卡面升级 /media/（与观看页同形，本地优先）；安利语可不写（空串，卡即正文）。
         _db.RegisterCoverArtifact(vid, "BVshare001.Cover.jpg");
-        var (_, _, emptyNote, upgraded) = DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", null);
+        var (_, _, emptyNote, upgraded) = DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", null, viewerCanView: true);
         Assert.Equal(string.Empty, emptyNote);
         using (var card2 = System.Text.Json.JsonDocument.Parse(upgraded!))
         {
@@ -302,12 +304,13 @@ public sealed class DmTests : IDisposable
         Assert.Contains("/watch/BVshare001", landed.DynJson);
 
         // 校验嘴脸与动态分享同款：空气收信人/自娱自乐/查无此片/安利语超长/待邀空席。
-        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, null, "BVshare001", null).Error!.Value.Status);
-        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, me, "BVshare001", null).Error!.Value.Status);
-        Assert.Equal(StatusCodes.Status404NotFound, DmEndpoints.ValidateVideoShare(_db, me, peer, "BV查无此片0", null).Error!.Value.Status);
-        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", new string('字', 501)).Error!.Value.Status);
+        // 查无那例递的是 true：要验的是「没这个片子」那张脸（在不在馆那道判据在前），不是看客钥匙。
+        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, null, "BVshare001", null, viewerCanView: true).Error!.Value.Status);
+        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, me, "BVshare001", null, viewerCanView: true).Error!.Value.Status);
+        Assert.Equal(StatusCodes.Status404NotFound, DmEndpoints.ValidateVideoShare(_db, me, peer, "BV查无此片0", null, viewerCanView: true).Error!.Value.Status);
+        Assert.Equal(StatusCodes.Status400BadRequest, DmEndpoints.ValidateVideoShare(_db, me, peer, "BVshare001", new string('字', 501), viewerCanView: true).Error!.Value.Status);
         var (pendingId, _) = _db.CreateMemberInvite(null);
-        Assert.Equal(StatusCodes.Status404NotFound, DmEndpoints.ValidateVideoShare(_db, me, pendingId, "BVshare001", null).Error!.Value.Status);
+        Assert.Equal(StatusCodes.Status404NotFound, DmEndpoints.ValidateVideoShare(_db, me, pendingId, "BVshare001", null, viewerCanView: true).Error!.Value.Status);
     }
 
     // ─── 选人框搜索（directory?q=）：门槛、命中、只搜不兑底 ───

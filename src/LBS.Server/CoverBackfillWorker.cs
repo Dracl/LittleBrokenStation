@@ -1,4 +1,3 @@
-using DownKyi.Application.Bilibili;
 using LBS.Engine;
 using LBS.Infrastructure;
 
@@ -10,15 +9,19 @@ namespace LBS.Server;
 /// 文件落 data/videos、与 downkyi 产物同族命名（&lt;基目录&gt;/&lt;基名&gt;.Cover.jpg，基名从该视频任一产物行 rel 推导），
 /// 文件先落盘、再进 artifacts 行：缺件回炉（MissingMediaReconciler）拿 artifacts 行验盘，先插行会把「有行无件」误判整套回炉。
 /// 失败不建行、下轮重试——封面是锦上添花，前端随时有热链兑底，不许挡任何人的路。
+/// 抓 → 落盘 → 换主 → 登记那一串与稿件设置里那枚「重拉封面与媒体」共用 <see cref="CoverFileFetcher"/>，一份实现两处调。
+/// <b>整轮挂在 <see cref="LbsCollectPolicy"/> 的出号上下文里</b>：LbsQueryClient 第一行就是 RequireCookie()，
+/// 裸注入 LbsQueryClient 而不挂 policy 时整轮都是匿名请求，逐条抛的无号异常被 catch 吞成 Debug 日志——
+/// 于是「每小时跑一轮、轮轮空跑 0 条」还看不出毛病（本轮就是来还这笔账的）。
 /// </summary>
 public sealed class CoverBackfillWorker(
     StationDb db,
     LbsQueryClient client,
+    LbsCollectPolicy policy,
     DataPaths paths,
     ILogger<CoverBackfillWorker> logger) : BackgroundService
 {
     private const int BatchPerRound = 40;
-    private const string Referer = "https://www.bilibili.com";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -63,91 +66,45 @@ public sealed class CoverBackfillWorker(
             return;
         }
 
+        // 号池空了不装忙（与动态巡捕 / 订阅爬工同一姿势）：先问一句再出号，省得 40 支都抛一次无号异常刷日志。
+        if (!policy.HasAccount())
+        {
+            logger.LogInformation("封面补员：站里没可用的采集号，这轮 {Taken} 条先欠着，绑好活号就自动恢复", queue.Count);
+            return;
+        }
+
+        await policy.RunForActivityAsync(() => FillAsync(queue, cancellationToken));
+    }
+
+    private async Task FillAsync(IReadOnlyList<StationDb.CoverBackfillCandidate> queue, CancellationToken cancellationToken)
+    {
         var filled = 0;
         foreach (var candidate in queue)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            try
+            var result = await CoverFileFetcher.TryReplaceAsync(
+                client, db, paths, candidate.VideoId, candidate.CoverUrl, candidate.BaseRel, cancellationToken);
+            switch (result.Outcome)
             {
-                if (NormalizeUrl(candidate.CoverUrl) is not { } url || DeriveCoverRel(candidate.BaseRel) is not { } rel)
-                {
-                    continue; // 封面链认不出或基名退化：这单今天办不了，不算失败也不建行
-                }
-
-                var dest = Path.Combine(paths.Videos, rel.Replace('/', Path.DirectorySeparatorChar));
-                Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-                // 临时件落盘、验过货再换正主：半成品永远不会被 artifacts 行（和缺件回炉）看见。
-                var part = dest + ".part";
-                try
-                {
-                    await client.DownloadFileAsync(new BilibiliHttpRequest(url, Referer, includeCredentials: false, includeBuvid: false), part, cancellationToken);
-                    if (new FileInfo(part).Length > 0)
-                    {
-                        File.Move(part, dest, overwrite: true);
-                        db.RegisterCoverArtifact(candidate.VideoId, rel); // 先文件后行
-                        filled++;
-                    }
-                }
-                finally
-                {
-                    TryDelete(part);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                logger.LogDebug(ex, "封面补员：{Bvid} 这趟没下载成，下轮再来", candidate.Bvid);
+                case CoverFetch.Replaced:
+                    filled++;
+                    break;
+                case CoverFetch.Failed:
+                    logger.LogDebug(result.Error, "封面补员：{Bvid} 这趟没下载成，下轮再来", candidate.Bvid);
+                    break;
+                default:
+                    // Kept：封面链认不出或基名退化（没处落盘），这单今天办不了，不算失败也不建行。
+                    break;
             }
 
             await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
         }
 
         logger.LogInformation("封面补员：本轮补齐 {Filled}/{Taken} 条", filled, queue.Count);
-    }
-
-    private static string? NormalizeUrl(string coverUrl)
-    {
-        var trimmed = coverUrl.Trim();
-        if (trimmed.StartsWith("//", StringComparison.Ordinal))
+        if (filled == 0)
         {
-            trimmed = "https:" + trimmed; // 协议相对链补全，HttpClient 不吃裸 //
-        }
-
-        return trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-            ? trimmed
-            : null;
-    }
-
-    /// <summary>从同视频任一产物行 rel（正斜杠体）推封面 rel：目录不动，基名去扩展与 .Cover 中缀再挂 .Cover.jpg
-    /// （现存产物如 xxx- BV1xx.mp4 → xxx- BV1xx.Cover.jpg，与 downkyi 同族）。</summary>
-    private static string? DeriveCoverRel(string baseRel)
-    {
-        var slash = baseRel.LastIndexOf('/');
-        var dir = slash >= 0 ? baseRel[..(slash + 1)] : string.Empty;
-        var fileName = Path.GetFileNameWithoutExtension(baseRel);
-        if (fileName.EndsWith(".Cover", StringComparison.OrdinalIgnoreCase))
-        {
-            fileName = fileName[..^".Cover".Length];
-        }
-
-        return string.IsNullOrWhiteSpace(fileName) ? null : dir + fileName + ".Cover.jpg";
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch (IOException)
-        {
-            /* 临时件删不掉就随它去：没有行，谁也当它不存在 */
+            // 整轮一条没补上还只记 Debug，就是当年那副「看着在跑、其实空转」的样子——这里至少留一句能看见的。
+            logger.LogWarning("封面补员：这轮 {Taken} 条一条没补上（多半是封面链抓不动或被风控），下轮再试", queue.Count);
         }
     }
 }

@@ -394,6 +394,13 @@ onMounted(async () => {
     switchTab('dm')
     openThread(dmPeer)
   }
+  // 顶栏铃铛预览的深链：/messages?msg={id} 把那封信摊开。预览停留过已标读，这里只负责把它掀开来读全文
+  const msgId = typeof route.query.msg === 'string' ? Number(route.query.msg) : null
+  if (msgId && Number.isFinite(msgId)) {
+    switchTab('inbox')
+    const hit = items.value.find((m) => m.id === msgId)
+    if (hit && !expandedIds.value.has(hit.id)) await toggle(hit)
+  }
 })
 
 onUnmounted(() => {

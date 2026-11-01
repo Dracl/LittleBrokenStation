@@ -56,7 +56,8 @@ public sealed partial class StationDb
                 status         TEXT NOT NULL,
                 created_at_utc TEXT NOT NULL,
                 engine_task_ids TEXT,
-                last_error     TEXT
+                last_error     TEXT,
+                visibility     TEXT NOT NULL DEFAULT 'public'
             );
             """;
         command.ExecuteNonQuery();
@@ -208,7 +209,8 @@ public sealed partial class StationDb
                     name            TEXT NOT NULL,
                     intro           TEXT,
                     owner_member_id INTEGER NOT NULL,
-                    created_at_utc  TEXT NOT NULL
+                    created_at_utc  TEXT NOT NULL,
+                    visibility      TEXT NOT NULL DEFAULT 'public'
                 );
                 CREATE TABLE IF NOT EXISTS collection_items (
                     collection_id INTEGER NOT NULL,
@@ -226,9 +228,24 @@ public sealed partial class StationDb
         // 绝拿 seconds（产物时长）冒充。早先建的库没这列，缺就补。
         EnsureColumn(connection, "previews", "cost_seconds", "REAL");
 
+        // 稿件与合集的可见性（'public'/'private'）：私有只有投稿人（合集东家）本人与站长看得着。
+        // 存量行靠 DEFAULT 天然落 public，不回填、不立碑（站长拍板）；回收站那些 SELECT * 快照对新列免改
+        // （恢复时拿 PRAGMA table_info 筛列名，新列跟着账走）。读侧谓词只从 VisibilityFilter 那一个出口出。
+        EnsureColumn(connection, "videos", "visibility", "TEXT NOT NULL DEFAULT 'public'");
+        EnsureColumn(connection, "collections", "visibility", "TEXT NOT NULL DEFAULT 'public'");
+
         // 站内分区的站长改派槽：有效分区 = site_zone 优先，空则继承 B 站归档的 video_meta.zone（形如「音乐>翻唱」）。
         // 分区页只认顶级段；未入站无档案又没改派的货没户口，不进分区页。
         EnsureColumn(connection, "videos", "site_zone", "TEXT");
+        // 稿件设置那三个本地覆写槽，形状照上面 site_zone 一族：NULL 与空串都算「未覆写」（有效值表达式一律 NULLIF 归一），
+        // 覆写 = 写非空串、还原 = 置 NULL；写口只有 StationDb.VideoSettings.cs 里 SetVideo*Override 那一族，不留第二张写嘴。
+        // site_title / site_desc：站内自己那份标题与简介（顶掉 B 站归档值；简介只在放映厅念，列表本来就不显它）。
+        EnsureColumn(connection, "videos", "site_title", "TEXT");
+        EnsureColumn(connection, "videos", "site_desc", "TEXT");
+        // 历史遗留：早先「封面来源三档」那件功能已在今天全站拆除（写口、读口 CASE、字段、测试全拆干净），
+        // 留下一枚 site_cover_pref 空列：站内没人读、也没人写，存量库里那 155 条实测全是 NULL。
+        // 新库不再建它（本行已删）；存量库里那一枚就当死件放着，等下次整库整理时一并收（为一个空列写 DROP COLUMN
+        // 的一次性迁移，比留着它更难看）。
 
         // 旧库升级：M0 建的表没有引擎字段，缺列就补（SQLite ADD COLUMN 不锁表，小库无所谓）。
         EnsureColumn(connection, "videos", "engine_task_ids", "TEXT");
@@ -296,6 +313,9 @@ public sealed partial class StationDb
         EnsureColumn(connection, "video_meta", "stat_share", "INTEGER");
         EnsureColumn(connection, "video_meta", "stat_reply", "INTEGER");
         EnsureColumn(connection, "video_meta", "stat_probed", "INTEGER");
+        // 创作团队（联合创作稿的 B 站 staff 名单）：camelCase JSON 数组，读写共用 WatchStaffCodec。
+        // 不另开 staff_probed 销账位：团队与互动数据是同一次 view 拿的，要不要再出去由 stat_probed 定。
+        EnsureColumn(connection, "video_meta", "staff_json", "TEXT");
         // 站内弹幕的发送者匿名凭证（仅发送者本人可删，主人例外）。
         EnsureColumn(connection, "danmaku_local", "sender_dmid", "TEXT");
         EnsureColumn(connection, "danmaku_local", "sender_owner", "INTEGER DEFAULT 0");
@@ -730,22 +750,27 @@ public sealed partial class StationDb
         return new AdminStats(total, arrived, downloading, pending, failed, liveAccounts, totalBytes, viewTotal, likeTotal, coinTotal, favTotal, shareTotal, replyTotal, upCount);
     }
 
-    public IReadOnlyList<VideoEntry> ListVideos()
+    /// <summary>卡阵（含没到货的行）：尺子只滤可见性，不筛到站与否（下载面板与成员空间吃同一张嘴）。</summary>
+    public IReadOnlyList<VideoEntry> ListVideos(VisibilityScope? scope = null)
     {
+        var (visSql, bindVis) = VisibilityFilter(scope ?? VisibilityScope.PublicOnly, "v");
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
+        command.CommandText = $"""
+            SELECT v.id, v.url, v.bvid, v.avid, {EffTitleExpr}, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
-                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1)
+                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
+                   v.visibility
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
                  AND p.idx = (SELECT MIN(idx) FROM pages WHERE video_id = v.id)
+            WHERE {visSql}
             ORDER BY v.id DESC;
             """;
+        bindVis(command);
 
         using var reader = command.ExecuteReader();
         return ReadEntries(reader);
@@ -756,7 +781,7 @@ public sealed partial class StationDb
     /// 空格分词后词间 AND，每个词在标题/UP主/BV号/分区/简介任一命中即算；LIKE 通配符按字面处理。
     /// sort="plays" 按播放数降序（见 ViewPowerSql），默认新到站优先。
     /// </summary>
-    public IReadOnlyList<VideoEntry> SearchVideos(string query, string? sort, int limit = 50)
+    public IReadOnlyList<VideoEntry> SearchVideos(string query, string? sort, int limit = 50, VisibilityScope? scope = null)
     {
         var words = query.Split((char[]?)[' ', '\t'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (words.Length == 0 || limit <= 0)
@@ -777,28 +802,35 @@ public sealed partial class StationDb
             command.Parameters.AddWithValue(name, pattern);
             // SQL 的 ESCAPE 子句字面量：单引号包一个反斜杠，用逐字串避开转义歧义。
             const string esc = @"'\'";
-            conditions.Add($"(v.title LIKE {name} ESCAPE {esc} OR m.up_name LIKE {name} ESCAPE {esc} OR v.bvid LIKE {name} ESCAPE {esc} OR m.zone LIKE {name} ESCAPE {esc} OR m.description LIKE {name} ESCAPE {esc})");
+            // 标题 / 分区 / 简介三栏都走有效值那张嘴（站内覆写与改派优先；这条查询给 video_meta 起的是 m，
+            // 表达式本体在 VideoSettings.cs，别名递进去——卡阵、放映厅、分区页与搜索从此同一张嘴）：
+            // 改派后的新户口搜得着、旧户口不再命中，覆写后的新简介搜得着、原句不再命中（拿原值搜就是「改了却搜不到自己改的那句」）。
+            // UP 主名与 BV 号本来就只有一份（video_meta.up_name / videos.bvid），照旧直接比。
+            conditions.Add($"({EffTitleExpr} LIKE {name} ESCAPE {esc} OR m.up_name LIKE {name} ESCAPE {esc} OR v.bvid LIKE {name} ESCAPE {esc} OR {EffZoneExprWith("m")} LIKE {name} ESCAPE {esc} OR {EffDescExprWith("m")} LIKE {name} ESCAPE {esc})");
         }
 
         // sort 是白名单拼接，不取用户自由输入进 ORDER BY。
         var order = sort == "plays" ? ViewPowerSql + " DESC, v.id DESC" : "v.id DESC";
+        var (visSql, bindVis) = VisibilityFilter(scope ?? VisibilityScope.PublicOnly, "v");
 
         command.CommandText = $"""
-            SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
+            SELECT v.id, v.url, v.bvid, v.avid, {EffTitleExpr}, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
-                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1)
+                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
+                   v.visibility
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
                  AND p.idx = (SELECT MIN(idx) FROM pages WHERE video_id = v.id)
-            WHERE v.status = $status AND {string.Join(" AND ", conditions)}
+            WHERE v.status = $status AND {visSql} AND {string.Join(" AND ", conditions)}
             ORDER BY {order}
             LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$status", VideoStatus.Arrived.ToString());
         command.Parameters.AddWithValue("$limit", limit);
+        bindVis(command);
 
         using var reader = command.ExecuteReader();
         return ReadEntries(reader);
@@ -854,7 +886,9 @@ public sealed partial class StationDb
                 reader.IsDBNull(15) ? null : "/media/" + reader.GetString(15),
                 // 悬停预览与本地封面同形（/previews/ + rel，rel 相对 data/previews）；没 Arrived 行留 null，前端不摆预览。
                 // 具名传参：CanManage 由上层 TagManageable 后补，这里不占位。
-                PreviewUrl: reader.IsDBNull(16) ? null : "/previews/" + reader.GetString(16)));
+                PreviewUrl: reader.IsDBNull(16) ? null : "/previews/" + reader.GetString(16),
+                // 可见性：能走到这一行的都是尺子放行过的，带出来只给前端画锁（认不出的脏值当公开读，不抛）。
+                Visibility: VisibilityCodec.FromColumn(reader.IsDBNull(17) ? null : reader.GetString(17))));
             if (dmFiles > 0)
             {
                 danmakuFiles.Add((list[^1].Id, dmFiles));
@@ -911,7 +945,9 @@ public sealed partial class StationDb
         return relPaths.Count > 0 ? total : null;
     }
 
-    /// <summary>批量入库：库内已有 bvid 与批内重复都计入 Duplicated，单事务提交。</summary>
+    /// <summary>批量入库：库内已有 bvid 与批内重复都计入 Duplicated，单事务提交。
+    /// 撞重那支只补 cover/时间，visibility 一根手指不碰——早就被主人藏好的稿子，
+    /// 导入源（UP 投稿列表/收藏夹）无权把它翻回公开。</summary>
     public AddVideosOutcome AddVideosBulk(IReadOnlyList<NewVideo> videos)
     {
         using var connection = Open(_dbPath);
@@ -959,8 +995,8 @@ public sealed partial class StationDb
 
             using var insert = connection.CreateCommand();
             insert.CommandText = """
-                INSERT INTO videos (url, bvid, title, cover_url, published_at_utc, status, created_at_utc)
-                VALUES ($url, $bvid, $title, $cover, $pub, $status, $now);
+                INSERT INTO videos (url, bvid, title, cover_url, published_at_utc, status, created_at_utc, visibility)
+                VALUES ($url, $bvid, $title, $cover, $pub, $status, $now, $visibility);
                 SELECT last_insert_rowid();
                 """;
             insert.Parameters.AddWithValue("$url", video.Url);
@@ -970,6 +1006,7 @@ public sealed partial class StationDb
             insert.Parameters.AddWithValue("$pub", (object?)video.PublishedAtUtc ?? DBNull.Value);
             insert.Parameters.AddWithValue("$status", VideoStatus.Pending.ToString());
             insert.Parameters.AddWithValue("$now", now);
+            insert.Parameters.AddWithValue("$visibility", VisibilityCodec.ToColumn(video.Visibility));
             insertedIds.Add(Convert.ToInt64(insert.ExecuteScalar()));
             added++;
         }
@@ -1650,6 +1687,80 @@ public sealed partial class StationDb
 
         transaction.Commit();
     }
+
+    /// <summary>
+    /// 「重拉封面与媒体」的窄口回写：只动 <c>video_meta</c> 的 zone / description / view_count / up_name / up_mid / publish_text
+    /// 六栏，外加 <c>videos.cover_url</c>（新链非空才顶）。回的两个布尔分开报：MetaWritten = 档案那六栏真写到行上了，
+    /// CoverWritten = 封面链真写到行上了（拿它们各自拼 updated / kept，不拿一个笼统的「成功」冒充两件事）。
+    /// <b>绝不走 <see cref="SaveSubmissionMetadata"/>：它是 DELETE FROM video_meta + INSERT 七栏的首提交口径</b>——
+    /// 同一行里 UP 名片（up_face / up_sign / up_fans）、互动数据（stat_* 与 stat_probed）、创作团队（staff_json）
+    /// 都是另几拨采集员（LbsUpInfoFetcher / 互动补采）慢慢攒出来的家底，走那条会被整行抹成 NULL，
+    /// pages 也会连 task_id / base_path 一起重插。重取只许改上面这几栏，这条口径就长在 SQL 里。
+    /// 站内覆写那三栏（site_title / site_desc / site_zone）这里一个字节不碰（有效值表达式自会挑该念哪份）；
+    /// <b>videos.title 也不重取</b>：标题正是站长能在稿件设置里覆写的那一栏，跟着 B 站跑会把他改过的字冲掉
+    /// （他勾的是「重拉封面与媒体」，不是「重命名」）。
+    /// 七栏一律 COALESCE：B 站这次没给（null / 空串 / 纯空白）就当这栏没新东西，不拿空值涂旧账。
+    /// </summary>
+    public (bool MetaWritten, bool CoverWritten) UpdateArchiveFromView(long videoId, ArchiveRefreshPatch patch)
+    {
+        var zone = BlankToNull(patch.Zone);
+        var description = BlankToNull(patch.Description);
+        var viewCount = BlankToNull(patch.ViewCountText);
+        var upName = BlankToNull(patch.UpName);
+        var publishText = BlankToNull(patch.PublishText);
+        var coverUrl = BlankToNull(patch.CoverUrl);
+        // B 站 owner.mid 缺档时给 0：0 不是 mid，当没给处理（COALESCE 自会留着旧值）。
+        var upMid = patch.UpMid is > 0 ? patch.UpMid : null;
+
+        using var connection = Open(_dbPath);
+
+        var metaWritten = false;
+        if (zone is not null || description is not null || viewCount is not null || upName is not null
+            || publishText is not null || upMid is not null)
+        {
+            using var meta = connection.CreateCommand();
+            meta.CommandText = """
+                UPDATE video_meta
+                   SET zone = COALESCE($zone, zone),
+                       description = COALESCE($desc, description),
+                       view_count = COALESCE($views, view_count),
+                       up_name = COALESCE($upName, up_name),
+                       up_mid = COALESCE($upMid, up_mid),
+                       publish_text = COALESCE($publish, publish_text)
+                 WHERE video_id = $id;
+                """;
+            AddText(meta, "$zone", zone);
+            AddText(meta, "$desc", description);
+            AddText(meta, "$views", viewCount);
+            AddText(meta, "$upName", upName);
+            AddText(meta, "$publish", publishText);
+            meta.Parameters.AddWithValue("$upMid", (object?)upMid ?? DBNull.Value);
+            meta.Parameters.AddWithValue("$id", videoId);
+            metaWritten = meta.ExecuteNonQuery() > 0;
+        }
+
+        var coverWritten = false;
+        if (coverUrl is not null)
+        {
+            using var video = connection.CreateCommand();
+            video.CommandText = "UPDATE videos SET cover_url = COALESCE($cover, cover_url) WHERE id = $id;";
+            AddText(video, "$cover", coverUrl);
+            video.Parameters.AddWithValue("$id", videoId);
+            coverWritten = video.ExecuteNonQuery() > 0;
+        }
+
+        return (metaWritten, coverWritten);
+    }
+
+    /// <summary>去首尾空白后空白一律 null：COALESCE 那一侧靠它分辨「B 站给了」与「B 站这次没说」。</summary>
+    private static string? BlankToNull(string? raw)
+    {
+        var trimmed = raw?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
+
+    private static void AddText(SqliteCommand command, string name, string? value) =>
+        command.Parameters.AddWithValue(name, (object?)value ?? DBNull.Value);
 
     /// <summary>
     /// 到站后按分 P 的输出基准路径扫盘归档产物（正片/弹幕/字幕/封面），重复扫描安全。
@@ -2621,6 +2732,18 @@ public sealed partial class StationDb
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>创作团队归档（与互动数据同一次 view 采回）：无团队/采挂都写 null，不影响 stat_probed 的销账。
+    /// 重提交（销档重下）会把整行 DELETE+INSERT 重开，staff 跟着清零 → 下一轮回炉重采，正是想要的行为。</summary>
+    public void SetVideoStaff(long videoId, string? staffJson)
+    {
+        using var connection = Open(_dbPath);
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "UPDATE video_meta SET staff_json = $json WHERE video_id = $id;";
+        cmd.Parameters.AddWithValue("$json", (object?)staffJson ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$id", videoId);
+        cmd.ExecuteNonQuery();
+    }
+
     /// <summary>互动数据补采前的台账检查：未销账且未采到过才值得出去跑一趟。</summary>
     public bool ShouldBackfillStat(long videoId)
     {
@@ -2644,22 +2767,25 @@ public sealed partial class StationDb
     /// 层内为什么走 RANDOM() 而不是 v.id DESC：馆藏里有 143 支同 UP 主稿件，按 id 倒序取 8 支就永远是
     /// 最新那 8 支，刷新多少次都是同几张脸，本地分站最该干的「把沉在库底的旧稿递到手边」一件没干。
     /// 只打乱层内顺序，同 UP 优先这一层留着（一屏里掺进不相干的 UP 反而不像「接下来播放」）。
+    /// 补位也只从这位看得着的库里挑：尺子不递进去，别人的私有稿就会从随机那条缝里溜到访客眼前。
     /// </summary>
-    public List<VideoEntry> GetRelatedVideos(long videoId, int take = 8)
+    public List<VideoEntry> GetRelatedVideos(long videoId, int take = 8, VisibilityScope? scope = null)
     {
+        var (visSql, bindVis) = VisibilityFilter(scope ?? VisibilityScope.PublicOnly, "v");
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT v.id, v.url, v.bvid, v.avid, v.title, v.status, v.created_at_utc, v.cover_url, v.last_error,
+        command.CommandText = $"""
+            SELECT v.id, v.url, v.bvid, v.avid, {EffTitleExpr}, v.status, v.created_at_utc, v.cover_url, v.last_error,
                    m.up_name, m.view_count, p.duration_text, v.published_at_utc, m.publish_text,
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
-                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1)
+                   (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
+                   v.visibility
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
                  AND p.idx = (SELECT MIN(idx) FROM pages WHERE video_id = v.id)
-            WHERE v.status = $status AND v.id <> $id
+            WHERE v.status = $status AND v.id <> $id AND {visSql}
             ORDER BY (CASE WHEN $mid IS NOT NULL AND m.up_mid = $mid THEN 0
                            WHEN $up IS NOT NULL AND m.up_name = $up THEN 0
                            ELSE 1 END),
@@ -2668,6 +2794,7 @@ public sealed partial class StationDb
             """;
         command.Parameters.AddWithValue("$status", VideoStatus.Arrived.ToString());
         command.Parameters.AddWithValue("$id", videoId);
+        bindVis(command);
 
         // 自身坐标（同 UP 判定用）：一次自查，查不到就按全新入站序排。
         long? mid = null;
@@ -2718,6 +2845,30 @@ public sealed partial class StationDb
         command.CommandText = "SELECT rel_path FROM artifacts WHERE video_id = $id AND kind = $kind ORDER BY id DESC LIMIT 1;";
         command.Parameters.AddWithValue("$id", videoId);
         command.Parameters.AddWithValue("$kind", kind);
+        return command.ExecuteScalar() as string;
+    }
+
+    /// <summary>这条稿当前记着的 B 站封面热链（重拉封面时 B 站没给新链就拿它原地重抓）；查无此行也回 null。</summary>
+    public string? GetCoverUrl(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT cover_url FROM videos WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", videoId);
+        return command.ExecuteScalar() as string;
+    }
+
+    /// <summary>推封面件目录与基名用的那条产物 rel（正片行优先，与 <see cref="ListVideosMissingCover"/> 的 BaseRel 同一条子查询）；
+    /// 一条产物行都没有时回 null（没处落盘，重拉封面这一步只能原样留着）。</summary>
+    public string? GetCoverBaseRel(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT a.rel_path FROM artifacts a WHERE a.video_id = $id
+             ORDER BY (a.kind = 'video') DESC, a.id LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$id", videoId);
         return command.ExecuteScalar() as string;
     }
 
@@ -2836,9 +2987,10 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
     }
 
-    /// <summary>观看页数据：档案 + 分 P + 本地文件。查不到 bvid 返回 null。</summary>
-    public WatchData? GetWatchData(string bvid)
+    /// <summary>观看页数据：档案 + 分 P + 本地文件。查不到 bvid 或这稿对这位藏着 → 都回 null（同一张面孔，不告诉门外它存在）。</summary>
+    public WatchData? GetWatchData(string bvid, VisibilityScope? scope = null)
     {
+        var (visSql, bindVis) = VisibilityFilter(scope ?? VisibilityScope.PublicOnly, "v");
         using var connection = Open(_dbPath);
 
         long id;
@@ -2846,10 +2998,18 @@ public sealed partial class StationDb
         string? title, coverUrl, createdAtText;
         long? aid;
         VideoStatus status;
+        VideoVisibility visibility;
+        bool titleOverridden, descOverridden, zoneOverridden;
         using (var video = connection.CreateCommand())
         {
-            video.CommandText = "SELECT id, url, bvid, title, status, cover_url, created_at_utc, avid FROM videos WHERE bvid = $bvid;";
+            // 标题走有效值那张嘴（站内覆写优先）；三枚覆写标给稿件设置面板回显（NULLIF 与上面两式一字同源，见 VideoSettings.cs）。
+            video.CommandText = $"""
+                SELECT v.id, v.url, v.bvid, {EffTitleExpr}, v.status, v.cover_url, v.created_at_utc, v.avid, v.visibility,
+                       {OverriddenExpr("site_title")}, {OverriddenExpr("site_desc")}, {OverriddenExpr("site_zone")}
+                FROM videos v WHERE v.bvid = $bvid AND {visSql};
+                """;
             video.Parameters.AddWithValue("$bvid", bvid);
+            bindVis(video);
             using var reader = video.ExecuteReader();
             if (!reader.Read())
             {
@@ -2864,6 +3024,10 @@ public sealed partial class StationDb
             coverUrl = reader.IsDBNull(5) ? null : reader.GetString(5);
             createdAtText = reader.GetString(6);
             aid = reader.IsDBNull(7) ? null : reader.GetInt64(7);
+            visibility = VisibilityCodec.FromColumn(reader.IsDBNull(8) ? null : reader.GetString(8));
+            titleOverridden = reader.GetInt64(9) != 0;
+            descOverridden = reader.GetInt64(10) != 0;
+            zoneOverridden = reader.GetInt64(11) != 0;
         }
 
         string? upName = null, zone = null, publishText = null, description = null, viewCount = null;
@@ -2876,9 +3040,18 @@ public sealed partial class StationDb
         long? statFav = null;
         long? statShare = null;
         long? statReply = null;
+        string? staffJson = null;
         using (var meta = connection.CreateCommand())
         {
-            meta.CommandText = "SELECT up_name, zone, publish_text, description, view_count, up_mid, up_face, up_sign, up_fans, stat_like, stat_coin, stat_fav, stat_share, stat_reply FROM video_meta WHERE video_id = $id;";
+            // 分区与简介走有效值表达式（EffZoneExpr / EffDescExpr）：改派与本地覆写在放映厅也照得住，
+            // 与分区页 / 卡阵同一张嘴（以前只吃 vm.zone：站长改了派，分区页换了、开片那张还顶户口旧名）。
+            // 从 videos 起 LEFT JOIN（不是从 video_meta 起）：老稿没档案时改派过的户口照样得报，不被 INNER JOIN 抹掉。
+            meta.CommandText = $"""
+                SELECT vm.up_name, {EffZoneExpr}, vm.publish_text, {EffDescExpr}, vm.view_count, vm.up_mid,
+                       vm.up_face, vm.up_sign, vm.up_fans, vm.stat_like, vm.stat_coin, vm.stat_fav, vm.stat_share, vm.stat_reply, vm.staff_json
+                FROM videos v LEFT JOIN video_meta vm ON vm.video_id = v.id
+                WHERE v.id = $id;
+                """;
             meta.Parameters.AddWithValue("$id", id);
             using var reader = meta.ExecuteReader();
             if (reader.Read())
@@ -2897,6 +3070,7 @@ public sealed partial class StationDb
                 statFav = reader.IsDBNull(11) ? null : reader.GetInt64(11);
                 statShare = reader.IsDBNull(12) ? null : reader.GetInt64(12);
                 statReply = reader.IsDBNull(13) ? null : reader.GetInt64(13);
+                staffJson = reader.IsDBNull(14) ? null : reader.GetString(14);
             }
         }
 
@@ -3055,7 +3229,13 @@ public sealed partial class StationDb
             statCoin,
             statFav,
             statShare,
-            statReply);
+            statReply,
+            Staff: WatchStaffCodec.FromJson(staffJson),
+            Visibility: VisibilityCodec.ToColumn(visibility),
+            // 稿件设置面板那几栏（IsStationOwner 不在这里算：数据层不认身份，与 CanManage 同一分工，归 /api/watch 端点盖）。
+            TitleOverridden: titleOverridden,
+            DescOverridden: descOverridden,
+            ZoneOverridden: zoneOverridden);
     }
 
     /// <summary>

@@ -28,6 +28,8 @@ const invite = ref('')
 const step = ref('idle') // idle | loading | qr | expired | done
 const pollPhase = ref('waiting') // waiting | scanned（success 直接进 done 分支）
 const notice = ref(null) // { kind, text }
+// 作废那一句按来源分三张脸（超时 / 分站重启 / 连不上），由 pollOnce 定词、作废面板与底部小字共用一份
+const expiredText = ref('')
 const qrBox = ref(null)
 const qrKey = ref('')
 // 账密登录表单
@@ -41,6 +43,22 @@ function stopPoll() {
     clearTimeout(pollTimer)
     pollTimer = null
   }
+}
+
+// 票活在服务器内存里、只 3 分钟 TTL，还占着发起人的名额：光 stopPoll() 等于每回「开弹窗→没扫→关掉」
+// 都在服务端留一格白占的票。走人前替后端把它退了。fire-and-forget：不 await（不拖关窗）、不报错（退不成
+// 也不拿个错拦用户），keepalive 让路由被切走 / 页面要关那一发也跑得出去。发完先把 qrKey 清账：
+// close 与 onUnmounted 会连着来，同一枚 key 不退第二回（后端那边幂等，前端也不去多一发）。
+function cancelTicket() {
+  const key = qrKey.value
+  if (!key) return // 手上没票就不发这一发
+  qrKey.value = ''
+  fetch('/api/member/qr/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+    keepalive: true,
+  }).catch(() => {})
 }
 
 let qrScript = null
@@ -104,6 +122,7 @@ const modeSubtitle = computed(() => ({
 }[activeMode.value]))
 
 function close() {
+  cancelTicket() // 关窗前把票退坑（不等它，也不管它成不成）
   loginDialogOpen.value = false
 }
 
@@ -119,6 +138,7 @@ function reset() {
   pollPhase.value = 'waiting'
   notice.value = null
   qrKey.value = ''
+  expiredText.value = ''
   loginForm.value = { username: '', password: '' }
   loggingIn.value = false
 }
@@ -129,6 +149,7 @@ watch(visible, (open) => {
     window.addEventListener('keydown', onKeydown)
   } else {
     stopPoll()
+    cancelTicket() // 与 close() 两处都退（watch(visible) 是重复的那份清理逻辑）：qrKey 一清就不重发
     if (closeTimer) {
       clearTimeout(closeTimer)
       closeTimer = null
@@ -145,6 +166,7 @@ async function pollOnce() {
     const phase = data?.phase
     if (phase === 'success') {
       stopPoll()
+      cancelTicket() // 扫成了也算这票用完了：收尾就把它退坑，不等 TTL 到
       step.value = 'done'
       if (activeMode.value === 'bind') {
         // bind 成功不动登录态：喊父组件去重拉账号池，这里报个喜自己收摊
@@ -163,21 +185,30 @@ async function pollOnce() {
       pollTimer = setTimeout(pollOnce, 1500)
       return
     }
-    // expired / unknown / key 不存在（410）：终止轮询，message 原样递到脸上，给刷新入口
+    // 作废脸拆开了：查无此票（410）/ 发起资格认不出（401）/ 超时（expired）/ B 站回话看不懂（unknown）。
+    // 四档都以后端那句话为先（它是唯一知道自己为什么作废的那一方），前端只在其缺失时兜底，不编第二套词盖掉它。
+    // 当年 401 空 body 被当成「码作废」，站长拿着空位就是在这儿绕不出来的。
+    // 这里不再另挂 notice（同一句话不摆两遍，底部小字跟着 expiredText 走）。
+    // 票在这一发里已经死了，不另退（cancel 只在关窗 / 重取 / 成功 / 卸载四处发）。
     stopPoll()
     step.value = 'expired'
-    if (data?.message) notice.value = { kind: 'err', text: data.message }
+    if (res.status === 410) expiredText.value = data?.message || '这张码已经不作数了，换一张就行'
+    else if (res.status === 401) expiredText.value = data?.message || '这台设备的登录态认不出来了，重新登录后再来绑一次'
+    else if (phase === 'expired') expiredText.value = data?.message || '这张码超时了，换一张再来'
+    else expiredText.value = data?.message || '连不上分站，看看它是不是没在跑'
   } catch {
     stopPoll()
     step.value = 'expired'
-    notice.value = { kind: 'err', text: '分站后端没有应答' }
+    expiredText.value = '连不上分站，看看它是不是没在跑'
   }
 }
 
 async function getQr() {
   if (step.value === 'loading') return
   stopPoll()
+  cancelTicket() // 换一张之前先把手上这张退坑，再取新码（否则旧 key 又在服务端挂三分钟）
   notice.value = null
+  expiredText.value = ''
   step.value = 'loading'
   const body = { mode: activeMode.value }
   const code = invite.value.trim()
@@ -216,6 +247,7 @@ async function getQr() {
 
 onUnmounted(() => {
   stopPoll()
+  cancelTicket() // 路由被切走也算走人：票照样退坑（keepalive 那一发赶得上）
   if (closeTimer) clearTimeout(closeTimer)
   window.removeEventListener('keydown', onKeydown)
 })
@@ -356,7 +388,7 @@ function goRegister() {
           </div>
 
           <div v-else-if="step === 'expired'" class="flex flex-col items-center gap-2 py-3">
-            <p class="text-sm text-inkSub">这张码作废了，右下角换一张再来。</p>
+            <p class="text-sm text-inkSub">{{ expiredText }}</p>
           </div>
           </template>
 

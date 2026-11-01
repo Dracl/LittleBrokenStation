@@ -122,7 +122,7 @@ const isEmpty = computed(() => !busy.value && !loadError.value && items.value?.l
     :class="fullscreen && 'fixed inset-3 z-[90] flex flex-col overflow-hidden shadow-2xl'"
   >
     <!-- 标题条：左名右钮，窗口感从这条来 -->
-    <header class="flex flex-wrap items-center gap-2 border-b border-lineSoft/70 px-5 py-3">
+    <header class="wall-bar flex flex-wrap items-center gap-2 border-b border-lineSoft/70 px-5 py-3">
       <span class="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-stationPink/10 text-stationPink">
         <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="4" width="8" height="6" rx="1.2" />
@@ -133,7 +133,7 @@ const isEmpty = computed(() => !busy.value && !loadError.value && items.value?.l
       <h3 class="text-sm font-semibold text-inkMain">我的馆藏壁</h3>
       <span class="rounded-full border border-lineSoft px-2 py-px font-mono text-[11px] text-inkFaint">{{ countLabel }}</span>
 
-      <div class="ml-auto flex flex-wrap items-center gap-2">
+      <div class="wall-tools ml-auto flex flex-wrap items-center gap-2">
         <!-- 喂料三档：我投的 / 我看的 / 都要 -->
         <div class="flex items-center rounded-full border border-lineSoft p-0.5" role="group" aria-label="墙上放什么">
           <button
@@ -225,5 +225,19 @@ const isEmpty = computed(() => !busy.value && !loadError.value && items.value?.l
 }
 .wall-tool:hover {
   @apply border-stationPink/60 text-stationPink;
+}
+
+/* 标题条右侧那排工具（喂料三档 + 洗牌/复位/±/全屏）：平时收着，鼠标扫过标题条才浮现，
+   脾气照首页分区行那两枚轮辖钮（opacity-0 → group-hover 现形）。
+   触屏没 hover 这回事，媒体查询一挡就照常显；藏的时候连“点”一并收掉，免得照不到人的钮被误点；
+   键盘 Tab 进来走 :focus-within，照样亮。 */
+.wall-tools {
+  transition: opacity 0.2s ease;
+}
+@media (hover: hover) {
+  .wall-bar:not(:hover):not(:focus-within) .wall-tools {
+    opacity: 0;
+    pointer-events: none;
+  }
 }
 </style>

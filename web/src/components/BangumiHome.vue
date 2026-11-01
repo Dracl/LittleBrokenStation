@@ -544,13 +544,7 @@ onBeforeUnmount(() => {
   mask-image: linear-gradient(to bottom, #000 0%, #000 52%, rgb(0 0 0 / 0.78) 66%, rgb(0 0 0 / 0.55) 77%, rgb(0 0 0 / 0.33) 86%, rgb(0 0 0 / 0.14) 93%, transparent 100%);
 }
 
-/* 横滚行藏起系统滚动条，只剩箭头这条腿 */
-.no-scrollbar {
-  scrollbar-width: none;
-}
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
+/* 横滚行那根滚动条藏起来的事，交给 style.css 全站的 .no-scrollbar 一份 */
 
 /* 入口卡：三张统一深底白字的海报卡。有封面（合集每日一抽 / 周报新货头一张）铺封面 + 左糊 + 左压暗；
    没封面回落到各自色系的深渐变，压暗层常驻，白字永远有兜底。 */

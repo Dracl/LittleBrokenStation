@@ -727,11 +727,7 @@ public static class MissingMediaReconciler
         var missing = new List<long>();
         foreach (var (id, bvid) in db.GetArrivedVideosForMediaScan())
         {
-            var relPaths = db.GetArtifactRelPaths(id);
-            var lost = relPaths.Count > 0
-                ? relPaths.Any(rel => !PhysicalExists(paths.Videos, rel))
-                : !HasBvidDirectory(paths.Videos, bvid);
-            if (lost)
+            if (IsMediaMissing(db, paths, id, bvid))
             {
                 missing.Add(id);
             }
@@ -749,6 +745,19 @@ public static class MissingMediaReconciler
 
         logger?.LogInformation("数据交换缺件点名：{Count} 个到站视频磁盘缺件，已回炉重下", missing.Count);
         return missing;
+    }
+
+    /// <summary>
+    /// 单条版缺件判定（开机全库扫与「重拉封面与媒体」共用这一张嘴）：有产物行就逐条验盘，
+    /// 一条产物行都没有才退到按 bvid 目录兼底。预览行天生不在 artifacts 表里（另存 previews），
+    /// 以它不会被算进缺件——这条口径由 <see cref="StationDb"/> 的预览台账划界钉着，别往 artifacts 里捣预览。
+    /// </summary>
+    public static bool IsMediaMissing(StationDb db, DataPaths paths, long videoId, string bvid)
+    {
+        var relPaths = db.GetArtifactRelPaths(videoId);
+        return relPaths.Count > 0
+            ? relPaths.Any(rel => !PhysicalExists(paths.Videos, rel))
+            : !HasBvidDirectory(paths.Videos, bvid);
     }
 
     /// <summary>rel_path 相对 data/videos 解析；想越狱出视频库的一律按「缺件」办（不假装看得见）。</summary>
