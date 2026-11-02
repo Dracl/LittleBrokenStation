@@ -176,12 +176,21 @@ function onShared(message) {
   setTimeout(() => { toast.value = null }, 2600)
 }
 
-// B 站图格规矩：多图才进格（四图 2×2、其余三列，一律 3:4 裁切）；
+// B 站图格规矩：多图才进格（四图 2×2、其余三列），格子一律正方形 1:1（B 站首页动态同款）；
 // 单图不裁——直接按原比例翻出来（B 站时间线同款），格宽上限 340px，w-fit 让角标贴着图而不是格子。
 function picsLayout(count) {
   if (count === 1) return 'w-fit'
   if (count === 4) return 'grid grid-cols-2 gap-1 max-w-[340px]'
   return 'grid grid-cols-3 gap-1 max-w-[500px]'
+}
+
+// 格子里的取景：普通图居中，长图（高>宽×2，与 picBadge 那条判据同源）从顶上取一段引子。
+// 不写 object-position 的话浏览器默认居中裁：那条 1000×8000 的特典长图会露出正中间的问号特典，
+// 而不是像 B 站那样露出最上面的「5 周年新衣回」大字（站长 11-02 比对两张图抓到的）。
+function gridPicStyle(pic) {
+  const w = pic?.width ?? pic?.Width ?? 0
+  const h = pic?.height ?? pic?.Height ?? 0
+  return w > 0 && h > w * 2 ? { objectPosition: 'top center' } : undefined
 }
 
 // 单图样式：有宽高就按比例预留盒子（防跳动）；超长图（高>宽×2，即「长图」角标货）
@@ -486,8 +495,8 @@ onMounted(async () => {
                     :src="picSrc(d, i)"
                     referrerpolicy="no-referrer"
                     loading="lazy"
-                    :class="d.pics.length === 1 ? 'block cursor-zoom-in rounded' : 'aspect-[3/4] w-full cursor-zoom-in rounded object-cover'"
-                    :style="d.pics.length === 1 ? singlePicStyle(pic) : undefined"
+                    :class="d.pics.length === 1 ? 'block cursor-zoom-in rounded' : 'aspect-square w-full cursor-zoom-in rounded object-cover'"
+                    :style="d.pics.length === 1 ? singlePicStyle(pic) : gridPicStyle(pic)"
                     :alt="`原动态配图 ${i + 1}`"
                     @error="$event.target.style.display = 'none'"
                     @click="openPicZoom(d, i)"
@@ -507,8 +516,8 @@ onMounted(async () => {
                   :src="picSrc(d, i)"
                   referrerpolicy="no-referrer"
                   loading="lazy"
-                  :class="d.pics.length === 1 ? 'block cursor-zoom-in rounded' : 'aspect-[3/4] w-full cursor-zoom-in rounded object-cover'"
-                  :style="d.pics.length === 1 ? singlePicStyle(pic) : undefined"
+                  :class="d.pics.length === 1 ? 'block cursor-zoom-in rounded' : 'aspect-square w-full cursor-zoom-in rounded object-cover'"
+                  :style="d.pics.length === 1 ? singlePicStyle(pic) : gridPicStyle(pic)"
                   :alt="`动态配图 ${i + 1}`"
                   @error="$event.target.style.display = 'none'"
                   @click="openPicZoom(d, i)"
