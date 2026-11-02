@@ -18,7 +18,14 @@ const props = defineProps({
   video: { type: Object, required: true },
   keyword: { type: String, default: '' },
   admin: { type: Boolean, default: false },
+  // 调用方借一只手按住封面放大：管理员钮浮在封面上，鼠标从封面移到钮上时封面会收到一次 mouseleave，
+  // 不按住的话指针明明还在封面里、图却缩回去了（站长 11-02 收封面时碰到的）。
+  coverHold: { type: Boolean, default: false },
 })
+
+// 封面 hover 状态透出给调用方（站长 11-02 把管理员钮收进封面）：AdminVideoCell 那四枚钮住在卡外面、
+// absolute 贴在封面顶行，它们需要知道「鼠标此刻在不在封面上」才决定浮不浮出。
+const emit = defineEmits(['cover-hover'])
 
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
@@ -53,10 +60,12 @@ const canOpenUp = computed(() => props.video.upMid != null)
 const coverHover = ref(false)
 function onCoverEnter() {
   coverHover.value = true
+  emit('cover-hover', true)
   onPreviewEnter()
 }
 function onCoverLeave() {
   coverHover.value = false
+  emit('cover-hover', false)
   onPreviewLeave()
 }
 
@@ -250,7 +259,7 @@ onBeforeUnmount(() => {
         decoding="async"
         referrerpolicy="no-referrer"
         class="h-full w-full object-cover transition duration-300"
-        :class="[coverHover ? 'scale-[1.03]' : '', coverReady ? 'opacity-100' : 'opacity-0']"
+        :class="[(coverHover || coverHold) ? 'scale-[1.03]' : '', coverReady ? 'opacity-100' : 'opacity-0']"
         @load="coverReady = true"
         @error="coverReady = true"
       />
@@ -307,9 +316,13 @@ onBeforeUnmount(() => {
     <p v-if="keyword" class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain" :title="video.title || video.bvid"><RouterLink :to="`/watch/${video.bvid}`" class="transition" :class="titleHover ? 'text-stationPink' : ''" @mouseenter="titleHover = true" @mouseleave="titleHover = false" v-html="titleHtml"></RouterLink></p>
     <p v-else class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain" :title="video.title || video.bvid"><RouterLink :to="`/watch/${video.bvid}`" class="transition" :class="titleHover ? 'text-stationPink' : ''" @mouseenter="titleHover = true" @mouseleave="titleHover = false">{{ video.title || video.bvid }}</RouterLink></p>
     <div
-      class="group/up relative mt-1 flex items-center gap-1.5 text-[13px] text-inkSub"
+      class="group/up relative mt-1 flex items-center gap-1.5 rounded-sm text-[13px] text-inkSub focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationBlue/60"
       :class="canOpenUp ? 'cursor-pointer' : ''"
+      :role="canOpenUp ? 'link' : undefined"
+      :tabindex="canOpenUp ? 0 : undefined"
+      :aria-label="canOpenUp ? `进 ${video.upName} 的分站空间` : undefined"
       @click="onUpRowClick"
+      @keydown.enter.prevent="onUpRowClick"
     >
       <!-- 命中垫子：行自己往上借 3px、往下借 4px（站长 11-02 在调参台上定的两个数）。垫子透明，不动排版。 -->
       <span v-if="canOpenUp" class="absolute -top-[3px] -bottom-[4px] inset-x-0" aria-hidden="true"></span>

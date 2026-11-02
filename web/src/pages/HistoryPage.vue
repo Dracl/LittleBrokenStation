@@ -71,6 +71,9 @@ function onCoverLoad(e) {
 // 两个 key 都存当前那条的 videoId（就是 v-for 的 :key 与退场集合用的那个稳定标识），一条格子的 hover 不波及邻格。
 const coverKey = ref(null) // 鼠标当前压在哪条的封面上 → 封面放大 + 行内「删除」钮浮出
 const titleKey = ref(null) // 鼠标当前压在哪条的标题字上 → 只有标题染粉
+// 「删除」钮自己那一格（站长 11-02 把管理钮收进封面后补的）：钮住在封面链接的外面，
+// 鼠标从封面移到钮上时封面的 mouseleave 先响，单靠 coverKey 会让钮在指尖底下 opacity-0（还能点、但看不见）。
+const toolKey = ref(null)
 
 // 退场中的行（videoId 集）：带集合让整叠清空也能逐行收合
 const historyExiting = ref(new Set())
@@ -324,7 +327,7 @@ function openLogin(mode) {
                   decoding="async"
                   referrerpolicy="no-referrer"
                   class="hist-cover h-full w-full object-cover transition duration-300"
-                  :class="coverKey === item.videoId ? 'scale-[1.04]' : ''"
+                  :class="(coverKey === item.videoId || toolKey === item.videoId) ? 'scale-[1.04]' : ''"
                   @load="onCoverLoad"
                 />
                 <span v-else class="flex h-full w-full select-none items-center justify-center font-mono text-sm text-inkFaint" aria-hidden="true">
@@ -355,9 +358,11 @@ function openLogin(mode) {
               </span>
               <button
                 class="absolute right-1.5 top-1.5 z-10 rounded-md bg-black/50 px-1.5 py-0.5 text-[11px] leading-4 text-white transition hover:bg-rose-500 focus-visible:opacity-100 disabled:opacity-0"
-                :class="coverKey === item.videoId && !historyBusy ? 'md:opacity-100' : 'md:opacity-0'"
+                :class="(coverKey === item.videoId || toolKey === item.videoId) && !historyBusy ? 'md:opacity-100' : 'md:opacity-0'"
                 :disabled="historyBusy"
                 title="从历史里抹掉这部（下次从头放）"
+                @mouseenter="toolKey = item.videoId"
+                @mouseleave="toolKey = null"
                 @click="deleteHistory(item)"
               >
                 删除

@@ -105,9 +105,13 @@ const titleKey = ref(null)
               >{{ v.title ?? v.bvid }}</RouterLink>
             </span>
             <span
-              class="group/up my-[2px] flex items-center text-[13px] leading-[15px] text-inkFaint"
+              class="group/up my-[2px] flex items-center rounded-sm text-[13px] leading-[15px] text-inkFaint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationBlue/60"
               :class="v.upMid != null ? 'cursor-pointer' : ''"
+              :role="v.upMid != null ? 'link' : undefined"
+              :tabindex="v.upMid != null ? 0 : undefined"
+              :aria-label="v.upMid != null ? `进 ${v.upName || v.bvid} 的分站空间` : undefined"
               @click="onUpRow(v, $event)"
+              @keydown.enter.prevent="onUpRow(v, $event)"
             >
               <!-- UP 徽标：与两张主页卡同一枚官方描边款（站长 11-02 点名换掉自绘的那版）；官方口径 13px 字旁 17×17。 -->
               <UpIcon class="mr-1 h-[17px] w-[17px] shrink-0" />

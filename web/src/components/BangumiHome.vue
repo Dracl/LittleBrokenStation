@@ -57,6 +57,14 @@ function onUpRow(item, e) {
 // 那是动画在冒充归属（他那两句判对了）。横滚行里多张卡共用一个变量，存当前 hover 封面的那条 bvid（写法同 titleKey）。
 const coverKey = ref('')
 
+// 右上那两枚管理钮（补采/删除）跟着封面走（站长 11-02 在卡片上点的 adminBtnOnCover）：它们 absolute 贴在封面顶行，
+// 视觉归属就是封面。但钮住在封面链接的外面，鼠标从封面移到钮上时封面的 mouseleave 先响，钮会在指尖底下消失、永远点不到，
+// 所以钮自己也留一格（btnKey），两张票任一成立就浮出。
+const btnKey = ref('')
+function toolsOnOf(item) {
+  return coverKey.value === item.bvid || btnKey.value === item.bvid
+}
+
 // 标题那抹粉只跟标题自己走：可点已经收到字面（外层 p 只管两行截断，内联 RouterLink 才是热区），
 // 染粉与手型同一个元素、同一块区域（站长 11-02 红点那一发）。横滚行里多张卡共用一个变量，存当前 hover 标题的那条 bvid。
 const titleKey = ref('')
@@ -494,10 +502,10 @@ onBeforeUnmount(() => {
       </div>
 
       <div :ref="(el) => setRowEl(row.key, el)" class="no-scrollbar flex gap-4 overflow-x-auto scroll-smooth pb-1" @scroll.passive="measureRow(row.key)">
-        <div v-for="item in row.items" :key="item.bvid" class="group relative w-[228px] shrink-0">
+        <div v-for="item in row.items" :key="item.bvid" class="relative w-[228px] shrink-0">
           <!-- 命中区收口（站长 11-02 在调参台上定的 coverTitleText）：外层那根包整卡的 RouterLink 撤了——
                整块可点会把统计行与标题方框里的空白也算成热区。可点的只剩封面（下面那枚）与标题的字面（内联那枚），
-               UP 行自己可点，统计行与底部余量都是死区。本层的 group 与 relative 留着：右上那两枚悬停管理钮靠 group 显隐、靠 relative 定位。 -->
+               UP 行自己可点，统计行与底部余量都是死区。本层的 group 也下岗了（站长 11-02 把右上那两枚管理钮也收进封面，改由 coverKey 驱动，见 toolsOnOf），relative 留着给它们定位。 -->
           <!-- 封面：指向放映厅的那枚链接。放大只跟「鼠标在封面上」走（coverKey），停在标题、UP 行上都不再牵动它 -->
           <RouterLink
             :to="`/watch/${item.bvid}`"
@@ -505,7 +513,7 @@ onBeforeUnmount(() => {
             @mouseenter="coverKey = item.bvid"
             @mouseleave="coverKey = ''"
           >
-            <img v-if="coverOf(item)" :src="coverOf(item)" :alt="item.title || item.bvid" loading="lazy" decoding="async" referrerpolicy="no-referrer" class="h-full w-full object-cover transition duration-300" :class="coverKey === item.bvid ? 'scale-[1.04]' : ''" />
+            <img v-if="coverOf(item)" :src="coverOf(item)" :alt="item.title || item.bvid" loading="lazy" decoding="async" referrerpolicy="no-referrer" class="h-full w-full object-cover transition duration-300" :class="toolsOnOf(item) ? 'scale-[1.04]' : ''" />
             <span v-else class="flex h-full w-full items-center justify-center text-[11px] tracking-widest text-inkFaint">{{ item.bvid }}</span>
             <!-- 封面底部数据区：与 VideoCard 同款——半透渐变带垫底，左「官方播放量图标 + 数 / 官方弹幕图标 + 数」右时长，描边白字 -->
             <div class="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/55 via-black/25 to-transparent"></div>
@@ -536,9 +544,13 @@ onBeforeUnmount(() => {
             >{{ item.title || item.bvid }}</RouterLink>
           </p>
           <div
-            class="group/up relative mt-0.5"
+            class="group/up relative mt-0.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationBlue/60"
             :class="upMidOf(item) != null ? 'cursor-pointer' : ''"
+            :role="upMidOf(item) != null ? 'link' : undefined"
+            :tabindex="upMidOf(item) != null ? 0 : undefined"
+            :aria-label="upMidOf(item) != null ? `进 ${item.upName || item.bvid} 的分站空间` : undefined"
             @click="onUpRow(item, $event)"
+            @keydown.enter.prevent="onUpRow(item, $event)"
           >
             <span v-if="upMidOf(item) != null" class="absolute -top-[3px] -bottom-[4px] inset-x-0" aria-hidden="true"></span>
             <p class="truncate text-[12px] text-inkFaint">
@@ -553,13 +565,16 @@ onBeforeUnmount(() => {
               <template v-if="relTime(publishedDate(item))">{{ item.upName ? ' · ' : '' }}{{ relTime(publishedDate(item)) }}</template>
             </p>
           </div>
-          <!-- 投稿人自管两钮：样式与网格卡阵（AdminVideoCell）那两枚同一套——hover 浮现、右上并排、黑玻离底。
-               它们住在封面与标题链接的外面，靠卡层的 group 显隐、靠 prevent.stop 抢下点击。 -->
+          <!-- 投稿人自管两钮：样式与网格卡阵（AdminVideoCell）那两枚同一套——黑玻璃底、右上并排、鼠标进封面才浮出（站长 11-02）。
+               它们住在封面与标题链接的外面，靠 prevent.stop 抢下点击；鼠标压在钮上时靠 btnKey 维持存在，不在指尖底下消失。 -->
           <button
             v-if="canManageOf(item) && isArrived(item)"
-            class="absolute right-9 top-2 hidden rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:bg-stationBlue hover:text-white group-hover:block disabled:opacity-40"
+            class="absolute right-9 top-2 rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:bg-stationBlue hover:text-white disabled:opacity-40"
+            :class="toolsOnOf(item) ? 'block' : 'hidden'"
             :disabled="commentBusy.has(item.id)"
             :title="HINT_FETCH_COMMENTS"
+            @mouseenter="btnKey = item.bvid"
+            @mouseleave="btnKey = ''"
             @click.prevent.stop="$emit('fetch-comments', item)"
           >
             <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
@@ -568,8 +583,11 @@ onBeforeUnmount(() => {
           </button>
           <button
             v-if="canManageOf(item)"
-            class="absolute right-2 top-2 hidden rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:bg-rose-500 hover:text-white group-hover:block"
+            class="absolute right-2 top-2 rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:bg-rose-500 hover:text-white"
+            :class="toolsOnOf(item) ? 'block' : 'hidden'"
             :title="HINT_DELETE_VIDEO"
+            @mouseenter="btnKey = item.bvid"
+            @mouseleave="btnKey = ''"
             @click.prevent.stop="$emit('remove', item)"
           >
             <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
