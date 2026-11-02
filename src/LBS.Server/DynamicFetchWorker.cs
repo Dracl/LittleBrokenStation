@@ -22,7 +22,7 @@ public sealed class DynamicFetchWorker(
     private int manualBusy;
 
     /// <summary>图片资产类 JSON（pics_local_json / body_emotes_json / pictures_*_json）统一 camelCase 存。</summary>
-    private static readonly JsonSerializerOptions AssetJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    internal static readonly JsonSerializerOptions AssetJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -165,8 +165,27 @@ public sealed class DynamicFetchWorker(
                 }
             }
 
-            // 新货的九宫格/封面/正文表情先落盘（与评论巡捕同款位置风格：policy 之外直接 await），再进评论段。
-            await CacheDynamicAssetsAsync(freshDynamics, cancellationToken);
+            // 新货的九宫格/封面/正文表情先落盘，再进评论段。落盘这条路的终点是 LbsQueryClient.DownloadFileAsync，
+            // 第一行就是 RequireCookie()，而 2026-10-28「站级登录态退役」后 cookie 只剩顺着调用链流这一个来源：
+            // 挂在 policy 之外每张图都抛 LbsNoAccountException、被图片分支那个 catch 静静吞掉（动态图全灭的根因）。
+            // 整段挂进出号上下文，与上面取动态、下面取评论吃同一个采集号；空号则歇脚，图的欠账交给动态配图补员兜。
+            // 没新货就不出号（RunForActivityAsync 一进来就 Require()，无号抛异常会把下面的评论段一并顶掉）。
+            if (freshDynamics.Count > 0)
+            {
+                if (!policy.HasAccount())
+                {
+                    var owing = freshDynamics.Count(d => d.Pics.Count > 0 || d.ArchiveCover is not null || d.Emotes is { Count: > 0 });
+                    if (owing > 0)
+                    {
+                        logger.LogInformation("动态图片资产落盘本轮歇脚：站里没有可用的 B 站号，{Owing} 条新动态的图先欠着，由动态配图补员兜底", owing);
+                    }
+                }
+                else
+                {
+                    await policy.RunForActivityAsync(() => CacheDynamicAssetsAsync(freshDynamics, cancellationToken));
+                }
+            }
+
             await RunCommentRoundAsync(freshIds, cancellationToken);
         }
         finally
@@ -268,13 +287,18 @@ public sealed class DynamicFetchWorker(
                 }
 
                 // 头像、表情与评论配图复用视频评论区的落盘库（data/avatars、data/emotes、data/cmt-img）：存不下的前端热链兑底。
-                var faceMap = await assetCache.CacheAvatarUrlsAsync(
-                    outcome.Comments.Select(c => c.Face), cancellationToken);
-                var emoteMap = outcome.Emotes is { Count: > 0 } emotePairs
-                    ? await assetCache.CacheEmoteUrlsAsync(emotePairs, cancellationToken)
-                    : null;
-                var pictureMap = await assetCache.CachePictureUrlsAsync(
-                    outcome.Comments.SelectMany(c => c.Pictures ?? (IReadOnlyList<string>)[]), cancellationToken);
+                // 这三枪与上一行取评论同吃一个采集号：它们同样挂在 LbsQueryClient 上（DownloadFileAsync 第一行就 RequireCookie()），
+                // 挂在 policy 之外就是每张图抛一次无号异常（过去只被图片分支的静默 catch 吞掉）。
+                var (faceMap, emoteMap, pictureMap) = await policy.RunForActivityAsync(async () =>
+                {
+                    var faces = await assetCache.CacheAvatarUrlsAsync(outcome.Comments.Select(c => c.Face), cancellationToken);
+                    var emotes = outcome.Emotes is { Count: > 0 } emotePairs
+                        ? await assetCache.CacheEmoteUrlsAsync(emotePairs, cancellationToken)
+                        : null;
+                    var pictures = await assetCache.CachePictureUrlsAsync(
+                        outcome.Comments.SelectMany(c => c.Pictures ?? (IReadOnlyList<string>)[]), cancellationToken);
+                    return (faces, emotes, pictures);
+                });
 
                 totalComments += db.UpsertComments(dynamicId, outcome.Comments
                     .Select(c => new StationDb.DynamicCommentRow(c.Rpid, c.RootRpid, c.ParentRpid, c.Mid, c.Name, c.Face, c.Message, c.Like, c.CtimeUtc,
@@ -349,13 +373,18 @@ public sealed class DynamicFetchWorker(
                 return (false, false, outcome.RiskControlled ? "B 站风控中，改日再催" : outcome.Error ?? "B 站没回货", 0);
             }
 
-            // 资产落盘与巡捕同一套：存不下的前端热链兑底。
-            var faceMap = await assetCache.CacheAvatarUrlsAsync(outcome.Comments.Select(c => c.Face), cancellationToken);
-            var emoteMap = outcome.Emotes is { Count: > 0 } emotePairs
-                ? await assetCache.CacheEmoteUrlsAsync(emotePairs, cancellationToken)
-                : null;
-            var pictureMap = await assetCache.CachePictureUrlsAsync(
-                outcome.Comments.SelectMany(c => c.Pictures ?? (IReadOnlyList<string>)[]), cancellationToken);
+            // 资产落盘与巡捕同一套：存不下的前端热链兑底。同样挂进出号上下文（与上面取评论同一个号）：
+            // 这条路由站长室刷新钮直接进来，本来一点 policy 上下文都没有，裸奔时九宫格全抛无号异常。
+            var (faceMap, emoteMap, pictureMap) = await policy.RunForActivityAsync(async () =>
+            {
+                var faces = await assetCache.CacheAvatarUrlsAsync(outcome.Comments.Select(c => c.Face), cancellationToken);
+                var emotes = outcome.Emotes is { Count: > 0 } emotePairs
+                    ? await assetCache.CacheEmoteUrlsAsync(emotePairs, cancellationToken)
+                    : null;
+                var pictures = await assetCache.CachePictureUrlsAsync(
+                    outcome.Comments.SelectMany(c => c.Pictures ?? (IReadOnlyList<string>)[]), cancellationToken);
+                return (faces, emotes, pictures);
+            });
 
             db.UpsertComments(dynamicId, outcome.Comments
                 .Select(c => new StationDb.DynamicCommentRow(c.Rpid, c.RootRpid, c.ParentRpid, c.Mid, c.Name, c.Face, c.Message, c.Like, c.CtimeUtc,
@@ -401,7 +430,15 @@ public sealed class DynamicFetchWorker(
             return;
         }
 
-        var map = await assetCache.CacheAvatarUrlsAsync(urls, cancellationToken);
+        // 这轮从 RunCommentRoundAsync 直接进来，上层没有 policy 上下文：不挂出号上下文就是每张头像抛一次无号异常
+        // （当年头像能落盘，靠的是还有站级登录态——10-28 之后这条枪也瞎了）。空号先歇脚，省得 200 张都抛一遍刷日志。
+        if (!policy.HasAccount())
+        {
+            logger.LogInformation("头像补员本轮歇脚：站里没有可用的 B 站号，{Candidates} 张存量头像先欠着，绑好活号就自动恢复", urls.Count);
+            return;
+        }
+
+        var map = await policy.RunForActivityAsync(() => assetCache.CacheAvatarUrlsAsync(urls, cancellationToken));
         var stamped = 0;
         foreach (var (url, local) in map)
         {
@@ -426,28 +463,40 @@ public sealed class DynamicFetchWorker(
             return;
         }
 
-        var stamped = 0;
-        foreach (var mid in mids)
+        // 与头像补员同一笔账（站长 11-02 点名「同病一起收」）：card 接口走 LbsQueryClient.GetStringAsync，
+        // 第一行就是 RequireCookie()，而本方法由 RunCommentRoundAsync 开头直接调，上层没有出号上下文——
+        // 10-28 站级登录态退役后这 50 个 mid 全抛无号异常，只被下面那句 LogDebug 静静吞掉。整段挂进出号上下文。
+        if (!policy.HasAccount())
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                if (await upInfo.FetchLevelAsync(mid, cancellationToken) is int level)
-                {
-                    stamped += db.BackfillCommentLevel(mid, level);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                logger.LogDebug(ex, "等级补员：mid {Mid} 这趟没查到，下轮再来", mid);
-            }
-
-            await Task.Delay(200, cancellationToken);
+            logger.LogInformation("等级补员本轮歇脚：站里没有可用的 B 站号，{Candidates} 位待查等级先欠着，绑好活号就自动恢复", mids.Count);
+            return;
         }
+
+        var stamped = 0;
+        await policy.RunForActivityAsync(async () =>
+        {
+            foreach (var mid in mids)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    if (await upInfo.FetchLevelAsync(mid, cancellationToken) is int level)
+                    {
+                        stamped += db.BackfillCommentLevel(mid, level);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "等级补员：mid {Mid} 这趟没查到，下轮再来", mid);
+                }
+
+                await Task.Delay(200, cancellationToken);
+            }
+        });
 
         if (stamped > 0)
         {

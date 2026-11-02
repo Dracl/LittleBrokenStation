@@ -604,16 +604,19 @@ public sealed class LbsCommentArchiver(
             var dest = Path.Combine(paths.CmtImg, AvatarHash(url!) + OriginalExtension(url!));
             try
             {
-                if (!File.Exists(dest))
+                // 存档原则同头像分支：半路存下的 0 字节残件算缺件，重下——DownloadFileAsync 用 FileMode.Create，
+                // 一进去先把文件建出来，中途抛异常留下的空壳会被 File.Exists 永久当成功写进 map。
+                if (!File.Exists(dest) || new FileInfo(dest).Length == 0)
                 {
                     await client.DownloadFileAsync(Request(url!), dest, cancellationToken);
                 }
 
                 map[url!] = "/cmt-img/" + Path.GetFileName(dest);
             }
-            catch when (!cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
-                // 单张失败不碍事，前端拿原 URL 热链。
+                // 单张失败不碍事，前端拿原 URL 热链。（级别就 Debug：单张存不上是常态，升 Warning 会把真问题淹掉。）
+                logger.LogDebug(ex, "评论配图下载失败（前端会回退热链）：{Url}", url);
             }
         }
 

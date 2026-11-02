@@ -2,6 +2,7 @@ using System.Text.Json;
 using LBS.Domain;
 using LBS.Engine;
 using LBS.Infrastructure;
+using LBS.Server;
 
 namespace LBS.Tests;
 
@@ -674,5 +675,157 @@ public sealed class DynamicCacheTests : IDisposable
         Assert.Equal("""["/cmt-img/p1.jpg",null]""", row.PicsLocalJson);
         Assert.Equal("/cmt-img/cover.jpg", row.CoverLocal);
         Assert.Equal("""{"[打call]":"/emotes/call.png"}""", row.BodyEmotesJson);
+    }
+
+    // ─── 动态配图补员（DynamicPicBackfillWorker）：候选筛选 / 单列写回 / 同序组装 ───
+
+    private const string ThreePics = """[{"url":"https://i0.hdslb.com/bfs/d/a.jpg","width":800,"height":600},"""
+        + """{"url":"https://i0.hdslb.com/bfs/d/b.jpg"},"""
+        + """{"url":"https://i0.hdslb.com/bfs/d/c.jpg"}]""";
+
+    /// <summary>塞一条带 pics_json 的动态（补员候选的原料）。</summary>
+    private void Seed(string dynamicId, string? picsJson, string? picsLocalJson = null, long targetMid = 9001)
+    {
+        _db.UpsertDynamic(dynamicId, targetMid, targetMid, "图图", "DYNAMIC_TYPE_OPUS", "图文", picsJson, null, "2026-01-01T00:00:00+00:00");
+        if (picsLocalJson is not null)
+        {
+            _db.SetDynamicPicsLocal(dynamicId, picsLocalJson);
+        }
+    }
+
+    [Fact]
+    public void ListDynamicsMissingPics_PicksRowsWithPicsButLocalHoles()
+    {
+        Seed("p-null", ThreePics); // 本地板整列 NULL（10-28 后动态图全灭的常见形状）
+        Seed("p-allnull", ThreePics, "[null,null,null]"); // 全 null 数组：一张没存上
+        Seed("p-partial", ThreePics, """["/cmt-img/a.jpg",null,"/cmt-img/c.jpg"]"""); // 部分落地，中间有洞
+        Seed("p-full", ThreePics, """["/cmt-img/a.jpg","/cmt-img/b.jpg","/cmt-img/c.jpg"]"""); // 全落地 → 必须排除
+        Seed("p-nopics", null); // 没图动态 → 必须排除
+        Seed("p-empty", ""); // pics_json 空字串 → 必须排除
+        Seed("p-emptyarr", "[]"); // pics_json 空数组 → 必须排除
+        Seed("p-pascal", """[{"Url":"https://i0.hdslb.com/bfs/d/x.jpg","Width":800}]"""); // PascalCase 脏行也要进候选
+
+        var ids = _db.ListDynamicsMissingPics(40).Select(r => r.DynamicId).ToList();
+        Assert.Equal(["p-null", "p-allnull", "p-partial", "p-pascal"], ids);
+
+        // 候选自证：把 pics_json 与现有本地板一并带回，worker 据此判哪几位还没下。
+        var partial = _db.ListDynamicsMissingPics(40).Single(r => r.DynamicId == "p-partial");
+        Assert.Equal(ThreePics, partial.PicsJson);
+        Assert.Equal("""["/cmt-img/a.jpg",null,"/cmt-img/c.jpg"]""", partial.PicsLocalJson);
+        Assert.Equal("p-null", _db.ListDynamicsMissingPics(40).First().DynamicId); // id 列随候选带回
+        Assert.True(_db.ListDynamicsMissingPics(40).First().Id > 0);
+    }
+
+    [Fact]
+    public void ListDynamicsMissingPics_OrdersOldestFirst_AndClampsLimit()
+    {
+        for (var i = 1; i <= 5; i++)
+        {
+            Seed($"ord-{i}", ThreePics);
+        }
+
+        // 老货优先（ORDER BY id 升序，没 attempts 列就靠它让补不上的行自然重逢）。
+        var all = _db.ListDynamicsMissingPics(40);
+        Assert.Equal(["ord-1", "ord-2", "ord-3", "ord-4", "ord-5"], all.Select(r => r.DynamicId));
+        Assert.True(all.Select(r => r.Id).SequenceEqual(all.Select(r => r.Id).OrderBy(x => x)));
+        Assert.Equal(["ord-1", "ord-2"], _db.ListDynamicsMissingPics(2).Select(r => r.DynamicId));
+
+        // limit 下限 Clamp 到 1：传 0 不能变成「不限量」或空转。
+        var floored = Assert.Single(_db.ListDynamicsMissingPics(0));
+        Assert.Equal("ord-1", floored.DynamicId);
+    }
+
+    [Fact]
+    public void ListDynamicsMissingPics_ClampsLimitAt200()
+    {
+        for (var i = 1; i <= 205; i++)
+        {
+            Seed($"big-{i}", ThreePics);
+        }
+
+        // 上限 Clamp 到 200：传 999 也不能一次捞光（worker 每轮只吃 40，这里守的是 Infrastructure 那道兼顶）。
+        Assert.Equal(200, _db.ListDynamicsMissingPics(999).Count);
+    }
+
+    [Fact]
+    public void SetDynamicPicsLocal_WritesOnlyThatColumn()
+    {
+        Seed("one-col", ThreePics, """[null,"/cmt-img/b.jpg",null]""");
+        _db.SetDynamicAssetLocals("one-col", """[null,"/cmt-img/b.jpg",null]""", "/cmt-img/cover.jpg", """{"[打call]":"/emotes/call.png"}""");
+
+        // 补档写回只碰 pics_local_json：卡面封面前本地与正文表情映射原样还在。
+        _db.SetDynamicPicsLocal("one-col", """["/cmt-img/a.jpg","/cmt-img/b.jpg",null]""");
+        var row = Assert.Single(_db.ListDynamics(9001, 50), r => r.DynamicId == "one-col");
+        Assert.Equal("""["/cmt-img/a.jpg","/cmt-img/b.jpg",null]""", row.PicsLocalJson);
+        Assert.Equal("/cmt-img/cover.jpg", row.CoverLocal);
+        Assert.Equal("""{"[打call]":"/emotes/call.png"}""", row.BodyEmotesJson);
+
+        // 对照组（为何不许复用 SetDynamicAssetLocals 补档）：同一根 UPDATE 写三列，null 也直写，一下就把另两列抹了。
+        Seed("three-cols", ThreePics, """[null,null,null]""");
+        _db.SetDynamicAssetLocals("three-cols", """[null,"/cmt-img/b.jpg",null]""", "/cmt-img/cover.jpg", """{"[打call]":"/emotes/call.png"}""");
+        _db.SetDynamicAssetLocals("three-cols", """["/cmt-img/a.jpg","/cmt-img/b.jpg","/cmt-img/c.jpg"]""", null, null);
+        var wiped = Assert.Single(_db.ListDynamics(9001, 50), r => r.DynamicId == "three-cols");
+        Assert.Null(wiped.CoverLocal);
+        Assert.Null(wiped.BodyEmotesJson);
+    }
+
+    [Fact]
+    public void BackfillComposePicsLocal_KeepsFilledPositions_AndNullsFailures()
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // a.jpg 那位已有本地板（还是张旧图）：map 里就算另有答案也不许覆盖。
+            ["https://i0.hdslb.com/bfs/d/a.jpg"] = "/cmt-img/DIFFERENT.jpg",
+            ["https://i0.hdslb.com/bfs/d/b.jpg"] = "/cmt-img/b.jpg",
+            // c.jpg 故意不在 map 里：单张失败。
+        };
+
+        // 现有本地板比 pics_json 短一位：保留已落地那位，补上 b.jpg，c.jpg 落 null，数组长度与 pics_json 一致。
+        var next = DynamicPicBackfillWorker.ComposePicsLocal(
+            ThreePics, """["/cmt-img/old-a.jpg",null]""", map);
+        Assert.NotNull(next);
+        var items = next!;
+        Assert.Equal(["/cmt-img/old-a.jpg", "/cmt-img/b.jpg", null], items);
+        Assert.Equal(3, items.Count);
+
+        // PascalCase 脏行（早期拿默认 options 裸奔入库的那批）也能读出 url。
+        var pascal = DynamicPicBackfillWorker.ComposePicsLocal(
+            """[{"Url":"https://i0.hdslb.com/bfs/d/x.jpg","Width":800}]""",
+            null,
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["https://i0.hdslb.com/bfs/d/x.jpg"] = "/cmt-img/x.jpg" });
+        Assert.NotNull(pascal);
+        Assert.Equal(["/cmt-img/x.jpg"], pascal!);
+
+        // 坏 JSON / 空数组 / NULL ⇒ 整行今天办不了（回 null），与「补了 0 位」两回事。
+        Assert.Null(DynamicPicBackfillWorker.ComposePicsLocal("这不是 JSON", null, map));
+        Assert.Null(DynamicPicBackfillWorker.ComposePicsLocal("[]", null, map));
+        Assert.Null(DynamicPicBackfillWorker.ComposePicsLocal(null, null, map));
+
+        // 本轮新补上的位数：旧值 NULL 视作全空位；一位没变回 0（worker 据此不写库）。
+        Assert.Equal(1, DynamicPicBackfillWorker.CountNewlyFilled("""["/cmt-img/old-a.jpg",null]""", items));
+        Assert.Equal(3, DynamicPicBackfillWorker.CountNewlyFilled(null, ["/cmt-img/a.jpg", "/cmt-img/b.jpg", "/cmt-img/c.jpg"]));
+        Assert.Equal(0, DynamicPicBackfillWorker.CountNewlyFilled("""["/cmt-img/a.jpg",null]""", ["/cmt-img/a.jpg", null]));
+    }
+
+    [Fact]
+    public void BackfillPendingPicUrls_OnlyAsksForEmptySlots()
+    {
+        // 已有本地路径的位不重下（幂等：同一行进两轮，第二轮只吐还空着的那位）。
+        Assert.Equal(
+            ["https://i0.hdslb.com/bfs/d/b.jpg"],
+            DynamicPicBackfillWorker.PendingPicUrls(ThreePics, """["/cmt-img/a.jpg",null,"/cmt-img/c.jpg"]"""));
+
+        // 全落地 ⇒ 没得下；本地板 NULL ⇒ 三位全要下。
+        Assert.Empty(DynamicPicBackfillWorker.PendingPicUrls(ThreePics, """["/cmt-img/a.jpg","/cmt-img/b.jpg","/cmt-img/c.jpg"]"""));
+        Assert.Equal(3, DynamicPicBackfillWorker.PendingPicUrls(ThreePics, null).Count);
+
+        // 同 url 重复占两位只下一张；坏链（没 url / 不是 http）不吐；pics_json 读不出 ⇒ 空表。
+        var dupe = """[{"url":"https://i0.hdslb.com/bfs/d/a.jpg"},{"url":"https://i0.hdslb.com/bfs/d/a.jpg"},"""
+            + """{"width":1},{"url":"i0.hdslb.com/bfs/d/d.jpg"}]""";
+        Assert.Equal(["https://i0.hdslb.com/bfs/d/a.jpg"], DynamicPicBackfillWorker.PendingPicUrls(dupe, null));
+        Assert.Empty(DynamicPicBackfillWorker.PendingPicUrls("这不是 JSON", null));
+
+        // 旧值坏 JSON 视作没存过，三位全重下。
+        Assert.Equal(3, DynamicPicBackfillWorker.PendingPicUrls(ThreePics, "{不是数组}").Count);
     }
 }

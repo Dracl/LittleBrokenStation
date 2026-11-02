@@ -60,6 +60,9 @@ builder.Services.AddSingleton<DynamicFetchWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DynamicFetchWorker>());
 // 封面补员：到站时没勾封面的视频，每小时一轮从 cover_url 补下封面原图（每轮封顶 40、条间 300ms，先文件后 artifacts 行）。
 builder.Services.AddHostedService<CoverBackfillWorker>();
+// 动态配图补员：九宫格没落盘（pics_local_json 为 NULL 或含 null 洞）的动态，每小时一轮从 pics_json 补下原图
+// （每轮封顶 40、条间 300ms，只写 pics_local_json 一列）。整轮挂采集号出号上下文，理由见类注释。
+builder.Services.AddHostedService<DynamicPicBackfillWorker>();
 builder.Services.AddHostedService<StreamBackfillWorker>(); // 分轨码率补员：把探子上岗前落盘的老货逐轮补探
 // 悬停预览补员：ffmpeg 从本地成片转低码率无声短片到 data/previews（不进视频库、不进 artifacts）。
 // 设定全存 settings KV（preview-*），与引擎设置互不串门；补员员单例注册，站长室催一轮与总览拿的是同一个实例。

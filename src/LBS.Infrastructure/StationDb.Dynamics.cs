@@ -337,6 +337,51 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
     }
 
+    /// <summary>动态配图补员候选：有 pics_json 却没把九宫格全落盘（pics_local_json 为 NULL 或含 null 洞）的动态，
+    /// 老货优先限量取。没加 attempts / status 列，靠 ORDER BY id 让补不上的老行每轮自然重逢。
+    /// 候选自证：把 pics_json 与现有 pics_local_json 一并带回，worker 据此判「哪几位还没下」。</summary>
+    public sealed record DynamicPicsBackfillCandidate(long Id, string DynamicId, string PicsJson, string? PicsLocalJson);
+
+    public IReadOnlyList<DynamicPicsBackfillCandidate> ListDynamicsMissingPics(int limit = 40)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, dynamic_id, pics_json, pics_local_json FROM dynamics
+            WHERE pics_json IS NOT NULL AND pics_json NOT IN ('','[]')
+              AND (pics_local_json IS NULL OR pics_local_json LIKE '%null%')
+            ORDER BY id
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 200));
+
+        var list = new List<DynamicPicsBackfillCandidate>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new DynamicPicsBackfillCandidate(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3)));
+        }
+
+        return list;
+    }
+
+    /// <summary>动态九宫格本地板回写：<b>只动 pics_local_json 一列</b>。补档不许用 <see cref="SetDynamicAssetLocals"/>——
+    /// 那是一根 UPDATE 写三列，null 也直写，会把同行的 cover_local / body_emotes_json 一起抹掉。
+    /// 这里 null 同样直写（本轮一张没存上就该留满 null 洞，前端逐格热链兑底）。</summary>
+    public void SetDynamicPicsLocal(string dynamicId, string? picsLocalJson)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE dynamics SET pics_local_json = $picsLocal WHERE dynamic_id = $did;";
+        command.Parameters.AddWithValue("$picsLocal", (object?)picsLocalJson ?? DBNull.Value);
+        command.Parameters.AddWithValue("$did", dynamicId);
+        command.ExecuteNonQuery();
+    }
+
     /// <summary>评论完工碑：盖了章的下轮不再补抓（零评论的动态也算办完，免得天天空跑）；
     /// 顺手把 B 站报的一级评论总数回写底栏（动态流不带 stat，这是唯一可靠来源），表情定格映射也此时存入。</summary>
     public void MarkCommentsFetched(string dynamicId, int? totalCount = null, string? emotesJson = null)
