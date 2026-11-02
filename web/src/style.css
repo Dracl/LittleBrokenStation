@@ -254,3 +254,46 @@
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* 封面微光帘：图未到位时扫一道高光。用 transform 而非 background-position，
+   动画交给合成层，四十张同时闪也不吃主线程绘制。
+   原先这一条只住在 VideoCard 的 scoped 里，番剧模式的分区行卡要同一份效果就得再拄一份，
+   手拄必然漂（预览那一层就是这么漏的），于是与 .no-scrollbar 同法提到全站一份。 */
+.cover-shimmer {
+  overflow: hidden;
+  background: #f1f2f3;
+}
+html.dark .cover-shimmer {
+  background: #23262e;
+}
+.cover-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(100deg, transparent 25%, rgba(0, 0, 0, 0.05) 50%, transparent 75%);
+  animation: cover-shimmer 1.2s ease infinite;
+}
+html.dark .cover-shimmer::after {
+  background: linear-gradient(100deg, transparent 25%, rgba(255, 255, 255, 0.06) 50%, transparent 75%);
+}
+@keyframes cover-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* UP 徽标在卡面行里的统一姿态（站长 11-02 在调参台上定的那组数）：默认 17×17，在 flex 居中的基础上再光学下移 0.5px，与名字 3px。
+   四处共用这一条（大幕胶囊、分区行卡、接下来播放、网格卡阵；UP 空间的卡阵用的就是网格卡阵那一枚，跟着走），
+   别再各写一串 Tailwind——上一版就是四处各写各的（15px 配 vertical-align:-2px / 17px 配 items-center / 14px 配 -2px），全站看上去就不齐。
+   尺寸写成变量：网格卡阵那处的字比另三处大一号，同一枚 17px 在那儿显得占比小，所以调用方用 [--up-ic-size:18px] 单点顶上 18px
+   （站长 11-02 在网格微调台上定）。用变量而不直接写 w-[18px]：本类不在 @layer 里，无层规则会压过 Tailwind 的 utility，直写顶不掉。
+   尺寸与偏移住在这里，左右间距不写：网格卡阵那行靠 gap 排子项，间距归调用方自己调。
+   display 写成 inline-block：transform 不作用于 display:inline，大幕胶囊那枚是行内语境，靠这一句才能吃到下移。 */
+.up-ic {
+  display: inline-block;
+  flex: none;
+  width: var(--up-ic-size, 17px);
+  height: var(--up-ic-size, 17px);
+  transform: translateY(0.5px);
+}

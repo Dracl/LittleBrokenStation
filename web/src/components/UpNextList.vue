@@ -113,8 +113,9 @@ const titleKey = ref(null)
               @click="onUpRow(v, $event)"
               @keydown.enter.prevent="onUpRow(v, $event)"
             >
-              <!-- UP 徽标：与两张主页卡同一枚官方描边款（站长 11-02 点名换掉自绘的那版）；官方口径 13px 字旁 17×17。 -->
-              <UpIcon class="mr-1 h-[17px] w-[17px] shrink-0" />
+              <!-- UP 徽标：与两张主页卡同一枚官方描边款（站长 11-02 点名换掉自绘的那版）；
+                   尺寸与光学下移走全站 .up-ic，与名字间距按他调参台定的 3px。 -->
+              <UpIcon class="up-ic mr-[3px]" />
               <span class="truncate">
                 <span
                   v-if="v.upMid != null"

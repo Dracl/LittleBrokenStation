@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { coverThumb } from '../utils/cover'
+import { createPreviewHost } from '../utils/hoverPreview'
+import { createCoverLedger } from '../utils/coverStates'
 import { colonTime, publishedDate } from '../utils/time'
 import { HINT_DELETE_VIDEO, HINT_FETCH_COMMENTS } from '../confirmStore'
 import UpIcon from './UpIcon.vue'
@@ -63,6 +65,37 @@ const coverKey = ref('')
 const btnKey = ref('')
 function toolsOnOf(item) {
   return coverKey.value === item.bvid || btnKey.value === item.bvid
+}
+
+// ─── 悬停预览与封面淡入（站长 11-02：两副卡面的功能要对齐，差的只能是样式）───────
+// 口径全住在公用层：预览走 utils/hoverPreview 的一路机位，淡入走 utils/coverStates 的一本账本，
+// 与网格卡阵（VideoCard）同一份代码，不再手拄一份——手拄必然漂，预览这一层当初就是这么漏的。
+const preview = createPreviewHost()
+const covers = createCoverLedger()
+
+// 预览元素按「行 + bvid」认领：机位要拿到当前那张卡的 <video> 才能按停与起播。
+// 不能用 bvid 当键——同一支视频会同时出现在「新到站」与下面的分区行里，两张卡共用一个 bvid 时，
+// 后挂载那张（行序靠后的分区行）会把登记覆盖掉，你悬停新到站那张、起播的却是下面那张看不见的（站长 11-02 抓到）。
+// 也不用单个变量：换卡时旧元素卸载（回调收到一发 null）与新元素挂载没有保证的先后，会被那发迟到的 null 抹空。
+const rowPreviewEls = new Map()
+// 行内卡的身份：行键 + bvid，同一支视频在两条行里各算一张卡，互不串台。
+function rk(row, item) {
+  return `${row.key}#${item.bvid}`
+}
+function bindRowPreview(id, el) {
+  if (el) rowPreviewEls.set(id, el)
+  else rowPreviewEls.delete(id)
+}
+
+function onRowCoverEnter(row, item) {
+  coverKey.value = item.bvid
+  preview.enter(rk(row, item), item.previewUrl || '', (id) => rowPreviewEls.get(id) || null)
+}
+
+// coverKey 的清除按卡认人：迟到的 mouseleave（上一张卡的）不许把当前这张的放大抹掉。
+function onRowCoverLeave(row, item) {
+  if (coverKey.value === item.bvid) coverKey.value = ''
+  preview.leave(rk(row, item))
 }
 
 // 标题那抹粉只跟标题自己走：可点已经收到字面（外层 p 只管两行截断，内联 RouterLink 才是热区），
@@ -161,10 +194,12 @@ const newArrivals = computed(() =>
     .slice(0, 24),
 )
 
-// 分区行条目：zone 端点没带时长/播放数/弹幕数，拿全集按 id 补上（对不上就整段不显，不编数）
+// 分区行条目：zone 端点没带时长/播放数/弹幕数/预览片，拿全集按 id 补上（对不上就整段不显，不编数）。
+// previewUrl 也走这条路：/api/zones/videos 只投影了展示字段，悬停预览那 360p 短片住在 /api/videos 那口里——
+// 两副卡面吃同一份全集，网格有预览、番剧模式没有这道缝就从这里合上（站长 11-02 点名对齐）。
 function patchItem(it) {
   const full = videoIndex.value.get(it.id)
-  return full ? { ...it, durationText: full.durationText, viewCountText: full.viewCountText, danmakuCount: full.danmakuCount } : it
+  return full ? { ...it, durationText: full.durationText, viewCountText: full.viewCountText, danmakuCount: full.danmakuCount, previewUrl: full.previewUrl } : it
 }
 
 // 弹幕条数按 B 站口径：过万折成「1.2万」，整万去小数尾（与 VideoCard 同一张嘴）
@@ -345,6 +380,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (heroTimer) clearInterval(heroTimer)
   window.removeEventListener('resize', onWindowResize)
+  preview.dispose() // 交还单路令牌与首页洗牌锁：免得切了页还留下一路在播，或卡阵一直冻着
 })
 </script>
 
@@ -388,11 +424,11 @@ onBeforeUnmount(() => {
           <span class="block truncate text-[11.5px] text-white/60">
             <span
               v-if="heroCur.upMid != null"
-              class="-mx-1 cursor-pointer px-1 transition hover:text-stationBlue"
+              class="-mx-1 inline-flex cursor-pointer items-center px-1 transition hover:text-stationBlue"
               title="这位在分站的空间"
               @click.stop.prevent="goUp(heroCur.upMid)"
-            ><UpIcon v-if="heroCur.upName" class="mr-1 inline-block h-[14px] w-[14px] align-[-2px] opacity-80" />{{ heroCur.upName }}</span>
-            <template v-else><UpIcon v-if="heroCur.upName" class="mr-1 inline-block h-[14px] w-[14px] align-[-2px] opacity-80" />{{ heroCur.upName }}</template>
+            ><UpIcon v-if="heroCur.upName" class="up-ic mr-[3px]" />{{ heroCur.upName }}</span>
+            <template v-else><UpIcon v-if="heroCur.upName" class="up-ic mr-[3px]" />{{ heroCur.upName }}</template>
             <template v-if="heroViews(heroCur)">{{ heroCur.upName ? ' · ' : '' }}<span class="inline-flex items-center gap-0.5"><PlayCountIcon class="h-[13px] w-[13px]" />{{ heroViews(heroCur) }}</span></template>
             <template v-if="heroDanmaku(heroCur)">{{ heroCur.upName || heroViews(heroCur) ? ' · ' : '' }}<span class="inline-flex items-center gap-0.5"><DanmakuCountIcon class="h-[13px] w-[13px]" />{{ heroDanmaku(heroCur) }}</span></template>
           </span>
@@ -510,11 +546,35 @@ onBeforeUnmount(() => {
           <RouterLink
             :to="`/watch/${item.bvid}`"
             class="relative block aspect-[16/10] overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]"
-            @mouseenter="coverKey = item.bvid"
-            @mouseleave="coverKey = ''"
+            @mouseenter="onRowCoverEnter(row, item)"
+            @mouseleave="onRowCoverLeave(row, item)"
           >
-            <img v-if="coverOf(item)" :src="coverOf(item)" :alt="item.title || item.bvid" loading="lazy" decoding="async" referrerpolicy="no-referrer" class="h-full w-full object-cover transition duration-300" :class="toolsOnOf(item) ? 'scale-[1.04]' : ''" />
+            <!-- 微光帘与淡入：与网格卡阵同一份（CSS 在 style.css，账本在 utils/coverStates）——
+                 图未到位时那道扫光由它顶位，到位才淡进来，不再让图糊到灰底上「啪」一下 -->
+            <div v-if="coverOf(item) && !covers.isReady(item.bvid)" class="cover-shimmer absolute inset-0" aria-hidden="true"></div>
+            <img v-if="coverOf(item)" :src="coverOf(item)" :alt="item.title || item.bvid" loading="lazy" decoding="async" referrerpolicy="no-referrer" :ref="(el) => covers.probe(item.bvid, el)" class="h-full w-full object-cover transition duration-300" :class="[toolsOnOf(item) ? 'scale-[1.04]' : '', covers.isReady(item.bvid) ? 'opacity-100' : 'opacity-0']" @load="covers.markReady(item.bvid)" @error="covers.markReady(item.bvid)" />
             <span v-else class="flex h-full w-full items-center justify-center text-[11px] tracking-widest text-inkFaint">{{ item.bvid }}</span>
+            <!-- 悬停预览层（站长 11-02 点名要与网格卡阵对齐）：停在封面上够 350ms 才起播，走开立即按停淡回封面、
+                 200ms 内回来原地续播；全站只许一路在播，横扫一排卡也不会两路同响。
+                 只挂在被悬停那一张卡的封面里，其余卡连元素都不建；preload=none，不悬停一个字节都不拉。 -->
+            <video
+              v-if="item.previewUrl && !preview.isGaveUp(rk(row, item)) && preview.isHost(rk(row, item))"
+              :key="rk(row, item) + item.previewUrl"
+              :ref="(el) => bindRowPreview(rk(row, item), el)"
+              :src="item.previewUrl"
+              muted
+              loop
+              playsinline
+              preload="none"
+              disablepictureinpicture
+              tabindex="-1"
+              aria-hidden="true"
+              class="pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-200"
+              :class="preview.isOn(rk(row, item)) ? 'opacity-100' : 'opacity-0'"
+              @loadeddata="preview.markShown(rk(row, item))"
+              @playing="preview.markShown(rk(row, item))"
+              @error="preview.fail(rk(row, item))"
+            ></video>
             <!-- 封面底部数据区：与 VideoCard 同款——半透渐变带垫底，左「官方播放量图标 + 数 / 官方弹幕图标 + 数」右时长，描边白字 -->
             <div class="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/55 via-black/25 to-transparent"></div>
             <div class="absolute inset-x-0 bottom-0 flex items-center justify-between px-2 pb-1.5">
@@ -553,16 +613,17 @@ onBeforeUnmount(() => {
             @keydown.enter.prevent="onUpRow(item, $event)"
           >
             <span v-if="upMidOf(item) != null" class="absolute -top-[3px] -bottom-[4px] inset-x-0" aria-hidden="true"></span>
-            <p class="truncate text-[12px] text-inkFaint">
-              <!-- UP 徽标：与主页卡同一枚官方描边款（站长 11-02：没有的就直接补上），12px 字旁按官方比例取 15px。 -->
-              <UpIcon v-if="item.upName" class="mr-1 inline-block h-[15px] w-[15px] align-[-2px]" />
+            <!-- 整行 flex 居中：图标尺寸与光学下移走全站 .up-ic（17×17、下移 0.5px），与名字 3px（站长 11-02 在调参台上定的那组数，四处同一枚）。 -->
+            <p class="flex items-center text-[12px] text-inkFaint">
+              <UpIcon v-if="item.upName" class="up-ic mr-[3px]" />
               <span
                 v-if="upMidOf(item) != null"
-                class="transition hover:text-stationBlue group-hover/up:text-stationBlue"
+                class="min-w-0 truncate transition hover:text-stationBlue group-hover/up:text-stationBlue"
                 title="这位在分站的空间"
               >{{ item.upName }}</span>
-              <template v-else>{{ item.upName }}</template>
-              <template v-if="relTime(publishedDate(item))">{{ item.upName ? ' · ' : '' }}{{ relTime(publishedDate(item)) }}</template>
+              <span v-else class="min-w-0 truncate">{{ item.upName }}</span>
+              <!-- 日期钉住不缩（shrink-0）：不再让整行一起 ellipsis 把日期吞掉；中点左右各 3px，跟原来那两格空格等宽。 -->
+              <span v-if="relTime(publishedDate(item))" class="shrink-0"><span v-if="item.upName" class="mx-[3px]">·</span>{{ relTime(publishedDate(item)) }}</span>
             </p>
           </div>
           <!-- 投稿人自管两钮：样式与网格卡阵（AdminVideoCell）那两枚同一套——黑玻璃底、右上并排、鼠标进封面才浮出（站长 11-02）。

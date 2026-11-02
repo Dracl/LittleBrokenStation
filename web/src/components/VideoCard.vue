@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { colonTime, publishedDate } from '../utils/time'
 import { coverThumb } from '../utils/cover'
-import { claimPreview, previewHoverEnter, previewHoverLeave, releasePreview } from '../utils/previewHover'
+import { createPreviewHost } from '../utils/hoverPreview'
+import { createCoverLedger } from '../utils/coverStates'
 import UpIcon from './UpIcon.vue'
 import PlayCountIcon from './PlayCountIcon.vue'
 import DanmakuCountIcon from './DanmakuCountIcon.vue'
@@ -131,114 +132,35 @@ function statusMeta(status) {
 
 // 封面加载态：远程图到位前刷微光帘，到位后淡入，不闪白不裸切；
 // 图命中缓存时 load 可能不补发，挂载后补探一次 complete。
+// 账本走 utils/coverStates（与番剧模式分区行同一份）：本卡一卡一实例，只记自己那一个键；
+// 微光帘那条 CSS 也已从本文件的 scoped 里抬到 style.css，两副卡面共用一条。
 const coverEl = ref(null)
-const coverReady = ref(false)
+const covers = createCoverLedger()
+const cardKey = computed(() => props.video.bvid || String(props.video.id ?? ''))
+const coverReady = computed(() => covers.isReady(cardKey.value))
 onMounted(() => {
-  if (coverEl.value?.complete) coverReady.value = true
+  covers.probe(cardKey.value, coverEl.value)
 })
 
 // ─── 悬停预览：后端备好了约 1MB 的 360p 无声片段（video.previewUrl）才启用这一层 ───
 // 封面 img 全程不卸：预览没到位/加载失败时看到的就是封面，所以这层只有淡入，没有任何报错 UI。
-// 计时器照播放器音量条那套（volArmHide + volHideTimer）：CSS :hover 与「立即归零」都经不起鼠标在卡边上抖两下。
-const PREVIEW_ARM_MS = 350 // 鼠标停够 350ms 才起播，路过卡阵的手指不算想看
-const PREVIEW_RESET_MS = 200 // 离场 200ms 内回来就原地续播，不重新从 0 拉一遍流
-
-// 系统要求减少动效：尊重到底，悬停一律不起播，卡面停在封面原样。
-const reduceMotion = !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
+// 起播延时（350ms）、续播窗口（200ms）、单路令牌、出错放弃、减少动效这些口径全住在 utils/hoverPreview 的机位里——
+// 番剧模式的分区行卡（BangumiHome）用的是同一个机位，两副卡面对不起手感的缝就从这里焊上（站长 11-02 点名要对齐）。
 const previewSrc = computed(() => props.video.previewUrl || '')
 const previewEl = ref(null)
-const previewShown = ref(false) // 首帧到位才淡入，避免黑帧裸切
-const previewGaveUp = ref(false) // 本卡彻底放弃：出错后连这层 <video> 都不再挂，绝不重试
-let previewArm = null
-let previewReset = null
-let hoverHeld = false
-
-function previewClearTimers() {
-  if (previewArm) {
-    clearTimeout(previewArm)
-    previewArm = null
-  }
-  if (previewReset) {
-    clearTimeout(previewReset)
-    previewReset = null
-  }
-}
-
-// 停车动作，同时充当全站单例的播放令牌：函数身份每张卡固定一个。
-function stopPreview(resetTime) {
-  const el = previewEl.value
-  if (!el) return
-  try {
-    el.pause()
-  } catch {
-    /* 本来就没在播 */
-  }
-  if (resetTime) {
-    try {
-      el.currentTime = 0
-    } catch {
-      /* 流还没 ready，归零没意义 */
-    }
-  }
-  previewShown.value = false
-}
-
-const stopForSingleton = () => stopPreview(true)
-
-function giveUpPreview() {
-  previewClearTimers()
-  releasePreview(stopForSingleton)
-  stopPreview(false)
-  previewGaveUp.value = true
-}
+const preview = createPreviewHost()
+const previewOn = computed(() => preview.isOn(cardKey.value))
+const previewMount = computed(() => !!previewSrc.value && !preview.isGaveUp(cardKey.value))
 
 function onPreviewEnter() {
-  if (previewSrc.value && !hoverHeld) {
-    hoverHeld = true
-    previewHoverEnter()
-  }
-  if (!previewSrc.value || previewGaveUp.value || reduceMotion) return
-  previewClearTimers()
-  previewArm = setTimeout(() => {
-    previewArm = null
-    const el = previewEl.value
-    if (!el) return
-    claimPreview(stopForSingleton) // 全站只许一路在播：先让上一路停车归零
-    el.muted = true // 属性之外再钉一次，免得 autoplay policy 卡住无声起播
-    const p = el.play()
-    if (p && typeof p.catch === 'function') p.catch(giveUpPreview)
-  }, PREVIEW_ARM_MS)
+  preview.enter(cardKey.value, previewSrc.value, () => previewEl.value)
 }
 
 function onPreviewLeave() {
-  if (hoverHeld) {
-    hoverHeld = false
-    previewHoverLeave()
-  }
-  if (!previewSrc.value || previewGaveUp.value) return
-  if (previewArm) {
-    clearTimeout(previewArm)
-    previewArm = null
-  }
-  releasePreview(stopForSingleton)
-  stopPreview(false) // 立即按停（淡回封面）
-  if (previewReset) clearTimeout(previewReset)
-  previewReset = setTimeout(() => {
-    previewReset = null
-    const el = previewEl.value
-    if (el && el.currentTime) el.currentTime = 0
-  }, PREVIEW_RESET_MS)
+  preview.leave(cardKey.value)
 }
 
-onBeforeUnmount(() => {
-  previewClearTimers()
-  releasePreview(stopForSingleton)
-  if (hoverHeld) {
-    hoverHeld = false
-    previewHoverLeave()
-  }
-})
+onBeforeUnmount(() => preview.dispose())
 </script>
 
 <template>
@@ -260,8 +182,8 @@ onBeforeUnmount(() => {
         referrerpolicy="no-referrer"
         class="h-full w-full object-cover transition duration-300"
         :class="[(coverHover || coverHold) ? 'scale-[1.03]' : '', coverReady ? 'opacity-100' : 'opacity-0']"
-        @load="coverReady = true"
-        @error="coverReady = true"
+        @load="covers.markReady(cardKey)"
+        @error="covers.markReady(cardKey)"
       />
       <div v-else class="flex h-full w-full items-center justify-center">
         <span class="text-xs tracking-widest text-inkFaint">{{ video.bvid }}</span>
@@ -269,7 +191,7 @@ onBeforeUnmount(() => {
       <!-- 悬停预览层：压在封面之上、数据区之下（DOM 顺序即层次），不吃点击也不抢焦点；
            :key 绑源址，卡位复用时不会拿上一条的流接着播。preload=none——不悬停就一个字节都不拉。 -->
       <video
-        v-if="previewSrc && !previewGaveUp"
+        v-if="previewMount"
         :key="previewSrc"
         ref="previewEl"
         :src="previewSrc"
@@ -281,10 +203,10 @@ onBeforeUnmount(() => {
         tabindex="-1"
         aria-hidden="true"
         class="pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-200"
-        :class="previewShown ? 'opacity-100' : 'opacity-0'"
-        @loadeddata="previewShown = true"
-        @playing="previewShown = true"
-        @error="giveUpPreview"
+        :class="previewOn ? 'opacity-100' : 'opacity-0'"
+        @loadeddata="preview.markShown(cardKey)"
+        @playing="preview.markShown(cardKey)"
+        @error="preview.fail(cardKey)"
       ></video>
       <span
         v-if="admin && video.status !== 2"
@@ -316,7 +238,7 @@ onBeforeUnmount(() => {
     <p v-if="keyword" class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain" :title="video.title || video.bvid"><RouterLink :to="`/watch/${video.bvid}`" class="transition" :class="titleHover ? 'text-stationPink' : ''" @mouseenter="titleHover = true" @mouseleave="titleHover = false" v-html="titleHtml"></RouterLink></p>
     <p v-else class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain" :title="video.title || video.bvid"><RouterLink :to="`/watch/${video.bvid}`" class="transition" :class="titleHover ? 'text-stationPink' : ''" @mouseenter="titleHover = true" @mouseleave="titleHover = false">{{ video.title || video.bvid }}</RouterLink></p>
     <div
-      class="group/up relative mt-1 flex items-center gap-1.5 rounded-sm text-[13px] text-inkSub focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationBlue/60"
+      class="group/up relative mt-1 flex items-center gap-1 rounded-sm text-[13px] leading-[20px] text-inkFaint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationBlue/60"
       :class="canOpenUp ? 'cursor-pointer' : ''"
       :role="canOpenUp ? 'link' : undefined"
       :tabindex="canOpenUp ? 0 : undefined"
@@ -328,11 +250,17 @@ onBeforeUnmount(() => {
       <span v-if="canOpenUp" class="absolute -top-[3px] -bottom-[4px] inset-x-0" aria-hidden="true"></span>
       <span v-if="admin && video.status !== 2" class="h-1.5 w-1.5 shrink-0 rounded-full" :class="statusMeta(video.status).dot"></span>
       <template v-if="video.upName">
-        <!-- UP 徽章：官方描边款（UpIcon 里那三段 path 直接刮自 B 站首页卡），尺寸照官方实测：13px 的 UP 名旁画 17×17。 -->
-        <UpIcon class="h-[17px] w-[17px] shrink-0 text-inkSub" />
+        <!-- UP 徽章：官方描边款（UpIcon 里那三段 path 直接刮自 B 站首页卡）。本行的数全站只此一处例外（站长 11-02 在网格微调台上定：
+             字号 13 / 行高 20 / 图标 18 / 下移 0.5 / 图标与名字净距 3 / 子项间距 4 / 名字最宽 60%）：
+             尺寸走 .up-ic 的变量，本处用 [--up-ic-size:18px] 顶到 18px（字比另三处大一号，17px 在这儿显轻）；
+             子项间距由 gap-1 出 4px，图标与名字要的净距 3px 用 -mr-[1px] 抵出来；下移 0.5px 住在 .up-ic 里。
+             其余三处（大幕胶囊、分区行卡、接下来播放）行内无 gap，拿默认 17px 各加 mr-[3px]。
+             颜色仍单钉 text-inkFaint：本行字色现在也是 inkFaint（四处同一调，不再特立 inkSub），
+             但徒标是 currentColor，钉一下就不怕以后有人改行色把这枚单独带跑。 -->
+        <UpIcon class="up-ic [--up-ic-size:18px] -mr-[1px] text-inkFaint" />
         <span
           v-if="keyword"
-          class="max-w-[55%] truncate transition"
+          class="max-w-[60%] truncate transition"
           :class="canOpenUp ? 'cursor-pointer hover:text-stationBlue group-hover/up:text-stationBlue' : 'hover:text-stationPink'"
           :title="canOpenUp ? '这位在分站的空间' : undefined"
           v-html="upHtml"
@@ -340,7 +268,7 @@ onBeforeUnmount(() => {
         ></span>
         <span
           v-else
-          class="max-w-[55%] truncate transition"
+          class="max-w-[60%] truncate transition"
           :class="canOpenUp ? 'cursor-pointer hover:text-stationBlue group-hover/up:text-stationBlue' : 'hover:text-stationPink'"
           :title="canOpenUp ? '这位在分站的空间' : undefined"
           @click="onUpNameClick"
@@ -358,30 +286,5 @@ onBeforeUnmount(() => {
 .cv-auto {
   content-visibility: auto;
   contain-intrinsic-size: auto 330px;
-}
-/* 封面微光帘：图未到位时扫一道高光。用 transform 而非 background-position，
-   动画交给合成层，四十张同时闪也不吃主线程绘制。 */
-.cover-shimmer {
-  overflow: hidden;
-  background: #f1f2f3;
-}
-html.dark .cover-shimmer {
-  background: #23262e;
-}
-.cover-shimmer::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  transform: translateX(-100%);
-  background: linear-gradient(100deg, transparent 25%, rgba(0, 0, 0, 0.05) 50%, transparent 75%);
-  animation: cover-shimmer 1.2s ease infinite;
-}
-html.dark .cover-shimmer::after {
-  background: linear-gradient(100deg, transparent 25%, rgba(255, 255, 255, 0.06) 50%, transparent 75%);
-}
-@keyframes cover-shimmer {
-  to {
-    transform: translateX(100%);
-  }
 }
 </style>

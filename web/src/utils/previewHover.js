@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 
-// 悬停预览的两条全站协作契约：VideoCard 负责履约，HomePage 只消费结果，调用方（AdminVideoCell 等）不必知情。
+// 悬停预览的两条全站协作契约：履约由 utils/hoverPreview 那一路机位担着（VideoCard 与 BangumiHome 分区行共用），
+// HomePage 只消费结果，调用方（AdminVideoCell 等）不必知情。
 
 /// 有卡正被悬停（含 350ms 起播延时窗口）：首页据此冻结洗牌，鼠标原地不动时卡片不许换人。
 export const previewHovering = ref(false)

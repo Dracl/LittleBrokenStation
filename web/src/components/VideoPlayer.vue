@@ -237,11 +237,12 @@ const gearPanel = ref(false)
 const playPanel = ref(false)
 const holdingSpeed = ref(false)
 
-// 播放设定：分站自己的精简版（自动播放/循环/连播/比例/长按倍速/关灯）。v3 键：自动播放经站长定夺默认关，
+// 播放设定：分站自己的精简版（开播封面/自动播放/循环/连播/比例/长按倍速/关灯）。v3 键：自动播放经站长定夺默认关，
 // 旧 v2 配置除自动播放外原样搬迁（它试点期默认过开，留着会冒充站长自己的选择）。
+// preCover（开播封面，站长 11-02 点名加）不进新键：旧 v3 配置里没这个字段的就吃下面的默认值 true（与开关上线前的行为一致）。
 const legacyPlay = JSON.parse(localStorage.getItem('lbs.player.playPrefs.v2') || 'null') ?? {}
 delete legacyPlay.autoplay
-const play = reactive({ ...{ autoplay: false, loop: false, autoNext: true, fit: 'contain', holdSpeed: 1.5, lightsOff: false }, ...legacyPlay, ...(JSON.parse(localStorage.getItem('lbs.player.playPrefs.v3') || 'null') ?? {}) })
+const play = reactive({ ...{ autoplay: false, loop: false, autoNext: true, fit: 'contain', holdSpeed: 1.5, lightsOff: false, preCover: true }, ...legacyPlay, ...(JSON.parse(localStorage.getItem('lbs.player.playPrefs.v3') || 'null') ?? {}) })
 watch(play, (v) => localStorage.setItem('lbs.player.playPrefs.v3', JSON.stringify(v)), { deep: true })
 
 // ─── 多编码版本（播放页点单加档）───
@@ -259,10 +260,11 @@ const currentSrc = computed(() => {
 // 不用 <video poster>：那个属性挂不上 referrerpolicy，热链封面会被 B 站图床按 referer 挡（站内 40+ 处 img
 // 都手写 no-referrer 就是这缘故）；自绘一层还顺带拿到淡出，pointer-events-none 又不挡「点画面即播」。
 // 换分 P / 换清晰度会 :key 重建 video 元素，那时重新算「没播过」——第一眼仍是封面，不是黑屏。
+// play.preCover（面板上的「开播封面」开关，站长 11-02 加）关掉时这层直接不亮，开播前看到的是 video 自己解码出来的首帧（没解出来就是黑底）。
 const playedOnce = ref(false)
 watch(currentSrc, () => { playedOnce.value = false })
 watch(playing, (p) => { if (p) playedOnce.value = true })
-const coverShown = computed(() => !!props.cover && !!props.page?.videoUrl && !playedOnce.value && !playing.value)
+const coverShown = computed(() => play.preCover && !!props.cover && !!props.page?.videoUrl && !playedOnce.value && !playing.value)
 
 // 自动播放只认「还没被人为暂停过」：进页/换 P/换版本都算新开张（userPaused 清零），
 // 暂停键按下去就别再自作主张续播（缓冲回调会反复报 canplay，不设这道闸会暂停后偷跑）。
@@ -1825,6 +1827,17 @@ const STROKE_ITEMS = [
         <button class="absolute right-0 top-0 text-white/50 transition hover:text-white" @click="playPanel = false">✕</button>
       </p>
 
+      <div class="mb-2.5 flex items-center justify-between">
+        <span class="text-white/85">开播封面</span>
+        <button
+          class="relative h-5 w-9 rounded-full transition"
+          :class="play.preCover ? 'bg-stationBlue' : 'bg-white/25'"
+          title="关掉后开播前不摆封面，直接看首帧；开播后的行为不变"
+          @click="play.preCover = !play.preCover"
+        >
+          <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" :class="play.preCover ? 'left-[18px]' : 'left-0.5'"></span>
+        </button>
+      </div>
       <div class="mb-2.5 flex items-center justify-between">
         <span class="text-white/85">自动播放</span>
         <button class="relative h-5 w-9 rounded-full transition" :class="play.autoplay ? 'bg-stationBlue' : 'bg-white/25'" @click="play.autoplay = !play.autoplay">
