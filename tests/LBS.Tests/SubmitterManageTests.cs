@@ -83,7 +83,7 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/zones", false, false)]
     [InlineData("GET", "/api/zones/videos", false, false)]
     [InlineData("POST", "/api/admin/zones/set", true, false)]
-    // 合集：名录与首页同级公开（首页番剧模式那排入口卡靠它摆封面）；但「点进某一架」是进站待遇，
+    // 合集：名录与首页同级公开（首页大屏幕模式那排入口卡靠它摆封面）；但「点进某一架」是进站待遇，
     // /api/collections/{id} 已被会员门拿下（详情里是稿件清单与简介，不是张封面）。
     // 开集/销集/加减片子挂在 /api/member/collections 下，这个前缀不在两张门视野里（两端都 false），端点自己查 MemberGate.Current 回 401（与 /api/member/history 同一防法）。
     [InlineData("GET", "/api/collections", false, false)]

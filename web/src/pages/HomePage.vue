@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import TopBar from '../components/TopBar.vue'
 import AdminVideoCell from '../components/AdminVideoCell.vue'
-import { coverThumb } from '../utils/cover'
+import { heroCoverSrc } from '../utils/coverSrc'
 import { previewHovering } from '../utils/previewHover'
 import { submitDialogOpen } from '../submitStore'
 import { askDeleteVideo } from '../confirmStore'
@@ -10,8 +10,8 @@ import { isDark, toggleTheme } from '../theme'
 import BangumiHome from '../components/BangumiHome.vue'
 import { guardGuestNav } from '../utils/guestGate'
 
-// ─── 视图开关：番剧模式（大幕轮播 + 分区横滚行，照 B 站番剧区）为默认，网格卡阵是另一档。
-// 选择存 localStorage，下次进站还是上次的样子；没选过的新客默认落番剧模式。右下三颗圆钮最下面那颗切换。
+// ─── 视图开关：大屏幕模式（大幕轮播 + 分区横滚行，照 B 站番剧区）为默认，网格卡阵是另一档。
+// 选择存 localStorage，下次进站还是上次的样子；没选过的新客默认落大屏幕模式。右下三颗圆钮最下面那颗切换。
 const VIEW_KEY = 'lbs_home_view'
 const viewMode = ref(localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'anime')
 function toggleView() {
@@ -115,8 +115,10 @@ function loadMore() {
   if (visibleCount.value < restVideos.value.length) visibleCount.value += PAGE_SIZE
 }
 
-// 大幕用的是封面原图的 1280 缩略，模糊底和过渡带同源，不再拉上 MB 原图。
-const featCover = computed(() => coverThumb(featured.value[featIdx.value]?.coverUrl, 1280))
+// 大幕走全站唯一出口的「原图档」（utils/coverSrc 里的 heroCoverSrc）：站长 11-03「首页大幕尽可能用原图，
+// 毕竟这么大，压缩了就难看了」。所以它不走预切档位，直接本地原图→热链原样（热链也不贴 B 站缩放参数）；
+// 模糊底与清晰面同源，不致两面不同尺寸。
+const featCover = computed(() => heroCoverSrc(featured.value[featIdx.value]))
 
 // 大幕加载态：帧/一批馆藏在手，新图未到位前转小环，不让黑帧裸切。
 const heroReady = ref(false)
@@ -253,6 +255,13 @@ function showNotice(kind, text) {
 }
 
 onMounted(() => {
+  // 进主页一枪（周报七日动静的「主页」柱）：每次挂载算一回（刷新、回首页都算），成员游客一视同仁；
+  // 与观映账分家（subjectType=page），游客柱继续只数 watch.*。
+  fetch('/api/events/ingest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ events: [{ name: 'home.open', subjectType: 'page', subjectId: 'home', payload: null }] }),
+  }).catch(() => {})
   refreshVideos()
   pollTimer = setInterval(() => {
     // 有排队/进站中的才快轮（下载进度需要）；全站安静时降到 15 秒一发，
@@ -313,12 +322,12 @@ watch(sentinelEl, (el) => {
   <!-- 根上挂一道捕获拦：访客（member 为空）点卡片进放映厅、点分区行、点合集入口这些一律不跳页，
        改成开现成那扇登录窗（utils/guestGate.js，与顶栏「登录 / 注册」同一扇）。只认落在 /watch · /zones ·
        /collections · /collection · /dynamics 那些 <a> 上的点击，卡面、悬停预览、翻页箭头与站长那几枚 hover 钮一概不碰；
-       番剧模式（BangumiHome）就挂在下面，一并罩住，成员则整个放行。 -->
+       大屏幕模式（BangumiHome）就挂在下面，一并罩住，成员则整个放行。 -->
   <div class="min-h-screen" @click.capture="guardGuestNav">
     <TopBar />
 
     <main class="mx-auto max-w-[1400px] px-6 py-6">
-      <!-- 番剧模式：大幕轮播 + 入口卡 + 分区横滚行，整套交给 BangumiHome -->
+      <!-- 大屏幕模式：大幕轮播 + 入口卡 + 分区横滚行，整套交给 BangumiHome -->
       <BangumiHome
           v-if="viewMode === 'anime'"
           :videos="videos"
@@ -328,7 +337,7 @@ watch(sentinelEl, (el) => {
           @remove="removeVideo"
         />
 
-      <!-- 馆藏墙（网格模式专属；番剧模式整块换成上面的 BangumiHome） -->
+      <!-- 馆藏墙（网格模式专属；大屏幕模式整块换成上面的 BangumiHome） -->
       <template v-else>
       <div class="mb-3 flex items-center justify-between">
         <h2 class="text-base font-semibold text-inkMain">馆藏<span v-if="videos.length" class="ml-2 text-xs font-normal text-inkFaint">{{ videos.length }} 件</span></h2>
@@ -457,7 +466,7 @@ watch(sentinelEl, (el) => {
       </svg>
     </button>
 
-    <!-- 换一批：重抽种子重洗卡阵与大幕（番剧模式下 banner 也跟着重抽），轮询期间顺序锁定 -->
+    <!-- 换一批：重抽种子重洗卡阵与大幕（大屏幕模式下 banner 也跟着重抽），轮询期间顺序锁定 -->
     <button
       class="fixed bottom-[5.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:rotate-6 hover:border-stationPink/60 hover:text-stationPink"
       title="换一批：重新洗牌首页卡阵"
@@ -469,11 +478,11 @@ watch(sentinelEl, (el) => {
       </svg>
     </button>
 
-    <!-- 视图切换：压在换一批正下方，网格卡阵 ⇄ 番剧模式（图标跟着当前视图换脸） -->
+    <!-- 视图切换：压在换一批正下方，网格卡阵 ⇄ 大屏幕模式（图标跟着当前视图换脸；叫法 11-03 站长点名单改大屏幕） -->
     <button
       class="fixed bottom-6 right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
-      :title="viewMode === 'grid' ? '切到番剧模式（大幕轮播 + 分区横滚行）' : '切回网格卡阵'"
-      :aria-label="viewMode === 'grid' ? '切到番剧模式' : '切回网格卡阵'"
+      :title="viewMode === 'grid' ? '切到大屏幕模式' : '切回网格卡阵'"
+      :aria-label="viewMode === 'grid' ? '切到大屏幕模式' : '切回网格卡阵'"
       @click="toggleView"
     >
       <svg v-if="viewMode === 'grid'" viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">

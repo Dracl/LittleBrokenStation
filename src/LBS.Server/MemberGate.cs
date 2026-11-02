@@ -23,8 +23,10 @@ public sealed class MemberGate(StationDb db)
     {
         // 查牌前先剪掉尾部多余斜杠：路由层把 /x 与 /x/ 当同一扇门，门闸照原串点名时，
         // 精确匹配与 EndsWith 型的口（/related、/download、投稿）会被一枚斜杠穿过去。
+        // 点名一律 IgnoreCase：Minimal API 的路由匹配本身不吃大小写，门闸若按 Ordinal 认字面，
+        // /API/videos/9/danmaku 这种换体写法就在路由上照样命中端点、在门闸上却「不是 /api/」——整道门形同虚设（活体实测漏过）。
         var path = (request.Path.Value ?? "").TrimEnd('/');
-        if (!path.StartsWith("/api/", StringComparison.Ordinal))
+        if (!path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -94,7 +96,7 @@ public sealed class MemberGate(StationDb db)
             return true;
         }
 
-        // 合集详情：名录 /api/collections 仍公开（首页番剧模式那排入口卡靠它摆封面），
+        // 合集详情：名录 /api/collections 仍公开（首页大屏幕模式那排入口卡靠它摆封面），
         // 但「点进某一架」是进站待遇 —— 详情里是稿件清单与简介，不是张封面。
         // 名录本身末尾不带斜杠，所以这一条只拿得住 /api/collections/{id} 那个形状（与 IsVideoIdOnlyPath 同一思路）。
         if (path.StartsWith("/api/collections/", StringComparison.OrdinalIgnoreCase))

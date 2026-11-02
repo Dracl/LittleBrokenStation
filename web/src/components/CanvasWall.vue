@@ -8,7 +8,8 @@
 // 位置算法：mulberry32 吃 (seed, videoId)，同种子同位置——刷新不跳墙，洗牌只挪整体重排。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { coverThumb } from '../utils/cover'
+import { coverThumbOnly } from '../utils/coverSrc'
+import { isLocalCoverUrl, peekWallThumb, wallThumb } from '../utils/wallThumbs'
 import { claimPreview, previewHoverEnter, previewHoverLeave, releasePreview } from '../utils/previewHover'
 
 const props = defineProps({
@@ -20,8 +21,12 @@ const props = defineProps({
 
 const emit = defineEmits(['loadMore'])
 
-const CARD_W = 168
-const CARD_H = 105
+// 卡片尺幅（站长 11-03 定）：**全站封面卡片位统一 16:10**（站长原话「统一成16:10吧，馆藏壁也改成16:10」）。
+// 中途一度改过 16:9：库里 165 张真封面有 125 张本来就是 16:9，按裁损算 16:9 只输 2.4%、16:10 要输 8.8%，
+// 但卡片比例与字节量在「服务端预裁档位」上线后已经解耦（按卡片比例预裁就行），少裁就不再是选比例的理由，
+// 而首页卡阵、抽屉、墙四处同一张图给四种构图这件事本身更贵——因此一律跟首页卡阵与 B 站投稿规范对齐到 16:10。
+const CARD_W = 176
+const CARD_H = 110
 const ZOOM_MIN = 0.35
 const ZOOM_MAX = 2.2
 const FIT_SCALE = 0.85 // 开墙/复位时的安家倍率：卡面可读，环墙从中心往外漫开
@@ -46,7 +51,7 @@ function mulberry32(seed) {
 // 六边螺旋环序从中心往外发——等距等隙天生不重叠，不需要松弛；第几张坐哪个巢只由序号决定，
 // 续页只在更外环筑巢，已上墙的卡铟位不动。入场顺环序，天然从中心点亮到四周。
 const GAP_X = 44 // 列间隙：站长在调节台上定的气口（2026-11-01 从 52 收到 44，墙更密）
-const GAP_Y = 48 // 行间隙：邻列错半格咬合（同批从 55 收到 48）
+const GAP_Y = 48 // 行间隙：邻列错半格咬合（2026-11-01 从 55 收到 48；11-03 卡片改矮过一阵又回到 110 高，行距跟着回 48）
 const PITCH_X = CARD_W + GAP_X
 const PITCH_Y = CARD_H + GAP_Y
 const HEX_DIRS = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]] // 轴向坐标六向
@@ -135,7 +140,20 @@ const worldBounds = computed(() => {
 // Vue 键控节点不销毁，CSS 入场动画就天然只演一遍——上一版每次拖拽边缘卡集体重播
 // 模糊淡入、拖来拖去像频闪的病根，就出在「随视野拆了重建」上（对标 Myriad 的 claimCanvasCardEnter 记账）。
 const CULL_MARGIN = 300
-const mounted = ref(new Set())
+// 上墙限速（站长 11-03 报的「加载时掉帧蹲一下」的第一刀）：一次把新露脸的几十张全塞进 DOM，
+// 几十张图的解码就全挤在同一帧里，主线程当场蹲住。现在一帧只放 MOUNT_BUDGET 张，
+// 队列按离视口中心由近及远排——配上 .wall-cover 的渐进显影，观感是从中心往外长出来。
+const MOUNT_BUDGET = 8
+const mountedSet = new Set() // 已上桌的卡（只进不出）：只用来判重，不做渲染依据，故不进响应式
+const mountPending = new Set() // 已在队列里的 id，防同一张排两次
+const inView = new Set() // 当前视口内的卡：焦距只给它们写样式
+let mountQueue = [] // 待上桌的 placed 条目
+let mountRaf = 0
+
+// v-for 的数据源用「追加式数组」而不是 placed.filter：每批只往尾部追加，键控 diff 走头部
+// 全匹配的快路，不再每批把整表重排一遍（几百张时那是每批一次全表 diff）。
+const shown = ref([])
+
 function syncMounted() {
   const b = worldBounds.value
   const { w, h } = stageSize.value
@@ -146,18 +164,67 @@ function syncMounted() {
   const t = -y / scale - m
   const r = (w - x) / scale + m
   const bot = (h - y) / scale + m
-  // 先收集再换 Set：拖拽的绝大多数帧没有新人上桌，不能每帧白克隆一次几百条的集合
-  let toAdd = null
+  const cx = (-x + w / 2) / scale // 视口中心的世界坐标：新人按远近上桌
+  const cy = (-y + h / 2) / scale
+  // 一趟遍历办三件事：记谁在视口内（焦距只算它们）、挑出没上桌的新人、按远近排队
+  const nextInView = new Set()
+  let found = null
   for (const p of placed.value) {
-    if (mounted.value.has(p.videoId)) continue
-    if (p.x < r && p.x + CARD_W > l && p.y < bot && p.y + CARD_H > t) {
-      if (!toAdd) toAdd = []
-      toAdd.push(p.videoId)
-    }
+    const visible = p.x < r && p.x + CARD_W > l && p.y < bot && p.y + CARD_H > t
+    if (visible) nextInView.add(p.videoId)
+    if (mountedSet.has(p.videoId) || mountPending.has(p.videoId) || !visible) continue
+    if (!found) found = []
+    found.push({ p, d: Math.hypot(p.x + CARD_W / 2 - cx, p.y + CARD_H / 2 - cy) })
   }
-  if (toAdd) mounted.value = new Set([...mounted.value, ...toAdd]) // 只在真有新人时换引用，免得每帧空转重渲染
+  // 新露脸的卡抹掉焦距备忘，逼它下一帧补写一次，免得带着旧值回到眼前跳一下
+  for (const id of nextInView) if (!inView.has(id)) focusMemo.delete(id)
+  inView.clear()
+  for (const id of nextInView) inView.add(id)
+  if (!found) {
+    scheduleFocusPaint()
+    return
+  }
+  found.sort((a, z) => a.d - z.d)
+  for (const f of found) mountPending.add(f.p.videoId)
+  mountQueue.push(...found.map((f) => f.p))
+  pumpMounts()
 }
-const shown = computed(() => placed.value.filter((p) => mounted.value.has(p.videoId)))
+
+// 逐帧放卡上桌：一帧一批，批与批之间留出解码的空档。本地封面顺手交给缩略缓存排队做小图，
+// 做好后由 ensureThumb 直接写到元素上（不走响应式）。nextTick 后补扫一次命中缓存的图直接显影，
+// 免得 load 事件不再触发而永远停在 opacity:0。
+function pumpMounts() {
+  if (mountRaf) return
+  mountRaf = requestAnimationFrame(() => {
+    mountRaf = 0
+    if (!mountQueue.length) return
+    const batch = mountQueue.splice(0, MOUNT_BUDGET)
+    for (const p of batch) {
+      mountPending.delete(p.videoId)
+      mountedSet.add(p.videoId)
+      ensureThumb(p)
+    }
+    shown.value.push(...batch) // 只往尾部追加
+    nextTick(() => {
+      const root = stage.value
+      if (!root) return
+      for (const el of root.querySelectorAll('img.wall-cover:not(.is-loaded)')) {
+        if (el.complete && el.naturalWidth) el.classList.add('is-loaded')
+      }
+    })
+    if (mountQueue.length) pumpMounts() // 下一帧接着补
+  })
+}
+
+// 续拉/换料会让巢位整体重排：已上桌的列表要按新 placed 重建，位置才不会留在旧巢上。
+watch(placed, (ps) => {
+  shown.value = ps.filter((p) => mountedSet.has(p.videoId))
+  syncMounted()
+})
+
+function onCoverLoad(e) {
+  e.target.classList.add('is-loaded') // 直接动元素，不走响应式：几百张图不该换来几百次重渲染
+}
 
 // ─── 焦距连续缩放（Apple Watch 蜂窝菜单的机理，对标 Myriad 的 paintCanvasCardFocus）───
 // 每张卡按「卡心离视口中心的世界距离」算自己的 scale：圈内 1.2、圈外 0.6，smoothstep 缓动；
@@ -168,7 +235,7 @@ const FOCUS_MIN = 0.6
 const FOCUS_MAX = 1.2
 const FOCUS_UNIT = 600 // 半径标尺：EXTENT 1.0 ≈ 600 世界像素（约三个巢位）
 const FOCUS_EXTENT = 1.3
-const FOCUS_WRITE_EPS = 0.004
+const FOCUS_WRITE_EPS = 0.01 // 0.004 太细：拖拽时几乎每帧都给几百张卡写样式，肉眼分不出那 0.4% 的缩放差
 
 const cardEls = new Map() // videoId -> 卡片元素
 const focusMemo = new Map() // videoId -> { f, z } 上次写进样式里的值
@@ -228,7 +295,11 @@ function scheduleFocusPaint() {
 
 function paintFocus() {
   const cs = centers.value
-  for (const [id, el] of cardEls) {
+  // 只给视口内的卡写样式：拖走的卡带着旧值待在原地没人看见，回到眼前时由 syncMounted 抹备忘补写。
+  // 拖拽时这圈的卡只有二三十张，每帧的样式写量从几百降到几十。
+  for (const id of inView) {
+    const el = cardEls.get(id)
+    if (!el) continue
     const c = cs.get(id)
     if (!c) continue
     const f = focusScaleAt(c.cx, c.cy)
@@ -237,7 +308,7 @@ function paintFocus() {
     if (last && Math.abs(f - last.f) < FOCUS_WRITE_EPS && z === last.z) continue
     focusMemo.set(id, { f, z })
     el.style.setProperty('--focus', f.toFixed(3))
-    el.style.zIndex = String(z)
+    if (!last || last.z !== z) el.style.zIndex = String(z) // 序没变就不碰，省下几百次无效置位
   }
 }
 
@@ -272,8 +343,36 @@ function checkEdge() {
   emit('loadMore')
 }
 
-function coverOf(it) {
-  return it.localCover || (it.coverUrl ? coverThumb(it.coverUrl, 480) : '')
+// 墙上卡片该显示哪张图（站长 11-03「所有缩略图要本地原图裁切」「不要用 b 站的 cdn 缩小图」）。
+// 顺序：本站预切的 /thumbs 档位 → 存量的浏览器自造小图（IndexedDB）→ 远程热链原样。
+// 本地件绝不直给原图（168 张合计 35.7 MB、中位 201 KB，而卡片只有 176×110），
+// 小图没到位前先不给 src，卡上露的是深色底与首字。
+const WALL_TIER = '352x220' // 卡片 176×110 的 2 倍，与后端 CoverThumbTiers 的 card 档一字对齐
+function rawCover(it) {
+  return it.localCover || it.coverUrl || ''
+}
+function hasCover(it) {
+  return !!rawCover(it) && !brokenCovers.value.has(it.videoId)
+}
+function coverSrcOf(it) {
+  const server = coverThumbOnly(it, WALL_TIER) // 新货：服务端已切好，直接拿地址，一个字节也不多重
+  if (server) return server
+  const raw = rawCover(it)
+  if (!raw) return ''
+  if (!isLocalCoverUrl(raw)) return raw // 远程：原样热链，B 站的 @宽w.webp 全站停用
+  return peekWallThumb(raw) // 存量：浏览器自造的小图（还没做好就先空着）
+}
+function ensureThumb(it) {
+  if (it.coverThumbs) return // 服务端切过了，没必要再花一次解码
+  const raw = it.localCover
+  if (!raw || brokenCovers.value.has(it.videoId)) return
+  wallThumb(raw).then((src) => {
+    // 小图做好（或失败回退成原图地址）就直接写元素：元素在就立刻显影，不在就等下次挂载由 coverSrcOf 给
+    if (!src) return
+    const el = cardEls.get(it.videoId)
+    const img = el ? el.querySelector('img.wall-cover') : null
+    if (img && img.getAttribute('src') !== src) img.src = src
+  })
 }
 
 function onCoverError(it) {
@@ -704,6 +803,9 @@ onBeforeUnmount(() => {
   clearTimeout(idleTimer)
   clearTimeout(driftTimer)
   if (driftRaf) cancelAnimationFrame(driftRaf)
+  if (mountRaf) cancelAnimationFrame(mountRaf) // 拆铺时把上墙队列一并清零，不给下一个实例留幽灵卡
+  mountQueue = []
+  mountPending.clear()
   releaseAllPreviews() // 拆铺前先收摊：停播、清计时器、退还悬停报备与单路令牌
 })
 
@@ -775,21 +877,22 @@ defineExpose({ zoomIn, zoomOut, fit })
         @pointerleave="onPreviewLeave(it)"
         @click="onCardClick"
       >
+        <!-- 首字垫底：图没到位时露出的是深色底与片名首字，到了再由 .wall-cover 渐显盖上 -->
+        <span class="absolute inset-0 flex items-center justify-center text-lg font-medium text-white/35">
+          {{ (it.title || it.bvid || '?').slice(0, 1) }}
+        </span>
         <img
-          v-if="coverOf(it) && !brokenCovers.has(it.videoId)"
-          :src="coverOf(it)"
+          v-if="hasCover(it)"
+          :src="coverSrcOf(it) || undefined"
           :alt="it.title || it.bvid"
-          class="h-full w-full object-cover"
+          class="wall-cover absolute inset-0 h-full w-full object-cover"
           loading="lazy"
           decoding="async"
           draggable="false"
           referrerpolicy="no-referrer"
           @error="onCoverError(it)"
+          @load="onCoverLoad"
         />
-        <!-- 封面缺席/坏了：深色底 + 首字顶位，墙不留空洞 -->
-        <span v-else class="flex h-full w-full items-center justify-center text-lg font-medium text-white/35">
-          {{ (it.title || it.bvid || '?').slice(0, 1) }}
-        </span>
         <!-- 悬停预览层：压在封面之上、字幕条之下；preload=none 不悬停一个字节不拉 -->
         <video
           v-if="it.preview && !previewGaveUp.has(it.videoId)"
@@ -828,6 +931,22 @@ defineExpose({ zoomIn, zoomOut, fit })
   transform: rotate(var(--rot, 0deg)) scale(var(--focus, 1));
   transform-origin: center center;
   animation: card-in 0.32s cubic-bezier(0.22, 0.8, 0.36, 1) both;
+  /* 把失效范围锁在卡内：封面显影与焦点缩放不再牵动整面墙的重排重绘 */
+  contain: layout paint style;
+  /* 拖走的卡整块跳过渲染（尺寸有内联宽高守住，不会塌）：挂过的卡只进不出，
+     逛完整面墙就是几百张在参与绘制，这一句把它们从每帧的绘制名单里划掉。
+     下面的 176px 110px 跟 CARD_W/CARD_H 同步，改尺幅记得改这一行 */
+  content-visibility: auto;
+  contain-intrinsic-size: 176px 110px;
+}
+/* 封面渐进显影（站长 11-03 提的「图片缓慢加载 + 渐变动画」）：解码到位才淡入，
+   没到位时卡上是深色底与首字，不再一糊糊上来。走元素类名与合成器，不进响应式。 */
+.wall-cover {
+  opacity: 0;
+  transition: opacity 0.22s ease;
+}
+.wall-cover.is-loaded {
+  opacity: 1;
 }
 @keyframes card-in {
   from {
@@ -842,6 +961,9 @@ defineExpose({ zoomIn, zoomOut, fit })
 @media (prefers-reduced-motion: reduce) {
   .wall-card {
     animation: none;
+  }
+  .wall-cover {
+    transition: none;
   }
 }
 </style>

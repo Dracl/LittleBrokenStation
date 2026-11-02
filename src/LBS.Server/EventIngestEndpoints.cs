@@ -15,7 +15,7 @@ public static class EventIngestEndpoints
     private static readonly string[] ClientAllowed =
     [
         "watch.open", "watch.play", "watch.pause", "watch.heartbeat", "watch.leave",
-        "page.view",
+        "page.view", "home.open",
     ];
 
     private static readonly TimeSpan IpWindow = TimeSpan.FromMinutes(1);

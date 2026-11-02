@@ -250,7 +250,7 @@ public sealed class VisibilityGateTests : IDisposable
     public void 抽屉设置的档位校验_认那三样_其余给一句人话()
     {
         Assert.True(CollectionsEndpoints.TryNormalizeVisibility(null, out var empty, out _));
-        Assert.Equal(VideoVisibility.Public, empty); // 不填 = 公开（与投稿那四档同一口径）
+        Assert.Equal(VideoVisibility.Public, empty); // 不填 = 公开（与投稿那三档同一口径）
 
         Assert.True(CollectionsEndpoints.TryNormalizeVisibility("   ", out var blank, out _));
         Assert.Equal(VideoVisibility.Public, blank);

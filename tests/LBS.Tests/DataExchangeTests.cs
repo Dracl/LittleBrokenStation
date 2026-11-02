@@ -10,8 +10,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace LBS.Tests;
 
 /// <summary>
-/// 数据交换：导出包 manifest 往返、快照洗白（cookie 洗成固定串 + 会话清空）、
-/// 导入安检（zip slip 整包拒、integrity_check 拒收、包名/回执白名单）与开机换库全流程。
+/// 数据交换：导出包 manifest 往返、快照洗白（cookie 无条件洗成固定串 + 会话清空，withCreds 递 true 也一视同仁，
+/// 且端点已把它写死 false）、导入安检（zip slip 整包拒、integrity_check 拒收、包名/回执白名单）与开机换库全流程。
 /// </summary>
 [Collection("DiskBound")]
 public sealed class DataExchangeTests : IDisposable
@@ -137,7 +137,9 @@ public sealed class DataExchangeTests : IDisposable
         SeedStation();
         SeedMediaFiles();
 
-        var result = _exporter.Run(new ExportOptions(true, true, true, true));
+        // withCreds 递 false：与端点现在的口径一致（端点已把它写死 false，见 Export_RequestBodyWithCredsTrue_StillScrubsCookies）。
+        // 旧包里的 true 仍能回读：Import_ApplyThenStartupSwap 那一条拿 withCreds:true 的老包走暂存与应用。
+        var result = _exporter.Run(new ExportOptions(false, true, true, true));
 
         Assert.True(DataExchangeLayout.IsSafeExportName(result.Name));
         Assert.True(result.Bytes > 0);
@@ -164,7 +166,8 @@ public sealed class DataExchangeTests : IDisposable
         Assert.Equal(1, manifest.Counts.Members);
         Assert.True(manifest.Counts.Events >= 0);
         Assert.NotNull(manifest.Options);
-        Assert.True(manifest.Options.WithCreds);
+        // 新语义：manifest 只说真话——包内 cookie 永远被洗，withCreds 就得是 false（端点那一步已写死）。
+        Assert.False(manifest.Options.WithCreds);
         Assert.True(manifest.Options.WithMedia);
         // files 只列非媒体类：station.db 在册，媒体件走汇总
         Assert.Contains(manifest.Files, f => f.Path == "station.db" && f.Bytes > 0);
@@ -190,7 +193,7 @@ public sealed class DataExchangeTests : IDisposable
     }
 
     [Fact]
-    public void Export_WithCreds_KeepsCookiesButStillWipesSessions()
+    public void Export_WithCreds_StillScrubsCookiesAndWipesSessions()
     {
         SeedStation();
         SeedMediaFiles();
@@ -206,9 +209,40 @@ public sealed class DataExchangeTests : IDisposable
         }
 
         var packDb = ExtractPackedDb(zipPath);
-        // 凭证随包：cookie 原样；会话无论如何都作废
-        Assert.Equal(["SESSDATA=secret-cookie"], QueryStrings(packDb, "SELECT DISTINCT cookie FROM member_accounts;"));
+        // 老断言钉的是「withCreds=true 就原样带走全员 B 站 cookie」，已翻转为「永远洗」：
+        // 导出包会被拿去分享/备份/换机，cookie 不能由包外的人在请求体里一句话决定要不要带走。
+        // 会话无论如何都作废那一手没变。
+        Assert.Equal(["revoked-on-export"], QueryStrings(packDb, "SELECT DISTINCT cookie FROM member_accounts;").OrderBy(x => x).ToArray());
         Assert.Equal(0, QueryCount(packDb, "SELECT COUNT(*) FROM member_sessions;"));
+        // 现站分毫未动（洗的是快照副本，不是现站）
+        Assert.Equal(["SESSDATA=secret-cookie"], QueryStrings(_paths.DatabaseFile, "SELECT DISTINCT cookie FROM member_accounts;"));
+    }
+
+    [Fact]
+    public void Export_RequestBodyWithCredsTrue_StillScrubsCookies()
+    {
+        // 钉的是端点那一条链（DataExchangeEndpoints.cs 的 POST /api/admin/export）：客户端在请求体里递
+        // withCreds:true 也只能拿到一份洗干净的包。这里拿端点同一份反序列化形状、拼同一句 ExportOptions，
+        // 免得「测试验了洗白、线上漏在端点那一层」那种两处真相。
+        SeedStation("SESSDATA=live-cookie");
+
+        var body = """{"withCreds":true,"withMedia":false,"withCmtImg":false,"withCaches":false,"withPreviews":false}""";
+        var request = JsonSerializer.Deserialize<DataExchangeEndpoints.ExportRequest>(
+            body, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.True(request.WithCreds); // 字段仍收得下（老前端不报错），到此为止，不再往下传
+
+        // 与 DataExchangeEndpoints.cs 那句构造一字同行：withCreds 写死 false，其余透传。
+        var options = new ExportOptions(false, request.WithMedia, request.WithCmtImg, request.WithCaches, request.WithPreviews ?? true);
+        var result = _exporter.Run(options);
+
+        var packDb = ExtractPackedDb(ZipPath(result.Name));
+        Assert.Equal(["revoked-on-export"], QueryStrings(packDb, "SELECT DISTINCT cookie FROM member_accounts;").OrderBy(x => x).ToArray());
+        // manifest 从此不替客户端那句「要带凭证」作伪证（前端那个「凭证 / 带登录态」徒据此自动消失）
+        var manifest = ReadManifest(ZipPath(result.Name));
+        Assert.NotNull(manifest.Options);
+        Assert.False(manifest.Options.WithCreds);
+        // 现站自己那条 cookie 不被洗（洗的是快照副本）
+        Assert.Equal(["SESSDATA=live-cookie"], QueryStrings(_paths.DatabaseFile, "SELECT DISTINCT cookie FROM member_accounts;"));
     }
 
     // ─── 导入安检 ───

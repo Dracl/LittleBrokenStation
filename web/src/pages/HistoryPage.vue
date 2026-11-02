@@ -4,7 +4,7 @@ import TopBar from '../components/TopBar.vue'
 import { member, loaded, loginDialogOpen, loginDialogMode } from '../memberStore'
 import { requestConfirm } from '../confirmStore'
 import { friendlyTime } from '../utils/time'
-import { coverThumb } from '../utils/cover'
+import { coverSrcOf } from '../utils/coverSrc'
 
 // ─── 观看历史专页（2026-11-01 从个人空间迁出）───
 // 独立成页后不再需要卡面那套内滚治理：没有 max-h 容器，滚动交还给页面与浏览器天然的锚定，
@@ -47,9 +47,10 @@ function progressPct(item) {
   return Math.max(0, Math.min(100, (pos / dur) * 100))
 }
 
-// 封面口径抄首页卡片：本地件优先，没归档才吃 B 站图床缩图。
+// 封面口径抄首页卡片：走全站唯一出口 utils/coverSrc（服务端缩略档位 → 本地原图 → 热链原样直出）。
+// 190 是格子 CSS 显示宽，内部按 DPR 2 折算挑档。
 function historyCover(item) {
-  return item.localCover || (item.coverUrl ? coverThumb(item.coverUrl, 480) : '')
+  return coverSrcOf(item, 190)
 }
 
 // 片内时间点：分:秒，过小时补时。
@@ -326,7 +327,7 @@ function openLogin(mode) {
                    外层格子的 relative 得留着（删除钮的 absolute 靠它定位），类名 .hist-cell 也不能动（入场退场动画绑在那里）。 -->
               <RouterLink
                 :to="`/watch/${item.bvid}`"
-                class="relative block aspect-video w-full overflow-hidden bg-black/[0.06] no-underline"
+                class="relative block aspect-[16/10] w-full overflow-hidden bg-black/[0.06] no-underline"
                 @mouseenter="coverKey = item.videoId"
                 @mouseleave="coverKey = null"
               >

@@ -163,6 +163,9 @@ public sealed partial class StationDb
         // 预览不跟随进回收站：它是 ffmpeg 从成片转出的派生物，可再生、占地不大，回收站不收；
         // 文件与 previews 行就地抹掉，馆藏恢复后什么都不用做——预览补员下一轮发现它欠着，自己再转一段回来。
         DropPreviewForRecycle(connection, videoId);
+        // 封面缩略件同理：它们不正片也不进回收站（回收站那位站长是拿 .Cover.jpg 看货的，档位件只是屏上消耗品）。
+        // 销账 + 清件一并办完，否则地址还在、盘上没件，墙上就挂一片碎图；恢复后由缩略补员自己切回来。
+        DropCoverThumbsForRecycle(connection, videoId, bvid);
 
         return new RecycleMoveOutcome(true, $"「{bvid}」已收进回收站", insertedId, staged.Count);
     }

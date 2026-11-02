@@ -72,6 +72,9 @@ public static class CoverFileFetcher
 
             File.Move(part, dest, overwrite: true);
             db.RegisterCoverArtifact(videoId, rel); // 先文件后行
+            // 封面刚换完就顺手把缩略档位重切一遍（站长 11-03「重新拉封面的时候也要裁切」）。
+            // 补员与重拉两条路共用本方法，所以这一刀一处就盖住两边；切片失败只记账不扰封面本身的下场。
+            await CoverThumbs.TryBuildAsync(db, paths, videoId, cancellationToken);
             return new CoverFetchResult(CoverFetch.Replaced);
         }
         catch (OperationCanceledException)

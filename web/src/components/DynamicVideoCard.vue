@@ -1,8 +1,8 @@
 <script setup>
 // 动态流里的视频卡：B 站同款「封面 + 时长角 + 灰底标题条」。
 // 已入站走站内放映厅（馆藏封面优先，端点已合并好）；未入站的档案封面也吃分站缓存：本地优先（coverLocal），
-// 热链兑底走 normUrl + coverThumb（hdslb CDN 缩图，不拉原图）；整块开 B 站外链。
-import { coverThumb } from '../utils/cover'
+// 热链兑底走 normUrl 后原样直出（站长 11-03：B 站缩放参数全站停用）；整块开 B 站外链。
+import { coverSrcOf } from '../utils/coverSrc'
 import { normUrl } from '../utils/dynpic'
 
 defineProps({
@@ -13,14 +13,15 @@ const clampStyle = 'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:
 const shell = 'block overflow-hidden rounded-md bg-[#f6f7f8] dark:bg-[#23262e] no-underline transition hover:shadow-md'
 
 function coverSrc(d) {
-  // 容器实宽 ~576px，480w 拉上来必糊；热链兑底按 1280w 要图（webp 也才几十 KB）。
-  return d.coverLocal || coverThumb(normUrl(d.cover), 1280) || ''
+  // 字段名与全站稿件不同名（coverLocal/cover），在此搭桥给全站唯一出口 utils/coverSrc；
+  // 576 是容器实宽，内部按 DPR 2 折算挑档，热链兑底原样直出不贴任何缩放参数。
+  return coverSrcOf({ localCover: d.coverLocal, coverUrl: normUrl(d.cover), bvid: d.bvid, coverThumbs: d.coverThumbs }, 576) || ''
 }
 </script>
 
 <template>
   <RouterLink v-if="d.inStation" :to="`/watch/${d.bvid}`" :class="shell">
-    <div class="relative aspect-video bg-[#eef0f2] dark:bg-white/5">
+    <div class="relative aspect-[16/10] bg-[#eef0f2] dark:bg-white/5">
       <img
         v-if="d.cover || d.coverLocal"
         :src="coverSrc(d)"
@@ -45,7 +46,7 @@ function coverSrc(d) {
     rel="noopener noreferrer"
     :class="shell"
   >
-    <div class="relative aspect-video bg-[#eef0f2] dark:bg-white/5">
+    <div class="relative aspect-[16/10] bg-[#eef0f2] dark:bg-white/5">
       <img
         v-if="d.cover || d.coverLocal"
         :src="coverSrc(d)"

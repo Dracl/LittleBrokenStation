@@ -54,6 +54,27 @@ public sealed class LedgerBackupTests : IDisposable
     }
 
     [Fact]
+    public void FullPathOf_认在册快照_拒路径花活() // 下载钮的后端尺子：与销单同一把，销不掉的也别想读走
+    {
+        var name = _backup.Run();
+
+        var full = _backup.FullPathOf(name);
+
+        Assert.NotNull(full);
+        Assert.Equal(Path.Combine(_tempDir, "backups", name), full);
+        Assert.True(File.Exists(full));
+
+        // 名字不是路径：.. 、绝对路径、带斜杠的都拒（哪怕那件真在盘上）
+        Assert.Null(_backup.FullPathOf("../../station.db"));
+        Assert.Null(_backup.FullPathOf("..\\..\\station.db"));
+        Assert.Null(_backup.FullPathOf(Path.Combine(_tempDir, "station.db")));
+        Assert.Null(_backup.FullPathOf($"{name}/../../station.db"));
+        Assert.Null(_backup.FullPathOf(""));
+        // 名字合格式但盘上没这件 → 也是 null，不给空流让前端拿到 0 字节的存档
+        Assert.Null(_backup.FullPathOf("station-19990101-000000.db"));
+    }
+
+    [Fact]
     public void Prune_KeepsOnlyNewest()
     {
         Assert.True(_backup.SetKeep(7));

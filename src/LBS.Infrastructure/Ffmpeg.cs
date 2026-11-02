@@ -131,6 +131,97 @@ public static class Ffmpeg
 
     private static string Truncate(string text) => text.Length <= 300 ? text : text[..300] + "…";
 
+    // libwebp 在不在，开站探一次就定下来：Debian 的 ffmpeg 大多带，但不是保证，不能每次切片都去跑一遍 -encoders。
+    // 三级取价：null = 还没探过；探不出来一律当没带，降级 jpg，不静默。
+    private static bool? webpEncoderReady;
+    private static readonly SemaphoreSlim WebpProbeGate = new(1, 1);
+
+    /// <summary>
+    /// 探一跟 ffmpeg 到底能不能编 webp（<see cref="CoverThumbTiers"/> 那套缩略件靠它）。
+    /// 结果缓存在进程里，探失败也当「没带」定下来，免得整站切片反复去跑子进程。
+    /// </summary>
+    public static async Task<bool> HasWebpEncoderAsync(CancellationToken cancellationToken)
+    {
+        if (webpEncoderReady is { } cached)
+        {
+            return cached;
+        }
+
+        await WebpProbeGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (webpEncoderReady is { } again)
+            {
+                return again;
+            }
+
+            var run = await RunAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-encoders"], ProbeTimeout, cancellationToken);
+            // 进程起不来（ffmpeg 没装）也回 false：jpg 那一路用的是 mjpeg，ffmpeg 自带，还能切得动。
+            webpEncoderReady = run is { Ok: true } && run.Value.StdOut.Contains("libwebp", StringComparison.OrdinalIgnoreCase);
+            return webpEncoderReady.Value;
+        }
+        finally
+        {
+            WebpProbeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 从本地封面原图切一枚指定尺幅的缩略件：先等比放大到铺满目标框，再居中裁到正好——与 CSS
+    /// <c>object-cover</c> 同一种裁法，所以卡片上看到的构图与浏览器自己裁时一致。
+    /// 目标格式 webp（带 libwebp 时）或 jpg；临时件的名字就带着真后缀，所以不用像预览那样嘴上补 <c>-f</c>。
+    /// 成功回 null，失败回一句人话原因（调用方原样记进 last_error）。
+    /// </summary>
+    public static async Task<string?> EncodeCoverTileAsync(
+        string sourceFile,
+        string destinationFile,
+        int width,
+        int height,
+        string format,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(sourceFile))
+        {
+            return "封面原图不在盘上，切不了缩略";
+        }
+
+        var codec = new List<string>();
+        if (string.Equals(format, CoverThumbTiers.FormatWebp, StringComparison.OrdinalIgnoreCase))
+        {
+            codec.Add("-c:v");
+            codec.Add("libwebp");
+            codec.Add("-quality");
+            codec.Add("80"); // 与浏览器侧 IndexedDB 那套的 0.82 同一档观感
+        }
+        else
+        {
+            codec.Add("-c:v");
+            codec.Add("mjpeg");
+            codec.Add("-q:v");
+            codec.Add("4"); // mjpeg 的 q 是 2(好)~31(差)，4 相当于 webp q80 那一档
+        }
+
+        var args = new List<string>
+        {
+            "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+            "-i", sourceFile,
+            "-frames:v", "1",
+            "-vf", $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}",
+        };
+        args.AddRange(codec);
+        args.Add(destinationFile);
+
+        var run = await RunAsync("ffmpeg", args, TimeSpan.FromSeconds(60), cancellationToken);
+        if (run is null)
+        {
+            return "ffmpeg 没答应";
+        }
+
+        return run.Value.Ok
+            ? null
+            : Truncate(run.Value.Error.Length > 0 ? run.Value.Error : $"ffmpeg 退出码 {run.Value.ExitCode}");
+    }
+
     /// <summary>
     /// 跑一趟外部进程：输出全部收进内存（-loglevel error 下没几行），超时整树掐掉。
     /// 回 null 表示进程根本没起来（ffmpeg 不在 PATH 之类）；取消信号原样上抛，不吞站点关停。

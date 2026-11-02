@@ -26,3 +26,8 @@
 *.webm binary
 *.m4a binary
 *.mp3 binary
+
+# 上游 vendored 树：不参与换行归一化（防上游 CRLF/LF 被我们改写），也不让 GitHub 语言条把它算进主语言
+vendor/** -text linguist-vendored
+*.db binary
+*.sqlite binary

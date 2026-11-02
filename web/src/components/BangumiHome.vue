@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { coverThumb } from '../utils/cover'
+import { coverSrcOf, heroCoverSrc } from '../utils/coverSrc'
 import { createPreviewHost } from '../utils/hoverPreview'
 import { createCoverLedger } from '../utils/coverStates'
 import { colonTime, publishedDate } from '../utils/time'
@@ -10,7 +10,7 @@ import UpIcon from './UpIcon.vue'
 import PlayCountIcon from './PlayCountIcon.vue'
 import DanmakuCountIcon from './DanmakuCountIcon.vue'
 
-// ─── 番剧模式：B 站番剧区（bilibili.com/anime）的同款开局——
+// ─── 大屏幕模式：B 站番剧区（bilibili.com/anime）的同款开局——
 // 顶部大 banner（模糊底铺满 + 清晰封面居右 + 右下黑玻离信息胶囊），
 // 底下一排横版小图 tab（选中放大浮起、名字落到卡下），
 // 三张浅色渐变入口卡，再往下每个顶级分区一条横滚行（悬停出左右圆箭头）。
@@ -103,7 +103,7 @@ function onRowCoverLeave(row, item) {
 const titleKey = ref('')
 
 // 大幕那行尾巴（播数与弹幕数）：图标交给模板（官方那两枚），这里只管数——取不到的那段整段不显。
-// 与 UP 名拆开后各自拼，UP 名在才补那个「 · 」。
+// 11-03 站长点名：两枚自带图标的计数之间不再补「 · 」，间距改由 span 的 ml-2 出。
 function heroViews(v) {
   return v.viewCountText || ''
 }
@@ -159,10 +159,11 @@ watch(heroIdx, () => {
   // 瞬位完成（两帧后）再把过渡还给它们
   requestAnimationFrame(() => requestAnimationFrame(() => { teleporting.value = new Set() }))
 })
-// banner 大图吃到 1280 缩略：模糊底和清晰面同源，不拉 MB 原图
+// banner 大图也走「原图档」（utils/coverSrc 的 heroCoverSrc，与首页大幕同一张嘴）：这块同样铺满 ~1400 CSS 像素，
+// 摆 1280 档就是放大使，压缩块在大面积上一眼看见（站长 11-03「大幕尽可能用原图」）。
+// 同页的分区入口卡/横滚行还是走档位，那些只有 200~440 宽，省字节才划算。
 function heroCoverOf(v) {
-  if (!v) return ''
-  return v.localCover || coverThumb(v.coverUrl, 1280)
+  return heroCoverSrc(v)
 }
 
 function heroPrev() {
@@ -196,10 +197,12 @@ const newArrivals = computed(() =>
 
 // 分区行条目：zone 端点没带时长/播放数/弹幕数/预览片，拿全集按 id 补上（对不上就整段不显，不编数）。
 // previewUrl 也走这条路：/api/zones/videos 只投影了展示字段，悬停预览那 360p 短片住在 /api/videos 那口里——
-// 两副卡面吃同一份全集，网格有预览、番剧模式没有这道缝就从这里合上（站长 11-02 点名对齐）。
+// 两副卡面吃同一份全集，网格有预览、大屏幕模式没有这道缝就从这里合上（站长 11-02 点名对齐）。
 function patchItem(it) {
   const full = videoIndex.value.get(it.id)
-  return full ? { ...it, durationText: full.durationText, viewCountText: full.viewCountText, danmakuCount: full.danmakuCount, previewUrl: full.previewUrl } : it
+  // coverThumbs 也从全集认领：/api/zones/videos 的投影没这列，不认的话横滚行永远只能吃本地原图，
+  // 档位缩略（512x320，档位表里本就写着「分区横滚行」）就轮不到它（认领套路同时长/播放数/预览片）。
+  return full ? { ...it, durationText: full.durationText, viewCountText: full.viewCountText, danmakuCount: full.danmakuCount, previewUrl: full.previewUrl, coverThumbs: full.coverThumbs ?? it.coverThumbs } : it
 }
 
 // 弹幕条数按 B 站口径：过万折成「1.2万」，整万去小数尾（与 VideoCard 同一张嘴）
@@ -234,8 +237,9 @@ async function loadRows() {
     const data = res.ok ? await res.json().catch(() => null) : null
     zones.value = Array.isArray(data?.zones) ? data.zones : []
     const hot = data?.hot?.cover
-    // 后端给的 cover 已是「本地原图优先」的成品，只有热链才需要折 B 站图床缩图（与另两张入口卡同口径）
-    zoneHotCover.value = typeof hot === 'string' && hot ? (/^https?:\/\//.test(hot) ? coverThumb(hot, 480) : hot) : ''
+    // 分区总览入口卡底图走全站唯一出口 utils/coverSrc：/api/zones 只给单个成品串（没稿件对象可认领档位与本地件），
+    // 440 是卡面 CSS 显示宽；同源成品原样用，热链也不再贴 B 站缩放参数（站长 11-03：全站停用，另两张入口卡同口径）。
+    zoneHotCover.value = coverSrcOf({ coverUrl: typeof hot === 'string' ? hot : '' }, 440)
     const lists = await Promise.all(
       zones.value.map(async (z) => {
         try {
@@ -344,17 +348,17 @@ async function loadWeeklyEntry() {
     const data = res.ok ? await res.json().catch(() => null) : null
     if (!data?.weekLabel) return
     const hit = (data.news?.items ?? []).find((n) => n.coverUrl)
-    // 后端给的 coverUrl 已是「本地原图优先」的成品，只有热链才需要折 B 站图床缩图（与周报页头图同口径）
-    const cover = hit ? (/^https?:\/\//.test(hit.coverUrl) ? coverThumb(hit.coverUrl, 480) : hit.coverUrl) : ''
-    weeklyEntry.value = { week: data.weekLabel, cover }
+    // 周报入口卡底图同走 utils/coverSrc：hit 本身就是条稿件（带 bvid/coverUrl，将来后端补上 coverThumbs 自动升档），
+    // 440 是卡面 CSS 显示宽，热链原样直出（与周报页头图同口径）。
+    weeklyEntry.value = { week: data.weekLabel, cover: coverSrcOf(hit, 440) }
   } catch {
     /* 底图缺席而已：卡回落蓝渐变 */
   }
 }
 
-// 封面与时间的口径与 VideoCard 一致：本地原图优先，热链走 480 缩图
+// 封面与时间的口径与 VideoCard 一致：全站唯一出口 utils/coverSrc（228 是横滚行卡面 CSS 显示宽，内部按 DPR 2 折算挑档）。
 function coverOf(v) {
-  return v.localCover || (v.coverUrl ? coverThumb(v.coverUrl, 480) : '')
+  return coverSrcOf(v, 228)
 }
 
 function relTime(d) {
@@ -429,8 +433,8 @@ onBeforeUnmount(() => {
               @click.stop.prevent="goUp(heroCur.upMid)"
             ><UpIcon v-if="heroCur.upName" class="up-ic mr-[3px]" />{{ heroCur.upName }}</span>
             <template v-else><UpIcon v-if="heroCur.upName" class="up-ic mr-[3px]" />{{ heroCur.upName }}</template>
-            <template v-if="heroViews(heroCur)">{{ heroCur.upName ? ' · ' : '' }}<span class="inline-flex items-center gap-0.5"><PlayCountIcon class="h-[13px] w-[13px]" />{{ heroViews(heroCur) }}</span></template>
-            <template v-if="heroDanmaku(heroCur)">{{ heroCur.upName || heroViews(heroCur) ? ' · ' : '' }}<span class="inline-flex items-center gap-0.5"><DanmakuCountIcon class="h-[13px] w-[13px]" />{{ heroDanmaku(heroCur) }}</span></template>
+            <template v-if="heroViews(heroCur)"><span class="ml-2 inline-flex items-center gap-0.5"><PlayCountIcon class="h-[13px] w-[13px]" />{{ heroViews(heroCur) }}</span></template>
+            <template v-if="heroDanmaku(heroCur)"><span class="ml-2 inline-flex items-center gap-0.5"><DanmakuCountIcon class="h-[13px] w-[13px]" />{{ heroDanmaku(heroCur) }}</span></template>
           </span>
         </span>
       </RouterLink>
@@ -692,7 +696,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <div v-else-if="!rows.length && !heroCur" class="rounded-xl border border-dashed border-black/10 dark:border-white/10 py-16 text-center">
-      <p class="text-[13px] text-inkSub">馆藏还空着，番剧区先谢客</p>
+      <p class="text-[13px] text-inkSub">馆藏还空着，大屏幕先谢客</p>
     </div>
   </div>
 </template>

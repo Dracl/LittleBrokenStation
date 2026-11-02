@@ -13,6 +13,16 @@ const SCOPES = [
 ]
 const SCOPE_KEY = 'lbs.member.wall.scope'
 
+// 外递料：给定就不去 /api/member/wall 自取，喂料三档、分页续拉、出错误牌一并歇着，
+// 洗牌/复位/±/全屏照旧——周报的「新货」就是这么上墙的（站长 11-03 定）。
+const props = defineProps({
+  fedItems: { type: Array, default: null },
+  title: { type: String, default: '我的馆藏壁' },
+  emptyTitle: { type: String, default: '' },
+  emptySubtitle: { type: String, default: '' },
+})
+const fed = computed(() => (Array.isArray(props.fedItems) ? props.fedItems : null))
+
 function savedScope() {
   const raw = localStorage.getItem(SCOPE_KEY)
   return SCOPES.some((s) => s.key === raw) ? raw : 'both'
@@ -79,10 +89,12 @@ async function loadMore() {
 
 watch(scope, (v) => {
   localStorage.setItem(SCOPE_KEY, v)
-  load()
+  if (!fed.value) load()
 })
 
-onMounted(load)
+onMounted(() => {
+  if (!fed.value) load()
+})
 
 function reshuffle() {
   seed.value = (seed.value + 1 + Math.floor(Math.random() * 9999)) | 0
@@ -107,16 +119,30 @@ onBeforeUnmount(() => {
   document.body.style.overflow = '' // 带全屏未退也不能把人家页面锁死
 })
 
+// 内外两路料共一个出口：外递料在手就用它，否则用自取的（null = 在飞，[] = 确实空墙）
+const shownItems = computed(() => (fed.value ? fed.value : items.value))
+const shownTotal = computed(() => (fed.value ? fed.value.length : total.value))
+// 重画一把的钥匙：自取那路看喂料档与种子，外递那路看料数与种子
+const wallKey = computed(() =>
+  fed.value ? `fed:${props.fedItems?.length ?? 0}:${seed.value}` : `${scope.value}:${seed.value}`,
+)
+
 const countLabel = computed(() => {
-  if (items.value === null) return '…'
-  return items.value.length < total.value ? `${items.value.length} / ${total.value} 件` : `${items.value.length} 件`
+  const its = shownItems.value
+  if (its === null) return '…'
+  return its.length < shownTotal.value ? `${its.length} / ${shownTotal.value} 件` : `${its.length} 件`
 })
-const isEmpty = computed(() => !busy.value && !loadError.value && items.value?.length === 0)
+const isEmpty = computed(() => !busy.value && !loadError.value && shownItems.value?.length === 0)
 </script>
 
 <template>
-  <!-- 全屏遮罩：压暗身后页面，点空白处也是退场 -->
-  <div v-if="fullscreen" class="fixed inset-0 z-[89] bg-black/55" @click="fullscreen = false"></div>
+  <!-- 全屏态整块搬到 body 底下。position:fixed 的参照物是最近那个带 transform / filter / 层叠上下文的祖先，
+       而周报那张卡包着一层入场动画（weekly-rise 的关键帧里有 transform），
+       不搬走时全屏层被自己那张卡关在原地，看上去就是「点一下全屏直接没了」（站长 11-03 报）。
+       搬进 body 之后参照物是视口；非全屏态 :disabled 一挡，仍旧原地渲染，个人空间那面照旧。 -->
+  <Teleport to="body" :disabled="!fullscreen">
+    <!-- 全屏遮罩：压暗身后页面，点空白处也是退场 -->
+    <div v-if="fullscreen" class="fixed inset-0 z-[89] bg-black/55" @click="fullscreen = false"></div>
   <section
     class="rounded-2xl border border-lineSoft bg-cardBg shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
     :class="fullscreen && 'fixed inset-3 z-[90] flex flex-col overflow-hidden shadow-2xl'"
@@ -130,12 +156,12 @@ const isEmpty = computed(() => !busy.value && !loadError.value && items.value?.l
           <rect x="6" y="13.5" width="7.5" height="5.5" rx="1.2" />
         </svg>
       </span>
-      <h3 class="text-sm font-semibold text-inkMain">我的馆藏壁</h3>
+      <h3 class="text-sm font-semibold text-inkMain">{{ title }}</h3>
       <span class="rounded-full border border-lineSoft px-2 py-px font-mono text-[11px] text-inkFaint">{{ countLabel }}</span>
 
       <div class="wall-tools ml-auto flex flex-wrap items-center gap-2">
-        <!-- 喂料三档：我投的 / 我看的 / 都要 -->
-        <div class="flex items-center rounded-full border border-lineSoft p-0.5" role="group" aria-label="墙上放什么">
+        <!-- 喂料三档：我投的 / 我看的 / 都要。外递料的墙没这回事，整组收起 -->
+        <div v-if="!fed" class="flex items-center rounded-full border border-lineSoft p-0.5" role="group" aria-label="墙上放什么">
           <button
             v-for="s in SCOPES"
             :key="s.key"
@@ -148,7 +174,7 @@ const isEmpty = computed(() => !busy.value && !loadError.value && items.value?.l
           </button>
         </div>
 
-        <span class="h-4 w-px bg-lineSoft" aria-hidden="true"></span>
+        <span v-if="!fed" class="h-4 w-px bg-lineSoft" aria-hidden="true"></span>
 
         <button class="wall-tool" title="洗牌：整墙重新撒一遍" aria-label="洗牌" @click="reshuffle">
           <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -184,13 +210,13 @@ const isEmpty = computed(() => !busy.value && !loadError.value && items.value?.l
       :class="fullscreen ? 'flex-1' : 'h-[400px]'"
     >
       <CanvasWall
-        v-if="items?.length"
-        :key="`${scope}:${seed}`"
+        v-if="shownItems?.length"
+        :key="wallKey"
         ref="wall"
-        :items="items"
+        :items="shownItems"
         :seed="seed"
         :fullscreen="fullscreen"
-        :has-more="items.length < total"
+        :has-more="!fed && shownItems.length < shownTotal"
         @load-more="loadMore"
       />
 
@@ -206,17 +232,25 @@ const isEmpty = computed(() => !busy.value && !loadError.value && items.value?.l
       </div>
 
       <div v-else-if="isEmpty" class="absolute inset-0 flex items-center justify-center">
-        <EmptyTv :title="scope === 'history' ? '墙上还空着' : '还没有值得挂墙的东西'" :subtitle="scope === 'submissions' ? '投几部片子进来，墙就活了' : '投稿或看片都会自动上墙'">
-          <p class="text-[11px] text-inkFaint">刚进站的话，先去首页逛两部再回来看看</p>
+        <EmptyTv
+          :title="emptyTitle || (scope === 'history' ? '墙上还空着' : '还没有值得挂墙的东西')"
+          :subtitle="emptySubtitle || (scope === 'submissions' ? '投几部片子进来，墙就活了' : '投稿或看片都会自动上墙')"
+        >
+          <p v-if="!fed" class="text-[11px] text-inkFaint">刚进站的话，先去首页逛两部再回来看看</p>
         </EmptyTv>
       </div>
 
       <!-- 右下角常驻提示：教一次手势就够 -->
-      <p v-if="items?.length" class="pointer-events-none absolute bottom-2 right-3 z-10 font-mono text-[10px] text-inkFaint/80 dark:text-white/30">
-        {{ fullscreen ? '拖拽平移 · 滚轮缩放 · 方向键巡墙 · Esc 退出' : '拖 = 平移 · Ctrl+滚轮 = 缩放 · 点卡进放映厅 · 拖到边缘自动续墙' }}
+      <p v-if="shownItems?.length" class="pointer-events-none absolute bottom-2 right-3 z-10 font-mono text-[10px] text-inkFaint/80 dark:text-white/30">
+        {{ fullscreen
+          ? '拖拽平移 · 滚轮缩放 · 方向键巡墙 · Esc 退出'
+          : fed
+            ? '拖 = 平移 · Ctrl+滚轮 = 缩放 · 点卡进放映厅'
+            : '拖 = 平移 · Ctrl+滚轮 = 缩放 · 点卡进放映厅 · 拖到边缘自动续墙' }}
       </p>
     </div>
   </section>
+  </Teleport>
 </template>
 
 <style scoped>

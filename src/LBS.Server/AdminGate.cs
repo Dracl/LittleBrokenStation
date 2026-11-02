@@ -1,12 +1,15 @@
 using System.Security.Cryptography;
 using System.Text;
+using LBS.Domain;
 using LBS.Infrastructure;
 
 namespace LBS.Server;
 
 /// <summary>
 /// 站长室锁闸：给管理类端点上一道口令门（朋友共用分站时用），访客路由不受影响。
-/// 口令哈希存 settings KV（"admin-key"），未设即敞开；解锁凭 HttpOnly cookie 里的会话令牌，
+/// 口令哈希存 settings KV（"admin-key"），未设即敞开；新锁走 PBKDF2 加盐（<see cref="MemberPasswords"/>），
+/// 存里那枚无盐 SHA256 旧哈希照旧能验，验对那一刻透明换铸（现网真站点不至于因为加固被锁死）；
+/// 解锁凭 HttpOnly cookie 里的会话令牌，
 /// 有效期 7 天，重启分站后需重新解锁（内存会话不落盘，免得令牌跟着数据目录被复制）。
 /// 忘了口令：删掉 station.db 里 settings 表的 admin-key 行即可回到敞开态。
 /// </summary>
@@ -16,6 +19,12 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
     private static readonly TimeSpan SessionTtl = TimeSpan.FromDays(7);
     private static readonly TimeSpan LockoutWindow = TimeSpan.FromMinutes(5);
     private const int MaxFailsPerWindow = 6;
+
+    /// <summary>
+    /// 站长口令长度下限：与站内席位口令同一档（<see cref="MemberPasswords.MeetsPolicy"/> 也是 8）。
+    /// 四位口令在公网等于没锁——小黑屋只限住同一来源的并发速度，挡不住分布式慢摇。
+    /// </summary>
+    public const int MinPasswordLength = 8;
 
     /// <summary>整段前缀归站长管的路径。</summary>
     private static readonly string[] AdminPrefixes =
@@ -50,7 +59,10 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
     public bool IsAdminRequest(HttpRequest request)
     {
         var raw = request.Path.Value ?? "";
-        if (!raw.StartsWith("/api/", StringComparison.Ordinal))
+        // 进门那一句必须 IgnoreCase：Minimal API 的路由匹配不吃大小写，门闸按 Ordinal 认字面时
+        // /API/admin/members 在路由上照样命中端点、在这里却被当成「不是站长事务」直接放行（活体实测漏过）。
+        // 下面 AdminPrefixes / AdminPaths 的点名本来就是 IgnoreCase 的，保持原样，不拓语义。
+        if (!raw.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -135,7 +147,11 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
         }
     }
 
-    /// <summary>试锁：口令对就发 7 天会话令牌。同一来源连错 6 次进 5 分钟小黑屋。</summary>
+    /// <summary>
+    /// 试锁：口令对就发 7 天会话令牌。候选口令先 <c>Trim()</c> 再验，与挂牌那一步（<see cref="TrySetPassword"/>）同口径：
+    /// 当年落库的是 Trim 过的口令，验的时候不 Trim 就会把「手机上多碰了一个空格」的本人挡在门外；Trim 后为空的候选一律拒。
+    /// 同一来源连错 6 次进 5 分钟小黑屋。
+    /// </summary>
     public string? TryUnlock(string? password, string clientIp)
     {
         var stored = db.GetSetting("admin-key");
@@ -157,7 +173,8 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
             }
         }
 
-        if (string.IsNullOrEmpty(password) || Hash(password) != stored)
+        var candidate = password?.Trim(); // 与设锁同口径：量什么验什么（Trim 后为空即拒，不进比对）
+        if (string.IsNullOrEmpty(candidate) || !VerifyPassword(stored, candidate, out var needsUpgrade))
         {
             lock (pad)
             {
@@ -171,6 +188,13 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
             }
 
             return null;
+        }
+
+        // 存量那枚无盐 SHA256 认对了：验证成功那一刻就地换铸 PBKDF2（现网数据不受影响，老哈希不再继续服役）。
+        // 换铸用的是验对的那个候选串（已 Trim），与下面验的串一字不差，不会把自己锁死。
+        if (needsUpgrade)
+        {
+            UpgradeLegacyKey(candidate);
         }
 
         lock (pad)
@@ -188,11 +212,91 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
         }
     }
 
-    /// <summary>设/换口令（首次上锁也走这里）。</summary>
+    /// <summary>设/换口令（首次上锁也走这里）：不够长的口令一律拒上锁，不给「上了锁等于没锁」留后路。</summary>
+    /// <exception cref="ArgumentException">口令短于 <see cref="MinPasswordLength"/>（调用方想回 400 就先用 <see cref="MeetsPasswordPolicy"/> 自己挡）。</exception>
     public void SetPassword(string password)
     {
-        db.SetSetting("admin-key", Hash(password));
+        if (!TrySetPassword(password, out var error))
+        {
+            throw new ArgumentException(error, nameof(password));
+        }
+    }
+
+    /// <summary>不抛体版的设锁：口令不够格时回假与一句人话（端点拿它回 400，不必接异常）。</summary>
+    public bool TrySetPassword(string? password, out string? error)
+    {
+        if (!MeetsPasswordPolicy(password))
+        {
+            error = $"站长室口令至少 {MinPasswordLength} 位";
+            return false;
+        }
+
+        db.SetSetting("admin-key", MemberPasswords.Hash(password!.Trim()));
+        error = null;
         logger.LogInformation("站长室口令已设置");
+        return true;
+    }
+
+    /// <summary>口令够不够格上锁（只看长度，无复杂度强制）。Trim 后再量：与挂牌那一步的 Trim 同一口径。</summary>
+    public static bool MeetsPasswordPolicy(string? password) =>
+        !string.IsNullOrWhiteSpace(password) && password.Trim().Length >= MinPasswordLength;
+
+    /// <summary>
+    /// 存量无盐 SHA256 → PBKDF2 的透明升级：只在口令验对那一刻发生。
+    /// 落库失败不许反过来把人挡在门外（口令已经验对）：留着旧哈希、记一笔，下次解锁再铸。
+    /// </summary>
+    private void UpgradeLegacyKey(string password)
+    {
+        try
+        {
+            db.SetSetting("admin-key", MemberPasswords.Hash(password));
+            logger.LogInformation("站长室口令已从无盐 SHA256 升级为 PBKDF2 存储");
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "站长室口令升级 PBKDF2 落库失败，本次仍按旧哈希放行");
+        }
+    }
+
+    /// <summary>
+    /// 口令校验的唯一入口：新铸的走 <see cref="MemberPasswords"/>（PBKDF2 加盐 210000 轮），
+    /// settings 里存量那枚 64 位 hex 无盐 SHA256 照旧认（现网真站点的数据不能因为这次加固被锁死），
+    /// 认对时通过 <paramref name="needsUpgrade"/> 知会调用方换铸。两条比对都是定时的，不给旁路测密留缝。
+    /// </summary>
+    private static bool VerifyPassword(string? stored, string candidate, out bool needsUpgrade)
+    {
+        needsUpgrade = false;
+        if (string.IsNullOrEmpty(stored))
+        {
+            return false;
+        }
+
+        if (MemberPasswords.Verify(stored, candidate))
+        {
+            return true;
+        }
+
+        if (!IsLegacySha256(stored))
+        {
+            return false;
+        }
+
+        // 存量那一枚：先定形（十六进制不分大小写）再比；长度不等时 FixedTimeEquals 直接给假，不多泄字数。
+        var storedHex = Encoding.UTF8.GetBytes(stored.ToLowerInvariant());
+        var candidateHex = Encoding.UTF8.GetBytes(Hash(candidate));
+        if (!CryptographicOperations.FixedTimeEquals(storedHex, candidateHex))
+        {
+            return false;
+        }
+
+        needsUpgrade = true;
+        return true;
+    }
+
+    /// <summary>存量哈希的形状：正好 64 位十六进制。PBKDF2 那形带 $ 分隔与轮数段，两形不会互相冒充。</summary>
+    private static bool IsLegacySha256(string stored)
+    {
+        return stored.Length == 64 && stored.All(Uri.IsHexDigit);
     }
 
     /// <summary>除锁：口令清除 + 全体会话作废，分站回到敞开态。</summary>
@@ -218,7 +322,11 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
 
     public static string Cookie => CookieName;
 
-    public static string Hash(string password)
+    /// <summary>
+    /// 存量（无盐 SHA256）口令的算法：只留给 <see cref="VerifyPassword"/> 验旧哈希，新锁一律走 <see cref="MemberPasswords"/>。
+    /// 收成 internal 是为了不让业处顺手拿它去设新锁（那等于绕开加盐）；测试经 <c>InternalsVisibleTo</c> 拿它伪造存量哈希。
+    /// </summary>
+    internal static string Hash(string password)
     {
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(password))).ToLowerInvariant();
     }

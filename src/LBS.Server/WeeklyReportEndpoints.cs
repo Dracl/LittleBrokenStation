@@ -14,19 +14,48 @@ public static class WeeklyReportEndpoints
     /// <summary>缺省看最近一个已过完的整周：进站问周报，给的全是盖棺定论、不会再变来变去的数。</summary>
     private const int DefaultWeekBack = 0;
 
+    /// <summary>海报署名头像的转运客户端：B 站图床跨域，直画 canvas 会脏像素（toDataURL 报错），只能同源中转。</summary>
+    private static readonly HttpClient PosterAvatarHttp = new() { Timeout = TimeSpan.FromSeconds(8) };
+
     /// <summary>week 参数夹校（纯函数直测）：null 落缺省，越界夹回 0..4。</summary>
     internal static int ClampWeek(int? week) => Math.Clamp(week ?? DefaultWeekBack, 0, StationDb.WeeklyMaxWeekBack);
 
+    /// <summary>头像白名单域名（纯函数直测）：只认 B 站系图床，防 SSRF；大小写不敏感。</summary>
+    internal static bool IsBilibiliFaceHost(string host) =>
+        host.Equals("bilibili.com", StringComparison.OrdinalIgnoreCase)
+        || host.EndsWith(".bilibili.com", StringComparison.OrdinalIgnoreCase)
+        || host.Equals("hdslb.com", StringComparison.OrdinalIgnoreCase)
+        || host.EndsWith(".hdslb.com", StringComparison.OrdinalIgnoreCase)
+        || host.EndsWith(".biliimg.com", StringComparison.OrdinalIgnoreCase);
+
     public static void MapWeeklyReportEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/weekly", (int? week, StationDb db, HttpContext http) =>
+        app.MapGet("/api/weekly", (int? week, string? w, StationDb db, HttpContext http) =>
         {
             if (MemberGate.Current(http) is not { } me)
             {
                 return Results.Json(new { message = "登录后才能看周报" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            var report = db.GetWeeklyReport(ClampWeek(week), me.Id, StationDb.WeeklyNewsPagedTake);
+            // 绝对周（<c>?w=2026-W44</c>，周报公告那枚按钮跳的就是它）：先把 ISO 周号折成相对偏移，
+            // 认不出或超出可回看窗口一律 404；<c>?week=</c> 的老行为一字不变（不传 w 就走原路）。
+            var nowUtc = DateTimeOffset.UtcNow;
+            int back;
+            if (!string.IsNullOrWhiteSpace(w))
+            {
+                if (StationDb.LocalWeekBackByKey(w, nowUtc) is not { } byKey)
+                {
+                    return Results.Json(new { message = "那一周不在可回看范围（只有最近 5 个已过完的整周）" }, statusCode: StatusCodes.Status404NotFound);
+                }
+
+                back = byKey;
+            }
+            else
+            {
+                back = ClampWeek(week);
+            }
+
+            var report = db.GetWeeklyReport(back, nowUtc, me.Id, StationDb.WeeklyNewsPagedTake);
             return Results.Ok(new
             {
                 weekLabel = report.WeekLabel,
@@ -38,7 +67,10 @@ public static class WeeklyReportEndpoints
                     items = report.News.Select(n => new { bvid = n.Bvid, title = n.Title, coverUrl = n.CoverUrl }),
                 },
                 hottest = report.Hottest.Select(h => new { bvid = h.Bvid, title = h.Title, coverUrl = h.CoverUrl, viewers = h.Viewers }),
-                dayBars = report.DayBars.Select(d => new { localDate = d.LocalDate, opens = d.Opens, plays = d.Plays, heads = d.Heads, guestShots = d.GuestShots, guestHeads = d.GuestHeads }),
+                dayBars = report.DayBars.Select(d => new { localDate = d.LocalDate, opens = d.Opens, plays = d.Plays, heads = d.Heads, guestShots = d.GuestShots, guestHeads = d.GuestHeads, home = d.Home }),
+                heatWall = report.HeatWall.Select(h => new { localDate = h.LocalDate, shots = h.Shots }),
+                heatMatrix = report.HeatMatrix.Select(c => new { wday = c.Wday, bucket = c.Bucket, shots = c.Shots }),
+                sparks = new { news = report.Sparks.News, danmaku = report.Sparks.Danmaku, stock = report.Sparks.Stock },
                 deltas = report.Deltas.Select(d => new { key = d.Key, current = d.Current, last = d.Last }),
                 staleUps = report.StaleUps.Select(s => new
                 {
@@ -75,6 +107,7 @@ public static class WeeklyReportEndpoints
                     danmakuSent = report.Personal.DanmakuSent,
                     dmSent = report.Personal.DmSent,
                     commentsPosted = report.Personal.CommentsPosted,
+                    home = report.Personal.Home,
                 },
                 personalVsAll = report.PersonalVsAll is null ? null : new
                 {
@@ -94,6 +127,7 @@ public static class WeeklyReportEndpoints
                 {
                     watchPlays = report.WatchPlays,
                     watchOpens = report.WatchOpens,
+                    home = report.Play.Home,
                     beams = report.Play.Beams,
                     uniqueViewers = report.UniqueViewers,
                     searches = report.Searches,
@@ -113,6 +147,7 @@ public static class WeeklyReportEndpoints
                     blockedWatch = report.Guest.BlockedWatch,
                     blockedDanmaku = report.Guest.BlockedDanmaku,
                     loginTries = report.Guest.LoginTries,
+                    home = report.Guest.Home,
                 },
                 totals = new
                 {
@@ -125,6 +160,51 @@ public static class WeeklyReportEndpoints
                     dmMessages = report.Totals.DmMessages,
                 },
             });
+        });
+
+        // 海报署名头像的转运站：B 站图床跨域，直画 canvas 会脏像素（toDataURL 直接报错），只能同源中转。
+        // 只认 B 站系域名（IsBilibiliFaceHost 白名单，防 SSRF——任意 URL 一律不拉），图不超 512KB，成员才可拉。
+        app.MapGet("/api/weekly/poster-avatar", async (string? url, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is null)
+            {
+                return Results.Json(new { message = "登录后才能用海报署名" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var target)
+                || (target.Scheme != Uri.UriSchemeHttps && target.Scheme != Uri.UriSchemeHttp)
+                || !IsBilibiliFaceHost(target.Host))
+            {
+                return Results.BadRequest(new { message = "署名图只认 B 站头像链接" });
+            }
+
+            try
+            {
+                using var resp = await PosterAvatarHttp.GetAsync(target, HttpCompletionOption.ResponseHeadersRead, http.RequestAborted);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    return Results.StatusCode((int)resp.StatusCode);
+                }
+
+                var mime = resp.Content.Headers.ContentType?.MediaType ?? "image/jpeg";
+                if (!mime.StartsWith("image/", StringComparison.Ordinal))
+                {
+                    return Results.BadRequest(new { message = "署名只收图片" });
+                }
+
+                var bytes = await resp.Content.ReadAsByteArrayAsync(http.RequestAborted);
+                if (bytes.Length > 512 * 1024)
+                {
+                    return Results.BadRequest(new { message = "署名图太大" });
+                }
+
+                http.Response.Headers.CacheControl = "public, max-age=86400";
+                return Results.File(bytes, mime);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                return Results.StatusCode(StatusCodes.Status502BadGateway);
+            }
         });
     }
 }

@@ -1,11 +1,36 @@
+# 构建产物与缓存（镜像里由构建阶段现做，不许从宿主机带进去）
 **/bin/
 **/obj/
 **/node_modules/
 web/dist/
+
+# 本地数据与本地目录：容器只认 /data volume，这些一律不进 context
 data/
+data-e2e/
+artifacts/
+OH-Works/
+.edithere/
+# 服务器以仓库根为 cwd 启动时会当场造出空 wwwroot，别让它跟着进 context
+/wwwroot/
+
+# 与镜像无关的树
 docs/
+tools/
+tests/
+.github/
+
+# 运行期数据与凭据，就算误落在仓库根也不进 context
+**/*.db
+**/cookies/
+
+# 仓库元文件
 .git/
 .gitignore
 .gitattributes
 .editorconfig
+
+# 根目录 markdown 一律不进 context（README 等），下面两行给许可证合规要拷的文件开白名单：
+# 对应 Dockerfile 的 COPY LICENSE THIRD-PARTY-NOTICES.md /app/licenses/
 *.md
+!LICENSE
+!THIRD-PARTY-NOTICES.md

@@ -1,7 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { coverThumb } from '../utils/cover'
 import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
 import RecycleBinCard from '../components/RecycleBinCard.vue'
@@ -10,6 +9,7 @@ import { requestConfirm } from '../confirmStore'
 import { friendlyTime } from '../utils/time'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 import { VIDEO_GONE_HINT } from '../utils/gone.js'
+import { remoteCoverFallback, remoteCoverThumb } from '../utils/coverSrc'
 
 const health = ref(null)
 const settings = ref(null)
@@ -1099,6 +1099,31 @@ async function backupDelete(name) {
 
 function fmtBackupTime(iso) {
   return iso ? new Date(iso).toLocaleString('zh-CN', { hour12: false }) : '—'
+}
+
+// 下载快照（站长 11-03「现在备份好都没地方下载」）：直接给 <a download> 指到站长门内那个口，
+// 不走 fetch→blob——整站台账快照可能上百 MB，先囤进内存再存盘没道理，浏览器自己会起下载条。
+function backupDownload(name) {
+  const a = document.createElement('a')
+  a.href = `/api/backups/${encodeURIComponent(name)}/file`
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+// 下载面板那两列的封面（站长 11-03 点名的例外）：条目还没到站、盘上没件，本地档位件无从谈起；
+// 而这里显示的本来就是 B 站图、本来也在连 B 站服务器，于是给它贴缩放参数（60×36 的格子拉 200 KB 原图最亏）。
+// 缩放哪天被收了就把 @ 段摘掉退回原图，只重试一次（全站其余封面都不贴缩放参数，那批才叫「不怕 ban」）。
+function queueCover(url) {
+  return remoteCoverThumb(url, 160)
+}
+function onQueueCoverError(event, raw) {
+  const el = event.target
+  if (el.dataset.rawTried === '1') return
+  el.dataset.rawTried = '1'
+  const fallback = remoteCoverFallback(raw)
+  if (fallback && fallback !== el.getAttribute('src')) el.src = fallback
 }
 
 // ─── 私信记录（管理员视野）：成员展开区拉与我的往来；「发私信」跳信箱预开会话 ───
@@ -2319,7 +2344,8 @@ onUnmounted(() => {
             <ul class="space-y-1.5">
               <li v-for="item in dlQueue.downloading" :key="`dl-${item.id}`" class="flex items-center gap-2.5">
                 <span class="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-stationPink"></span>
-                <img v-if="item.coverUrl" :src="coverThumb(item.coverUrl, 160)" referrerpolicy="no-referrer" loading="lazy" decoding="async" class="h-9 w-15 shrink-0 rounded-md object-cover" alt="" />
+                <!-- 下载队列条目还没到站、没有本地件也没有档位缩略：只能直出热链原图，B 站缩放参数按站长要求全站停用（11-03） -->
+                <img v-if="item.coverUrl" :src="queueCover(item.coverUrl)" referrerpolicy="no-referrer" loading="lazy" decoding="async" class="h-9 w-15 shrink-0 rounded-md object-cover" alt="" @error="onQueueCoverError($event, item.coverUrl)" />
                 <span v-else class="h-9 w-15 shrink-0 rounded-md bg-white/5"></span>
                 <span class="min-w-0 flex-1 truncate text-xs text-white/75" :title="item.title || item.bvid">{{ item.title || item.bvid }}</span>
                 <span class="shrink-0 text-[10px] text-white/25">{{ item.bvid }}</span>
@@ -2330,7 +2356,8 @@ onUnmounted(() => {
             <p class="mb-2 text-[11px] uppercase tracking-widest text-white/35">排队中</p>
             <ul class="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
               <li v-for="item in dlQueue.pending" :key="`pd-${item.id}`" class="flex items-center gap-2.5">
-                <img v-if="item.coverUrl" :src="coverThumb(item.coverUrl, 160)" referrerpolicy="no-referrer" loading="lazy" decoding="async" class="h-9 w-15 shrink-0 rounded-md object-cover opacity-70" alt="" />
+                <!-- 同上：到站前没有本地件，只能直出热链原图，B 站缩放参数按站长要求全站停用（11-03） -->
+                <img v-if="item.coverUrl" :src="queueCover(item.coverUrl)" referrerpolicy="no-referrer" loading="lazy" decoding="async" class="h-9 w-15 shrink-0 rounded-md object-cover opacity-70" alt="" @error="onQueueCoverError($event, item.coverUrl)" />
                 <span v-else class="h-9 w-15 shrink-0 rounded-md bg-white/5"></span>
                 <span class="min-w-0 flex-1 truncate text-xs text-white/60" :title="item.title || item.bvid">{{ item.title || item.bvid }}</span>
                 <span class="shrink-0 text-[10px] text-white/25">{{ item.bvid }}</span>
@@ -2862,6 +2889,16 @@ onUnmounted(() => {
             >
               <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
+              </svg>
+            </button>
+            <!-- 下载钮排在销钮右边（站长 11-03「在删除符号的右边加一个下载」）：销一份要过确认框，下载是无副作用的读，不拦。 -->
+            <button
+              class="shrink-0 rounded-md p-1 text-white/35 transition hover:bg-adminAccent/20 hover:text-adminAccent"
+              title="下载这份快照"
+              @click="backupDownload(f.name)"
+            >
+              <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 4v10m0 0l-3.5-3.5M12 14l3.5-3.5M5 19h14" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </button>
           </li>

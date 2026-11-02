@@ -6,7 +6,6 @@ const TABS = [
   { key: 'video', label: '视频链接' },
   { key: 'favurl', label: '收藏夹链接' },
   { key: 'upurl', label: 'UP 主主页' },
-  { key: 'favfile', label: '收藏夹文件' },
 ]
 
 const VISIBILITIES = [
@@ -20,7 +19,7 @@ const favUrl = ref('')
 const upUrl = ref('')
 const busy = ref(false)
 const notice = ref(null) // { kind, text }
-// 可见性四档共用一档（批量档也是整批同一个），默认公开；
+// 可见性三档共用一档（批量档也是整批同一个），默认公开；
 // 切 tab 不动它，关窗重开才复位。
 const visibility = ref('public')
 
@@ -100,22 +99,6 @@ function submitCurrent() {
   if (activeTab.value === 'video') return submitVideo()
   if (activeTab.value === 'upurl') return submitUpUrl()
   return submitFavUrl()
-}
-
-async function submitFavFile(event) {
-  const file = event.target.files?.[0]
-  event.target.value = ''
-  if (!file || busy.value) return
-  busy.value = true
-  try {
-    const content = await file.text()
-    const result = settle(await postJson('/api/favorites/import', { content, visibility: visibility.value }))
-    notice.value = result
-  } catch {
-    notice.value = { kind: 'err', text: '读不动这个文件' }
-  } finally {
-    busy.value = false
-  }
 }
 </script>
 
@@ -203,22 +186,8 @@ async function submitFavFile(event) {
             <p class="mt-2 text-xs leading-5 text-inkFaint">整架搬回投稿：按 BV 去重，公开空间免登录即可搬；单次封顶 500 条，翻页节奏由分站节流慢慢收，大 UP 主会收得安静又持久。</p>
           </template>
 
-          <template v-else>
-            <label class="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-lineSoft bg-[#f6f7f8] py-10 transition hover:border-stationPink/60 hover:bg-stationPink/5 dark:bg-[#23262e] dark:hover:bg-stationPink/10">
-              <span class="flex h-11 w-11 items-center justify-center rounded-full bg-stationPink/10">
-                <svg viewBox="0 0 24 24" class="h-5 w-5 text-stationPink" fill="none" stroke="currentColor" stroke-width="1.8">
-                  <path d="M12 16V4m0 0 4 4m-4-4-4 4" stroke-linecap="round" stroke-linejoin="round" />
-                  <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round" />
-                </svg>
-              </span>
-              <span class="text-sm text-inkSub">{{ busy ? '正在签收……' : '选择浏览器导出的收藏夹 HTML 文件' }}</span>
-              <span class="text-xs text-inkFaint">.html / .htm</span>
-              <input type="file" accept=".html,.htm,text/html" class="hidden" :disabled="busy" @change="submitFavFile" />
-            </label>
-          </template>
-
           <!-- 谁能看见：分段钮形状照抄墙上「喂料三档」（WallWindow），白卡上直接摆，日夜同一套颜色。
-               四档共用这一枚：摆在输入区之下、回执之上，favfile 没底栏也照样容得下。 -->
+               三档共用这一枚：摆在输入区之下、回执之上。 -->
           <div class="mt-4 flex flex-wrap items-center gap-2">
             <span class="text-[11.5px] text-inkFaint">谁能看见</span>
             <div class="flex items-center rounded-full border border-lineSoft p-0.5" role="group" aria-label="这条投稿谁能看见">
@@ -251,7 +220,7 @@ async function submitFavFile(event) {
           </p>
         </div>
 
-        <div v-if="activeTab !== 'favfile'" class="flex justify-end gap-2 border-t border-lineSoft/70 bg-[#fafbfc] dark:bg-white/5 px-6 py-4">
+        <div class="flex justify-end gap-2 border-t border-lineSoft/70 bg-[#fafbfc] dark:bg-white/5 px-6 py-4">
           <button class="rounded-lg px-4 py-2 text-sm text-inkSub transition hover:bg-black/5 hover:text-inkMain" @click="close">
             先不投了
           </button>

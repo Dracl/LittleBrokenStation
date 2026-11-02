@@ -5,7 +5,6 @@
 // 措辞口径向 askDeleteVideo 看齐：只有这一卡上的才是真没了，得说透；往回收站里抖的那类（抖进回收站可捞）不拉玫红。
 import { computed, onMounted, ref } from 'vue'
 import { requestConfirm } from '../confirmStore'
-import { coverThumb } from '../utils/cover'
 import { friendlyTime } from '../utils/time'
 
 const items = ref(null) // null = 没拉到（加载中或后端没应答），[] = 确实空仓
@@ -43,10 +42,13 @@ async function load() {
   }
 }
 
-// 封面照 AvatarImg 的降级思路：有图拉 hdslb 缩略（cover.js 同款防御），拉不到就退化首字母。
+// 封面照 AvatarImg 的降级思路：拉不到就退化首字母。
+// 取数只能直出：coverUrl 是本站的 /api/admin/recycle/{id}/cover 端点（从盘上捐被删档的原图），
+// 不是稿件对象：没 localCover 可退、没 coverThumbs 可认（档位件随档同销，回收站里无档可切），
+// 所以全站收口的 utils/coverSrc 在这用不上；也不能贴 B 站缩放参数——那 URL 同源（旧的 coverThumb 在此从来是空转：hdslb 域判定拦下原样返回）。
 function coverOf(item) {
   if (coverGone.value.includes(item.id)) return ''
-  return coverThumb(item.coverUrl, 320)
+  return item.coverUrl || ''
 }
 
 function dropCover(id) {

@@ -12,7 +12,7 @@
 ## 它做什么
 
 **入库**
-- 粘贴 B 站链接投稿；浏览器导出的 Netscape 收藏夹文件整架导入；UP 主主页一键整架导入（封顶 500 件，止损三连防灌水）
+- 粘贴 B 站链接投稿；UP 主主页一键整架导入（封顶 500 件，止损三连防灌水）
 - 订阅更新：登记收藏夹链接或博主 MID，爬工每小时带随机抖动巡站，新 BV 自动投稿进站
 - 台账自动去重，重复投稿只补档案不建重行；封面与真实投稿时间入站在即
 
@@ -42,6 +42,11 @@ docker run -d --name lbs \
   ghcr.io/dracl/littlebrokenstation:latest
 ```
 
+> **首启安全**：站上还没有主人的时候，第一位扫码/注册进来的成员会自动继位站长（拿到全站管理权）。
+> 首次启动务必只在内网或防火墙后把站打开，由你自己先把站长继位了，再考虑对外；继位完成前不要把端口挂上公网。
+> 对外要换端口用 `LBS_URLS` 环境变量（例：`-e LBS_URLS=http://0.0.0.0:9000`）。它优先于 `ASPNETCORE_URLS`：
+> 后者对本项目是死配置（`Program.cs` 里 `builder.WebHost.UseUrls` 只读 `LBS_URLS`），改了不生效。
+
 浏览器打开 `http://你的NAS:8090` 即可，站长室在 `/admin`。
 数据目录 `/data` 里有视频库、SQLite、cookies 和缓存，备份它等于备份整座分站。
 数据目录请放 NAS 本地盘，不要把 SQLite 放到 NFS 或 SMB 共享挂载上，WAL 模式在网络文件系统上会坏库。
@@ -65,6 +70,9 @@ dotnet test --filter "FullyQualifiedName!~DownKyi"
 都没才新建。`dotnet run` 会把工作目录切到 `src/LBS.Server`，靠这条兜底才不会在 `src/LBS.Server/` 下自举出一座空站；
 真要不放心，起站前 `$env:LBS_DATA_DIR = "<绝对路径>"` 钉死，开站日志那一行也会把数据目录的来路念出来。
 
+`tools/dev/` 是作者开发期的一次性脚本（图标抓取、素材生成之类），依赖被 `.gitignore` 挡在库外的本地目录
+（如 `OH-Works/`），不保证在别人机器上跑得通，也不在 CI 覆盖范围内。
+
 ## 命名词源
 
 「破站」一词源自早年 A 站用户自嘲 B 站服务器不稳定，后来被 B 站用户自嘲时笑纳，成了社区昵称。
@@ -74,8 +82,11 @@ dotnet test --filter "FullyQualifiedName!~DownKyi"
 
 - 本项目是 unofficial 社区项目，与 bilibili 官方无任何关联、授权或背书关系。
 - 仅供个人备份自己有权访问的内容与学习研究使用，请在下载后 24 小时内删除，版权与一切权利归内容原作者所有。
-- 官方二进制素材（logo、图片、icon sprite、字体）一个字节都不进本仓库，界面版式全部自行用 CSS 实现，
+- 官方位图素材（logo 图片、icon sprite、字体）一个字节都不进本仓库，界面版式全部自行用 CSS 实现，
   标识位使用自绘替身并支持从本地文件载入你自己的素材。
+- 一处如实说明：界面图标（播放页与互动区那十几枚）是自 B 站播放页渲染出的 DOM 复原的 **SVG 路径数据**，
+  以 JS 源码形式随仓库分发（见 THIRD-PARTY-NOTICES.md 的「界面图标」节）。这是路径数据、不是官方位图或 sprite；
+  图形权利归 bilibili，如权利人认为需要下架，开个 issue 即可，我们换成自绘替身。
 
 ## 许可与致谢
 
@@ -89,6 +100,6 @@ dotnet test --filter "FullyQualifiedName!~DownKyi"
 - ✅ M1 下载核心：链接解析入库、收藏夹导入、下载队列、Cookie 登录（含 downkyicore Worker 移植）
 - ✅ M2 复刻 B 站：顶栏、搜索、首页视频卡、播放页对基准并排比对
 - ✅ M3 分站灵魂：本地弹幕、订阅爬工、UP 名片与互动档案、账号分流、反爬套件、暂停板
-- ✅ M4 上线：README 定稿、站长室口令门、台账定时备份、收藏夹订阅实测
-- ⏸️ M4.5 容器化：Dockerfile + GHCR CI（已写就，经用户同意暂搁，推送前验收）
+- ✅ M4 上线：README 定稿、站长室改走 owner 会话门（身份即钥匙，口令锁留档待公网形态）、台账定时备份、收藏夹订阅实测
+- ✅ M4.5 容器化：Dockerfile + GHCR CI（已写就，单测 + 前端构建 + 起容器冒烟已并入 .github/workflows/oci.yml）
 - 🔭 远期：到站通知、多形态皮肤、主人模式头像

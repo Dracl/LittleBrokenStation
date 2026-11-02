@@ -84,7 +84,9 @@ public sealed partial class StationDb
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
-                   v.visibility, m.up_mid
+                   v.visibility, m.up_mid,
+                   -- 封面缩略档位清单（ReadEntries 与 ListVideos / SearchVideos / 相关推荐共用一张列表，四处同形）。
+                   (SELECT group_concat(t.rel_path, ',') FROM cover_thumbs t WHERE t.video_id = v.id AND t.status = 'arrived')
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id

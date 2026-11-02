@@ -23,6 +23,20 @@ function gotoSharedVideo(dyn) {
   if (dyn?.bvid) router.push(`/watch/${dyn.bvid}`)
 }
 
+// 周报公告（后端 WeeklyReportWorker 播的「分站周报 · 2026-W44」）：认得出 ISO 周号才递一枚跳到那期的钮，
+// 认不出就当普通公告摊平——宁可不摆，也不摆一枚跳到最新一期的假钮。
+const WEEKLY_ANNOUNCE_RE = /^分站周报\s*·\s*(\d{4}-W\d{2})$/
+function weeklyIssueOf(item) {
+  if (item?.kind !== 'announce') return ''
+  const hit = WEEKLY_ANNOUNCE_RE.exec(String(item.title ?? '').trim())
+  return hit ? hit[1] : ''
+}
+
+function gotoWeeklyIssue(w) {
+  if (!w) return
+  router.push({ path: '/weekly', query: { w } })
+}
+
 // ─── 页签 ───
 // 上次停在哪个页签就开哪个（浏览器本地小账，同点赞一个路子）；没记过默认信箱
 const TAB_KEY = 'lbs-msg-tab'
@@ -531,6 +545,19 @@ function peerLabel(p) {
                       class="mt-2.5 inline-block text-xs text-stationPink transition hover:underline"
                     >去看 →</RouterLink>
                     <span v-else-if="item.link" class="mt-2.5 inline-block text-xs text-inkFaint">{{ VIDEO_GONE_HINT }}</span>
+                    <!-- 周报公告专用：虚线分隔 + 右对齐描边幽灵钮，跳 /weekly?w=周号（长标题换行也挤不掉它，整行 flex-wrap） -->
+                    <div
+                      v-if="weeklyIssueOf(item)"
+                      class="mt-3 flex flex-wrap items-center justify-end gap-2 border-t border-dashed border-lineSoft pt-2.5"
+                    >
+                      <button
+                        type="button"
+                        class="shrink-0 rounded-[8px] border border-stationPink/60 px-[11px] py-[5px] text-[11.5px] text-stationPink transition hover:bg-stationPink/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationPink/30 dark:border-stationPink/70"
+                        @click="gotoWeeklyIssue(weeklyIssueOf(item))"
+                      >
+                        查看 {{ weeklyIssueOf(item) }} 周报 →
+                      </button>
+                    </div>
                   </div>
                 </div>
               </li>
@@ -725,7 +752,8 @@ function peerLabel(p) {
                   </span>
                   发起私信
                 </span>
-                <button class="flex h-7 w-7 items-center justify-center rounded-full text-inkFaint transition hover:bg-black/5 hover:text-inkMain" @click="directoryOpen = false">✕</button>
+                <!-- after 只撑热区（28→44）：盒子和 hover 圆底不变，外拓落在 header px-4/py-3 留白里 -->
+                <button class="relative flex h-7 w-7 items-center justify-center rounded-full text-inkFaint transition hover:bg-black/5 hover:text-inkMain after:absolute after:-inset-[9px] after:content-['']" @click="directoryOpen = false">✕</button>
               </div>
               <div class="px-3 pb-3 pt-3">
                 <PeerPicker mode="open" @pick="p => openThread(p.memberId, p)" />

@@ -33,7 +33,9 @@ public static class MemberWallEndpoints
         string? LocalCover,
         string? CoverUrl,
         string Source,
-        string? Preview = null);
+        string? Preview = null,
+        // 站内自切的封面缩略档位（逗号相接文件名）：有则墙上直接吃 /thumbs，没切过的存量由前端自造小图兑底。
+        string? CoverThumbs = null);
 
     public static void MapMemberWallApi(this WebApplication app)
     {
@@ -69,7 +71,7 @@ public static class MemberWallEndpoints
                 {
                     if (seen.Add(v.Id))
                     {
-                        items.Add(new WallItem(v.Id, v.Bvid, v.Title, v.LocalCover, v.CoverUrl, "submission", v.PreviewUrl));
+                        items.Add(new WallItem(v.Id, v.Bvid, v.Title, v.LocalCover, v.CoverUrl, "submission", v.PreviewUrl, v.CoverThumbs));
                     }
                 }
             }

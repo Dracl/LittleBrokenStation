@@ -14,6 +14,11 @@ namespace LBS.Server;
 /// 导入走「上传暂存 → 校验 → 应用（自救快照 + 现站保底 + 写 pending 标记）→ 停机 → 下次开机换库」，
 /// 换库必须赶在 StationDb 首次打开之前（Program.cs 挂在 builder.Build() 之后第一件事）。
 /// </summary>
+/// <remarks>
+/// 导出勾选里的 WithCreds 是个已失效的历史开关：成员号池（member_accounts）的 cookie 随台账件走，
+/// 出包前一律被洗成 revoked-on-export（见 <c>ScrubAndCount</c>），递 true 不再有任何效果；
+/// 字段保留只为老导出包/老前端反序列化不报错，并且 manifest 里的 Options 仍能原样回读。
+/// </remarks>
 public sealed record ExportOptions(bool WithCreds, bool WithMedia, bool WithCmtImg, bool WithCaches, bool WithPreviews = true);
 
 public sealed record ExportManifestFile(string Path, long Bytes);
@@ -123,7 +128,7 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
         var zipPath = "";
         try
         {
-            var counts = ScrubAndCount(snapshot, scrubCookies: !options.WithCreds);
+            var counts = ScrubAndCount(snapshot);
             // 洗白用的是读写连接，连接池会替快照扣着句柄——不清掉，后面打包读不动它
             SqliteConnection.ClearAllPools();
             var stationName = DataExchangeLayout.SafeStationName(db.GetSetting("station-name"));
@@ -138,7 +143,7 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
                 AddFile(zip, snapshot, "station.db", files);
                 // 登录态不再入包：分站已无站级 B 站 cookie，成员号池（member_accounts）跟着台账件走，
                 // 出包前已被洗成 revoked-on-export，不存在「一份 cookie 跟着包满天飞」的老风险。
-                // options.WithCreds 这个开关就此失去意义（前端勾选项已拆），留着只为老导入包认得这个字段。
+                // options.WithCreds 这个开关就此失去意义（前端勾选项已拆，写死洗于 ScrubAndCount），留着只为老导入包认得这个字段。
 
                 if (options.WithMedia)
                 {
@@ -243,8 +248,8 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
         return true;
     }
 
-    /// <summary>快照洗白：会话无论如何作废；不随凭证时 cookie 洗成固定串（列 NOT NULL 不能置 NULL），顺带从快照查 counts。</summary>
-    private static ExportCounts ScrubAndCount(string snapshot, bool scrubCookies)
+    /// <summary>快照洗白：会话整表作废、成员号池的 cookie 一律洗成固定串（列 NOT NULL 不能置 NULL），顺带从快照查 counts。cookie 那一手不给开关：客户端在导出请求体里递什么 withCreds 都不能把全站成员的 B 站登录态（SESSDATA/bili_jct）原样带进 zip。</summary>
+    private static ExportCounts ScrubAndCount(string snapshot)
     {
         using var connection = new SqliteConnection($"Data Source={snapshot};Default Timeout=15");
         connection.Open();
@@ -252,11 +257,9 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
         {
             wipe.CommandText = "DELETE FROM member_sessions;";
             wipe.ExecuteNonQuery();
-            if (scrubCookies)
-            {
-                wipe.CommandText = "UPDATE member_accounts SET cookie = 'revoked-on-export';";
-                wipe.ExecuteNonQuery();
-            }
+            // 无条件洗：导出包会被拿去分享/备份/换机，cookie 跟着包走就是拿全站成员的号做人情。
+            wipe.CommandText = "UPDATE member_accounts SET cookie = 'revoked-on-export';";
+            wipe.ExecuteNonQuery();
         }
 
         return new ExportCounts(
@@ -467,10 +470,9 @@ public static class ImportStager
                 warnings.Add("媒体未随包，导入后缺件视频将自动回炉重下");
             }
 
-            if (manifest.Options is null || !manifest.Options.WithCreds)
-            {
-                warnings.Add("成员需重新扫码登录");
-            }
+            // 无条件提醒：包内 cookie 已被洗成 revoked-on-export（与 manifest 里那个失效的 withCreds 无关），
+            // 不提醒就会有人以为导回来就能直接拿成员的号去跑 B 站。
+            warnings.Add("成员需重新扫码登录");
 
             return new StageOutcome(true, null, receipt,
                 new ImportPreview(manifest.StationName, manifest.ExportedAtUtc, manifest.Options, manifest.Counts), warnings);

@@ -14,7 +14,38 @@ env:
   IMAGE: ghcr.io/dracl/littlebrokenstation
 
 jobs:
+  # 门禁：单测与前端构建先过，不过不必修镜像。
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 备 .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # pnpm 版本与 Dockerfile 里 corepack prepare 钉的保持一致，免得两边解析出不同的锁
+      - name: 备 pnpm
+        run: corepack enable && corepack prepare pnpm@12.14.0 --activate && pnpm --version
+
+      - name: 后端测试
+        run: dotnet test tests/LBS.Tests -c Release --nologo
+
+      - name: 前端构建
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm build
+
   image:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,7 +75,61 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: 构建并推送
+      # 第一段：只建不推，load 进本机 daemon 给冒烟用（单平台才可 load；多平台时 load 要去掉）。
+      # 坏镜像绝不能先落 GHCR，所以 push 拆到冒烟绿了之后的那一步。
+      - name: 构建（先不推）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 冒烟：镜像真起来、健康端点与首页都答 200 才有下一步的推送。
+      # / 走的是 MapFallbackToFile("index.html")，答 200 即证明 wwwroot 伺服正常（content root 跑偏的话这里就 404）。
+      - name: 冒烟：起容器打健康与首页
+        env:
+          SMOKE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -uo pipefail
+          image="$(printf '%s\n' "$SMOKE_TAGS" | grep -v '^[[:space:]]*$' | head -n 1)"
+          echo "冒烟镜像：${image}"
+          docker rm -f lbs-smoke >/dev/null 2>&1 || true
+          docker run -d --name lbs-smoke -p 8090:8090 "${image}" >/dev/null
+          healthy=0
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8090/api/health >/dev/null 2>&1; then healthy=1; break; fi
+            if ! [ -n "$(docker ps --filter name=lbs-smoke --format '{{.Names}}')" ]; then
+              echo "容器已经退出，不等了"
+              break
+            fi
+            sleep 1
+          done
+          if [ "${healthy}" -ne 1 ]; then
+            echo "::error::/api/health 在 60 秒内没答到 200"
+            docker logs --tail 200 lbs-smoke || true
+            docker rm -f lbs-smoke >/dev/null 2>&1 || true
+            exit 1
+          fi
+          echo "健康端点应答："
+          curl -fsS http://127.0.0.1:8090/api/health
+          echo
+          if ! curl -fsS -o /dev/null http://127.0.0.1:8090/; then
+            echo "::error::首页 / 没答 200，前端伺服有问题（查 content root / wwwroot）"
+            curl -sS -i http://127.0.0.1:8090/ | head -n 20 || true
+            docker logs --tail 200 lbs-smoke || true
+            docker rm -f lbs-smoke >/dev/null 2>&1 || true
+            exit 1
+          fi
+          echo "冒烟通过：/api/health 与 / 都是 200"
+          docker rm -f lbs-smoke >/dev/null 2>&1 || true
+
+      # 第二段：冒烟绿了才推。同一 buildx 实例 + 同一份输入 + 上一步刚写的 gha 缓存，理论上整层命中不重建；
+      # 缓存没命中而重建时，推上去的那一份与刚冒烟那一份同输入但不保证同 digest，要字节级同一得改成 docker push 已 load 的镜像。
+      - name: 冒烟绿了再推 GHCR
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -52,4 +137,3 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max

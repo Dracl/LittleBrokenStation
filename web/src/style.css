@@ -257,7 +257,7 @@
 
 /* 封面微光帘：图未到位时扫一道高光。用 transform 而非 background-position，
    动画交给合成层，四十张同时闪也不吃主线程绘制。
-   原先这一条只住在 VideoCard 的 scoped 里，番剧模式的分区行卡要同一份效果就得再拄一份，
+   原先这一条只住在 VideoCard 的 scoped 里，大屏幕模式的分区行卡要同一份效果就得再拄一份，
    手拄必然漂（预览那一层就是这么漏的），于是与 .no-scrollbar 同法提到全站一份。 */
 .cover-shimmer {
   overflow: hidden;

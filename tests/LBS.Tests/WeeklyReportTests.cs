@@ -100,6 +100,118 @@ public sealed class WeeklyReportTests : IDisposable
         });
     }
 
+    /// <summary>往 events 台账塞一枪进首页（形状照 HomePage.vue 的上报实况：subject_type='page'、subject_id='home'，
+    /// 与观映账分家：游客柱只数 watch.*，闲逛枪不掺进去）。</summary>
+    private void Home(long? memberId, long? mid, DateTimeOffset ts)
+    {
+        _db.InsertEventsBatch(new[]
+        {
+            new EventDraft(
+                mid is null ? EventActors.Guest : EventActors.Member,
+                mid,
+                EventNames.HomeOpen,
+                "page",
+                "home",
+                null,
+                mid is null ? "9.9.9.9" : null,
+                ts.ToString("O"),
+                memberId),
+        });
+    }
+
+    [Fact]
+    public void 主页柱_只数进首页枪_闲逛不掺观映账_空逛日也立得住柱()
+    {
+        // 站长 11-03 点名加「主页」柱：home.open 单独记账，且只逛首页没看片的日子也得有柱（旧口径那种日子整列缺失）。
+        var seat = Seat("巡站的");
+        var noon = new DateTimeOffset(2026, 10, 20, 4, 0, 0, TimeSpan.Zero);   // 本地 10-20 正午
+        var quiet = new DateTimeOffset(2026, 10, 22, 1, 30, 0, TimeSpan.Zero); // 本地 10-22 凌晨：只有闲逛，没观映
+
+        Watch("BVhomer", 770_001, noon, "watch.open", memberId: seat);
+        Watch("BVhomer", 770_001, noon, "watch.play", memberId: seat);
+        Watch("BVhomer", null, noon, "watch.play"); // 游客一枪观映：游客柱只认这一枪
+        Home(seat, 770_001, noon);
+        Home(null, null, noon);
+        Home(null, null, quiet);
+
+        var report = _db.GetWeeklyReport(0, Now);
+        // 三卡同账：流水全站 3 枪（成员 1 + 游客 2），战报只认本人 1 枪，游客卡只认游客 2 枪。
+        Assert.Equal(3, report.Play.Home);
+        Assert.Equal(2, report.Guest.Home);
+        Assert.Equal(1, _db.GetWeeklyReport(0, Now, seat).Personal!.Home);
+        var day1 = Assert.Single(report.DayBars, b => b.LocalDate == "2026-10-20");
+        Assert.Equal(2, day1.Home);          // 成员+游客各一枪首页
+        Assert.Equal(1, day1.Opens);
+        Assert.Equal(2, day1.Plays);          // 成员播 + 游客播
+        Assert.Equal(1, day1.GuestShots);     // 游客的 home 枪不掺进来
+        var day2 = Assert.Single(report.DayBars, b => b.LocalDate == "2026-10-22");
+        Assert.Equal(1, day2.Home);
+        Assert.Equal(0, day2.Opens);
+        Assert.Equal(0, day2.GuestShots);
+    }
+
+    [Fact]
+    public void 热力墙时段矩阵迷你折线_全走活动口径_心跳噪音与墙外枪不掺() 
+    {
+        // 站长 11-03 点名的三新图：热力墙（活 8 周）、时段矩阵（报周）、迷你折线（新货/弹幕/存底）。
+        // 活动口径只认真动静：进厅/播放/首页/搜索/投稿/发弹幕/登录；心跳与墙外枪一律不配进格。
+        var seat = Seat("热力站友");
+        var old = new DateTimeOffset(2026, 8, 30, 15, 0, 0, TimeSpan.Zero);   // 本地 08-30 23:00：墙（08-31 周一起）前一天
+        var wallDay = new DateTimeOffset(2026, 10, 6, 1, 0, 0, TimeSpan.Zero); // 本地 10-06 周二 09:00：墙内
+        var noon = new DateTimeOffset(2026, 10, 20, 4, 0, 0, TimeSpan.Zero);   // 本地 10-20 周二正午（W43 内）
+        var sunNight = new DateTimeOffset(2026, 10, 25, 15, 0, 0, TimeSpan.Zero); // 本地 10-25 周日 23:00
+
+        Watch("BVheat", 771_001, old, "watch.open", memberId: seat);
+        Watch("BVheat", 771_001, wallDay, "watch.open", memberId: seat);
+        Watch("BVheat", 771_001, noon, "watch.open", memberId: seat);
+        Watch("BVheat", 771_001, noon, "watch.play", memberId: seat);
+        Watch("BVheat", 771_001, noon, "watch.heartbeat", memberId: seat); // 噪音枪：不进墙不进气泡
+        Home(seat, 771_001, noon);
+        Home(null, null, sunNight);
+
+        var vid = AddVideo("BVspark");
+        StampVideoCreated("BVspark", new DateTimeOffset(2026, 8, 20, 0, 0, 0, TimeSpan.Zero)); // 墙前存量 → 存底线基数
+        AddVideo("BVw0");
+        StampVideoCreated("BVw0", new DateTimeOffset(2026, 9, 1, 20, 0, 0, TimeSpan.Zero));    // 本地 09-02：墙内首周新货
+        AddVideo("BVw43s");
+        StampVideoCreated("BVw43s", W43StartUtc.AddHours(10));                                  // W43 新货：末格 w7
+        var dm = _db.AddLocalDanmaku(vid, 0, 1, "热力弹幕", null, false);
+        StampDanmakuCreated(dm, W43StartUtc.AddHours(20));                                       // W43 弹幕增量
+
+        var report = _db.GetWeeklyReport(0, Now);
+
+        // 热力墙：墙外枪（08-30）不配格；墙内只数活动枪，心跳不掺。
+        Assert.DoesNotContain(report.HeatWall, h => h.LocalDate == "2026-08-30");
+        Assert.Equal(1, Assert.Single(report.HeatWall, h => h.LocalDate == "2026-10-06").Shots);
+        Assert.Equal(3, Assert.Single(report.HeatWall, h => h.LocalDate == "2026-10-20").Shots);
+
+        // 时段矩阵：只看报周——周二正午三枪进 wday2/档3，周日夜一枪进 wday7/档5；墙外日不配格。
+        Assert.Equal(3, Assert.Single(report.HeatMatrix, c => c.Wday == 2 && c.Bucket == 3).Shots);
+        Assert.Equal(1, Assert.Single(report.HeatMatrix, c => c.Wday == 7 && c.Bucket == 5).Shots);
+
+        // 迷你折线：新货逐周对格（首周一发、末周一发），存底是累加线（基数 1 + 墙内 2）。
+        Assert.Equal(1, report.Sparks.News[0]);
+        Assert.Equal(0, report.Sparks.News[1]);
+        Assert.Equal(1, report.Sparks.News[7]);
+        Assert.Equal(1, report.Sparks.Danmaku[7]);
+        Assert.Equal(2, report.Sparks.Stock[0]);
+        Assert.Equal(3, report.Sparks.Stock[7]);
+    }
+
+    [Fact]
+    public void 署名头像转运_域名白名单只认B站系()
+    {
+        // 防 SSRF：任意 URL 不拉；子域必须带点隔界，evil-bilibili.com / hdslb.com.evil.net 这类仿冒域名进不来。
+        Assert.True(WeeklyReportEndpoints.IsBilibiliFaceHost("i0.hdslb.com"));
+        Assert.True(WeeklyReportEndpoints.IsBilibiliFaceHost("face0.static.hdslb.com"));
+        Assert.True(WeeklyReportEndpoints.IsBilibiliFaceHost("www.bilibili.com"));
+        Assert.True(WeeklyReportEndpoints.IsBilibiliFaceHost("HDSLB.COM"));
+        Assert.False(WeeklyReportEndpoints.IsBilibiliFaceHost("evil.com"));
+        Assert.False(WeeklyReportEndpoints.IsBilibiliFaceHost("evil-bilibili.com"));
+        Assert.False(WeeklyReportEndpoints.IsBilibiliFaceHost("hdslb.com.evil.net"));
+        Assert.False(WeeklyReportEndpoints.IsBilibiliFaceHost(""));
+    }
+
     [Fact]
     public void 周桶只给过完的整周_本周动静谁都看不见()
     {
@@ -430,6 +542,26 @@ public sealed class WeeklyReportTests : IDisposable
     }
 
     [Fact]
+    public void 绝对周号折成相对偏移_只开同一扇窗不放宽() // /api/weekly?w= 的后端尺子
+    {
+        // 2026-11-03 09:00 (+08)，本地本周是 W45（上一个已过完的整周 = W44 = back 0）。
+        var now = new DateTimeOffset(2026, 11, 3, 1, 0, 0, TimeSpan.Zero);
+
+        Assert.Equal(0, StationDb.LocalWeekBackByKey("2026-W44", now));
+        Assert.Equal(1, StationDb.LocalWeekBackByKey("2026-W43", now));
+        Assert.Equal(4, StationDb.LocalWeekBackByKey("2026-W40", now));
+        Assert.Null(StationDb.LocalWeekBackByKey("2026-W45", now)); // 本周没过完：不给看未盖棺的数
+        Assert.Null(StationDb.LocalWeekBackByKey("2026-W46", now)); // 未来
+        Assert.Null(StationDb.LocalWeekBackByKey("2026-W39", now)); // 超出最近 5 个整周那扇窗
+        Assert.Null(StationDb.LocalWeekBackByKey("2026-W53", now)); // 该年压根没这一周
+        Assert.Null(StationDb.LocalWeekBackByKey("2026-44", now));
+        Assert.Null(StationDb.LocalWeekBackByKey("2026-W4", now));
+        Assert.Null(StationDb.LocalWeekBackByKey("2026-w44", now));
+        Assert.Null(StationDb.LocalWeekBackByKey("", now));
+        Assert.Null(StationDb.LocalWeekBackByKey(null, now));
+    }
+
+    [Fact]
     public void 发报员周一下九点开窗_同周发第二次必须不发()
     {
         var active = Seat("值守的", 950_001);
@@ -455,9 +587,17 @@ public sealed class WeeklyReportTests : IDisposable
         var announce = Assert.Single(inbox);
         Assert.Equal(MemberMail.KindAnnounce, announce.Kind);
         Assert.Equal("分站周报 · 2026-W44", announce.Title);
-        Assert.Contains("新增稿件 1 件", announce.Body);
+        Assert.Contains("新增稿件　1 件", announce.Body);
         Assert.Contains("弹幕 +2 条", announce.Body);
-        Assert.Contains("/weekly", announce.Body);
+        // 排版（站长 11-03「现在太乱了」）：每行「四字标签 + 一枚全角空格」打头，行内最多三项；
+        // 家底的续行用全角空格缩到标签那一列下面。钉住这两条，以后谁把长句堆回来这里就红。
+        var rows = announce.Body.Split('\n');
+        Assert.All(rows, r => Assert.True(r.StartsWith("　　") || (r.Length > 4 && r[4] == '　'), $"这行不合排版：{r}"));
+        Assert.All(rows, r => Assert.True(r.Split(" · ").Length <= 3, $"行内项数超了：{r}"));
+        Assert.Contains("全站家底　稿件 1", announce.Body);
+        Assert.DoesNotContain("上周流水", announce.Body); // 旧的「播放 · 观众 · 搜索…」长句已拆行
+        // 末尾那行「去站里看 /weekly」收掉了：跳转交给前端那枚按钮，周号由它从标题认（站长 11-03）。
+        Assert.DoesNotContain("/weekly", announce.Body);
         Assert.Empty(_db.ListMessages(banned)); // 封席位不收报
 
         // 幂等：同周第二次（哪怕同一个时刻再巡一遍）必须哑火，一条公告都不许多发。

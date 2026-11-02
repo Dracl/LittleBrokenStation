@@ -37,6 +37,9 @@ public sealed partial class StationDb
     /// <summary>周报能回看的最远完整周（0..N 往前数；0 就是上一个刚过完的整周，不给看未过完的本周）。</summary>
     public const int WeeklyMaxWeekBack = 4;
 
+    /// <summary>热力墙/迷你折线的横扫：周报那周再往前数共 8 个整周（与热力墙 8 列对齐）。</summary>
+    public const int WeeklyHeatWeeks = 8;
+
     /// <summary>心跳一枪代表的墙钟秒数：前端 WatchPage 每 30 秒报一枪且「没在播就不报」，
     /// 时长 = 枪数×30；看半分钟以下走人记 0，所以时长永远宁少不多。</summary>
     public const int WeeklyHeartbeatSeconds = 30;
@@ -54,6 +57,14 @@ public sealed partial class StationDb
     // watch.play 从来只有白名单字面量（StationEvents.cs 里没有 WatchPlay），这里照实况对齐，不另造名字。
     private const string WatchPlayEvent = "watch.play";
 
+    /// <summary>活动口径（热力墙/时段矩阵共用）：只数真动静的行为枪——进厅/播放/首页/搜索/投稿/发弹幕/登录成功。
+    /// 心跳、门禁拦挡、弹幕轮询这些噪音一律不掺：心跳一杆能顶百杆，画出来满墙红是假红。</summary>
+    private static readonly string[] HeatEvents =
+    [
+        EventNames.WatchOpen, WatchPlayEvent, EventNames.HomeOpen, EventNames.SearchQuery,
+        EventNames.VideoSubmit, EventNames.DanmakuSend, EventNames.LoginSuccess,
+    ];
+
     public sealed record WeeklyBucket(DateTimeOffset SinceUtc, DateTimeOffset UntilUtc, string WeekLabel);
 
     /// <summary>新货一行：封面走馆藏 localCover 优先的现成口径（有 kind='cover' 产物行吃 /media/…，没有回落热链）。</summary>
@@ -68,10 +79,10 @@ public sealed partial class StationDb
     /// <summary>最受欢迎分区一行：zone 住在 video_meta（「音乐>翻唱」这种全称），空串归「未标分区」。</summary>
     public sealed record WeeklyZoneItem(string Zone, long Viewers, long Plays, long Videos);
 
-    /// <summary>个人战报：登录者自己这周的动静（events.actor_member_id / 弹幕 sender / 私信发件人锁人），访客凑不了数。</summary>
+    /// <summary>个人战报：登录者自己这周的动静（events.actor_member_id / 弹幕 sender / 私信发件人锁人），访客凑不了数；Home 是本人进首页回数（home.open）。</summary>
     public sealed record WeeklyPersonal(
         long Opens, long Plays, long VideosWatched, long Searches, long Submissions, long Logins,
-        long DanmakuSent, long DmSent, long CommentsPosted);
+        long DanmakuSent, long DmSent, long CommentsPosted, long Home);
 
     /// <summary>个人对比全站：占比是本人播放数除全站播放数，名次是本周观众按播放数排的座次（没观众时名次为 null，不编第几名）。</summary>
     public sealed record WeeklyPersonalVsAll(long SharePermille, long? Rank, long HeadCount);
@@ -83,21 +94,33 @@ public sealed partial class StationDb
     /// 一条都没抓过的人为 null（前端显「没档」，不拿空白冒充断更天数）。</summary>
     public sealed record WeeklyStale(long Mid, string? Nickname, string? FaceUrl, long DynThisWeek, long DynTotal, long? LastDays, string? LastAtUtc);
 
-    /// <summary>七日活动柱图的一根柱：本地日历日为键，柱高看播放（play），淡柱是进厅（open），柱上人头另标；
-    /// GuestShots 是当日游客的观映枪数（画第三根柱用），GuestHeads 是当日游客去重 IP 数（游客无 mid，只能拿 IP 当尺，同一出口会并成一人）。</summary>
-    public sealed record WeeklyDayBar(string LocalDate, long Opens, long Plays, long Heads, long GuestShots, long GuestHeads);
+    /// <summary>七日活动柱图的一根柱：本地日历日为键，柱序左起游客→主页→进厅→播放（站长 11-03 点名）；柱上人头另标；
+    /// GuestShots 是当日游客的观映枪数（只数 watch.*，不混主页闲逛），GuestHeads 是当日游客去重 IP 数（游客无 mid，只能拿 IP 当尺，同一出口会并成一人）；
+    /// Home 是当日进首页枪数（home.open，成员游客一视同仁）。</summary>
+    public sealed record WeeklyDayBar(string LocalDate, long Opens, long Plays, long Heads, long GuestShots, long GuestHeads, long Home);
+
+    /// <summary>出没热力墙的一格：本地日历日为键，Shots 是当日活动枪数（活动口径见 HeatEvents 注）；没动静的那日不落行，缺格前端自知。</summary>
+    public sealed record WeeklyHeatDay(string LocalDate, long Shots);
+
+    /// <summary>时段热度矩阵的一格：wday 是 1..7（周一打头，sqlite %w 的周日=0 在 C# 里掰过来），bucket 是本地钟点每 4 小时一档（0=凌晨 0~3 点）。</summary>
+    public sealed record WeeklyHeatCell(int Wday, int Bucket, long Shots);
+
+    /// <summary>大数卡的三根 8 周迷你折线（由老到新，与热力墙同 8 周对栁）：News 是每周新货，Danmaku 是每周弹幕增量，Stock 是各周末存底总量（累加线）。</summary>
+    public sealed record WeeklySparks(long[] News, long[] Danmaku, long[] Stock);
 
     /// <summary>站外游客账：全部拿 actor_type='guest' 的行走，身份只能拿 IP 去重（游客无 mid）。
     /// BlockedWatch 是游客想进片页被门禁挡下的枪数（subject_id 形如 /api/watch/BV…，与弹幕轮询的空转分开数）；
-    /// BlockedDanmaku 是游客读弹幕被挡的枪数（前端重试造成的噪音，不当「想看被拦」的硬信号）。外发禁带 IP 本体。</summary>
+    /// BlockedDanmaku 是游客读弹幕被挡的枪数（前端重试造成的噪音，不当「想看被拦」的硬信号）。外发禁带 IP 本体；
+    /// Home 是游客逛首页枪数（只摆数不进 Heads 口径，人头继续只认有观映意图的行）。</summary>
     public sealed record WeeklyGuest(
-        long Heads, long Opens, long Plays, long Searches, long BlockedWatch, long BlockedDanmaku, long LoginTries);
+        long Heads, long Opens, long Plays, long Searches, long BlockedWatch, long BlockedDanmaku, long LoginTries, long Home);
 
     /// <summary>全站家底：videos/bytes 复用 AdminStats 口径（总稿件行数含未到站的、bytes 是视频库磁盘现扫）；members 数 members 全行（与数据交换的清点同口径）；动态/评论/私信/弹幕总数都取全表 COUNT。</summary>
     public sealed record WeeklyTotals(long Videos, long Members, long Danmaku, long Bytes, long Dynamics, long DynamicComments, long DmMessages);
 
-    /// <summary>播放实况：本周放映厅的真动静——进厅（open）/播放（play）/心跳各多少回，观众按人头去重（访客没 mid 不数进座）。</summary>
-    public sealed record WeeklyPlay(long Opens, long Plays, long Beams, long ViewerHeads);
+    /// <summary>播放实况：本周放映厅的真动静——进厅（open）/播放（play）/心跳各多少回，观众按人头去重（访客没 mid 不数进座）；
+    /// Home 是全站进首页枪数（home.open，成员游客一视同仁）。</summary>
+    public sealed record WeeklyPlay(long Opens, long Plays, long Beams, long ViewerHeads, long Home);
 
     /// <summary>时长榜一行（视频粒度）：seconds 是成员心跳枪数×30 的墙钟秒（游客看不了片，一枪不入账）；
     /// finishPermille 是完播千分比——该 BV 心跳报过的最大播放头 ÷ 片长，封顶 1000；
@@ -148,6 +171,9 @@ public sealed partial class StationDb
         WeeklyPersonalDuration? PersonalDuration,
         IReadOnlyList<WeeklyDelta> Deltas,
         IReadOnlyList<WeeklyDayBar> DayBars,
+        IReadOnlyList<WeeklyHeatDay> HeatWall,
+        IReadOnlyList<WeeklyHeatCell> HeatMatrix,
+        WeeklySparks Sparks,
         IReadOnlyList<WeeklyStale> StaleUps,
         WeeklyGuest Guest,
         WeeklyTotals Totals);
@@ -178,6 +204,50 @@ public sealed partial class StationDb
         var thursday = localDate.AddDays(3 - ((int)localDate.DayOfWeek + 6) % 7);
         var week = (thursday.DayOfYear - 1) / 7 + 1;
         return $"{thursday.Year}-W{week:D2}";
+    }
+
+    /// <summary>
+    /// 把 ISO 周标识（<c>"2026-W44"</c>）折成 <see cref="LocalWeekBucket"/> 那套相对偏移，给 <c>/api/weekly?w=</c> 用
+    /// （周报公告那枚跳转按钮递的就是这个）。
+    /// <para>
+    /// 认不出格式、算出来是未过完的本周或未来、以到超出可回看窗口（最近 5 个已过完的整周）都回 null——
+    /// 绝对周只开与 <c>?week=0..4</c> 同一扇窗，不给任何人拿周号去挖全站任意历史周（口径与 <c>ClampWeek</c> 一字对齐）。
+    /// </para>
+    /// </summary>
+    public static int? LocalWeekBackByKey(string? weekLabel, DateTimeOffset nowUtc)
+    {
+        var key = weekLabel?.Trim();
+        if (string.IsNullOrEmpty(key))
+        {
+            return null;
+        }
+
+        var parts = key.Split('-');
+        if (parts.Length != 2
+            || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var year)
+            || year is < 1970 or > 2999
+            || parts[1].Length != 3
+            || parts[1][0] != 'W'
+            || !int.TryParse(parts[1][1..], NumberStyles.None, CultureInfo.InvariantCulture, out var week)
+            || week is < 1 or > 53)
+        {
+            return null;
+        }
+
+        // ISO 周 1 是「含首个星期四的那一周」，所以 1 月 4 日必然落在周 1 里；由它掰回那周的周一，再按周号平移。
+        var jan4 = new DateOnly(year, 1, 4);
+        var mondayWeek1 = jan4.AddDays(-((int)jan4.DayOfWeek + 6) % 7);
+        var targetMonday = mondayWeek1.AddDays(7 * (week - 1));
+        if (LocalWeekKey(targetMonday) != key)
+        {
+            return null; // 该年压根没这一周（例如平年的 W53）
+        }
+
+        var localNow = nowUtc.ToOffset(LocalWeekOffset);
+        var mondayThisWeek = DateOnly.FromDateTime(localNow.DateTime).AddDays(-((int)localNow.DayOfWeek + 6) % 7);
+        // 上一个整周才是 back=0：目标正好是本周一（未过完）算出 -1，直接拒。
+        var back = (mondayThisWeek.DayNumber - targetMonday.DayNumber) / 7 - 1;
+        return back is >= 0 and <= WeeklyMaxWeekBack ? back : null;
     }
 
     /// <summary>片长文本解析（纯函数直测）："4m14s"→254、"1h2m3s"→3723、"1:02:03"→3723、"2:05"→125、
@@ -275,7 +345,7 @@ public sealed partial class StationDb
         var news = new List<WeeklyNewsItem>();
         var hottest = new List<WeeklyHotItem>();
         long danmakuAdded;
-        WeeklyPlay play = new(0, 0, 0, 0);
+        WeeklyPlay play = new(0, 0, 0, 0, 0);
         long submissions, searches, logins, newMembers, commentsArchived, dynamicsArchived, dmSent;
         var topUps = new List<WeeklyUpItem>();
         var topZones = new List<WeeklyZoneItem>();
@@ -295,8 +365,13 @@ public sealed partial class StationDb
         long durationAvgOpen = 0;
         var deltas = new List<WeeklyDelta>();
         var dayBars = new List<WeeklyDayBar>();
+        var heatWall = new List<WeeklyHeatDay>();
+        var heatMatrix = new List<WeeklyHeatCell>();
+        var newsSparks = new long[WeeklyHeatWeeks];
+        var danmakuSparks = new long[WeeklyHeatWeeks];
+        var stockSparks = new long[WeeklyHeatWeeks];
         var staleUps = new List<WeeklyStale>();
-        WeeklyGuest guest = new(0, 0, 0, 0, 0, 0, 0);
+        WeeklyGuest guest = new(0, 0, 0, 0, 0, 0, 0, 0);
 
         using (var connection = Open(_dbPath))
         {
@@ -387,7 +462,8 @@ public sealed partial class StationDb
                     SELECT COALESCE(SUM(CASE WHEN event = $open THEN 1 ELSE 0 END), 0),
                            COALESCE(SUM(CASE WHEN event = $play THEN 1 ELSE 0 END), 0),
                            COALESCE(SUM(CASE WHEN event = $beat THEN 1 ELSE 0 END), 0),
-                           COUNT(DISTINCT CASE WHEN event IN ($play, $beat) THEN NULLIF(actor_mid, '') END)
+                           COUNT(DISTINCT CASE WHEN event IN ($play, $beat) THEN NULLIF(actor_mid, '') END),
+                           (SELECT COUNT(*) FROM events WHERE event = $home AND subject_type = 'page' AND ts_utc >= $since AND ts_utc < $until)
                     FROM events
                     WHERE subject_type = 'video'
                       AND event IN ($open, $play, $beat)
@@ -396,11 +472,12 @@ public sealed partial class StationDb
                 command.Parameters.AddWithValue("$open", "watch.open");
                 command.Parameters.AddWithValue("$play", WatchPlayEvent);
                 command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$home", EventNames.HomeOpen);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 using var reader = command.ExecuteReader();
                 reader.Read();
-                play = new WeeklyPlay(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
+                play = new WeeklyPlay(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4));
             }
 
             // 台账动静一把数：投稿、搜索、登录成功、新席位、评论/动态入档、私信——全部数 events 白名单行与入库时间行，
@@ -633,7 +710,8 @@ public sealed partial class StationDb
                         (SELECT COUNT(*) FROM dm_messages WHERE from_member_id = $me AND created_at_utc >= $since AND created_at_utc < $until),
                         (SELECT COUNT(*) FROM dynamic_comments c
                           JOIN members m ON m.id = $me AND m.mid IS NOT NULL AND c.mid = m.mid
-                          WHERE c.cached_at_utc >= $since AND c.cached_at_utc < $until);
+                          WHERE c.cached_at_utc >= $since AND c.cached_at_utc < $until),
+                        (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event = $home AND subject_type = 'page' AND ts_utc >= $since AND ts_utc < $until);
                     """;
                 command.Parameters.AddWithValue("$me", viewer);
                 command.Parameters.AddWithValue("$open", "watch.open");
@@ -645,11 +723,12 @@ public sealed partial class StationDb
                 command.Parameters.AddWithValue("$loginPw", "login.password");
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
+                command.Parameters.AddWithValue("$home", EventNames.HomeOpen);
                 using var reader = command.ExecuteReader();
                 reader.Read();
                 personal = new WeeklyPersonal(
                     reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3),
-                    reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6), reader.GetInt64(7), reader.GetInt64(8));
+                    reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6), reader.GetInt64(7), reader.GetInt64(8), reader.GetInt64(9));
             }
 
             // 个人对比全站：占比看播放数（千分比存后端，前端只除 10）；名次是本周有 mid 的观众按播放数倒序的座次，
@@ -772,7 +851,164 @@ public sealed partial class StationDb
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    dayBars.Add(new WeeklyDayBar(reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5)));
+                    dayBars.Add(new WeeklyDayBar(reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), 0));
+                }
+            }
+
+            // 主页柱：home.open 按日历日另栉一查（subject_type='page'，不挤上面那桶观映账——游客柱口径必须继续只数 watch.*）；
+            // 只逛首页没看片的日子也算动静，得补柱，补完按日重排。
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT substr(datetime(ts_utc, $shift), 1, 10) AS local_day, COUNT(*)
+                    FROM events
+                    WHERE event = $home AND subject_type = 'page'
+                      AND ts_utc >= $since AND ts_utc < $until
+                    GROUP BY local_day
+                    ORDER BY local_day;
+                    """;
+                command.Parameters.AddWithValue("$shift", "+8 hours");
+                command.Parameters.AddWithValue("$home", EventNames.HomeOpen);
+                command.Parameters.AddWithValue("$since", since);
+                command.Parameters.AddWithValue("$until", until);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var localDay = reader.GetString(0);
+                    var home = reader.GetInt64(1);
+                    var at = dayBars.FindIndex(b => b.LocalDate == localDay);
+                    if (at >= 0)
+                    {
+                        dayBars[at] = dayBars[at] with { Home = home };
+                    }
+                    else
+                    {
+                        dayBars.Add(new WeeklyDayBar(localDay, 0, 0, 0, 0, 0, home));
+                    }
+                }
+
+                dayBars.Sort(static (a, b) => string.CompareOrdinal(a.LocalDate, b.LocalDate));
+            }
+
+            // 出没热力墙：自报周往回 8 个整周按日活动枪数取格（活动口径见 HeatEvents），给前端拼 8×7 的墙；
+            // 时段热度矩阵只看报周：本地钟点切 4 小时一档，照出「站长什么钟点追番」。
+            var heatSince = bucket.SinceUtc.AddDays(-7L * (WeeklyHeatWeeks - 1)).ToString("O");
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT substr(datetime(ts_utc, $shift), 1, 10) AS local_day, COUNT(*)
+                    FROM events
+                    WHERE event IN ($h0, $h1, $h2, $h3, $h4, $h5, $h6)
+                      AND ts_utc >= $hsince AND ts_utc < $huntil
+                    GROUP BY local_day
+                    ORDER BY local_day;
+                    """;
+                command.Parameters.AddWithValue("$shift", "+8 hours");
+                for (var i = 0; i < HeatEvents.Length; i++)
+                {
+                    command.Parameters.AddWithValue($"$h{i}", HeatEvents[i]);
+                }
+
+                command.Parameters.AddWithValue("$hsince", heatSince);
+                command.Parameters.AddWithValue("$huntil", until);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    heatWall.Add(new WeeklyHeatDay(reader.GetString(0), reader.GetInt64(1)));
+                }
+            }
+
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT CAST(strftime('%w', datetime(ts_utc, $shift)) AS INTEGER),
+                           CAST(strftime('%H', datetime(ts_utc, $shift)) AS INTEGER) / 4,
+                           COUNT(*)
+                    FROM events
+                    WHERE event IN ($h0, $h1, $h2, $h3, $h4, $h5, $h6)
+                      AND ts_utc >= $since AND ts_utc < $until
+                    GROUP BY 1, 2
+                    ORDER BY 1, 2;
+                    """;
+                command.Parameters.AddWithValue("$shift", "+8 hours");
+                for (var i = 0; i < HeatEvents.Length; i++)
+                {
+                    command.Parameters.AddWithValue($"$h{i}", HeatEvents[i]);
+                }
+
+                command.Parameters.AddWithValue("$since", since);
+                command.Parameters.AddWithValue("$until", until);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    var sundayZero = reader.GetInt32(0); // %w 周日=0，掰成周一打头的 1..7
+                    heatMatrix.Add(new WeeklyHeatCell(sundayZero == 0 ? 7 : sundayZero, reader.GetInt32(1), reader.GetInt64(2)));
+                }
+            }
+
+            // 迷你折线三根：新货与弹幕按 created_at_utc 逐日落格再归周栁（与热力墙同栁对栁）；
+            // 存底是累加线：先数热力墙开栁前的存量，再逐周叠新货，省掉八次 COUNT。
+            var dateToWeek = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var w = 0; w < WeeklyHeatWeeks; w++)
+            {
+                var monday = DateOnly.FromDateTime(bucket.SinceUtc.AddDays(-7L * (WeeklyHeatWeeks - 1 - w)).ToOffset(LocalWeekOffset).DateTime);
+                for (var d = 0; d < 7; d++)
+                {
+                    dateToWeek[monday.AddDays(d).ToString("yyyy-MM-dd")] = w;
+                }
+            }
+
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT substr(datetime(created_at_utc, $shift), 1, 10), COUNT(*)
+                    FROM videos
+                    WHERE created_at_utc >= $hsince AND created_at_utc < $huntil
+                    GROUP BY 1;
+                    """;
+                command.Parameters.AddWithValue("$shift", "+8 hours");
+                command.Parameters.AddWithValue("$hsince", heatSince);
+                command.Parameters.AddWithValue("$huntil", until);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (dateToWeek.TryGetValue(reader.GetString(0), out var w))
+                    {
+                        newsSparks[w] += reader.GetInt64(1);
+                    }
+                }
+            }
+
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    SELECT substr(datetime(created_at_utc, $shift), 1, 10), COUNT(*)
+                    FROM danmaku_local
+                    WHERE created_at_utc >= $hsince AND created_at_utc < $huntil
+                    GROUP BY 1;
+                    """;
+                command.Parameters.AddWithValue("$shift", "+8 hours");
+                command.Parameters.AddWithValue("$hsince", heatSince);
+                command.Parameters.AddWithValue("$huntil", until);
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                {
+                    if (dateToWeek.TryGetValue(reader.GetString(0), out var w))
+                    {
+                        danmakuSparks[w] += reader.GetInt64(1);
+                    }
+                }
+            }
+
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT COUNT(*) FROM videos WHERE created_at_utc < $hsince;";
+                command.Parameters.AddWithValue("$hsince", heatSince);
+                var stockRunning = Convert.ToInt64(command.ExecuteScalar() ?? 0L);
+                for (var w = 0; w < WeeklyHeatWeeks; w++)
+                {
+                    stockRunning += newsSparks[w];
+                    stockSparks[w] = stockRunning;
                 }
             }
 
@@ -797,7 +1033,9 @@ public sealed partial class StationDb
                         (SELECT COUNT(*) FROM events
                           WHERE actor_type = $guest AND event = $block AND subject_id LIKE '%/danmaku%' AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events
-                          WHERE actor_type = $guest AND event IN ($qrStart, $qrScan, $pwDeny) AND ts_utc >= $since AND ts_utc < $until);
+                          WHERE actor_type = $guest AND event IN ($qrStart, $qrScan, $pwDeny) AND ts_utc >= $since AND ts_utc < $until),
+                        (SELECT COUNT(*) FROM events
+                          WHERE actor_type = $guest AND event = $home AND subject_type = 'page' AND ts_utc >= $since AND ts_utc < $until);
                     """;
                 command.Parameters.AddWithValue("$guest", EventActors.Guest);
                 command.Parameters.AddWithValue("$open", "watch.open");
@@ -808,13 +1046,14 @@ public sealed partial class StationDb
                 command.Parameters.AddWithValue("$qrStart", "login.qr.start");
                 command.Parameters.AddWithValue("$qrScan", "login.qr.scanned");
                 command.Parameters.AddWithValue("$pwDeny", "login.password.denied");
+                command.Parameters.AddWithValue("$home", EventNames.HomeOpen);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 using var reader = command.ExecuteReader();
                 reader.Read();
                 guest = new WeeklyGuest(
                     reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3),
-                    reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6));
+                    reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6), reader.GetInt64(7));
             }
 
             // 更新榜：订阅台账 dynamics_targets 是「该冒泡的人」名单，拿 dynamics 的 published_at_utc 算距今——
@@ -931,7 +1170,7 @@ public sealed partial class StationDb
             new WeeklyDuration(durationSeconds, durationShots, durShotsByBvid.Count, durationFinished, durationAvgOpen,
                 durationTopVideos, durationTopUps, durationTopZones),
             topUps, topZones, personal, personalVsAll, personalDuration,
-            deltas, dayBars, staleUps, guest,
+            deltas, dayBars, heatWall, heatMatrix, new WeeklySparks(newsSparks, danmakuSparks, stockSparks), staleUps, guest,
             new WeeklyTotals(stats.Total, members, danmakuTotal, stats.TotalBytes, dynamicTotal, dynamicCommentTotal, dmTotal));
     }
 }

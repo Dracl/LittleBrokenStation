@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { colonTime, publishedDate } from '../utils/time'
-import { coverThumb } from '../utils/cover'
+import { coverSrcOf } from '../utils/coverSrc'
 import { createPreviewHost } from '../utils/hoverPreview'
 import { createCoverLedger } from '../utils/coverStates'
 import UpIcon from './UpIcon.vue'
@@ -91,8 +91,9 @@ function onUpRowClick(e) {
   router.push(`/up/${props.video.upMid}`)
 }
 
-// 封面取图：本地原图优先（后端已拼好 /media/…），没归档的才吃热链 CDN 缩图；两边都没有给空串走 BV 占位。
-const coverSrc = computed(() => props.video.localCover || (props.video.coverUrl ? coverThumb(props.video.coverUrl, 480) : ''))
+// 封面取图走全站唯一出口 utils/coverSrc：服务端缩略档位 → 本地原图 → 热链原样直出（B 站缩放参数已全站停用）；
+// 257 是卡面 CSS 显示宽，内部按 DPR 2 折算挑档；一条封面都没有给空串走 BV 占位。
+const coverSrc = computed(() => coverSrcOf(props.video, 257))
 
 // 弹幕条数按 B 站口径：过万折成「1.2万」，整万去小数尾
 function fmtCount(n) {
@@ -132,7 +133,7 @@ function statusMeta(status) {
 
 // 封面加载态：远程图到位前刷微光帘，到位后淡入，不闪白不裸切；
 // 图命中缓存时 load 可能不补发，挂载后补探一次 complete。
-// 账本走 utils/coverStates（与番剧模式分区行同一份）：本卡一卡一实例，只记自己那一个键；
+// 账本走 utils/coverStates（与大屏幕模式分区行同一份）：本卡一卡一实例，只记自己那一个键；
 // 微光帘那条 CSS 也已从本文件的 scoped 里抬到 style.css，两副卡面共用一条。
 const coverEl = ref(null)
 const covers = createCoverLedger()
@@ -145,7 +146,7 @@ onMounted(() => {
 // ─── 悬停预览：后端备好了约 1MB 的 360p 无声片段（video.previewUrl）才启用这一层 ───
 // 封面 img 全程不卸：预览没到位/加载失败时看到的就是封面，所以这层只有淡入，没有任何报错 UI。
 // 起播延时（350ms）、续播窗口（200ms）、单路令牌、出错放弃、减少动效这些口径全住在 utils/hoverPreview 的机位里——
-// 番剧模式的分区行卡（BangumiHome）用的是同一个机位，两副卡面对不起手感的缝就从这里焊上（站长 11-02 点名要对齐）。
+// 大屏幕模式的分区行卡（BangumiHome）用的是同一个机位，两副卡面对不起手感的缝就从这里焊上（站长 11-02 点名要对齐）。
 const previewSrc = computed(() => props.video.previewUrl || '')
 const previewEl = ref(null)
 const preview = createPreviewHost()

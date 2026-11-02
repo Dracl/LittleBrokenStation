@@ -58,7 +58,7 @@ public sealed partial class StationDb
     /// <summary>
     /// 静态区挡门用：拿相对路径（正斜杠，相对 data/videos；previews 那支相对 data/previews，同一字符串传进来）
     /// 问这个件属于哪条稿子、那条藏没藏。
-    /// 认法三级：artifacts.rel_path 精确 → video_codecs.rel_path → previews.rel_path；
+    /// 认法三级：artifacts.rel_path → video_codecs.rel_path → previews.rel_path（字面不中再走一轮 COLLATE NOCASE）；
     /// 台账都不认（头像/表情/评论图那类件根本不在这些表里）就退到文件名尾部的 BV 号反查 bvid。
     /// 彻底认不出回 null —— 调用方自己决定放行，不许拿 null 当私有，否则别人家的头像就跟着吃 404 了。
     /// </summary>
@@ -92,22 +92,28 @@ public sealed partial class StationDb
     }
 
     /// <summary>
-    /// 「这个件属于哪条稿子」的唯一认法：三条腿按「产物 → 加档件 → 悬停预览」的顺序问（都是 rel_path 精确匹配，
-    /// 命中即回，不做前缀花活）；台账都不认就退到文件名尾部那枚 BV 号反查 bvid。彻底认不出回 null。
+    /// 「这个件属于哪条稿子」的唯一认法：三条腿按「产物 → 加档件 → 悬停预览」的顺序问（先比字面，
+    /// 三条都不中再把三条跑一轮 COLLATE NOCASE），命中即回，不做前缀花活；台账都不认就退到文件名尾部那枚 BV 号反查 bvid。彻底认不出回 null。
     /// 三腿都 JOIN videos：稿件行已经不在的悬空台账不当命中，留给后面那腿（与分腿查可见性的老口径一字不差）。
     /// </summary>
     private static long? TryResolveMediaVideoId(SqliteConnection connection, string rel)
     {
-        foreach (var sql in new[]
+        // 轮次顺位不许倒过来：字面腿全部跑完才轮到 NOCASE 腿——大小写敏感的文件系统（ext4）上
+        // 同形不同大小写的两个件本可各自属不同稿，先把三条字面腿跑完，原有语义一字不差。
+        // NOCASE 那一轮的来由：静态区落在 NTFS / Docker 卷这类大小写不敏感的文件系统上时，
+        // /media/bv1xxxxxx.mp4（小写）照样从盘上取得出文件，台账按字面比却不中 → 认不到 id
+        // → 调用方按「台账不管这个件」fail-open 放行，私有稿的正片就这么溜出去。
+        // COLLATE NOCASE 不走索引，但这是低频反查（前面还压着一层 mediaOwnerCache），认这个代价。
+        foreach (var nocase in new[] { false, true })
         {
-            "SELECT a.video_id FROM artifacts a JOIN videos v ON v.id = a.video_id WHERE a.rel_path = $key LIMIT 1;",
-            "SELECT d.video_id FROM video_codecs d JOIN videos v ON v.id = d.video_id WHERE d.rel_path = $key LIMIT 1;",
-            "SELECT p.video_id FROM previews p JOIN videos v ON v.id = p.video_id WHERE p.rel_path = $key LIMIT 1;",
-        })
-        {
-            if (ReadScalarLong(connection, sql, "$key", rel) is { } videoId)
+            foreach (var (table, alias) in MediaRelTables)
             {
-                return videoId;
+                var sql = $"SELECT {alias}.video_id FROM {table} {alias} JOIN videos v ON v.id = {alias}.video_id "
+                    + $"WHERE {alias}.rel_path = $key{(nocase ? " COLLATE NOCASE" : "")} LIMIT 1;";
+                if (ReadScalarLong(connection, sql, "$key", rel) is { } videoId)
+                {
+                    return videoId;
+                }
             }
         }
 
@@ -121,6 +127,17 @@ public sealed partial class StationDb
 
         return null;
     }
+
+    /// <summary>三条腿的表与别名（产物 / 加档件 / 悬停预览 / 封面缩略件，认的都是 rel_path 这一列）。</summary>
+    private static readonly (string Table, string Alias)[] MediaRelTables =
+    [
+        ("artifacts", "a"),
+        ("video_codecs", "d"),
+        ("previews", "p"),
+        // 封面缩略件住在 data/thumbs，台账不在 artifacts 里；不补这一腿，私有稿件的缩略图会被
+        // 「台账不管这个件」的 fail-open 口径直接匿名放行（文件名里那枚 BV 号只是第二保险）。
+        ("cover_thumbs", "t"),
+    ];
 
     private static VideoVisibility? ReadVisibility(SqliteConnection connection, string sql, string paramName, object value)
         => ReadScalar(connection, sql, paramName, value) is string raw ? VisibilityCodec.FromColumn(raw) : null;
@@ -173,7 +190,7 @@ public sealed partial class StationDb
         {
             var token = segments[i];
             if (token.Length != BvidLength
-                || !token.StartsWith("BV", StringComparison.Ordinal)
+                || !token.StartsWith("BV", StringComparison.OrdinalIgnoreCase)
                 || !IsAsciiAlphaNum(token, 2))
             {
                 continue;

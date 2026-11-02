@@ -48,6 +48,7 @@ public static class EventNames
     public const string CardClick = "card.click";
 
     public const string WatchOpen = "watch.open";
+    public const string HomeOpen = "home.open"; // 进首页一枪（周报七日动静的「主页」柱）：subject_type=page，不混观映账
     public const string WatchHeartbeat = "watch.heartbeat";
     public const string WatchSeek = "watch.seek";
     public const string WatchBlocked = "watch.blocked";

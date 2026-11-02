@@ -42,6 +42,21 @@ public sealed record DataPaths(string Root, string Videos, string Downkyi, strin
     /// </summary>
     public string Recycle => Path.Combine(Root, "recycle");
 
+    /// <summary>
+    /// 封面缩略件区（站长 11-03「缩略图要本站自己从本地原图裁，不许靠 B 站 CDN 缩放」）。
+    /// 与 <see cref="Previews"/> 同理独立于 videos：不被 ClassifyArtifact 认成产物（否则会被插成第二行
+    /// kind='cover'，而全站读侧取的是最早那一行）、不被 IsMediaMissing 当必备产物验盘（否则档位文件
+    /// 没落全就把整条稿件 ResetToPending 重下正片）、不进回收站前缀补扫、也不进 AdminStats 的容量账。
+    /// 派生物，随时可删可再生。
+    /// </summary>
+    public string Thumbs => Path.Combine(Root, "thumbs");
+
+    /// <summary>
+    /// 切片中的临时件区。名字以点开头是有意的：<c>/thumbs</c> 静态区的半成品闸会把含 <c>/.</c> 的路径一律 404，
+    /// 切到一半的缩略图永不可能从静态区溜出去。
+    /// </summary>
+    public string ThumbsStaging => Path.Combine(Root, "thumbs", ".staging");
+
     public static DataPaths Resolve()
     {
         var (root, hint) = ResolveDataRoot(Directory.GetCurrentDirectory(), Environment.GetEnvironmentVariable(RootEnvVar));
@@ -57,7 +72,7 @@ public sealed record DataPaths(string Root, string Videos, string Downkyi, strin
             RootHint = hint,
         };
 
-        foreach (var dir in new[] { paths.Root, paths.Videos, paths.Downkyi, paths.Cookies, paths.Cache, paths.Avatars, paths.Emotes, paths.CmtImg, paths.Recycle, paths.Previews })
+        foreach (var dir in new[] { paths.Root, paths.Videos, paths.Downkyi, paths.Cookies, paths.Cache, paths.Avatars, paths.Emotes, paths.CmtImg, paths.Recycle, paths.Previews, paths.Thumbs, paths.ThumbsStaging })
         {
             Directory.CreateDirectory(dir);
         }

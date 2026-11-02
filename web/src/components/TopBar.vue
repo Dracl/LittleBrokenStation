@@ -102,12 +102,16 @@ onUnmounted(() => {
 })
 
 // ─── 悬停门：铃铛预览与头像菜单共用一把尺子（门本身在 utils/useHoverGate.js，放映厅的封面浮窗同款）───
-// 进 120ms 才开：横穿顶栏的过路鼠标不该惊动面板；离 260ms 才收：斜着移进面板不掉。
+// 离 260ms 才收：斜着移进面板不掉。进档本处单顶到 320ms（站长 11-02 点名：120ms 跟即时弹出没差别）：
+// 顶栏这两颗挂在页面最上沿，指针去哪儿都要从它们头上擦一下，过路鼠标不该惊动面板。
+// 不用公共默认值是因为封面浮窗那颗不靠顶栏、不会误擦，它继续吃 useHoverGate 的 120ms。
+const TOP_HOVER_OPEN_MS = 320
 
 let menuFromHover = false
 const avatarHover = useHoverGate(menuOpen, {
   onOpen: () => { menuFromHover = true },
   shouldClose: () => menuFromHover,
+  openMs: TOP_HOVER_OPEN_MS,
 })
 
 // ─── 铃铛悬停预览：摊开停一会儿就算读过 ───
@@ -119,7 +123,7 @@ const previewFailed = ref(false)
 let previewAt = 0
 const PREVIEW_TTL_MS = 30000
 
-const bellHover = useHoverGate(previewOpen, { onOpen: () => { loadPreview() } })
+const bellHover = useHoverGate(previewOpen, { onOpen: () => { loadPreview() }, openMs: TOP_HOVER_OPEN_MS })
 
 // 未读合流数一动（读掉、新到、登出）就作废缓存，下次 hover 拿新的
 watch(unread, () => { previewAt = 0 })
@@ -307,16 +311,31 @@ function goMessages() {
         />
       </div>
 
-      <div class="flex shrink-0 items-center gap-3">
+      <!-- 右簇间距 gap-5（20px，站长 11-02 定）：三颗都是 32px 的圆 hover 底，原先 gap-3 只剩 12px，
+           两个 hover 圆看上去快粘在一起，指针斜着走很容易擦错颗；头像那枚右上角还挂个皇冠外沿，多留点不吃亏。 -->
+      <div class="flex shrink-0 items-center gap-5">
+        <!-- 投稿钮：最细一档——裸图标，与旁边那枚信箱铃铛同一个写法（站长 11-02 定）。
+             走过的两版：分站自绘的粉描边胶囊（他嫌突兀），再到整枚照 B 站 laputa-home 那枚 .upload-entry__trigger 做的实心粉块（实机还是嫌抢）。
+             图标也换过一次：laputa-home 包（index-84fb5632.js 里的 UploadIcon）那是描边款——托盘加开口箭头（viewBox 0 0 18 18、
+             stroke currentColor、宽 1.7、三段 path：M12.0824 10H14.1412… / M8.99413 11.2353L8.99413 3.82353 / M12.0823 6.29413L8.9941 3.20589L5.90587 6.29413），
+             登录与访客两个分支渲染的是同一个。而站长 11-02 截图里他页面上那枚是实心箭头加一横杠——与首页包不同版（laputa-home 是
+             无 cookie 拉到的那版），所以下面这两笔是按他截图手绘的实心款，拿到他页面上那枚的 <svg> 原本就替成 1:1。 -->
         <button
-          class="flex h-7 items-center rounded-full border border-stationPink px-3.5 text-xs text-stationPink transition hover:bg-stationPink hover:text-white"
+          class="relative flex h-8 w-8 items-center justify-center rounded-full text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+          title="投稿"
+          aria-label="投稿"
           @click="onSubmitClick"
         >
-          投稿
+          <svg viewBox="0 0 24 24" class="h-[18px] w-[18px]" fill="currentColor">
+            <path d="M12 3.1 19.6 10.7h-4.4v5.7H8.8v-5.7H4.4Z" />
+            <rect x="5.6" y="18.1" width="12.8" height="2.9" rx="1.45" />
+          </svg>
         </button>
 
         <!-- 站内信箱铃铛：成员可见，未读>0 亮红点角标，爆 99 封显 99+。
-             鼠标停上去摊开未读快照（两本账各前 5，一个 read 都不打），点条目才进 /messages 真读。 -->
+             鼠标停上去摊开未读快照（两本账各前 5，一个 read 都不打），点条目才进 /messages 真读。
+             常态不带描边（站长 11-02 试过加一圈 lineSoft，跟旁边不像一家、反而更怪，当日驳回）：
+             它靠 hover 才出淡粉底，与头像那颗裸圆同族。 -->
         <div
           v-if="member"
           class="relative"

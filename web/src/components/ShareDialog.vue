@@ -6,6 +6,7 @@
 import { computed, ref } from 'vue'
 import PeerPicker from './PeerPicker.vue'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
+import { coverSrcOf } from '../utils/coverSrc'
 
 const props = defineProps({
   target: { type: Object, required: true },
@@ -66,14 +67,15 @@ async function submit() {
           </span>
           {{ isVideo ? '安利这个片子' : '安利这条动态' }}
         </span>
-        <button class="flex h-7 w-7 items-center justify-center rounded-full text-inkFaint transition hover:bg-black/5 hover:text-inkMain" @click="emit('close')">✕</button>
+        <!-- after 只撑热区（28→44）：盒子和 hover 圆底不变，外拓落在 header px-4/py-3 留白里 -->
+        <button class="relative flex h-7 w-7 items-center justify-center rounded-full text-inkFaint transition hover:bg-black/5 hover:text-inkMain after:absolute after:-inset-[9px] after:content-['']" @click="emit('close')">✕</button>
       </div>
 
       <!-- 要安利的内容缩略：动态看作者+摘要，片子看馆藏封面+标题 -->
       <div v-if="isVideo" class="mx-4 mt-3 flex items-center gap-2.5 rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-3 py-2.5">
         <img
           v-if="target.cover"
-          :src="target.cover"
+          :src="coverSrcOf({ coverUrl: target.cover }, 68)"
           referrerpolicy="no-referrer"
           class="h-10 w-[68px] shrink-0 rounded-md object-cover"
           alt=""

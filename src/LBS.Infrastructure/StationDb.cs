@@ -163,6 +163,29 @@ public sealed partial class StationDb
             preview.ExecuteNonQuery();
         }
 
+        // 封面缩略档位台账（站长 11-03「入站时一次切完、存量也全量回填」）：与 previews 同理不进 artifacts。
+        // rel_path 同时是私有稿件反查的比对列（MediaRelTables 第四条腿），所以这一列不许省、不许改名。
+        using (var coverThumb = connection.CreateCommand())
+        {
+            coverThumb.CommandText = """
+                CREATE TABLE IF NOT EXISTS cover_thumbs (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    video_id       INTEGER NOT NULL,
+                    rel_path       TEXT NOT NULL DEFAULT '',
+                    tier           TEXT NOT NULL,
+                    fmt            TEXT NOT NULL DEFAULT '',
+                    src_stamp      TEXT NOT NULL DEFAULT '',
+                    status         TEXT NOT NULL DEFAULT 'failed',
+                    last_error     TEXT,
+                    attempts       INTEGER NOT NULL DEFAULT 0,
+                    updated_at_utc TEXT NOT NULL,
+                    UNIQUE (video_id, tier)
+                );
+                CREATE INDEX IF NOT EXISTS idx_cover_thumbs_rel ON cover_thumbs(rel_path);
+                """;
+            coverThumb.ExecuteNonQuery();
+        }
+
         // 站内弹幕举报台账：举报即定格——弹幕正文、被举报人、举报人、视频链接全在落单那一刻抄成快照，
         // 之后弹幕被删、席位改名都不回头改这张单（所以读列表一律直读本表，不再 JOIN 别处）。
         // danmaku_local 本身没有状态列也不加：pending 的弹幕照常飘，只有站长处置才真删。
@@ -786,7 +809,9 @@ public sealed partial class StationDb
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
-                   v.visibility, m.up_mid
+                   v.visibility, m.up_mid,
+                   -- 封面缩略档位清单（第 20 列）：已落盘的文件名串，供前端拼 /thumbs 地址；没切过回 NULL。
+                   (SELECT group_concat(t.rel_path, ',') FROM cover_thumbs t WHERE t.video_id = v.id AND t.status = 'arrived')
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -843,7 +868,9 @@ public sealed partial class StationDb
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
-                   v.visibility, m.up_mid
+                   v.visibility, m.up_mid,
+                   -- 封面缩略档位清单（与 ListVideos / 相关推荐同形，ReadEntries 共用一套列下标）。
+                   (SELECT group_concat(t.rel_path, ',') FROM cover_thumbs t WHERE t.video_id = v.id AND t.status = 'arrived')
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -881,8 +908,10 @@ public sealed partial class StationDb
         END
         """;
 
-    /// <summary>把列表查询的固定列形状读成 VideoEntry（ListVideos / SearchVideos / 相关推荐共用），并补扫弹幕条数。
-    /// 列下标写死的：加一列要同步三处 SELECT，漏一处就是整页报锈。</summary>
+    /// <summary>把列表查询的固定列形状读成 VideoEntry，并补扫弹幕条数。
+    /// 列下标写死的：加一列要同步<b>四处</b> SELECT（ListVideos / SearchVideos / 相关推荐 / UP 空间 ListVideosByUpMid），
+    /// 漏一处就是那一页报锈（曾经注释只写了三处，UP 空间那一处靠单测拖出来的）。列数与下标对不上时，
+    /// 现成长得最像的错是 <c>IsDBNull(19)</c> 抛 ordinal 越界。</summary>
     private List<VideoEntry> ReadEntries(SqliteDataReader reader)
     {
         var list = new List<VideoEntry>();
@@ -914,7 +943,10 @@ public sealed partial class StationDb
                 // 可见性：能走到这一行的都是尺子放行过的，带出来只给前端画锁（认不出的脏值当公开读，不抛）。
                 Visibility: VisibilityCodec.FromColumn(reader.IsDBNull(17) ? null : reader.GetString(17)),
                 // UP 的 mid（第 19 列，末尾追加）：卡上的 UP 名要能点进站内 UP 空间。
-                UpMid: reader.IsDBNull(18) ? null : reader.GetInt64(18)));
+                UpMid: reader.IsDBNull(18) ? null : reader.GetInt64(18),
+                // 封面缩略档位清单（第 20 列）：逗号相接的 /thumbs 文件名；一条都没切过留 null。
+                // 与 PreviewUrl 同一副脾性：没切过就是 null，前端自己退回原图，不在这条 SELECT 里使绊子。
+                CoverThumbs: reader.IsDBNull(19) ? null : reader.GetString(19)));
             if (dmFiles > 0)
             {
                 danmakuFiles.Add((list[^1].Id, dmFiles));
@@ -1573,7 +1605,7 @@ public sealed partial class StationDb
             }
 
             using var transaction = connection.BeginTransaction();
-            foreach (var table in new[] { "artifacts", "pages", "video_meta", "video_codecs", "videos" })
+            foreach (var table in new[] { "artifacts", "pages", "video_meta", "video_codecs", "cover_thumbs", "videos" })
             {
                 using var delete = connection.CreateCommand();
                 delete.CommandText = table == "videos" ? "DELETE FROM videos WHERE id = $id;" : $"DELETE FROM {table} WHERE video_id = $id;";
@@ -2806,7 +2838,9 @@ public sealed partial class StationDb
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
-                   v.visibility, m.up_mid
+                   v.visibility, m.up_mid,
+                   -- 封面缩略档位清单（三处 SELECT 同形：ReadEntries 列下标写死，少一处就是整页报锈）。
+                   (SELECT group_concat(t.rel_path, ',') FROM cover_thumbs t WHERE t.video_id = v.id AND t.status = 'arrived')
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id

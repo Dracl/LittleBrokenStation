@@ -4,6 +4,7 @@
 // kind='dynamic' 与 kind='video' 同副视觉：都是「来源行 + 通栏封面 + 粉三角标题 + 通栏动作条」。
 // 动态那副多了报头（UP 正文）与图集两段；片卡没正文可报，就把 UP 名提到来源行当报头，时长退成 chip。
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
+import { coverSrcOf } from '../utils/coverSrc'
 import { colonTime, friendlyTime } from '../utils/time'
 import { VIDEO_GONE_HINT } from '../utils/gone.js'
 
@@ -73,8 +74,8 @@ function summary(dyn) {
         />
       </div>
       <!-- 无图有视频：用馆藏/定格封面铺一张 16:9 -->
-      <span v-else-if="dyn.cover && dyn.bvid" class="relative mt-2 block aspect-video overflow-hidden rounded-lg bg-[#eef0f2] dark:bg-[#23262e]">
-        <img :src="dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
+      <span v-else-if="dyn.cover && dyn.bvid" class="relative mt-2 block aspect-[16/10] overflow-hidden rounded-lg bg-[#eef0f2] dark:bg-[#23262e]">
+        <img :src="coverSrcOf({ coverUrl: dyn.cover }, 450)" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
       </span>
       <!-- 标题跟封面（④″）：粉三角 + 两行截断 + 时长 chip；老消息没 videoTitle 就不加行。 -->
       <div v-if="dyn.videoTitle" class="mt-2 flex items-start gap-1.5">
@@ -85,8 +86,8 @@ function summary(dyn) {
     </template>
     <template v-else>
       <!-- 封面通栏 16:9（与动态卡的定格封面同尺寸）；定格时没封面就整段缺席，泡不空转。 -->
-      <span v-if="dyn.cover" class="relative mt-2 block aspect-video overflow-hidden rounded-lg bg-[#eef0f2] dark:bg-[#23262e]">
-        <img :src="dyn.cover" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
+      <span v-if="dyn.cover" class="relative mt-2 block aspect-[16/10] overflow-hidden rounded-lg bg-[#eef0f2] dark:bg-[#23262e]">
+        <img :src="coverSrcOf({ coverUrl: dyn.cover }, 450)" referrerpolicy="no-referrer" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
       </span>
       <!-- 标题跟封面：粉三角 + 两行截断 + 时长 chip，与动态卡的 videoTitle 行同规格；没定格到标题就退回 BV 号。 -->
       <div class="mt-2 flex items-start gap-1.5">

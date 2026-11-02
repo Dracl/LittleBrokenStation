@@ -118,6 +118,19 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
             .ToList();
     }
 
+    /// <summary>取快照的绝对路径，只服站长室的下载钮：与 <see cref="Delete"/> 同一把尺（只认快照命名格式，
+    /// 路径花活一律拒）——销得掉的才允许被读走，两个口才不会一个严一个松。</summary>
+    public string? FullPathOf(string name)
+    {
+        if (!SafeName.IsMatch(name))
+        {
+            return null;
+        }
+
+        var file = Path.Combine(paths.Root, "backups", name);
+        return File.Exists(file) ? file : null;
+    }
+
     /// <summary>销单：只认快照命名格式，路径花活一律拒。</summary>
     public bool Delete(string name)
     {

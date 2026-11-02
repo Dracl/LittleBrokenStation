@@ -194,6 +194,9 @@ public sealed class StatusSyncWorker(
 
                 _qualitySeen.Remove(videoId);
                 var (archived, missingVideo) = db.FinalizeArtifacts(videoId, paths.Videos);
+                // 引擎首下的封面是引擎自己落的、不登记台账，行刚被上面那句扫出来——缩略只能切在这之后。
+                // （补员与重拉那两条路在 CoverFileFetcher 里就地切片，两边合起来才盖住全部来路。）
+                await CoverThumbs.TryBuildAsync(db, paths, videoId, cancellationToken);
                 logger.LogInformation(
                     "馆藏 {VideoId} 已到站（引擎任务 {Count} 个全部完成），归档产物 {Archived} 个{Missing}",
                     videoId,

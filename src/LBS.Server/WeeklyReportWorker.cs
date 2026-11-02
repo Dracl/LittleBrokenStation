@@ -163,41 +163,67 @@ public sealed class WeeklyReportWorker(StationDb db, ILogger<WeeklyReportWorker>
             return target;
         }
 
-        var highlight = report.Hottest.Count > 0
-            ? $"上周新增稿件 {report.NewsCount} 件，弹幕 +{report.DanmakuAdded} 条，最多人看的一条有 {report.Hottest[0].Viewers} 位观众。"
-            : $"上周新增稿件 {report.NewsCount} 件，弹幕 +{report.DanmakuAdded} 条。";
+        // 公告正文的排版（站长 11-03「这条公告排版也修改一下，现在太乱了」）：
+        // 一行只讲一类、行内最多三项；标签统一四字并用全角空格（'　'）补齐——中文字符与全角空格同宽，
+        // 前端按 whitespace-pre-wrap 直出时那一列天然对齐（站内信正文没有 HTML 可用，纯文本能借的只有这一招）。
+        // 值为 0 的项不摆、整行空了就整行不摆：原来那串「私信 0 封 · 没新人入席」是最吵的空账。
+        var lines = new List<string>();
+        void Row(string label, params string?[] items)
+        {
+            var kept = items.Where(i => !string.IsNullOrEmpty(i)).ToArray();
+            if (kept.Length == 0)
+            {
+                return;
+            }
 
-        // 流水账一行：把一周的动静扫完——放映、搜索、投稿、入库、私信，有动静才报数，全是台账真数。
-        var ledger = string.Join(" · ",
-            $"播放 {report.WatchPlays} 次", $"观众 {report.UniqueViewers} 人", $"搜索 {report.Searches} 回",
-            $"投稿 {report.Submissions} 次", $"评论入库 {report.CommentsArchived} 条", $"动态入库 {report.DynamicsArchived} 条",
-            $"私信 {report.DmSent} 封", report.NewMembers > 0 ? $"新席位 +{report.NewMembers}" : "没新人入席");
-        // 站外游客一行：有游客才拼（零游客不摆空账）；只报去重人数与次数，绝不外发 IP 本体。
-        var lines = new List<string>
-        {
-            highlight,
-            $"上周流水：{ledger}。",
-            $"全站家底：{report.Totals.Videos} 件稿件 · {report.Totals.Members} 位成员 · {report.Totals.Danmaku} 条弹幕 · {report.Totals.Dynamics} 条动态 · {report.Totals.DynamicComments} 条存档评论 · {report.Totals.DmMessages} 封私信。",
-        };
-        if (report.Guest.Heads > 0)
-        {
-            lines.Add($"站外游客：{report.Guest.Heads} 位未登录逛了站，进厅 {report.Guest.Opens} 次、播放 {report.Guest.Plays} 次"
-                + (report.Guest.BlockedWatch > 0 ? $"，{report.Guest.BlockedWatch} 回想进片页被门挡住。" : "。"));
+            lines.Add(label.PadRight(5, '　') + string.Join(" · ", kept)); // 四字标签 + 一枚全角空格作间隔（PadRight(4) 会贴在一起）
         }
 
-        // 时长一行：只报成员心跳换算的墙钟秒（游客看不了片，一枪不入账），零心跳就不摆空账。
+        var hottest = report.Hottest.Count > 0 ? report.Hottest[0] : null;
+        Row("新增稿件", $"{report.NewsCount} 件", report.DanmakuAdded > 0 ? $"弹幕 +{report.DanmakuAdded} 条" : null);
+        Row("本期之最", hottest is not null
+            ? $"《{ShortTitle(hottest.Title ?? hottest.Bvid)}》{hottest.Viewers} 位观众看过"
+            : null);
+        Row("观看热度",
+            report.UniqueViewers > 0 ? $"去重观众 {report.UniqueViewers} 人" : null,
+            report.WatchPlays > 0 ? $"播放 {report.WatchPlays} 次" : null,
+            report.Searches > 0 ? $"搜索 {report.Searches} 回" : null);
+        Row("投稿入库",
+            report.Submissions > 0 ? $"投稿 {report.Submissions} 次" : null,
+            report.CommentsArchived > 0 ? $"评论 {report.CommentsArchived} 条" : null,
+            report.DynamicsArchived > 0 ? $"动态 {report.DynamicsArchived} 条" : null);
+        Row("席位变化", report.NewMembers > 0 ? $"新席位 +{report.NewMembers}" : null);
+        // 家底是全站存量而不是本周流水，永远有数（整周零动静的周压根不发报，见 IsQuietWeek），所以它不参与「空了就整行不摆」；
+        // 六项拆两行，续行用全角空格缩到标签那一列下面。
+        Row("全站家底", $"稿件 {report.Totals.Videos}", $"成员 {report.Totals.Members}", $"弹幕 {report.Totals.Danmaku}");
+        Row("　　", $"动态 {report.Totals.Dynamics}", $"存档评论 {report.Totals.DynamicComments}", $"私信 {report.Totals.DmMessages}");
+        // 游客：有游客才拼（零游客不摆空账）；只报去重人数与次数，绝不外发 IP 本体。
+        if (report.Guest.Heads > 0)
+        {
+            Row("站外游客",
+                $"{report.Guest.Heads} 位未登录",
+                report.Guest.Opens > 0 ? $"进厅 {report.Guest.Opens} 次" : null,
+                report.Guest.BlockedWatch > 0 ? $"{report.Guest.BlockedWatch} 回想进片页被门挡住" : null);
+        }
+
+        // 时长那一块：只报成员心跳换算的墙钟秒（游客看不了片，一枪不入账），零心跳就不摆空账。
+        // 三条各占一行——原来它们挤在一句长句里，标题一长就把整行撑爆。
         if (report.Duration.Shots > 0)
         {
             var topTimeVideo = report.Duration.TopVideos.Count > 0 ? report.Duration.TopVideos[0] : null;
             var topTimeUp = report.Duration.TopUps.Count > 0 ? report.Duration.TopUps[0] : null;
-            lines.Add($"时长账：真看了 {HumanDuration(report.Duration.Seconds)}（心跳 {report.Duration.Shots} 枪），看完 {report.Duration.Finished} 部"
-                + (topTimeVideo is not null
-                    ? $"，最耗时的是《{ShortTitle(topTimeVideo.Title ?? topTimeVideo.Bvid)}》（{HumanDuration(topTimeVideo.Seconds)}）"
-                    : "")
-                + (topTimeUp is not null ? $"；看得最多的 UP 是 {topTimeUp.Key}（{HumanDuration(topTimeUp.Seconds)}）。" : "。"));
+            Row("观看时长",
+                $"真看了 {HumanDuration(report.Duration.Seconds)}",
+                report.Duration.Finished > 0 ? $"看完 {report.Duration.Finished} 部" : null,
+                $"心跳 {report.Duration.Shots} 枪");
+            Row("最耗时长", topTimeVideo is not null
+                ? $"《{ShortTitle(topTimeVideo.Title ?? topTimeVideo.Bvid)}》{HumanDuration(topTimeVideo.Seconds)}"
+                : null);
+            Row("看得最多", topTimeUp is not null ? $"{topTimeUp.Key} {HumanDuration(topTimeUp.Seconds)}" : null);
         }
 
-        lines.Add("去站里看 /weekly");
+        // 末尾不再写「去站里看 /weekly」那行纯文本（站长 11-03）：跳转交给前端那枚按钮，
+        // 周号由它从公告标题「分站周报 · 2026-W44」自己认——正文里不留路径，也不留第二份指引。
         var body = string.Join('\n', lines);
 
         var sent = db.BroadcastToActive(MemberMail.KindAnnounce, $"分站周报 · {target}", body);

@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { colonTime, publishedDate } from '../utils/time'
+import { coverSrcOf } from '../utils/coverSrc'
 import UpIcon from './UpIcon.vue'
 import PlayCountIcon from './PlayCountIcon.vue'
 import DanmakuCountIcon from './DanmakuCountIcon.vue'
@@ -79,8 +80,8 @@ const titleKey = ref(null)
         <div class="flex w-full">
           <RouterLink :to="`/watch/${v.bvid}`" class="relative block h-[80px] w-[141px] shrink-0 overflow-hidden rounded-[6px] bg-[#c9ccd0] dark:bg-[#23262e]">
             <img
-              v-if="v.coverUrl"
-              :src="v.coverUrl"
+              v-if="coverSrcOf(v, 141)"
+              :src="coverSrcOf(v, 141)"
               :alt="v.title ?? ''"
               loading="lazy"
               referrerpolicy="no-referrer"

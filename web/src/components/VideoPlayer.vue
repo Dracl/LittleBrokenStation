@@ -1501,6 +1501,11 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', closeCtx)
   clearInterval(progressBeat)
   progressBeat = 0
+  // 编码进度 5 秒轮询的开关在 watch 手里，卸载时不掐会替已消失的实例继续打端点
+  if (progTimer) {
+    clearInterval(progTimer)
+    progTimer = null
+  }
   window.removeEventListener('pagehide', reportProgressByBeacon)
 })
 
@@ -1708,7 +1713,8 @@ const STROKE_ITEMS = [
         </span>
 
         <div ref="volZoneEl" class="relative flex h-8 items-center gap-1 rounded px-1 hover:bg-white/10" @mouseenter="volEnter" @mouseleave="volLeave">
-          <button class="flex h-6 w-6 items-center justify-center" :title="muted ? '取消静音（M）' : '静音（M）'" @click="muted ? (applyVolume(volume || 1)) : applyVolume(0)">
+          <!-- after 只撑热区（24→32，正好吃掉容器 px-1 与 gap-1，不越界抢邻居）：盒子和图标位置一个字没动 -->
+          <button class="relative flex h-6 w-6 items-center justify-center after:absolute after:-inset-1 after:content-['']" :title="muted ? '取消静音（M）' : '静音（M）'" @click="muted ? (applyVolume(volume || 1)) : applyVolume(0)">
             <span class="relative flex h-5 w-5 items-center justify-center">
               <BIcon :meta="biVolume" class="h-5 w-5" />
               <!-- 静音态官方包里没有，白身斜杠叠加在音量图标上（纯 CSS，不碰 bicons.js） -->

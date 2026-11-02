@@ -250,7 +250,7 @@ function likeCount(item) {
               </template>
             </CollapsibleRichText>
             <div v-if="topReply.pictures?.length" class="mt-2 flex flex-wrap gap-1">
-              <img v-for="(pic, pi) in topReply.pictures" :key="pi" :src="picLocal(topReply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(topReply, pi)" />
+              <img v-for="(pic, pi) in topReply.pictures" :key="pi" :src="picLocal(topReply, pi)" alt="评论配图 {{ pi + 1 }}" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(topReply, pi)" />
             </div>
             <div class="mt-2 flex items-center gap-5 text-xs text-inkFaint">
               <span>{{ timeText(topReply.time) }}</span>
@@ -287,7 +287,7 @@ function likeCount(item) {
           <CollapsibleRichText :text="reply.content" :emotes="emoteMap" :emote-meta="emoteMeta" content-class="mt-1 whitespace-pre-line text-[15px] leading-7 text-inkMain" />
 
           <div v-if="reply.pictures?.length" class="mt-2 flex flex-wrap gap-1">
-            <img v-for="(pic, pi) in reply.pictures" :key="pi" :src="picLocal(reply, pi)" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(reply, pi)" />
+            <img v-for="(pic, pi) in reply.pictures" :key="pi" :src="picLocal(reply, pi)" alt="评论配图 {{ pi + 1 }}" referrerpolicy="no-referrer" class="h-24 w-24 cursor-zoom-in rounded object-cover" loading="lazy" @click="openZoom(reply, pi)" />
           </div>
 
           <div class="mt-2 flex items-center gap-5 text-xs text-inkFaint">

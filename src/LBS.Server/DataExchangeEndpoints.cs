@@ -34,7 +34,12 @@ public sealed class ExportJobBoard
 /// </summary>
 public static class DataExchangeEndpoints
 {
-    /// <summary>导出勾选：withPreviews 不送则当 true（预览是派生物，旧前端没这一勾时默认随包走，与 ExportOptions 口径一致）。</summary>
+    /// <summary>
+    /// 导出勾选：withPreviews 不送则当 true（预览是派生物，旧前端没这一勾时默认随包走，与 ExportOptions 口径一致）。
+    /// withCreds 是客户端递得到的历史字段：cookie 在 <c>StationExporter.ScrubAndCount</c> 那里无条件洗，
+    /// 下面那句 <see cref="ExportOptions"/> 构造已把它写死 false——manifest 只说真话，前端那个「凭证/带登录态」徒以
+    /// <c>options.withCreds</c> 为据也就跟着自洽了。字段本身保留，只为老前端与老包反序列化不报错。
+    /// </summary>
     public sealed record ExportRequest(bool WithCreds, bool WithMedia, bool WithCmtImg, bool WithCaches, bool? WithPreviews);
 
     public sealed record ImportApplyRequest(string? Receipt);
@@ -44,7 +49,9 @@ public static class DataExchangeEndpoints
         // ─── 导出：勾选打包（必含台账 + manifest），大包走 job ───
         app.MapPost("/api/admin/export", (ExportRequest request, StationExporter exporter, ExportJobBoard board, ILogger<StationExporter> logger) =>
         {
-            var options = new ExportOptions(request.WithCreds, request.WithMedia, request.WithCmtImg, request.WithCaches, request.WithPreviews ?? true);
+            // withCreds 写死 false：cookie 在 ScrubAndCount 那里无条件洗，manifest 就不再替客户端那句「要带凭证」作伪证。
+            // 请求体里的 withCreds 字段仍收得下（老前端/老包反序列化不报错），只是到此为止，不再往下传。
+            var options = new ExportOptions(false, request.WithMedia, request.WithCmtImg, request.WithCaches, request.WithPreviews ?? true);
             var jobId = board.Create();
             _ = Task.Run(() =>
             {

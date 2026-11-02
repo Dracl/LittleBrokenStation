@@ -12,8 +12,12 @@ using LBS.Domain;
 using LBS.Engine;
 using LBS.Infrastructure;
 using LBS.Server;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
+using System.Net;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -60,6 +64,9 @@ builder.Services.AddSingleton<DynamicFetchWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DynamicFetchWorker>());
 // 封面补员：到站时没勾封面的视频，每小时一轮从 cover_url 补下封面原图（每轮封顶 40、条间 300ms，先文件后 artifacts 行）。
 builder.Services.AddHostedService<CoverBackfillWorker>();
+// 封面缩略补员：把有封面却没缩略的稿件（包括存量全部老货）按档位本地裁出来。
+// 开机 15 秒后开切、一轮 40 条，还有欠账就连轴转，切干净了才退到每 5 分钟看一眼（站长 11-03 拍板要全量回填）。
+builder.Services.AddHostedService<CoverThumbBackfillWorker>();
 // 动态配图补员：九宫格没落盘（pics_local_json 为 NULL 或含 null 洞）的动态，每小时一轮从 pics_json 补下原图
 // （每轮封顶 40、条间 300ms，只写 pics_local_json 一列）。整轮挂采集号出号上下文，理由见类注释。
 builder.Services.AddHostedService<DynamicPicBackfillWorker>();
@@ -104,9 +111,15 @@ builder.Services.AddLbsDownloadEngine(new EngineOptions(EngineOptions.DefaultUse
 // 静态前端：开发期直接指向 web/dist（pnpm build 产物），发布镜像里拷进 wwwroot
 // 注意：仅赋 WebRootPath 不足以让 StaticFileMiddleware 换目录，必须同时换 WebRootFileProvider
 var devWebDist = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, "..", "..", "web", "dist"));
+// 应用本体的 wwwroot（镜像里是 /app/wwwroot，发布时把前端拷进去）：content root 跟 cwd 走，
+// 容器 WORKDIR=/data 时相对定位会去伺服一个当场新建的空目录（Release 换 cwd 实测：/ 与 /admin 全 404）。
+// 实到 exe 老家这一腿，把镜像里的前端接住；开发期 web/dist 优先的次序不变。
+var sidecarWeb = Path.Combine(AppContext.BaseDirectory, "wwwroot");
 var webRoot = File.Exists(Path.Combine(devWebDist, "index.html"))
     ? devWebDist
-    : Path.Combine(builder.Environment.ContentRootPath, "wwwroot");
+    : File.Exists(Path.Combine(sidecarWeb, "index.html"))
+        ? sidecarWeb
+        : Path.Combine(builder.Environment.ContentRootPath, "wwwroot");
 Directory.CreateDirectory(webRoot);
 builder.Environment.WebRootPath = webRoot;
 builder.Environment.WebRootFileProvider = new PhysicalFileProvider(webRoot);
@@ -114,7 +127,68 @@ builder.Environment.WebRootFileProvider = new PhysicalFileProvider(webRoot);
 var urls = Environment.GetEnvironmentVariable("LBS_URLS") ?? "http://0.0.0.0:8090";
 builder.WebHost.UseUrls(urls);
 
+// 全局限流闸：只治端点（/api/*），静态区（封面/正片/弹幕 json）不走端点管线不受限。
+// 匿名薄、登录宽：管理员室轮询密集不能误伤，匿名写路径只够正经人手速。
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, token) =>
+    {
+        context.HttpContext.Response.ContentType = "application/json; charset=utf-8";
+        await context.HttpContext.Response.WriteAsync("""{"error":"rate-limited","message":"手速太快了，歇一会儿再试"}""", token);
+    };
+
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(http =>
+    {
+        var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var authed = http.Request.Cookies.ContainsKey("lbs_dmid") || http.Request.Cookies.ContainsKey("lbs_admin");
+        var write = HttpMethods.IsPost(http.Request.Method) || HttpMethods.IsPut(http.Request.Method)
+            || HttpMethods.IsDelete(http.Request.Method) || HttpMethods.IsPatch(http.Request.Method);
+        var (permit, queue) = (authed, write) switch
+        {
+            (false, true) => (20, 0),     // 匿名写：弹幕私信投稿的钓鱼脚本在这里碰壁
+            (false, false) => (300, 20),  // 匿名逛：首屏卡阵 + 无限滚动的余量
+            (true, true) => (300, 20),    // 登录写：站长室批量设置手速如飞
+            (true, false) => (1200, 50),  // 登录读：队列/进度轮询密集，别拿它开刀
+        };
+        return RateLimitPartition.GetFixedWindowLimiter(
+            $"{ip}|{(authed ? "a" : "g")}|{(write ? "w" : "r")}",
+            _ => new FixedWindowRateLimiterOptions { PermitLimit = permit, Window = TimeSpan.FromMinutes(1), QueueLimit = queue, AutoReplenishment = true });
+    });
+});
+
 var app = builder.Build();
+
+// 反代身后（nginx/Caddy）全站 IP 判定（小黑屋、登录限次、扫码票、限流）看到的都是代理机：
+// 不配信任区，小黑屋变成「任何人输错 6 次锁全站」，扫码 IP 绑定形同虚设。
+// 默认完全不信任（局域网直连照旧）；挂反代请配 LBS_TRUSTED_PROXY_CIDRS（逗号分隔，如 127.0.0.1/32,192.168.0.0/16）。
+var trustedProxyCidrs = (Environment.GetEnvironmentVariable("LBS_TRUSTED_PROXY_CIDRS") ?? "").Trim();
+if (trustedProxyCidrs.Length > 0)
+{
+    var forwarded = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto };
+    foreach (var piece in trustedProxyCidrs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        try
+        {
+            // .NET 10 口径：KnownNetworks(IpNetwork) 已废，新闸眼 KnownIPNetworks 吃 System.Net.IPNetwork（地址+前缀长）。
+            var slash = piece.LastIndexOf('/');
+            if (slash <= 0)
+            {
+                throw new FormatException("缺 /前缀长");
+            }
+
+            forwarded.KnownIPNetworks.Add(new System.Net.IPNetwork(
+                IPAddress.Parse(piece[..slash]), int.Parse(piece[(slash + 1)..])));
+        }
+        catch (Exception ex)
+        {
+            app.Logger.LogWarning("LBS_TRUSTED_PROXY_CIDRS 条目 {Cidr} 不是合法 CIDR（如 192.168.0.0/16），已跳过：{Message}", piece, ex.Message);
+        }
+    }
+
+    app.UseForwardedHeaders(forwarded);
+    app.Logger.LogInformation("反代信任区已启用：{Cidrs}（客户端 IP 取自 X-Forwarded-For）", trustedProxyCidrs);
+}
 
 // 数据交换·开机换库：必须赶在 StationDb 首次打开之前（DI 工厂是懒的，workers 也还没起，此刻盘上只有刚 Resolve 的目录）。
 // pending.json 在 = 要换进刚导入的包：换台账 + 回写登录态 + 解媒体/缓存 + 清引擎台账；无论成败都删标记，绝不带标记死循环。
@@ -150,11 +224,10 @@ app.UseStaticFiles(new StaticFileOptions
     },
 });
 
-app.MapGet("/api/health", (DataPaths paths) => Results.Ok(new HealthInfo(
+app.MapGet("/api/health", () => Results.Ok(new HealthInfo(
     Ok: true,
     Name: "小破分站",
     Version: Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "0.0.0",
-    DataDir: paths.Root,
     ServerTimeUtc: DateTimeOffset.UtcNow)));
 
 app.MapEngineSettingsApi();
@@ -209,6 +282,9 @@ mediaTypes.Mappings[".ass"] = "text/plain";
 mediaTypes.Mappings[".srt"] = "text/plain";
 mediaTypes.Mappings[".vtt"] = "text/vtt";
 mediaTypes.Mappings[".json"] = "application/json";
+// 缩略件用 webp，不赌框架默认字典（这台机器上没能直接验成），万一映射不上会退成 octet-stream。
+// mediaTypes 是五个静态区共用的实例，这里补一行，五个前缀一起好。
+mediaTypes.Mappings[".webp"] = "image/webp";
 
 // 中转半成品一律不许从静态区溜出去。实测（本轮）：往 data/videos 丢一个 probe.part，
 // GET /media/probe.part → 200 并能拿到整份字节；同位的 .hidden.mp4 倒是 404（中间件不答理点开头）。
@@ -222,6 +298,7 @@ app.Use(async (context, next) =>
     var path = context.Request.Path.Value ?? "";
     var onStatic = path.StartsWith("/media/", StringComparison.OrdinalIgnoreCase)
         || path.StartsWith("/previews/", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith("/thumbs/", StringComparison.OrdinalIgnoreCase)
         || path.StartsWith("/cache/", StringComparison.OrdinalIgnoreCase);
     if (onStatic && IsStaleTransientPath(path))
     {
@@ -338,7 +415,42 @@ app.UseStaticFiles(new StaticFileOptions
     },
 });
 
-// 静态区私有件判定（只管 /media/ 与 /previews/ 两支，其余前缀一概放行）。
+// 封面缩略件区（站长 11-03「缩略图要本站自己从本地原图裁，不许靠 B 站 CDN 缩放」）：data/thumbs → /thumbs。
+// 与 /previews 同形（派生物、独立目录、两道闸补保），差别只有两处：
+// 一、缓存走 immutable 长缓存。文件名里带原图版本戳（<bvid>_<档>-<版本>.<后缀>），原图重拉过一次 URL 就变，
+//     同一个地址永不改内容，所以不必像 /media 的封面那样每次进站都补一轮 revalidation（首页一屏 40 张就是 40 个来回）。
+// 二、私有稿件必须挡住。缩略件根本不在 artifacts 里，归属由 cover_thumbs 台账那条腿认（见 MediaRelTables 第四条），
+//     忘了补前缀分支就是 100% fail-open，所以这道分支与生成器同一次提交，不许拆开发车。
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(dataPaths.Thumbs),
+    RequestPath = "/thumbs",
+    ContentTypeProvider = mediaTypes,
+    ServeUnknownFileTypes = true,
+    DefaultContentType = "application/octet-stream",
+    OnPrepareResponse = ctx =>
+    {
+        if (IsStaleTransientPath(ctx.Context.Request.Path.Value ?? ""))
+        {
+            ctx.Context.Response.StatusCode = StatusCodes.Status404NotFound;
+            ctx.Context.Response.ContentType = null;
+            ctx.Context.Response.Headers.ContentLength = null;
+            return;
+        }
+
+        if (PrivateMediaBlocked(ctx.Context))
+        {
+            ctx.Context.Response.StatusCode = StatusCodes.Status404NotFound;
+            ctx.Context.Response.ContentType = null;
+            ctx.Context.Response.Headers.ContentLength = null;
+            return;
+        }
+
+        ctx.Context.Response.Headers.CacheControl = "public,max-age=31536000,immutable";
+    },
+});
+
+// 静态区私有件判定（只管 /media/、/previews/、/thumbs/ 三支，其余前缀一概放行）。
 // 判定链：剥前缀 → 百分号解码（中文文件名不解码对不上台账，白挡）→ 反斜杠归一成 / → 认稿件 id →
 // 台账不认这个件（头像/表情/评论图那类根本不在这些表里）就放行 —— null 绝不能当私有，否则全站公共件一起变黑；
 // 认出来了才问 CanViewVideo，不过就 404（与半成品闸同一副面孔，不说「私有」二字）。
@@ -354,6 +466,11 @@ bool PrivateMediaBlocked(HttpContext context)
     else if (path.StartsWith("/previews/", StringComparison.OrdinalIgnoreCase))
     {
         rel = path["/previews/".Length..];
+    }
+    else if (path.StartsWith("/thumbs/", StringComparison.OrdinalIgnoreCase))
+    {
+        // 缩略件与悬停预览同等待遇：都是派生物，都住在视频库外，私有稿一样不许透。
+        rel = path["/thumbs/".Length..];
     }
     else
     {
@@ -388,7 +505,8 @@ static bool IsStaleTransientPath(string path) =>
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path.Value ?? "";
-    if (path.StartsWith("/api/", StringComparison.Ordinal))
+    // 路由匹配默认忽略大小写，门径点名必须跟着忽略，否则 /API/... 绕过盖章与会员门（发布前实测坐实）。
+    if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
     {
         var gate = context.RequestServices.GetRequiredService<MemberGate>();
         var member = gate.Resolve(context.Request);
@@ -438,6 +556,9 @@ app.Use(async (context, next) =>
     await next();
 });
 
+// 限流闸在两道门之后、所有端点之前：小黑屋与限流共用同一套 IP 口径（含上面的反代信任区）。
+app.UseRateLimiter();
+
 // 锁闸的门面：status 告诉前端要不要摆密码门；unlock 发 7 天会话 cookie；
 // lock/release 只能在已解锁态操作（否则上了锁就自己把自己锁死了）。
 app.MapGet("/api/gate/status", (AdminGate gate, HttpContext http) => Results.Ok(new
@@ -473,12 +594,13 @@ app.MapPost("/api/gate/lock", (GateRequest request, AdminGate gate, HttpContext 
         return Results.Unauthorized();
     }
 
-    if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Trim().Length < 4)
+    // 口令闸门交给 AdminGate 自己把守（下限八位、PBKDF2 落库），这里只负责把不合格挡成 400，
+    // 不让 ArgumentException 裸奔到客户端（全站无 exception handler，500 回栈不是风格）。
+    if (!gate.TrySetPassword(request.Password, out var lockError))
     {
-        return Results.BadRequest(new { message = "口令至少 4 位" });
+        return Results.BadRequest(new { message = lockError ?? "口令不合格" });
     }
 
-    gate.SetPassword(request.Password.Trim());
     gate.RevokeSessions();
     return Results.Ok(new { message = "站长室已上锁，下次进站需输口令" });
 });
@@ -571,6 +693,10 @@ app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db, HttpContext 
         v.Bvid,
         v.Title,
         CoverUrl = v.CoverUrl,
+        // 本地封面与缩略档位一起递：放映厅「接下来播放」过去只能拿远程原图（尺寸 141×80），
+        //  SQL 里早就查了本地件却没往外给（站长 11-03「所有缩略图要本地原图裁切」）。
+        LocalCover = v.LocalCover,
+        CoverThumbs = v.CoverThumbs,
         v.UpName,
         // mid 也得递：这张卡上的 UP 名要能点进站内 UP 空间（缺了它前端只能画成死文本）。
         v.UpMid,
@@ -1484,69 +1610,6 @@ app.MapPost("/api/videos", async (AddVideoRequest request, StationDb db, Downloa
     return Results.Ok(new { videoId, message = $"已加入进站队列，{bvid} 正在赶来" });
 });
 
-app.MapPost("/api/favorites/import", async (FavoritesImportRequest request, StationDb db, DownloadQueue queue,
-    EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
-{
-    if (string.IsNullOrWhiteSpace(request.Content) || !NetscapeBookmarkParser.LooksLikeNetscapeBookmarkFile(request.Content))
-    {
-        return Results.BadRequest(new { message = "这看起来不是浏览器导出的收藏夹文件" });
-    }
-
-    // 整批共用一个可见性（与单链、收藏夹链接、UP 主整架同一口径）：认不了就 400，不默默归档成公开。
-    if (!VisibilityCodec.TryParse(request.Visibility, out var visibility))
-    {
-        return Results.BadRequest(new { message = $"可见性只认 {VisibilityCodec.Public} / {VisibilityCodec.Private}（不填算公开）" });
-    }
-
-    var candidates = NetscapeBookmarkParser.Parse(request.Content);
-    var videos = new List<NewVideo>();
-    var ignored = 0;
-
-    foreach (var candidate in candidates)
-    {
-        if (Uri.TryCreate(candidate.Url, UriKind.Absolute, out var uri)
-            && BilibiliLink.IsBilibiliHost(uri.Host)
-            && BilibiliLink.TryExtractBvid(candidate.Url, out var bvid))
-        {
-            videos.Add(new NewVideo(candidate.Url, bvid, candidate.Title, null, null, visibility));
-        }
-        else
-        {
-            ignored++;
-        }
-    }
-
-    // 收藏夹文件也要过投稿闸：以前它连席位都不问，素净席位能整批灌进台账还不定归属（幽灵行的另一条来路）。
-    // 位置在解析之后、写库之前 —— 解析是本地活，不烧 B 站请求，放前面还能顺手报「忽略 N 条」。
-    var importer = MemberGate.Current(http);
-    if (SubmissionIntake.Deny(db, importer) is { } denial)
-    {
-        return denial;
-    }
-
-    var outcome = SubmissionIntake.Accept(db, importer!, videos);
-    foreach (var videoId in outcome.InsertedIds)
-    {
-        await queue.EnqueueAsync(videoId, cancellationToken);
-    }
-
-    if (outcome.Added > 0)
-    {
-        events.RecordWithPayload(EventActors.Member, importer!.Mid,
-            EventNames.VideoSubmit, "batch", "bookmarks",
-            new { via = "bookmarks", added = outcome.Added, duplicated = outcome.Duplicated, ignored },
-            http.Connection.RemoteIpAddress?.ToString(), importer.Id);
-    }
-
-    return Results.Ok(new
-    {
-        added = outcome.Added,
-        duplicated = outcome.Duplicated,
-        ignored,
-        message = $"导入完成：新增 {outcome.Added} 条，重复 {outcome.Duplicated} 条，忽略 {ignored} 条非视频链接",
-    });
-});
-
 app.MapPost("/api/favorites/import-url", async (FavoritesUrlImportRequest request, LbsFavoritesImport favorites, LbsCollectPolicy policy, LbsApiThrottle throttle, StationDb db, DownloadQueue queue,
     EventRecorder events, HttpContext http, CancellationToken cancellationToken) =>
 {
@@ -1830,6 +1893,21 @@ app.MapPost("/api/backups/config", (BackupConfigRequest request, LedgerBackup ba
 app.MapDelete("/api/backups/{name}", (string name, LedgerBackup backup) =>
     backup.Delete(name) ? Results.Ok(new { message = "快照已销" }) : Results.BadRequest(new { message = "没有这个快照" }));
 
+// 快照下载（站长 11-03「现在备份好都没地方下载」）：站长室档案柜那枚下载钮。
+// 它天然在站长门内（/api/backups 整段前缀在 AdminGate 的点名表里）；名字走 LedgerBackup.FullPathOf，
+// 与「销单」同一把尺——只认快照命名格式，拿 .. 或绝对路径借道 data 以外的目录一概拒。
+app.MapGet("/api/backups/{name}/file", (string name, LedgerBackup backup) =>
+{
+    var file = backup.FullPathOf(name);
+    if (file is null)
+    {
+        return Results.BadRequest(new { message = "没有这个快照" });
+    }
+
+    // 整站台账快照可能上百 MB：走流 + Range，不把整份读进内存，浏览器下载器中断了也能续。
+    return Results.File(File.OpenRead(file), "application/octet-stream", Path.GetFileName(file), enableRangeProcessing: true);
+});
+
 // 节流闸状态：站长室展示风控冷却倒计时。
 app.MapGet("/api/station/throttle", (LbsApiThrottle throttle) => Results.Ok(new
 {
@@ -2031,9 +2109,10 @@ app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataP
     }
 });
 
-app.MapGet("/api/settings", (DataPaths paths) => Results.Ok(new
+app.MapGet("/api/settings", (DataPaths paths, HttpContext http) => Results.Ok(new
 {
-    dataDir = paths.Root,
+    // 数据目录只向站长会话报家门：匿名访客没必要知道房子在哪（前端站长室的存储卡照常拿得到）。
+    dataDir = MemberGate.IsOwner(MemberGate.Current(http)) ? paths.Root : null,
     skin = new { bare = false, note = "裸分站皮肤 M4 到站" },
 }));
 
@@ -2057,12 +2136,11 @@ if (dataPaths.RootHint is { } dataHint)
 }
 app.Run();
 
-internal sealed record HealthInfo(bool Ok, string Name, string Version, string DataDir, DateTimeOffset ServerTimeUtc);
+internal sealed record HealthInfo(bool Ok, string Name, string Version, DateTimeOffset ServerTimeUtc);
 
-// 投稿四档（单链 / 收藏夹文件 / 收藏夹链接 / UP 主整架）都能选公开或私有，整批共用一个档位；不填 = 公开。
+// 投稿三档（单链 / 收藏夹链接 / UP 主整架）都能选公开或私有，整批共用一个档位；不填 = 公开。
 // 字段名跟前端 SubmitDialog 的 body 一字不差（visibility），认不出的值一律 400，不给「默默变成公开」的糊涂账。
 internal sealed record AddVideoRequest(string Url, string? Visibility);
-internal sealed record FavoritesImportRequest(string Content, string? Visibility);
 internal sealed record FavoritesUrlImportRequest(string Url, string? Visibility);
 internal sealed record UpImportRequest(string Url, string? Visibility);
 

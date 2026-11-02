@@ -436,14 +436,14 @@ async function doLogout() {
                 <div class="relative pt-2.5">
                   <!-- 垫卡：只露上缘一条，转角走八字；z 序靠 DOM 顺序，不需要 z-index -->
                   <span
-                    class="pointer-events-none absolute inset-x-1 top-0 aspect-[16/9] -rotate-2 rounded-xl bg-white shadow-[0_3px_10px_-4px_rgba(0,0,0,0.22)] ring-1 ring-black/5 transition duration-300 group-hover/coll:-translate-y-0.5 group-hover/coll:-rotate-3 dark:bg-[#2a2d34] dark:ring-white/10"
+                    class="pointer-events-none absolute inset-x-1 top-0 aspect-[16/10] -rotate-2 rounded-xl bg-white shadow-[0_3px_10px_-4px_rgba(0,0,0,0.22)] ring-1 ring-black/5 transition duration-300 group-hover/coll:-translate-y-0.5 group-hover/coll:-rotate-3 dark:bg-[#2a2d34] dark:ring-white/10"
                     aria-hidden="true"
                   ></span>
                   <span
-                    class="pointer-events-none absolute inset-x-2 top-1 aspect-[16/9] rotate-1 rounded-xl bg-white shadow-[0_2px_8px_-4px_rgba(0,0,0,0.18)] ring-1 ring-black/5 transition duration-300 group-hover/coll:rotate-2 dark:bg-[#262a31] dark:ring-white/10"
+                    class="pointer-events-none absolute inset-x-2 top-1 aspect-[16/10] rotate-1 rounded-xl bg-white shadow-[0_2px_8px_-4px_rgba(0,0,0,0.18)] ring-1 ring-black/5 transition duration-300 group-hover/coll:rotate-2 dark:bg-[#262a31] dark:ring-white/10"
                     aria-hidden="true"
                   ></span>
-                  <div class="relative aspect-[16/9] overflow-hidden rounded-xl bg-[#f1f2f3] shadow-[0_2px_10px_-4px_rgba(0,0,0,0.25)] ring-1 ring-black/5 dark:bg-[#23262e] dark:ring-white/10">
+                  <div class="relative aspect-[16/10] overflow-hidden rounded-xl bg-[#f1f2f3] shadow-[0_2px_10px_-4px_rgba(0,0,0,0.25)] ring-1 ring-black/5 dark:bg-[#23262e] dark:ring-white/10">
                     <img
                       v-if="c.cover"
                       :src="c.cover"

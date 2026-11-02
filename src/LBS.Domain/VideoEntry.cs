@@ -76,4 +76,7 @@ public sealed record VideoEntry(
     VideoVisibility Visibility = VideoVisibility.Public,
     // 这位 UP 的 mid：卡面上那个 UP 名要点进站内 UP 空间（只带名字进不了那一页 ——
     // 同名不是理论风险，而且 UP 空间那个口本来就是按 mid 取数）。尾追可选参数，老调用点不受影响。
-    long? UpMid = null);
+    long? UpMid = null,
+    // 封面缩略档位清单：逗号相接的 <c>/thumbs</c> 文件名（形如 BV1xx_352x220-6389012-3f2a1.webp）。
+    // 一条都没切过留 null，前端 <c>coverSrcOf</c> 自动退回本地原图 / 远程热链——「没切过」在契约上就是 null。
+    string? CoverThumbs = null);
