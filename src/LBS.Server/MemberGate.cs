@@ -102,6 +102,13 @@ public sealed class MemberGate(StationDb db)
             return true;
         }
 
+        // UP 空间（GET /api/up/{mid}/videos）：放映厅名片那颗蓝钮的去向，里头是一份稿件清单 ——
+        // 与合集详情同权（进站待遇，不是张封面）。只点 GET：POST /api/up/ 那口（UP 主整搬）在上面投稿那一段已点名。
+        if (HttpMethods.IsGet(request.Method) && path.StartsWith("/api/up/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         return false;
     }
 

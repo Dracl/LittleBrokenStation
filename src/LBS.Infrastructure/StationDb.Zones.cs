@@ -24,7 +24,10 @@ public sealed partial class StationDb
         string? UpName,
         string? PublishedAtUtc,
         string? PublishText,
-        string Zone);
+        string Zone,
+        // 这位 UP 的 mid（尾追一列，老调用点不受影响）：分区卡行上那个 UP 名要点进站内 UP 空间，
+        // 只带名字进不了那一页（同名不是理论风险，而且那一页本来就是按 mid 取数）。
+        long? UpMid);
 
     /// <summary>
     /// 有效分区表达式（全站唯一口径）：改派优先，其次 B 站归档 zone，两头皆空就没有户口。
@@ -75,7 +78,7 @@ public sealed partial class StationDb
         command.CommandText = $"""
             SELECT v.id, v.bvid, {EffTitleExpr}, v.cover_url,
                    (SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
-                   vm.up_name, v.published_at_utc, vm.publish_text, {EffZoneExpr}
+                   vm.up_name, v.published_at_utc, vm.publish_text, {EffZoneExpr}, vm.up_mid
             FROM videos v LEFT JOIN video_meta vm ON vm.video_id = v.id
             WHERE v.status = 'Arrived' AND {visSql} AND {EffZoneExpr} IS NOT NULL
             ORDER BY v.created_at_utc DESC, v.id DESC;
@@ -99,7 +102,8 @@ public sealed partial class StationDb
                 reader.IsDBNull(5) ? null : reader.GetString(5),
                 reader.IsDBNull(6) ? null : reader.GetString(6),
                 reader.IsDBNull(7) ? null : reader.GetString(7),
-                zone));
+                zone,
+                reader.IsDBNull(9) ? null : reader.GetInt64(9)));
         }
 
         return list;

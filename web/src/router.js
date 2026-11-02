@@ -10,6 +10,7 @@ import DynamicsPage from './pages/DynamicsPage.vue'
 import ZonePage from './pages/ZonePage.vue'
 import CollectionsPage from './pages/CollectionsPage.vue'
 import CollectionDetailPage from './pages/CollectionDetailPage.vue'
+import UpSpacePage from './pages/UpSpacePage.vue'
 import WeeklyPage from './pages/WeeklyPage.vue'
 import RegisterPage from './pages/RegisterPage.vue'
 import GuestGatePage from './pages/GuestGatePage.vue'
@@ -25,6 +26,9 @@ const router = createRouter({
     { path: '/zones', name: 'zones', component: ZonePage, meta: { title: '分区 - 小破分站', guestBlocked: true } },
     { path: '/collections', name: 'collections', component: CollectionsPage, meta: { title: '合集名录 - 小破分站', guestBlocked: true } },
     { path: '/collection/:id', name: 'collection', component: CollectionDetailPage, meta: { title: '合集 - 小破分站', guestBlocked: true } },
+    // UP 空间（放映厅名片上那颗蓝钮的去向）：里头是一份稿件清单，与合集详情同权——名录可逛、清单进站。
+    // 同向靠两端：这里挂 guestBlocked，后端 MemberGate 点名 GET /api/up/ 那一口，只改一端就是「钮点得开却吃 401」。
+    { path: '/up/:mid', name: 'up-space', component: UpSpacePage, meta: { title: 'UP 空间 - 小破分站', guestBlocked: true } },
     { path: '/weekly', name: 'weekly', component: WeeklyPage, meta: { title: '分站周报 - 小破分站' } },
     { path: '/admin', name: 'admin', component: AdminPage, meta: { title: '站长室 - 小破分站' } },
     { path: '/me', name: 'me', component: MemberPage, meta: { title: '个人空间 - 小破分站' } },
@@ -36,7 +40,7 @@ const router = createRouter({
   ],
 })
 
-// 访客只看主页的门（前端这一半）：动态 / 分区 / 合集名录 / 合集详情这四页是成员待遇。
+// 访客只看主页的门（前端这一半）：动态 / 分区 / 合集名录 / 合集详情 / UP 空间这五页是成员待遇。
 // 真门在后端（/api/dynamics* 与 /api/collections/{id} 进会员门，匿名 401），这道只是别让人白跑一趟空页；
 // /api/zones 与 /api/collections（名录）仍旧公开，首页那些卡拿数据照旧、不因此改请求。
 // memberStore 首次那发还没落（loaded 仍为 false）时先等它：把「还没查」当成「查过是访客」会误拦刚进站的客人。

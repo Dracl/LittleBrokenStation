@@ -162,6 +162,17 @@ app.MapPreviewApi();
 app.MapGet("/api/videos", (StationDb db, HttpContext http) =>
     Results.Ok(TagManageable(db, db.ListVideos(ViewerScope(http)), http)));
 
+// UP 空间：放映厅名片上那颗蓝钮的去向。只给已到货的行（没缓存的不给人看），
+// 页头吃 video_meta 的站内快照 —— 这一页不替站长出网：老稿没采过名片就画默认小人与「还没有签名」，
+// 要补齐走稿件设置里现成的「重拉封面与媒体」。门禁在 MemberGate 点名（与 /api/collections/{id} 同权），
+// 前端路由同向挂 guestBlocked —— 两端必须同向，不然就是「访客点得到钮却吃 401」。
+app.MapGet("/api/up/{mid:long}/videos", (long mid, StationDb db, HttpContext http) =>
+    Results.Ok(new
+    {
+        up = db.GetUpProfileByMid(mid),
+        items = TagManageable(db, db.ListVideosByUpMid(mid, ViewerScope(http)), http),
+    }));
+
 // 站内搜索：只命中已到站视频，空格分词 AND；空查询给空结果让前端少一条错误分支。
 // 长度截断防滥用，排序白名单（plays / 缺省新到站）在 StationDb 里控制。
 app.MapGet("/api/search", (string? q, string? sort, StationDb db, EventRecorder events, HttpContext http) =>
@@ -558,6 +569,8 @@ app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db, HttpContext 
         v.Title,
         CoverUrl = v.CoverUrl,
         v.UpName,
+        // mid 也得递：这张卡上的 UP 名要能点进站内 UP 空间（缺了它前端只能画成死文本）。
+        v.UpMid,
         v.ViewCountText,
         v.DurationText,
         v.DanmakuCount,

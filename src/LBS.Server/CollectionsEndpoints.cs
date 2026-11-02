@@ -90,6 +90,7 @@ public static class CollectionsEndpoints
         coverUrl = v.CoverUrl,
         localCover = v.LocalCover,
         upName = v.UpName,
+        upMid = v.UpMid,
         // 卡阵那三件与悬停预览：少一件首页那张卡就给用户一排破折号，跟着字段名逐字对齐前端
         viewCountText = v.ViewCountText,
         durationText = v.DurationText,

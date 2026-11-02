@@ -1,6 +1,10 @@
 <script setup>
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { colonTime, publishedDate } from '../utils/time'
+import UpIcon from './UpIcon.vue'
+import PlayCountIcon from './PlayCountIcon.vue'
+import DanmakuCountIcon from './DanmakuCountIcon.vue'
 
 // 接下来播放：分站自己的推荐流（同 UP 主优先 + 层内随机抽），卡形仿 B 站「封面左 + 信息右」。
 const props = defineProps({
@@ -22,6 +26,26 @@ function pubDate(v) {
 function go(bvid) {
   if (bvid) router.push(`/watch/${bvid}`)
 }
+
+// 行里那个 UP 名 → 分站里的 UP 空间（整行是个大 button，所以只能拿 span 抢这一发）。
+// 没带 mid 的行维持纯文本，不给死链。
+function goUp(mid) {
+  if (mid != null) router.push(`/up/${mid}`)
+}
+
+// 整行（UP 徽标 · 名字 · 时间）归 UP 空间：外层是个大 button（点整行跳放映厅），
+// 名字只得几个字宽，点偏一点就被它接走（站长 11-02）。命中区只取这一行本身，不往标题伸。
+// 没归档 mid 的行原样交给外层 button（照旧跳放映厅）。
+function onUpRow(v, e) {
+  if (v.upMid == null) return
+  e.preventDefault()
+  e.stopPropagation()
+  goUp(v.upMid)
+}
+
+// 停在 UP 行上时不染标题：整行都在那个大 button 的 group 里，CSS 的 group-hover 分不出鼠标落在哪一块，
+// 与两张主页卡同一套路（站长 11-02：动画不能冒充归属）。多条行共用一个变量，存当前 hover 的那条 id。
+const hoverKey = ref(null)
 </script>
 
 <template>
@@ -66,32 +90,34 @@ function go(bvid) {
             >{{ colonTime(v.durationText) }}</span>
           </span>
           <span class="ml-[10px] min-w-0 flex-1">
-            <span class="line-clamp-2 text-[15px] font-medium leading-[19px] text-inkMain transition group-hover:text-stationBlue">{{ v.title ?? v.bvid }}</span>
-            <span class="my-[2px] flex items-center text-[13px] leading-[15px] text-inkFaint">
-              <!-- UP 徽标（18×18）：自绘描边圆角方框 + U、P 两笔，尺寸距距对齐 B 站官方实测 -->
-              <svg viewBox="0 0 18 18" class="mr-1 h-[18px] w-[18px] shrink-0" fill="currentColor">
-                <path d="M5.18 6.75v2.83a2.31 2.31 0 0 0 4.62 0V6.75a.58.58 0 0 1 1.15 0v2.83a3.46 3.46 0 0 1-6.92 0V6.75a.58.58 0 0 1 1.15 0z" />
-                <path d="M9.49 6.75c0-.32.26-.57.58-.57h1.74a2.16 2.16 0 0 1 0 4.31h-1.17v.75a.58.58 0 0 1-1.15 0V6.75zm1.15 2.62h1.17a1.01 1.01 0 0 0 0-2.03h-1.17v2.03z" />
-                <path d="M9 2.62c1.93 0 3.61.1 4.79.2 1.35.1 2.41 1.15 2.53 2.5.09.98.18 2.27.18 3.68s-.09 2.7-.18 3.67c-.12 1.36-1.18 2.4-2.53 2.51-1.18.1-2.86.19-4.79.19s-3.61-.09-4.79-.19c-1.35-.11-2.41-1.15-2.53-2.51C1.59 11.7 1.5 10.4 1.5 9s.09-2.7.18-3.67c.12-1.36 1.18-2.4 2.53-2.51C5.39 2.72 7.07 2.62 9 2.62zm0 1.13c-1.89 0-3.54.1-4.7.19-.81.07-1.44.69-1.51 1.49-.09.95-.17 2.2-.17 3.57s.08 2.62.17 3.57c.07.8.7 1.42 1.51 1.49 1.16.09 2.81.19 4.7.19s3.54-.1 4.7-.19c.81-.07 1.44-.69 1.51-1.49.09-.95.17-2.2.17-3.57s-.08-2.62-.17-3.57c-.07-.8-.7-1.42-1.51-1.49-1.16-.09-2.81-.19-4.7-.19z" />
-              </svg>
-              <span class="truncate">{{ v.upName ?? '—' }}<template v-if="pubDate(v)"> · {{ pubDate(v) }}</template></span>
+            <span class="line-clamp-2 text-[15px] font-medium leading-[19px] text-inkMain transition" :class="hoverKey === v.id ? '' : 'group-hover:text-stationPink'">{{ v.title ?? v.bvid }}</span>
+            <span
+              class="group/up my-[2px] flex items-center text-[13px] leading-[15px] text-inkFaint"
+              :class="v.upMid != null ? 'cursor-pointer' : ''"
+              @mouseenter="hoverKey = v.id"
+              @mouseleave="hoverKey = null"
+              @click="onUpRow(v, $event)"
+            >
+              <!-- UP 徽标：与两张主页卡同一枚官方描边款（站长 11-02 点名换掉自绘的那版）；官方口径 13px 字旁 17×17。 -->
+              <UpIcon class="mr-1 h-[17px] w-[17px] shrink-0" />
+              <span class="truncate">
+                <span
+                  v-if="v.upMid != null"
+                  class="cursor-pointer transition hover:text-stationBlue group-hover/up:text-stationBlue"
+                  title="这位在分站的空间"
+                  @click.stop.prevent="goUp(v.upMid)"
+                >{{ v.upName }}</span>
+                <template v-else>{{ v.upName ?? '—' }}</template>
+                <template v-if="pubDate(v)"> · {{ pubDate(v) }}</template>
+              </span>
             </span>
             <span class="flex items-center text-[13px] leading-[15px] text-inkFaint">
-              <!-- 播放量图标（18×18）：自绘描边方框 + 实心三角 -->
-              <svg viewBox="0 0 18 18" class="mr-1 h-[18px] w-[18px] shrink-0" fill="currentColor">
-                <path d="M9 2.62c1.93 0 3.61.1 4.79.2 1.35.1 2.41 1.15 2.53 2.5.09.98.18 2.27.18 3.68s-.09 2.7-.18 3.67c-.12 1.36-1.18 2.4-2.53 2.51-1.18.1-2.86.19-4.79.19s-3.61-.09-4.79-.19c-1.35-.11-2.41-1.15-2.53-2.51C1.59 11.7 1.5 10.4 1.5 9s.09-2.7.18-3.67c.12-1.36 1.18-2.4 2.53-2.51C5.39 2.72 7.07 2.62 9 2.62zm0 1.13c-1.89 0-3.54.1-4.7.19-.81.07-1.44.69-1.51 1.49-.09.95-.17 2.2-.17 3.57s.08 2.62.17 3.57c.07.8.7 1.42 1.51 1.49 1.16.09 2.81.19 4.7.19s3.54-.1 4.7-.19c.81-.07 1.44-.69 1.51-1.49.09-.95.17-2.2.17-3.57s-.08-2.62-.17-3.57c-.07-.8-.7-1.42-1.51-1.49-1.16-.09-2.81-.19-4.7-.19z" />
-                <path d="M7.31 7.63v2.74c0 .69.75 1.12 1.34.77l2.38-1.37a.9.9 0 0 0 0-1.54L8.65 6.86a.9.9 0 0 0-1.34.77z" />
-              </svg>
+              <!-- 播放量图标：官方圆角框 + 三角，与首页卡同一枚（站长 11-02 点名换掉自绘版），尺寸照官方 18×18。 -->
+              <PlayCountIcon class="mr-1 h-[18px] w-[18px] shrink-0" />
               <span class="tabular-nums">{{ v.viewCountText ?? '—' }}</span>
               <span v-if="v.danmakuCount != null" class="ml-2 flex items-center">
-                <!-- 弹幕量图标（18×18）：自绘描边方框 + 四条弹幕胶囊 -->
-                <svg viewBox="0 0 18 18" class="mr-1 h-[18px] w-[18px] shrink-0" fill="currentColor">
-                  <path d="M9 2.62c1.93 0 3.61.1 4.79.2 1.35.1 2.41 1.15 2.53 2.5.09.98.18 2.27.18 3.68s-.09 2.7-.18 3.67c-.12 1.36-1.18 2.4-2.53 2.51-1.18.1-2.86.19-4.79.19s-3.61-.09-4.79-.19c-1.35-.11-2.41-1.15-2.53-2.51C1.59 11.7 1.5 10.4 1.5 9s.09-2.7.18-3.67c.12-1.36 1.18-2.4 2.53-2.51C5.39 2.72 7.07 2.62 9 2.62zm0 1.13c-1.89 0-3.54.1-4.7.19-.81.07-1.44.69-1.51 1.49-.09.95-.17 2.2-.17 3.57s.08 2.62.17 3.57c.07.8.7 1.42 1.51 1.49 1.16.09 2.81.19 4.7.19s3.54-.1 4.7-.19c.81-.07 1.44-.69 1.51-1.49.09-.95.17-2.2.17-3.57s-.08-2.62-.17-3.57c-.07-.8-.7-1.42-1.51-1.49-1.16-.09-2.81-.19-4.7-.19z" />
-                  <path d="M11.91 8.06h-4.5a.57.57 0 1 1 0-1.14h4.5a.57.57 0 1 1 0 1.14z" />
-                  <path d="M13.03 11.06h-4.5a.57.57 0 1 1 0-1.14h4.5a.57.57 0 1 1 0 1.14z" />
-                  <path d="M5.34 8.06h-.37a.57.57 0 1 1 0-1.14h.37a.57.57 0 1 1 0 1.14z" />
-                  <path d="M6.47 11.06h-.37a.57.57 0 1 1 0-1.14h.37a.57.57 0 1 1 0 1.14z" />
-                </svg>
+                <!-- 弹幕量图标：官方圆角框 + 四条弹幕胶囊，同一批扒回来的。 -->
+                <DanmakuCountIcon class="mr-1 h-[18px] w-[18px] shrink-0" />
                 <span class="tabular-nums">{{ v.danmakuCount }}</span>
               </span>
             </span>

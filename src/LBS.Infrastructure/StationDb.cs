@@ -597,6 +597,14 @@ public sealed partial class StationDb
             uname.ExecuteNonQuery();
         }
 
+        // UP 空间要按 mid 捞稿：video_meta.up_mid 先前一个索引都没有（全站那几条建索引语句里没它），
+        // 新 WHERE 是实打实的全表扫 —— 这行是新端口的必要配套，不是可选优化。
+        using (var upIdx = connection.CreateCommand())
+        {
+            upIdx.CommandText = "CREATE INDEX IF NOT EXISTS idx_video_meta_up_mid ON video_meta(up_mid);";
+            upIdx.ExecuteNonQuery();
+        }
+
         // 回填只跑一次：settings KV 立碑守卫（跑前查、跑后置位），整段一个事务不给半吊子留缝。
         var migrated = false;
         using (var probe = connection.CreateCommand())
@@ -778,7 +786,7 @@ public sealed partial class StationDb
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
-                   v.visibility
+                   v.visibility, m.up_mid
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -835,7 +843,7 @@ public sealed partial class StationDb
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
-                   v.visibility
+                   v.visibility, m.up_mid
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id
@@ -904,7 +912,9 @@ public sealed partial class StationDb
                 // 具名传参：CanManage 由上层 TagManageable 后补，这里不占位。
                 PreviewUrl: reader.IsDBNull(16) ? null : "/previews/" + reader.GetString(16),
                 // 可见性：能走到这一行的都是尺子放行过的，带出来只给前端画锁（认不出的脏值当公开读，不抛）。
-                Visibility: VisibilityCodec.FromColumn(reader.IsDBNull(17) ? null : reader.GetString(17))));
+                Visibility: VisibilityCodec.FromColumn(reader.IsDBNull(17) ? null : reader.GetString(17)),
+                // UP 的 mid（第 19 列，末尾追加）：卡上的 UP 名要能点进站内 UP 空间。
+                UpMid: reader.IsDBNull(18) ? null : reader.GetInt64(18)));
             if (dmFiles > 0)
             {
                 danmakuFiles.Add((list[^1].Id, dmFiles));
@@ -2796,7 +2806,7 @@ public sealed partial class StationDb
                    (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
                    (SELECT a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                    (SELECT p.rel_path FROM previews p WHERE p.video_id = v.id AND p.status = 'Arrived' LIMIT 1),
-                   v.visibility
+                   v.visibility, m.up_mid
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             LEFT JOIN pages p ON p.video_id = v.id

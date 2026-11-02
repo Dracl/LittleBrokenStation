@@ -1,11 +1,15 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { colonTime, publishedDate } from '../utils/time'
 import { coverThumb } from '../utils/cover'
 import { claimPreview, previewHoverEnter, previewHoverLeave, releasePreview } from '../utils/previewHover'
+import UpIcon from './UpIcon.vue'
+import PlayCountIcon from './PlayCountIcon.vue'
+import DanmakuCountIcon from './DanmakuCountIcon.vue'
 
 // 纯展示视频卡：版式对齐 B 站首页卡（2026-10 基准）。
-// 封面 16:10 左下「▶播放 💬弹幕」无底描边字，右下时长大号描边字；标题中黑两行；
+// 封面 16:10 左下「官方播放量图标 + 数 / 官方弹幕图标 + 数」（PlayCountIcon / DanmakuCountIcon，B 站首页同一枚）无底描边字，右下时长大号描边字；标题中黑两行；
 // meta 行 UP 徽章 + 相对时间。hover 缩放交给调用方的 .group 容器；
 // keyword 传入时标题与 UP 主高亮命中词；admin 打开状态角标/圆点与失败原因（站长视角）。
 const props = defineProps({
@@ -33,6 +37,31 @@ function highlight(text) {
 
 const titleHtml = computed(() => highlight(props.video.title || props.video.bvid))
 const upHtml = computed(() => (props.video.upName ? highlight(props.video.upName) : ''))
+
+// 卡面上的 UP 名 → 分站里的 UP 空间（站长 11-02 点名：点一下就进）。
+// 整张卡外层是 RouterLink，这里不能再塞一个 <a>（a 套 a 不合法），用 span 自己抢下这一发。
+// 没带 mid 的行（老数据或没归档过档案）维持纯文本，不给死链。
+const router = useRouter()
+const canOpenUp = computed(() => props.video.upMid != null)
+
+// 鼠标停在 UP 行上时，不染标题也不放大封面。整卡是一个 group，CSS 的 group-hover 分不出鼠标落在卡里哪一块，
+// 只能自己记一下：站长 11-02 看到的一直是「动画说这块归卡片」，跟触发区归属无关（他这句判对了）。
+const rowHover = ref(false)
+function onUpNameClick(e) {
+  if (!canOpenUp.value) return
+  e.preventDefault() // 抢在「整张卡跳放映厅」之前
+  e.stopPropagation()
+  router.push(`/up/${props.video.upMid}`)
+}
+
+// 整行（徒章 · 名字 · 时间）都是 UP 空间的入口：站长 11-02 说名字只剩几个字宽，点偏一点就被卡接走。
+// 命中区就取这一行自己的盒子，上下都不往外借——上一版往上垫了 7px，反而压到标题的空盒，被他退回来了。
+function onUpRowClick(e) {
+  if (!canOpenUp.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  router.push(`/up/${props.video.upMid}`)
+}
 
 // 封面取图：本地原图优先（后端已拼好 /media/…），没归档的才吃热链 CDN 缩图；两边都没有给空串走 BV 占位。
 const coverSrc = computed(() => props.video.localCover || (props.video.coverUrl ? coverThumb(props.video.coverUrl, 480) : ''))
@@ -197,8 +226,8 @@ onBeforeUnmount(() => {
         loading="lazy"
         decoding="async"
         referrerpolicy="no-referrer"
-        class="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
-        :class="coverReady ? 'opacity-100' : 'opacity-0'"
+        class="h-full w-full object-cover transition duration-300"
+        :class="[rowHover ? '' : 'group-hover:scale-[1.03]', coverReady ? 'opacity-100' : 'opacity-0']"
         @load="coverReady = true"
         @error="coverReady = true"
       />
@@ -238,34 +267,49 @@ onBeforeUnmount(() => {
       <div class="absolute inset-x-0 bottom-0 flex items-center justify-between px-2 pb-1.5">
         <span class="flex items-center gap-2 text-[12px] text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]">
           <span class="flex items-center gap-1">
-            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="currentColor">
-              <path d="M8 5v14l11-7z" />
-            </svg>
+            <PlayCountIcon class="h-[18px] w-[18px]" />
             {{ video.viewCountText ?? '—' }}
           </span>
           <span v-if="video.danmakuCount != null" class="flex items-center gap-1">
-            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.8">
-              <rect x="2.5" y="5.5" width="19" height="13" rx="3" />
-              <path d="M6.5 10h5M6.5 13.5h8" stroke-linecap="round" />
-            </svg>
+            <DanmakuCountIcon class="h-[18px] w-[18px]" />
             {{ fmtCount(video.danmakuCount) }}
           </span>
         </span>
         <span v-if="video.durationText" class="text-[13px] font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]">{{ colonTime(video.durationText) }}</span>
       </div>
     </div>
-    <p v-if="keyword" class="mt-2 line-clamp-2 min-h-[44px] text-[15px] font-medium leading-[22px] text-inkMain transition group-hover:text-stationPink" :title="video.title || video.bvid" v-html="titleHtml"></p>
-    <p v-else class="mt-2 line-clamp-2 min-h-[44px] text-[15px] font-medium leading-[22px] text-inkMain transition group-hover:text-stationPink" :title="video.title || video.bvid">{{ video.title || video.bvid }}</p>
-    <div class="mt-1 flex items-center gap-1.5 text-[13px] text-inkSub">
+    <!-- 标题区 42px（调参台再一轮，站长 11-02）：热区 48 已盖满整块，所以整块都归卡片的触发区，点了进放映厅，
+         不再垫透明热区；跟卡片分家的只有下面那行 UP：它自己可点，上借 3px、下借 4px。 -->
+    <p v-if="keyword" class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain transition" :class="rowHover ? '' : 'group-hover:text-stationPink'" :title="video.title || video.bvid" v-html="titleHtml"></p>
+    <p v-else class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain transition" :class="rowHover ? '' : 'group-hover:text-stationPink'" :title="video.title || video.bvid">{{ video.title || video.bvid }}</p>
+    <div
+      class="group/up relative mt-1 flex items-center gap-1.5 text-[13px] text-inkSub"
+      :class="canOpenUp ? 'cursor-pointer' : ''"
+      @mouseenter="rowHover = true"
+      @mouseleave="rowHover = false"
+      @click="onUpRowClick"
+    >
+      <!-- 命中垫子：行自己往上借 3px、往下借 4px（站长 11-02 在调参台上定的两个数）。垫子透明，不动排版。 -->
+      <span v-if="canOpenUp" class="absolute -top-[3px] -bottom-[4px] inset-x-0" aria-hidden="true"></span>
       <span v-if="admin && video.status !== 2" class="h-1.5 w-1.5 shrink-0 rounded-full" :class="statusMeta(video.status).dot"></span>
       <template v-if="video.upName">
-        <!-- UP 徽章：手绘圆角框 + UP 字，走 currentColor 跟着灰度 -->
-        <svg viewBox="0 0 18 18" class="h-3.5 w-3.5 shrink-0 text-inkSub" aria-hidden="true">
-          <rect x="0.9" y="0.9" width="16.2" height="16.2" rx="4.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-          <text x="9" y="12.6" text-anchor="middle" font-size="8" font-weight="700" font-family="Arial, sans-serif" fill="currentColor">UP</text>
-        </svg>
-        <span v-if="keyword" class="max-w-[55%] truncate transition hover:text-stationPink" v-html="upHtml"></span>
-        <span v-else class="max-w-[55%] truncate transition hover:text-stationPink">{{ video.upName }}</span>
+        <!-- UP 徽章：官方描边款（UpIcon 里那三段 path 直接刮自 B 站首页卡），尺寸照官方实测：13px 的 UP 名旁画 17×17。 -->
+        <UpIcon class="h-[17px] w-[17px] shrink-0 text-inkSub" />
+        <span
+          v-if="keyword"
+          class="max-w-[55%] truncate transition"
+          :class="canOpenUp ? 'cursor-pointer hover:text-stationBlue group-hover/up:text-stationBlue' : 'hover:text-stationPink'"
+          :title="canOpenUp ? '这位在分站的空间' : undefined"
+          v-html="upHtml"
+          @click="onUpNameClick"
+        ></span>
+        <span
+          v-else
+          class="max-w-[55%] truncate transition"
+          :class="canOpenUp ? 'cursor-pointer hover:text-stationBlue group-hover/up:text-stationBlue' : 'hover:text-stationPink'"
+          :title="canOpenUp ? '这位在分站的空间' : undefined"
+          @click="onUpNameClick"
+        >{{ video.upName }}</span>
         <span class="text-inkFaint">·</span>
       </template>
       <span>{{ relTime(publishedDate(video)) }}</span>

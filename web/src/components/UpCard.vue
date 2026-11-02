@@ -1,6 +1,8 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { defaultAvatar } from '../utils/avatar.js'
+import { fmtFans } from '../utils/fans.js'
 
 const props = defineProps({
   upName: { type: String, default: null },
@@ -21,15 +23,6 @@ const faceSrc = computed(() => (props.upFace && !faceFailed.value ? props.upFace
 function onFaceError() {
   if (!props.upFace || faceFailed.value) return // 已经在画默认图，不再来回折腾
   faceFailed.value = true
-}
-
-function fmtFans(n) {
-  if (n == null) return '—'
-  if (n >= 10000) {
-    const wan = n / 10000
-    return (wan >= 100 ? Math.round(wan) : Math.round(wan * 10) / 10).toString().replace(/\.0$/, '') + '万'
-  }
-  return n.toString()
 }
 
 // 联合创作名单：本人也算一员（B 站自己就把他列在头一个，角色写「UP主」），名字外链 B 站空间。
@@ -95,6 +88,16 @@ function spaceHref(p) {
           />
           <span class="mt-1.5 w-full truncate text-xs text-stationPink transition group-hover/mate:underline">{{ p.name }}</span>
           <span class="mt-0.5 w-full truncate text-[11px] text-inkFaint">{{ p.role || '创作' }}</span>
+          <!-- 站内入口（站长 11-02 点头要）：名字照旧直开 B 站空间，另挂一颗小蓝胶囊进分站里的这一位。
+               这位分站一篇都没收过也不打紧 —— UP 空间那页自会说「分站还没收过这位的稿件」。 -->
+          <RouterLink
+            v-if="p.mid != null"
+            :to="`/up/${p.mid}`"
+            class="mt-1 rounded-full px-1.5 py-px text-[10px] leading-4 text-stationBlue ring-1 ring-stationBlue/30 transition hover:bg-stationBlue hover:text-white"
+            title="这位在分站的空间"
+          >
+            空间
+          </RouterLink>
         </a>
       </div>
     </template>
@@ -124,18 +127,32 @@ function spaceHref(p) {
           <p v-else class="min-w-0 truncate text-base font-semibold text-inkMain">{{ upName ?? '未知 UP 主' }}</p>
         </div>
         <p class="mt-0.5 line-clamp-2 text-xs leading-5 text-inkFaint">{{ upSign || '这个 UP 主还没有签名' }}</p>
-        <a
-          v-if="upMid"
-          :href="`https://space.bilibili.com/${upMid}`"
-          target="_blank"
-          rel="noreferrer"
-          class="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-md bg-stationPink py-1.5 text-xs font-medium text-white transition hover:opacity-85"
-        >
-          <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M8 3v10M3 8h10" stroke-linecap="round" />
-          </svg>
-          去 B 站关注{{ upFans != null ? ` · ${fmtFans(upFans)}` : '' }}
-        </a>
+        <!-- 两颗钮并排：左边站内蓝钮进 UP 空间（只看分站缓存的货），右边粉色照旧去 B 站关注。
+             共用同一个 v-if：没 mid 两枚都不画，不给空链留缝。 -->
+        <div v-if="upMid" class="mt-2.5 flex gap-1.5">
+          <RouterLink
+            :to="`/up/${upMid}`"
+            class="flex shrink-0 items-center justify-center gap-1 rounded-md bg-stationBlue px-2.5 py-1.5 text-xs font-medium text-white transition hover:opacity-85"
+            title="这位在分站的空间：只列分站已缓存的稿件"
+          >
+            <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2.2" y="3" width="11.6" height="10" rx="1.6" />
+              <path d="M2.2 6.2h11.6M6.2 6.2V13" stroke-linecap="round" />
+            </svg>
+            UP 空间
+          </RouterLink>
+          <a
+            :href="`https://space.bilibili.com/${upMid}`"
+            target="_blank"
+            rel="noreferrer"
+            class="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-stationPink py-1.5 text-xs font-medium text-white transition hover:opacity-85"
+          >
+            <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M8 3v10M3 8h10" stroke-linecap="round" />
+            </svg>
+            去 B 站关注{{ upFans != null ? ` · ${fmtFans(upFans)}` : '' }}
+          </a>
+        </div>
       </div>
     </div>
   </div>

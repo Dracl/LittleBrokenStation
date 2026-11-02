@@ -99,6 +99,10 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/dynamics/1234567890/comments", false, true)]
     [InlineData("POST", "/api/dynamics/1234567890/comments/refresh", false, true)]
     [InlineData("GET", "/api/dynamics/1234567890/comments/", false, true)]  // 同样不许拿斜杠穿
+    // UP 空间（放映厅名片那颗蓝钮）：里头是一份稿件清单，与合集详情同权 —— 名录可逛、清单进站。
+    // 只拿 GET：POST /api/up/import（UP 主整搬）在投稿那一段已点名，两枚不能互相顶替。
+    [InlineData("GET", "/api/up/556980/videos", false, true)]
+    [InlineData("POST", "/api/up/556980/videos", false, true)]  // POST /api/up/ 整段早就在投稿那一段点名（UP 主整搬）：这一格钉的是「两支各自成立，不靠对方顶」
     public void 两张门的归属矩阵(string method, string path, bool expectAdmin, bool expectMember)
     {
         var request = Request(method, path);

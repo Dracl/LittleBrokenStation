@@ -39,6 +39,7 @@ public static class ZonesEndpoints
                     coverUrl = v.CoverUrl,
                     localCover = v.LocalCover,
                     upName = v.UpName,
+                    upMid = v.UpMid,
                     publishedAtUtc = v.PublishedAtUtc,
                     publishText = v.PublishText,
                     zone = v.Zone,

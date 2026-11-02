@@ -51,7 +51,10 @@ public sealed partial class StationDb
         string? PreviewUrl,
         string? PublishedAtUtc,
         string? PublishText,
-        string? Zone);
+        string? Zone,
+        // 这位 UP 的 mid（尾追一列，老调用点不受影响）：合集详情页用的就是首页那张 VideoCard，
+        // 缺了它卡上的 UP 名只能画成死文本，进不了 UP 空间那一页。
+        long? UpMid);
 
     /// <summary>合集详情 = 简报 + 片单（只含已到站的，最新入集的排前头）。</summary>
     public sealed record CollectionDetail(
@@ -372,7 +375,8 @@ public sealed partial class StationDb
                    vm.up_name, vm.view_count, p.duration_text,
                    (SELECT pr.rel_path FROM previews pr WHERE pr.video_id = v.id AND pr.status = 'Arrived' LIMIT 1),
                    v.published_at_utc, vm.publish_text, {EffZoneExpr},
-                   (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku')
+                   (SELECT COUNT(1) FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'danmaku'),
+                   vm.up_mid
             FROM collection_items ci
             JOIN videos v ON v.id = ci.video_id
             LEFT JOIN video_meta vm ON vm.video_id = v.id
@@ -400,7 +404,8 @@ public sealed partial class StationDb
                 reader.IsDBNull(8) ? null : "/previews/" + reader.GetString(8),
                 reader.IsDBNull(9) ? null : reader.GetString(9),
                 reader.IsDBNull(10) ? null : reader.GetString(10),
-                reader.IsDBNull(11) ? null : reader.GetString(11)));
+                reader.IsDBNull(11) ? null : reader.GetString(11),
+                reader.IsDBNull(13) ? null : reader.GetInt64(13)));
             if (!reader.IsDBNull(12) && reader.GetInt64(12) > 0)
             {
                 pendingDanmaku.Add(index);

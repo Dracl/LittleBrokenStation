@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import DanmakuLayer from './DanmakuLayer.vue'
 import BIcon from './BIcon.vue'
+import DanmakuCountIcon from './DanmakuCountIcon.vue'
 import { biPlay, biVolume, biSetting, biPip, biFull, biDmOn, biDmOff, biDmSet, biHiRes } from '../assets/bicons'
 import { probeMp4 } from '../utils/mp4Meta'
 import { loadAssText, buildHeat, HEAT } from '../utils/dmHeat'
@@ -2080,10 +2081,7 @@ const STROKE_ITEMS = [
     <div class="flex items-center gap-3 border-t border-black/5 px-3 py-2 shadow-[0_2px_10px_rgba(0,0,0,0.12)]">
       <div class="flex shrink-0 items-center gap-3 text-xs text-inkFaint">
         <span class="flex items-center gap-1 tabular-nums" title="已归档的 B 站弹幕总数">
-          <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.4">
-            <rect x="1.2" y="2.8" width="13.6" height="9" rx="2" />
-            <path d="M4.5 14.2 7 11.8" stroke-linecap="round" />
-          </svg>
+          <DanmakuCountIcon class="h-3.5 w-3.5" />
           {{ danmakuCount != null ? `${danmakuCount} 条弹幕` : '弹幕未归档' }}
         </span>
         <span v-if="localItems.length > 0" class="hidden text-inkFaint/70 sm:inline">站内弹幕 +{{ localItems.length }}</span>

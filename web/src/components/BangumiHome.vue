@@ -1,9 +1,12 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { coverThumb } from '../utils/cover'
 import { colonTime, publishedDate } from '../utils/time'
 import { HINT_DELETE_VIDEO, HINT_FETCH_COMMENTS } from '../confirmStore'
+import UpIcon from './UpIcon.vue'
+import PlayCountIcon from './PlayCountIcon.vue'
+import DanmakuCountIcon from './DanmakuCountIcon.vue'
 
 // ─── 番剧模式：B 站番剧区（bilibili.com/anime）的同款开局——
 // 顶部大 banner（模糊底铺满 + 清晰封面居右 + 右下黑玻离信息胶囊），
@@ -22,6 +25,45 @@ const props = defineProps({
 // 能不能按由服务端算好的 canManage 说话：分区行那口 /api/zones/videos 没这列，按 id 从全集认领（与时长/播放数同一套路）。
 defineEmits(['fetch-comments', 'remove'])
 const byId = computed(() => new Map(props.videos.map((v) => [v.id, v])))
+
+// 大幕与卡行里的 UP 名 → 分站里的 UP 空间（站长 11-02 点名：点一下就进）。
+// 两块外层都是 RouterLink，不能再塞 <a>，拿 span + prevent.stop 抢在跳放映厅之前。
+const router = useRouter()
+function goUp(mid) {
+  if (mid != null) router.push(`/up/${mid}`)
+}
+
+// /api/zones/videos 那口只投影了展示字段（id/bvid/title/cover/upName/zone……），没带 up_mid，
+// 所以 UP 空间的入口按 id 从首页已拉的全集认领（与时长/播放数/canManage 同一套路）。
+function upMidOf(item) {
+  if (item.upMid != null) return item.upMid
+  const full = byId.value.get(item.id)
+  return full && full.upMid != null ? full.upMid : null
+}
+
+// 卡行那一整行（名字 · 时间）归 UP 空间，不靠用户射那几个字（站长 11-02）。
+// 命中区是行自己的盒子 + 上借 3px / 下借 5px 的透明垫子（调参台定的数）；没归档 mid 的行不动，照旧跟外层卡走。
+function onUpRow(item, e) {
+  const mid = upMidOf(item)
+  if (mid == null) return
+  e.preventDefault()
+  e.stopPropagation()
+  goUp(mid)
+}
+
+// 鼠标停在卡行的 UP 行上时，不染标题也不放大封面：整张卡是一个 group，CSS 的 group-hover 分不出鼠标落在哪一块。
+// 站长 11-02 这句判对了：他看到的一直是动画在冒充归属，跟触发区无关。横滚行里多张卡共用一个变量，存当前 hover 的那条 bvid。
+const rowHoverKey = ref('')
+
+// 大幕那行尾巴（播数与弹幕数）：图标交给模板（官方那两枚），这里只管数——取不到的那段整段不显。
+// 与 UP 名拆开后各自拼，UP 名在才补那个「 · 」。
+function heroViews(v) {
+  return v.viewCountText || ''
+}
+
+function heroDanmaku(v) {
+  return v.danmakuCount != null ? fmtCount(v.danmakuCount) : ''
+}
 
 function canManageOf(item) {
   return Boolean(byId.value.get(item.id)?.canManage ?? item.canManage)
@@ -330,7 +372,15 @@ onBeforeUnmount(() => {
         <span class="min-w-0">
           <span class="block truncate text-[14px] font-medium">{{ heroCur.title || heroCur.bvid }}</span>
           <span class="block truncate text-[11.5px] text-white/60">
-            {{ [heroCur.upName, heroCur.viewCountText ? `播放 ${heroCur.viewCountText}` : '', heroCur.danmakuCount != null ? `💬 ${fmtCount(heroCur.danmakuCount)}` : ''].filter(Boolean).join(' · ') }}
+            <span
+              v-if="heroCur.upMid != null"
+              class="-mx-1 cursor-pointer px-1 transition hover:text-stationBlue"
+              title="这位在分站的空间"
+              @click.stop.prevent="goUp(heroCur.upMid)"
+            ><UpIcon v-if="heroCur.upName" class="mr-1 inline-block h-[14px] w-[14px] align-[-2px] opacity-80" />{{ heroCur.upName }}</span>
+            <template v-else><UpIcon v-if="heroCur.upName" class="mr-1 inline-block h-[14px] w-[14px] align-[-2px] opacity-80" />{{ heroCur.upName }}</template>
+            <template v-if="heroViews(heroCur)">{{ heroCur.upName ? ' · ' : '' }}<span class="inline-flex items-center gap-0.5"><PlayCountIcon class="h-[13px] w-[13px]" />{{ heroViews(heroCur) }}</span></template>
+            <template v-if="heroDanmaku(heroCur)">{{ heroCur.upName || heroViews(heroCur) ? ' · ' : '' }}<span class="inline-flex items-center gap-0.5"><DanmakuCountIcon class="h-[13px] w-[13px]" />{{ heroDanmaku(heroCur) }}</span></template>
           </span>
         </span>
       </RouterLink>
@@ -441,33 +491,47 @@ onBeforeUnmount(() => {
         <div v-for="item in row.items" :key="item.bvid" class="group relative w-[228px] shrink-0">
           <RouterLink :to="`/watch/${item.bvid}`" class="block">
           <div class="relative aspect-[16/10] overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]">
-            <img v-if="coverOf(item)" :src="coverOf(item)" :alt="item.title || item.bvid" loading="lazy" decoding="async" referrerpolicy="no-referrer" class="h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]" />
+            <img v-if="coverOf(item)" :src="coverOf(item)" :alt="item.title || item.bvid" loading="lazy" decoding="async" referrerpolicy="no-referrer" class="h-full w-full object-cover transition duration-300" :class="rowHoverKey === item.bvid ? '' : 'group-hover:scale-[1.04]'" />
             <span v-else class="flex h-full w-full items-center justify-center text-[11px] tracking-widest text-inkFaint">{{ item.bvid }}</span>
-            <!-- 封面底部数据区：与 VideoCard 同款——半透渐变带垫底，左「▶播放 💬弹幕」右时长，描边白字 -->
+            <!-- 封面底部数据区：与 VideoCard 同款——半透渐变带垫底，左「官方播放量图标 + 数 / 官方弹幕图标 + 数」右时长，描边白字 -->
             <div class="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/55 via-black/25 to-transparent"></div>
             <div class="absolute inset-x-0 bottom-0 flex items-center justify-between px-2 pb-1.5">
               <span class="flex items-center gap-2 text-[12px] text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]">
                 <span class="flex items-center gap-1">
-                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="currentColor">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
+                  <PlayCountIcon class="h-[18px] w-[18px]" />
                   {{ item.viewCountText ?? '—' }}
                 </span>
                 <span v-if="item.danmakuCount != null" class="flex items-center gap-1">
-                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <rect x="2.5" y="5.5" width="19" height="13" rx="3" />
-                    <path d="M6.5 10h5M6.5 13.5h8" stroke-linecap="round" />
-                  </svg>
+                  <DanmakuCountIcon class="h-[18px] w-[18px]" />
                   {{ fmtCount(item.danmakuCount) }}
                 </span>
               </span>
               <span v-if="item.durationText" class="text-[13px] font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]">{{ colonTime(item.durationText) }}</span>
             </div>
           </div>
-          <p class="mt-2 line-clamp-2 min-h-[40px] text-[14.5px] font-medium leading-[20px] text-inkMain transition group-hover:text-stationPink" :title="item.title || item.bvid">{{ item.title || item.bvid }}</p>
-          <p class="mt-0.5 truncate text-[12px] text-inkFaint">
-            {{ [item.upName, relTime(publishedDate(item))].filter(Boolean).join(' · ') }}
-          </p>
+          <!-- 标题区 42px（调参台再一轮，站长 11-02）：热区已盖满，整块都归外层那张卡的触发区，点了进放映厅；
+               跟卡片分家的只有下面那行 UP——它自己可点，上借 3px、下借 4px。 -->
+          <p class="mt-2 line-clamp-2 min-h-[42px] text-[14.5px] font-medium leading-[20px] text-inkMain transition" :class="rowHoverKey === item.bvid ? '' : 'group-hover:text-stationPink'" :title="item.title || item.bvid">{{ item.title || item.bvid }}</p>
+          <div
+            class="group/up relative mt-0.5"
+            :class="upMidOf(item) != null ? 'cursor-pointer' : ''"
+            @mouseenter="rowHoverKey = item.bvid"
+            @mouseleave="rowHoverKey = ''"
+            @click="onUpRow(item, $event)"
+          >
+            <span v-if="upMidOf(item) != null" class="absolute -top-[3px] -bottom-[4px] inset-x-0" aria-hidden="true"></span>
+            <p class="truncate text-[12px] text-inkFaint">
+              <!-- UP 徽标：与主页卡同一枚官方描边款（站长 11-02：没有的就直接补上），12px 字旁按官方比例取 15px。 -->
+              <UpIcon v-if="item.upName" class="mr-1 inline-block h-[15px] w-[15px] align-[-2px]" />
+              <span
+                v-if="upMidOf(item) != null"
+                class="transition hover:text-stationBlue group-hover/up:text-stationBlue"
+                title="这位在分站的空间"
+              >{{ item.upName }}</span>
+              <template v-else>{{ item.upName }}</template>
+              <template v-if="relTime(publishedDate(item))">{{ item.upName ? ' · ' : '' }}{{ relTime(publishedDate(item)) }}</template>
+            </p>
+          </div>
           </RouterLink>
           <!-- 投稿人自管两钮：样式与网格卡阵（AdminVideoCell）那两枚同一套——hover 浮现、右上并排、黑玻离底。
                卡片整块是链接，钮只能当它的兄弟，靠 prevent.stop 抢下点击。 -->

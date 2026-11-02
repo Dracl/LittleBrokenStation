@@ -16,6 +16,8 @@ import DanmakuList from '../components/DanmakuList.vue'
 import UpNextList from '../components/UpNextList.vue'
 import EmptyTv from '../components/EmptyTv.vue'
 import VisibilityPill from '../components/VisibilityPill.vue'
+import PlayCountIcon from '../components/PlayCountIcon.vue'
+import DanmakuCountIcon from '../components/DanmakuCountIcon.vue'
 import { member, loginDialogOpen } from '../memberStore'
 import { submitDialogOpen } from '../submitStore'
 import { HINT_DELETE_VIDEO, HINT_FETCH_COMMENTS } from '../confirmStore'
@@ -784,17 +786,11 @@ const coverFresh = computed(() => {
               </h1>
               <div class="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-inkFaint">
                 <span v-if="data.viewCountText" class="flex items-center gap-1.5">
-                  <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.3">
-                    <rect x="1.2" y="2.6" width="13.6" height="10.8" rx="2" />
-                    <path d="M6.6 6 10 8 6.6 10z" fill="currentColor" stroke="none" />
-                  </svg>
+                  <PlayCountIcon class="h-3.5 w-3.5" />
                   {{ data.viewCountText }}
                 </span>
                 <span class="flex items-center gap-1.5">
-                  <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
-                    <rect x="1.2" y="2.6" width="13.6" height="10.8" rx="2" />
-                    <path d="M3.8 5.8h5.4M3.8 8.3h4" />
-                  </svg>
+                  <DanmakuCountIcon class="h-3.5 w-3.5" />
                   {{ data.danmakuCount ?? 0 }}
                 </span>
                 <span v-if="data.publishText">{{ data.publishText }}</span>

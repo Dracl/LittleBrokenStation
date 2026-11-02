@@ -73,4 +73,7 @@ public sealed record VideoEntry(
     string? PreviewUrl = null,
     // 这稿的可见性：读侧已经拿尺子滤过一轮，能出现在列表里的都是「这位看得着的」，
     // 这里带出来只给前端画那枚「锁」徽记（尾追具名传参，不动既有位置）。
-    VideoVisibility Visibility = VideoVisibility.Public);
+    VideoVisibility Visibility = VideoVisibility.Public,
+    // 这位 UP 的 mid：卡面上那个 UP 名要点进站内 UP 空间（只带名字进不了那一页 ——
+    // 同名不是理论风险，而且 UP 空间那个口本来就是按 mid 取数）。尾追可选参数，老调用点不受影响。
+    long? UpMid = null);
