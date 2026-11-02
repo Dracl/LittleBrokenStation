@@ -60,9 +60,20 @@ function historyClock(sec) {
   return h > 0 ? `${h}:${pad(Math.floor((n % 3600) / 60))}:${pad(n % 60)}` : `${pad(Math.floor(n / 60))}:${pad(n % 60)}`
 }
 
-// 封面淡入：首见封面先隐身等 load，省得灰底上「啪」地糊上图闪一下
-function onCoverLoad(e) {
-  e.target.classList.add('is-on')
+// 封面淡入：首见封面先隐身等 load，省得灰底上「啪」地糊上图闪一下。
+// 走响应式集合，不能像上一版那样靠 e.target.classList.add('is-on')：这枚 img 上挂着动态 :class（hover 放大那一档），
+// Vue 改 class 时是把「静态 + 动态」整串重写，手工塞进去的 is-on 会被抹掉——
+// 鼠标一停在封面上 .hist-cover{opacity:0} 就复活，图在指尖底下变灰、走开也不回来（站长 11-02 抓到）。
+const coverLoaded = ref(new Set())
+const coverFailed = ref(new Set())
+function markCoverLoaded(videoId) {
+  if (coverLoaded.value.has(videoId)) return
+  coverLoaded.value = new Set(coverLoaded.value).add(videoId)
+}
+// 图挂了（本地件被删、图床 404）：不隐身也不留一个碎图标，直接退回下面那枚首字母兑底。
+function markCoverFailed(videoId) {
+  if (coverFailed.value.has(videoId)) return
+  coverFailed.value = new Set(coverFailed.value).add(videoId)
 }
 
 // 命中区收到最严一档（站长 11-02 在调参台上定的收口，口径同「接下来播放」UpNextList）：格子只有封面与
@@ -320,15 +331,16 @@ function openLogin(mode) {
                 @mouseleave="coverKey = null"
               >
                 <img
-                  v-if="historyCover(item)"
+                  v-if="historyCover(item) && !coverFailed.has(item.videoId)"
                   :src="historyCover(item)"
                   :alt="item.title || item.bvid"
                   loading="lazy"
                   decoding="async"
                   referrerpolicy="no-referrer"
                   class="hist-cover h-full w-full object-cover transition duration-300"
-                  :class="(coverKey === item.videoId || toolKey === item.videoId) ? 'scale-[1.04]' : ''"
-                  @load="onCoverLoad"
+                  :class="[(coverKey === item.videoId || toolKey === item.videoId) ? 'scale-[1.04]' : '', coverLoaded.has(item.videoId) ? 'is-on' : '']"
+                  @load="markCoverLoaded(item.videoId)"
+                  @error="markCoverFailed(item.videoId)"
                 />
                 <span v-else class="flex h-full w-full select-none items-center justify-center font-mono text-sm text-inkFaint" aria-hidden="true">
                   {{ (item.title || item.bvid || '?').slice(0, 1) }}
@@ -417,10 +429,11 @@ function openLogin(mode) {
     transform: none;
   }
 }
-/* 封面图先透着（底下的灰垫子顶位），load 到了再淡进来接管，杜绝图到的那一下白闪 */
+/* 封面图先透着（底下的灰垫子顶位），load 到了再淡进来接管（is-on 由 Vue 绑，不手工塞 class），杜绝图到的那一下白闪。
+   transform 一并写进来：这条 scoped 规则比 Tailwind 的 transition 更具体，不列 transform 的话 hover 放大是瞬跳不是缓动。 */
 .hist-cover {
   opacity: 0;
-  transition: opacity 0.35s ease;
+  transition: opacity 0.35s ease, transform 0.3s ease;
 }
 .hist-cover.is-on {
   opacity: 1;
