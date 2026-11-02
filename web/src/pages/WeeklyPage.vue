@@ -222,6 +222,19 @@ const newsShown = computed(() => {
 })
 watch(week, () => { newsPage.value = 0 })
 
+// 新货条目的命中区收到最严一档（站长 11-02 在调参台上定的收口，口径同「接下来播放」UpNextList）：
+// 一条只有封面与「压在标题字上」两处可点，底下的 bvid 行、标题第二行之后的空白与条目之间的缝全是死区。
+// 所以整条那层 RouterLink 撤了，拆成封面一枚 + 标题内联一枚；group-hover 跟着下岗（它分不出鼠标落在条目的哪一块，
+// 停在 bvid 上也会把封面放大、把标题染粉）。两个 key 各存当前那条的 bvid（v-for 的 :key），一条的动作不波及邻条。
+const newsCoverKey = ref(null) // 鼠标当前压在哪条的封面上 → 封面放大
+const newsTitleKey = ref(null) // 鼠标当前压在哪条的标题字上 → 只有标题染粉
+
+// 「最多人看」那一列同套手感（站长 11-02 定的基准：封面可点 + 标题字面可点带染粉 + 读数行死区）。
+// 另开两个 key 而不搭 newsCoverKey / newsTitleKey 那趟车：同一条片子完全可能本周既入新货又上热榜，
+// 共用一个变量存 bvid 就会让两张卡的 hover 互相牵连（那边鼠标压字、这边也跟着染粉），所以按榜各存各的。
+const hotCoverKey = ref(null) // 鼠标当前压在哪条热榜的封面上 → 封面放大（倍率与缓动跟新货那条对齐）
+const hotTitleKey = ref(null) // 鼠标当前压在哪条热榜的标题字上 → 只有标题染粉
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -469,13 +482,14 @@ function goNext() {
               </span>
             </div>
             <div v-if="newsShown.length" class="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
-              <RouterLink
-                v-for="item in newsShown"
-                :key="item.bvid"
-                :to="`/watch/${item.bvid}`"
-                class="group w-full"
-              >
-                <div class="relative aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3] dark:bg-[#23262e]">
+              <div v-for="item in newsShown" :key="item.bvid" class="w-full">
+                <!-- 封面一枚 RouterLink 指向播放页（另一枚在标题字上）：放大由 newsCoverKey 说话，鼠标真进封面才缩 -->
+                <RouterLink
+                  :to="`/watch/${item.bvid}`"
+                  class="relative block aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3] dark:bg-[#23262e]"
+                  @mouseenter="newsCoverKey = item.bvid"
+                  @mouseleave="newsCoverKey = null"
+                >
                   <img
                     v-if="coverSrc(item.coverUrl)"
                     :src="coverSrc(item.coverUrl)"
@@ -483,15 +497,25 @@ function goNext() {
                     loading="lazy"
                     decoding="async"
                     referrerpolicy="no-referrer"
-                    class="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
+                    class="h-full w-full object-cover transition duration-300"
+                    :class="newsCoverKey === item.bvid ? 'scale-[1.03]' : ''"
                   />
                   <span v-else class="flex h-full w-full items-center justify-center text-xs tracking-widest text-inkFaint">{{ item.bvid }}</span>
-                </div>
-                <p class="mt-2 line-clamp-2 text-[13px] font-medium leading-[19px] text-inkMain transition group-hover:text-stationPink" :title="item.title || item.bvid">
-                  {{ item.title || item.bvid }}
+                </RouterLink>
+                <!-- 标题：热区只给字面。外层 p 只管两行截断，真正可点的是内联那枚 RouterLink ——
+                     第二行文字之后的空白、行下方的余量都不响应，光标也不变手型（染粉与手型同一个元素、同一块区域）。 -->
+                <p class="mt-2 line-clamp-2 text-[13px] font-medium leading-[19px] text-inkMain" :title="item.title || item.bvid">
+                  <RouterLink
+                    :to="`/watch/${item.bvid}`"
+                    class="transition"
+                    :class="newsTitleKey === item.bvid ? 'text-stationPink' : ''"
+                    @mouseenter="newsTitleKey = item.bvid"
+                    @mouseleave="newsTitleKey = null"
+                  >{{ item.title || item.bvid }}</RouterLink>
                 </p>
+                <!-- bvid 那行是死区：不响应点击、不给手型，只当读数。 -->
                 <p class="mt-0.5 truncate text-[11px] text-inkFaint">{{ item.bvid }}</p>
-              </RouterLink>
+              </div>
             </div>
             <p v-else class="px-6 py-10 text-center text-sm text-inkFaint">这一周没有新货入站。</p>
           </section>
@@ -503,12 +527,20 @@ function goNext() {
             </div>
             <ol v-if="data.hottest.length">
               <li v-for="(h, i) in data.hottest" :key="h.bvid" class="border-b border-lineSoft/60 last:border-b-0">
-                <RouterLink :to="`/watch/${h.bvid}`" class="flex items-center gap-3 px-4 py-3 transition hover:bg-stationPink/5">
+                <!-- 整行不再是链接（站长 11-02 顺手定的命中区收口）：名次、bvid、「N 位观众」保持读数区，整行不给背景高亮；
+                     可点的只有封面与「压在标题字上」两处，写法与新货条目、UpNextList 同一套手感。 -->
+                <div class="flex items-center gap-3 px-4 py-3">
                   <span
                     class="w-7 shrink-0 text-center text-[15px] font-semibold"
                     :class="i < 3 ? 'text-stationPink' : 'text-inkFaint'"
                   >{{ i + 1 }}</span>
-                  <div class="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]">
+                  <!-- 封面一枚 RouterLink 指向播放页：放大走 hotCoverKey，倍率与缓动跟同页新货那条一致（scale-[1.03] + transition duration-300），不自创 -->
+                  <RouterLink
+                    :to="`/watch/${h.bvid}`"
+                    class="relative block h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]"
+                    @mouseenter="hotCoverKey = h.bvid"
+                    @mouseleave="hotCoverKey = null"
+                  >
                     <img
                       v-if="coverSrc(h.coverUrl)"
                       :src="coverSrc(h.coverUrl)"
@@ -516,16 +548,28 @@ function goNext() {
                       loading="lazy"
                       decoding="async"
                       referrerpolicy="no-referrer"
-                      class="h-full w-full object-cover"
+                      class="h-full w-full object-cover transition duration-300"
+                      :class="hotCoverKey === h.bvid ? 'scale-[1.03]' : ''"
                     />
                     <span v-else class="flex h-full w-full items-center justify-center text-[10px] tracking-widest text-inkFaint">{{ h.bvid }}</span>
-                  </div>
+                  </RouterLink>
                   <span class="min-w-0 flex-1">
-                    <span class="block truncate text-[14px] font-medium text-inkMain" :title="h.title || h.bvid">{{ h.title || h.bvid }}</span>
+                    <!-- 标题：热区只给字面。外层 span 只管一行截断与省略号，真正可点的是内联那枚 RouterLink ——
+                         文字之后的空白、行下方的余量都不响应，光标也不变手型（染粉与手型同一个元素、同一块区域）。 -->
+                    <span class="block truncate text-[14px] font-medium text-inkMain" :title="h.title || h.bvid">
+                      <RouterLink
+                        :to="`/watch/${h.bvid}`"
+                        class="transition"
+                        :class="hotTitleKey === h.bvid ? 'text-stationPink' : ''"
+                        @mouseenter="hotTitleKey = h.bvid"
+                        @mouseleave="hotTitleKey = null"
+                      >{{ h.title || h.bvid }}</RouterLink>
+                    </span>
+                    <!-- bvid 行是读数区：不吃进链接、不响应点击、不给手型。 -->
                     <span class="mt-0.5 block truncate text-[11px] text-inkFaint">{{ h.bvid }}</span>
                   </span>
                   <span class="shrink-0 text-[13px] text-inkSub"><span class="font-semibold text-stationPink">{{ h.viewers }}</span> 位观众</span>
-                </RouterLink>
+                </div>
               </li>
             </ol>
             <p v-else class="px-6 py-10 text-center text-sm text-inkFaint">这一周没人进厅。</p>

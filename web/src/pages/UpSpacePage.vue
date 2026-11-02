@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import VideoCard from '../components/VideoCard.vue'
 import { defaultAvatar } from '../utils/avatar.js'
@@ -131,9 +131,9 @@ watch(mid, load)
 
         <!-- 卡阵：与合集详情同形的网格，卡面一根毛不改 -->
         <div v-if="items.length" class="mt-5 grid grid-cols-2 gap-x-4 gap-y-[38px] md:grid-cols-3 xl:grid-cols-5">
-          <RouterLink v-for="video in items" :key="video.bvid" :to="`/watch/${video.bvid}`" class="group block">
-            <VideoCard :video="video" />
-          </RouterLink>
+          <!-- 命中区收口（站长 11-02 定的 coverTitleText）：外层那根包整卡的 RouterLink 撤了，可点的是 VideoCard 内部的
+               封面与标题字面；v-for / :key 直接落到卡上，网格子项就是卡自己（卡根是个 block 的 div，版式不变） -->
+          <VideoCard v-for="video in items" :key="video.bvid" :video="video" />
         </div>
 
         <!-- 空态：分站还没收过这位。不摆 0 张空卡，也不假装这人不存在 —— 页头那张脸还在，说的是「这里没货」 -->

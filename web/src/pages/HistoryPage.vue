@@ -65,6 +65,13 @@ function onCoverLoad(e) {
   e.target.classList.add('is-on')
 }
 
+// 命中区收到最严一档（站长 11-02 在调参台上定的收口，口径同「接下来播放」UpNextList）：格子只有封面与
+// 「压在标题字上」两处可点，底下那行时间/进度、格子四周的余量全是死区。整格那层 RouterLink 撤了，
+// 拆成封面一枚 + 标题内联一枚；group-hover 随之全部下岗（它分不出鼠标落在格子哪一块）。
+// 两个 key 都存当前那条的 videoId（就是 v-for 的 :key 与退场集合用的那个稳定标识），一条格子的 hover 不波及邻格。
+const coverKey = ref(null) // 鼠标当前压在哪条的封面上 → 封面放大 + 行内「删除」钮浮出
+const titleKey = ref(null) // 鼠标当前压在哪条的标题字上 → 只有标题染粉
+
 // 退场中的行（videoId 集）：带集合让整叠清空也能逐行收合
 const historyExiting = ref(new Set())
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -297,41 +304,58 @@ function openLogin(mode) {
               v-for="item in filteredHistory"
               :key="item.videoId"
               :data-video-id="item.videoId"
-              class="hist-cell group relative overflow-hidden rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e]"
+              class="hist-cell relative overflow-hidden rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e]"
               :class="{ 'hist-cell-out': historyExiting.has(item.videoId) }"
             >
-              <RouterLink :to="`/watch/${item.bvid}`" class="block no-underline">
-                <span class="relative block aspect-video w-full overflow-hidden bg-black/[0.06]">
-                  <img
-                    v-if="historyCover(item)"
-                    :src="historyCover(item)"
-                    :alt="item.title || item.bvid"
-                    loading="lazy"
-                    decoding="async"
-                    referrerpolicy="no-referrer"
-                    class="hist-cover h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]"
-                    @load="onCoverLoad"
-                  />
-                  <span v-else class="flex h-full w-full select-none items-center justify-center font-mono text-sm text-inkFaint" aria-hidden="true">
-                    {{ (item.title || item.bvid || '?').slice(0, 1) }}
-                  </span>
-                  <!-- 进度条贴在封面底：满格配「已看完」戳 -->
-                  <span class="absolute inset-x-0 bottom-0 h-[3px] bg-black/25">
-                    <span class="block h-full bg-stationPink" :style="{ width: `${progressPct(item)}%` }"></span>
-                  </span>
-                  <span v-if="progressPct(item) >= 95" class="absolute left-1.5 top-1.5 rounded bg-emerald-500/90 px-1 py-px text-[10px] leading-4 text-white">已看完</span>
+              <!-- 封面一枚 RouterLink 指向播放页（另一枚在标题字上）：它兼任「鼠标在封面上」的探针，
+                   封面放大与右上角「删除」钮浮出都靠 coverKey，整格不再是一整块热区。
+                   外层格子的 relative 得留着（删除钮的 absolute 靠它定位），类名 .hist-cell 也不能动（入场退场动画绑在那里）。 -->
+              <RouterLink
+                :to="`/watch/${item.bvid}`"
+                class="relative block aspect-video w-full overflow-hidden bg-black/[0.06] no-underline"
+                @mouseenter="coverKey = item.videoId"
+                @mouseleave="coverKey = null"
+              >
+                <img
+                  v-if="historyCover(item)"
+                  :src="historyCover(item)"
+                  :alt="item.title || item.bvid"
+                  loading="lazy"
+                  decoding="async"
+                  referrerpolicy="no-referrer"
+                  class="hist-cover h-full w-full object-cover transition duration-300"
+                  :class="coverKey === item.videoId ? 'scale-[1.04]' : ''"
+                  @load="onCoverLoad"
+                />
+                <span v-else class="flex h-full w-full select-none items-center justify-center font-mono text-sm text-inkFaint" aria-hidden="true">
+                  {{ (item.title || item.bvid || '?').slice(0, 1) }}
                 </span>
-                <span class="block px-2 pb-2 pt-1.5">
-                  <span class="line-clamp-2 block text-[13px] leading-[19px] text-inkMain transition group-hover:text-stationPink" :title="item.title || item.bvid">
-                    {{ item.title || item.bvid }}
-                  </span>
-                  <span class="mt-1 block truncate font-mono text-[10.5px] text-inkFaint">
-                    {{ friendlyTime(item.updatedAtUtc) }} · 看到 {{ historyClock(item.positionSec) }} · 第 {{ item.pageIdx ?? 0 }} P
-                  </span>
+                <!-- 进度条贴在封面底：满格配「已看完」戳 -->
+                <span class="absolute inset-x-0 bottom-0 h-[3px] bg-black/25">
+                  <span class="block h-full bg-stationPink" :style="{ width: `${progressPct(item)}%` }"></span>
                 </span>
+                <span v-if="progressPct(item) >= 95" class="absolute left-1.5 top-1.5 rounded bg-emerald-500/90 px-1 py-px text-[10px] leading-4 text-white">已看完</span>
               </RouterLink>
+              <span class="block px-2 pb-2 pt-1.5">
+                <!-- 标题：热区只给字面。外层 span 只管两行截断，真正可点的是内联那枚 RouterLink ——
+                     第二行文字之后的空白、行下方的余量都不响应，光标也不变手型（染粉与手型同一个元素、同一块区域）。 -->
+                <span class="line-clamp-2 block text-[13px] leading-[19px] text-inkMain" :title="item.title || item.bvid">
+                  <RouterLink
+                    :to="`/watch/${item.bvid}`"
+                    class="no-underline transition"
+                    :class="titleKey === item.videoId ? 'text-stationPink' : ''"
+                    @mouseenter="titleKey = item.videoId"
+                    @mouseleave="titleKey = null"
+                  >{{ item.title || item.bvid }}</RouterLink>
+                </span>
+                <!-- 时间/进度那行是死区（站长 11-02 定的收口）：不响应点击、不给手型，只当读数。 -->
+                <span class="mt-1 block truncate font-mono text-[10.5px] text-inkFaint">
+                  {{ friendlyTime(item.updatedAtUtc) }} · 看到 {{ historyClock(item.positionSec) }} · 第 {{ item.pageIdx ?? 0 }} P
+                </span>
+              </span>
               <button
-                class="absolute right-1.5 top-1.5 z-10 rounded-md bg-black/50 px-1.5 py-0.5 text-[11px] leading-4 text-white transition hover:bg-rose-500 focus-visible:opacity-100 disabled:opacity-0 md:opacity-0 md:group-hover:opacity-100"
+                class="absolute right-1.5 top-1.5 z-10 rounded-md bg-black/50 px-1.5 py-0.5 text-[11px] leading-4 text-white transition hover:bg-rose-500 focus-visible:opacity-100 disabled:opacity-0"
+                :class="coverKey === item.videoId && !historyBusy ? 'md:opacity-100' : 'md:opacity-0'"
                 :disabled="historyBusy"
                 title="从历史里抹掉这部（下次从头放）"
                 @click="deleteHistory(item)"

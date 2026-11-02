@@ -1,5 +1,4 @@
 <script setup>
-import { RouterLink } from 'vue-router'
 import VideoCard from './VideoCard.vue'
 import { HINT_DELETE_VIDEO, HINT_FETCH_COMMENTS } from '../confirmStore'
 
@@ -18,10 +17,11 @@ defineEmits(['fetch-comments', 'revive', 'remove', 'requeue'])
 
 <template>
   <div class="group relative">
-    <RouterLink :to="`/watch/${video.bvid}`" class="block">
-      <!-- 均匀卡阵与搜索结果页共用 VideoCard（B 站首页同款版式），站长视角多开状态点与失败原因 -->
-      <VideoCard :video="video" admin />
-    </RouterLink>
+    <!-- 命中区收口（站长 11-02 在调参台上定的 coverTitleText）：外层这颗整卡大链接撤了，可点结构归 VideoCard 自己
+         （封面一枚 RouterLink + 标题字面一枚），调用方不再替它包一层 a。
+         本层的 group 与 relative 原样留着：下面四枚悬停管理钮都住在链接外面，靠这层的 group 显隐、靠 relative 定位。
+         均匀卡阵与搜索结果页共用 VideoCard（B 站首页同款版式），站长视角多开状态点与失败原因 -->
+    <VideoCard :video="video" admin />
     <button
       v-if="video.status === 1"
       class="absolute left-2 top-2 hidden rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:bg-amber-400 hover:text-black group-hover:block disabled:opacity-40"

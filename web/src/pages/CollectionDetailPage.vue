@@ -191,9 +191,9 @@ onMounted(load)
 
         <div v-if="detail.items?.length" class="mt-5 grid grid-cols-2 gap-x-4 gap-y-[38px] md:grid-cols-3 xl:grid-cols-5">
           <div v-for="video in detail.items" :key="video.bvid" class="relative">
-            <RouterLink :to="`/watch/${video.bvid}`" class="group block">
-              <VideoCard :video="video" />
-            </RouterLink>
+            <!-- 命中区收口（站长 11-02 定的 coverTitleText）：外层包整卡的 RouterLink 撤了，可点的是 VideoCard 内部的封面与标题字面。
+                 外层 relative 留着：下面那枚「请出抽屉」钮靠它定位（它本来就不靠被撤链接上的 group，一直跟 canManage 走显隐） -->
+            <VideoCard :video="video" />
             <button
               v-if="canManage"
               class="absolute right-1.5 top-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white/75 backdrop-blur transition hover:bg-rose-500 hover:text-white disabled:opacity-40"

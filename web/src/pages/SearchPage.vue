@@ -86,9 +86,9 @@ watch(() => [route.query.q, sort.value], search)
 
       <!-- 结果网格 -->
       <div v-else class="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
-        <RouterLink v-for="video in videos" :key="video.id" :to="`/watch/${video.bvid}`" class="group block">
-          <VideoCard :video="video" :keyword="q" />
-        </RouterLink>
+        <!-- 命中区收口（站长 11-02 定的 coverTitleText）：外层包整卡的 RouterLink 撤了，可点的是 VideoCard 内部的封面与标题字面；
+             v-for / :key 直接落到卡上，keyword 照旧递进去给标题与 UP 名打命中词 -->
+        <VideoCard v-for="video in videos" :key="video.id" :video="video" :keyword="q" />
       </div>
     </main>
   </div>

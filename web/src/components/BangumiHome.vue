@@ -27,7 +27,8 @@ defineEmits(['fetch-comments', 'remove'])
 const byId = computed(() => new Map(props.videos.map((v) => [v.id, v])))
 
 // 大幕与卡行里的 UP 名 → 分站里的 UP 空间（站长 11-02 点名：点一下就进）。
-// 两块外层都是 RouterLink，不能再塞 <a>，拿 span + prevent.stop 抢在跳放映厅之前。
+// 整条 UP 行都要可点（不只几个字宽的名字），所以仍是 span + click 而不是内联 <a>；
+// prevent/stop 那两句属防御：卡行外层已不是链接（命中区收口），大幕那颗胶囊还是，留着免得两发互抢。
 const router = useRouter()
 function goUp(mid) {
   if (mid != null) router.push(`/up/${mid}`)
@@ -42,7 +43,8 @@ function upMidOf(item) {
 }
 
 // 卡行那一整行（名字 · 时间）归 UP 空间，不靠用户射那几个字（站长 11-02）。
-// 命中区是行自己的盒子 + 上借 3px / 下借 5px 的透明垫子（调参台定的数）；没归档 mid 的行不动，照旧跟外层卡走。
+// 命中区是行自己的盒子 + 上借 3px / 下借 5px 的透明垫子（调参台定的数）；没归档 mid 的行不给死链（整行不可点，
+// 外层大链接已在命中区收口（站长 11-02）里撤掉，卡面的去处在封面与标题字面上）。
 function onUpRow(item, e) {
   const mid = upMidOf(item)
   if (mid == null) return
@@ -51,9 +53,13 @@ function onUpRow(item, e) {
   goUp(mid)
 }
 
-// 鼠标停在卡行的 UP 行上时，不染标题也不放大封面：整张卡是一个 group，CSS 的 group-hover 分不出鼠标落在哪一块。
-// 站长 11-02 这句判对了：他看到的一直是动画在冒充归属，跟触发区无关。横滚行里多张卡共用一个变量，存当前 hover 的那条 bvid。
-const rowHoverKey = ref('')
+// 封面放大只认「鼠标在封面上」（站长 11-02 命中区收口）：上一版靠卡层的 group-hover 反推，停在标题、UP 行、行内空白上也会把封面拉大，
+// 那是动画在冒充归属（他那两句判对了）。横滚行里多张卡共用一个变量，存当前 hover 封面的那条 bvid（写法同 titleKey）。
+const coverKey = ref('')
+
+// 标题那抹粉只跟标题自己走：可点已经收到字面（外层 p 只管两行截断，内联 RouterLink 才是热区），
+// 染粉与手型同一个元素、同一块区域（站长 11-02 红点那一发）。横滚行里多张卡共用一个变量，存当前 hover 标题的那条 bvid。
+const titleKey = ref('')
 
 // 大幕那行尾巴（播数与弹幕数）：图标交给模板（官方那两枚），这里只管数——取不到的那段整段不显。
 // 与 UP 名拆开后各自拼，UP 名在才补那个「 · 」。
@@ -489,9 +495,17 @@ onBeforeUnmount(() => {
 
       <div :ref="(el) => setRowEl(row.key, el)" class="no-scrollbar flex gap-4 overflow-x-auto scroll-smooth pb-1" @scroll.passive="measureRow(row.key)">
         <div v-for="item in row.items" :key="item.bvid" class="group relative w-[228px] shrink-0">
-          <RouterLink :to="`/watch/${item.bvid}`" class="block">
-          <div class="relative aspect-[16/10] overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]">
-            <img v-if="coverOf(item)" :src="coverOf(item)" :alt="item.title || item.bvid" loading="lazy" decoding="async" referrerpolicy="no-referrer" class="h-full w-full object-cover transition duration-300" :class="rowHoverKey === item.bvid ? '' : 'group-hover:scale-[1.04]'" />
+          <!-- 命中区收口（站长 11-02 在调参台上定的 coverTitleText）：外层那根包整卡的 RouterLink 撤了——
+               整块可点会把统计行与标题方框里的空白也算成热区。可点的只剩封面（下面那枚）与标题的字面（内联那枚），
+               UP 行自己可点，统计行与底部余量都是死区。本层的 group 与 relative 留着：右上那两枚悬停管理钮靠 group 显隐、靠 relative 定位。 -->
+          <!-- 封面：指向放映厅的那枚链接。放大只跟「鼠标在封面上」走（coverKey），停在标题、UP 行上都不再牵动它 -->
+          <RouterLink
+            :to="`/watch/${item.bvid}`"
+            class="relative block aspect-[16/10] overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]"
+            @mouseenter="coverKey = item.bvid"
+            @mouseleave="coverKey = ''"
+          >
+            <img v-if="coverOf(item)" :src="coverOf(item)" :alt="item.title || item.bvid" loading="lazy" decoding="async" referrerpolicy="no-referrer" class="h-full w-full object-cover transition duration-300" :class="coverKey === item.bvid ? 'scale-[1.04]' : ''" />
             <span v-else class="flex h-full w-full items-center justify-center text-[11px] tracking-widest text-inkFaint">{{ item.bvid }}</span>
             <!-- 封面底部数据区：与 VideoCard 同款——半透渐变带垫底，左「官方播放量图标 + 数 / 官方弹幕图标 + 数」右时长，描边白字 -->
             <div class="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/55 via-black/25 to-transparent"></div>
@@ -508,15 +522,22 @@ onBeforeUnmount(() => {
               </span>
               <span v-if="item.durationText" class="text-[13px] font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]">{{ colonTime(item.durationText) }}</span>
             </div>
-          </div>
-          <!-- 标题区 42px（调参台再一轮，站长 11-02）：热区已盖满，整块都归外层那张卡的触发区，点了进放映厅；
-               跟卡片分家的只有下面那行 UP——它自己可点，上借 3px、下借 4px。 -->
-          <p class="mt-2 line-clamp-2 min-h-[42px] text-[14.5px] font-medium leading-[20px] text-inkMain transition" :class="rowHoverKey === item.bvid ? '' : 'group-hover:text-stationPink'" :title="item.title || item.bvid">{{ item.title || item.bvid }}</p>
+          </RouterLink>
+          <!-- 标题区 42px（调参台再一轮，站长 11-02）：方框尺寸一个都不动（min-h / leading / 字号照旧），
+               可点只给字面——外层 p 管两行截断与 tooltip，真正可点的是内联那枚 RouterLink，染粉与手型同一个元素、同一块区域。
+               跟标题分家的只有下面那行 UP——它自己可点，上借 3px、下借 4px。 -->
+          <p class="mt-2 line-clamp-2 min-h-[42px] text-[14.5px] font-medium leading-[20px] text-inkMain" :title="item.title || item.bvid">
+            <RouterLink
+              :to="`/watch/${item.bvid}`"
+              class="transition"
+              :class="titleKey === item.bvid ? 'text-stationPink' : ''"
+              @mouseenter="titleKey = item.bvid"
+              @mouseleave="titleKey = ''"
+            >{{ item.title || item.bvid }}</RouterLink>
+          </p>
           <div
             class="group/up relative mt-0.5"
             :class="upMidOf(item) != null ? 'cursor-pointer' : ''"
-            @mouseenter="rowHoverKey = item.bvid"
-            @mouseleave="rowHoverKey = ''"
             @click="onUpRow(item, $event)"
           >
             <span v-if="upMidOf(item) != null" class="absolute -top-[3px] -bottom-[4px] inset-x-0" aria-hidden="true"></span>
@@ -532,9 +553,8 @@ onBeforeUnmount(() => {
               <template v-if="relTime(publishedDate(item))">{{ item.upName ? ' · ' : '' }}{{ relTime(publishedDate(item)) }}</template>
             </p>
           </div>
-          </RouterLink>
           <!-- 投稿人自管两钮：样式与网格卡阵（AdminVideoCell）那两枚同一套——hover 浮现、右上并排、黑玻离底。
-               卡片整块是链接，钮只能当它的兄弟，靠 prevent.stop 抢下点击。 -->
+               它们住在封面与标题链接的外面，靠卡层的 group 显隐、靠 prevent.stop 抢下点击。 -->
           <button
             v-if="canManageOf(item) && isArrived(item)"
             class="absolute right-9 top-2 hidden rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:bg-stationBlue hover:text-white group-hover:block disabled:opacity-40"

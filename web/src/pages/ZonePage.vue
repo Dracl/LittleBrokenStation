@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import VideoCard from '../components/VideoCard.vue'
 import { member } from '../memberStore'
@@ -187,9 +187,9 @@ onMounted(loadZones)
       <!-- 下半：该区卡阵（首页同款 VideoCard），站长在卡角有支笔 -->
       <div v-else-if="activeZone && items.length" class="grid grid-cols-2 gap-x-4 gap-y-[38px] md:grid-cols-3 xl:grid-cols-5">
         <div v-for="video in items" :key="video.bvid" class="relative">
-          <RouterLink :to="`/watch/${video.bvid}`" class="group block">
-            <VideoCard :video="video" />
-          </RouterLink>
+          <!-- 命中区收口（站长 11-02 定的 coverTitleText）：外层包整卡的 RouterLink 撤了，可点的是 VideoCard 内部的封面与标题字面。
+               本层 relative 留着：左上角区角标（pointer-events-none）、右上改派钮与下方的改派抽屉都以它为定位参照 -->
+          <VideoCard :video="video" />
           <span
             class="pointer-events-none absolute left-1.5 top-1.5 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white/85 backdrop-blur"
             :title="video.zone"

@@ -8,6 +8,13 @@ import TopBar from '../components/TopBar.vue'
 const collections = ref(null) // null = 没拉到；[] = 确实没人建
 const loading = ref(false)
 
+// 命中区收到最严一档（站长 11-02 在调参台上定的收口，口径同「接下来播放」UpNextList）：
+// 一张抽屉卡只有封面与「压在标题字上」两处可点，简介行、建集人行、三枚角标和卡与卡之间的缝全是死区。
+// 所以整卡那层 RouterLink 撤了，换成封面一枚 + 标题内联一枚；group-hover 也不能再用——它分不出鼠标落在卡的哪一块，
+// 停在简介或建集人上也会把封面放大、把标题染粉，那是动画在冒充归属。两处状态各存「当前那张的 id」，一张卡的动作不波及邻卡。
+const coverKey = ref(null) // 鼠标当前压在谁的封面上 → 封面放大 + 右下角那道起帘
+const titleKey = ref(null) // 鼠标当前压在谁的标题字上 → 只有标题染粉
+
 async function load() {
   loading.value = true
   try {
@@ -70,20 +77,23 @@ onMounted(load)
       </div>
 
       <div v-else class="grid grid-cols-2 gap-x-4 gap-y-6 md:grid-cols-3 xl:grid-cols-5">
-        <RouterLink
-          v-for="c in collections"
-          :key="c.id"
-          :to="`/collection/${c.id}`"
-          class="group block"
-        >
-          <div class="relative aspect-[16/10] overflow-hidden rounded-xl bg-[#f1f2f3] dark:bg-[#23262e]">
+        <div v-for="c in collections" :key="c.id">
+          <!-- 封面：唯一指向抽屉的入口之一（另一枚在标题字上）。整卡大链接撤掉后，封面自己当链接，
+               放大由 coverKey 说话：鼠标真进封面才缩放量、才起帘，离开封面立刻归位。 -->
+          <RouterLink
+            :to="`/collection/${c.id}`"
+            class="relative block aspect-[16/10] overflow-hidden rounded-xl bg-[#f1f2f3] dark:bg-[#23262e]"
+            @mouseenter="coverKey = c.id"
+            @mouseleave="coverKey = null"
+          >
             <img
               v-if="c.cover"
               :src="c.cover"
               :alt="c.name"
               loading="lazy"
               referrerpolicy="no-referrer"
-              class="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+              class="h-full w-full object-cover transition duration-300"
+              :class="coverKey === c.id ? 'scale-105' : ''"
             />
             <span v-else class="flex h-full items-center justify-center text-[13px] text-inkFaint">先占着，等货入集</span>
             <!-- 集章角标：一眼认出这是合集而不是单支视频 -->
@@ -112,10 +122,24 @@ onMounted(load)
               </svg>
               私有
             </span>
-            <!-- 悬停起帘：右下角浮一句「打开抽屉」 -->
-            <span class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/45 via-transparent to-transparent opacity-0 transition duration-200 group-hover:opacity-100"></span>
-          </div>
-          <p class="mt-2 line-clamp-2 min-h-[40px] text-[14px] font-medium leading-snug text-inkMain transition group-hover:text-stationPink">{{ c.name }}</p>
+            <!-- 悬停起帘：右下角浮一句「打开抽屉」，跟封面放大同一个来源（coverKey），不给 group 留活口 -->
+            <span
+              class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/45 via-transparent to-transparent opacity-0 transition duration-200"
+              :class="coverKey === c.id ? 'opacity-100' : ''"
+            ></span>
+          </RouterLink>
+          <!-- 标题：热区只给字面。外层 p 只管两行截断与占位高度，真正可点的是内联那枚 RouterLink ——
+               第二行文字之后的空白、标题下方的余量都不响应，光标也不变手型（染粉与手型同一个元素、同一块区域）。 -->
+          <p class="mt-2 line-clamp-2 min-h-[40px] text-[14px] font-medium leading-snug text-inkMain">
+            <RouterLink
+              :to="`/collection/${c.id}`"
+              class="transition"
+              :class="titleKey === c.id ? 'text-stationPink' : ''"
+              @mouseenter="titleKey = c.id"
+              @mouseleave="titleKey = null"
+            >{{ c.name }}</RouterLink>
+          </p>
+          <!-- 下面两行（简介、建集人）连同封面上那三枚角标都是读数区：不给手型、不响应点击 -->
           <p v-if="c.intro" class="mt-0.5 line-clamp-1 text-[12px] text-inkFaint">{{ c.intro }}</p>
           <p class="mt-0.5 flex items-center gap-1 text-[12px] text-inkFaint">
             <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -124,7 +148,7 @@ onMounted(load)
             </svg>
             {{ c.ownerName || '无名席位' }} 建
           </p>
-        </RouterLink>
+        </div>
       </div>
     </main>
   </div>
