@@ -381,6 +381,84 @@ public sealed class CoverThumbTests : IDisposable
     }
 
     [Fact]
+    public async Task 台账说落了盘上却没有_对账销行后补员自己切回来() // 欠账判定探不到磁盘，幽灵行得靠每轮对账收口
+    {
+        if (!MediaSample.HasTools())
+        {
+            return;
+        }
+
+        var videoId = SeedWithCover("BVGhostRow1", 1600, 1000);
+        Assert.True((await Build(videoId)).Built);
+        var files = ThumbFiles("BVGhostRow1");
+        Assert.Equal(5, files.Length);
+
+        // 站长手删一枚档位件（或磁盘事故）：台账还写着 arrived，旧口径既看不见欠账、manifest 还递幽灵地址
+        var gone = files.Single(f => Path.GetFileName(f).Contains("_512x320-", StringComparison.Ordinal));
+        File.Delete(gone);
+        Assert.Contains("512x320-", _db.GetCoverThumbManifest(videoId)!); // 销账前：幽灵地址还在递
+        Assert.DoesNotContain(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId); // 台账自证清白，名单点不到它
+
+        var swept = _db.ReconcileCoverThumbRowsWithDisk();
+
+        Assert.Equal(1, swept);
+        Assert.DoesNotContain("512x320-", _db.GetCoverThumbManifest(videoId)!); // 幽灵地址收回去
+        Assert.Contains(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId); // 打成 failed 才进得来名单
+
+        Assert.True((await Build(videoId)).Built); // 下一轮真重切
+        Assert.Equal(5, ThumbFiles("BVGhostRow1").Length);
+        Assert.DoesNotContain(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId);
+        Assert.Equal(0, _db.ReconcileCoverThumbRowsWithDisk()); // 齐件时再对账：一行不误伤
+    }
+
+    [Fact]
+    public async Task 单档切砸过其余档都在_点名会捞回来重试到封顶() // 旧口径只看「零档/旧戳」，这种局会无声缺到永远
+    {
+        if (!MediaSample.HasTools())
+        {
+            return;
+        }
+
+        var videoId = SeedWithCover("BVReroll01", 1600, 1000);
+        Assert.True((await Build(videoId)).Built);
+
+        // 模拟当年某档 ffmpeg 瞬时抽风的现场：文件没了、行是 failed（attempts=2，没到封顶）
+        var victim = ThumbFiles("BVReroll01").Single(f => Path.GetFileName(f).Contains("_512x320-", StringComparison.Ordinal));
+        File.Delete(victim);
+        using (var conn = new SqliteConnection($"Data Source={_paths.DatabaseFile}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE cover_thumbs SET status = 'failed', rel_path = '', attempts = 2 WHERE video_id = $id AND tier = '512x320';";
+            cmd.Parameters.AddWithValue("$id", videoId);
+            cmd.ExecuteNonQuery();
+        }
+
+        // 四档齐 + 一枚 failed：旧口径不点名，新口径必须捞回来
+        Assert.Contains(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId);
+
+        var again = await Build(videoId); // 真重切那一档
+
+        Assert.True(again.Built);
+        Assert.Equal(5, ThumbFiles("BVReroll01").Length);
+        Assert.Contains("512x320-", _db.GetCoverThumbManifest(videoId)!);
+        Assert.DoesNotContain(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId); // 补齐后从名单退场
+
+        // 封顶闸门照旧：真切不动的稿照样整体搁笔，不会每小时拖一遍（上方既有测钉住另一半）。
+        // 注意 MarkCoverThumbFailed 拒改 arrived 行，所以这里直接改台账模拟「这一档彻底切不动」的现场。
+        using (var conn = new SqliteConnection($"Data Source={_paths.DatabaseFile}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE cover_thumbs SET status = 'failed', rel_path = '', attempts = 5 WHERE video_id = $id AND tier = '768x480';";
+            cmd.Parameters.AddWithValue("$id", videoId);
+            cmd.ExecuteNonQuery();
+        }
+
+        Assert.DoesNotContain(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId);
+    }
+
+    [Fact]
     public async Task 算法版本进版本戳_旧版档重新点名追平() // 改了切片判据，存量得自己追上来，不靠人工清盘
     {
         if (!MediaSample.HasTools())

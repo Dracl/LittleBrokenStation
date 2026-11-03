@@ -83,6 +83,55 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// 台账对账：把「说落了盘、盘上却没有」的 arrived 行<b>打成 failed</b>，让欠账判定把它点回来重切。
+    /// 欠账判定只看台账、探不到磁盘：站长手删 <c>data/thumbs</c>、磁盘事故、外部清理软件干掉一批件，
+    /// 台账都仍然是 arrived，<see cref="GetCoverThumbManifest"/> 会永远把幽灵地址递给前端而没人自愈。
+    /// 打回而不销行：直接 DELETE 的话，其余四档若都带着新戳，三个欠账判据一个都不沾，这条稿反而
+    /// 永远回不了名单（11-03 写第一版就踩了这个坑，回归测把它钉住）；failed 行走
+    /// <see cref="ListVideosNeedingCoverThumbs"/> 的第三判据，重切成功由 <see cref="RegisterCoverThumbArrived"/>
+    /// 翻回 arrived、attempts 归零。误伤无害：文件只是瞬时占用读不到时，下一轮 <c>TryBuildAsync</c>
+    /// 见 dest 还在就直接重新落账，不重编码。回销行数给补员员当工分：对出账目不符就地续下一轮，不多睡 5 分钟。
+    /// </summary>
+    public int ReconcileCoverThumbRowsWithDisk()
+    {
+        var stale = new List<(long VideoId, string Tier)>();
+        using var connection = Open(_dbPath);
+        using (var scan = connection.CreateCommand())
+        {
+            scan.CommandText = "SELECT video_id, tier, rel_path FROM cover_thumbs WHERE status = 'arrived';";
+            using var reader = scan.ExecuteReader();
+            while (reader.Read())
+            {
+                var rel = reader.GetString(2);
+                if (string.IsNullOrEmpty(rel) || !File.Exists(Path.Combine(_paths.Thumbs, rel)))
+                {
+                    stale.Add((reader.GetInt64(0), reader.GetString(1)));
+                }
+            }
+        }
+
+        // 与 MarkCoverThumbFailed 同一种现场：名字、格式、戳都抹掉，留一句原因等下一轮重切。
+        // attempts 不另起：重切真砸了会由 MarkCoverThumbFailed 累加，封顶闸门照旧兜底。
+        foreach (var (videoId, tier) in stale)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE cover_thumbs
+                   SET status = 'failed', rel_path = '', fmt = '', src_stamp = '',
+                       last_error = $error, updated_at_utc = $now
+                 WHERE video_id = $id AND tier = $tier AND status = 'arrived';
+                """;
+            command.Parameters.AddWithValue("$id", videoId);
+            command.Parameters.AddWithValue("$tier", tier);
+            command.Parameters.AddWithValue("$error", "台账对账：说落了盘、盘上却没有");
+            command.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+            command.ExecuteNonQuery();
+        }
+
+        return stale.Count;
+    }
+
     /// <summary>稿件删除/进回收站时清账（盘上文件由调用方删，这里只管台账）。</summary>
     public void DeleteCoverThumbs(long videoId)
     {
@@ -142,10 +191,13 @@ public sealed partial class StationDb
 
     /// <summary>
     /// 待切片名单：有封面产物行、却还欠着档的稿件。存量全量回填与新货自愈共用这一条查询。
-    /// 「欠着」有两种：一档都没落成的，以及<b>已落成的行还带着旧算法版本戳</b>的（存量追新规矩的通道）。
+    /// 「欠着」有三种：一档都没落成的；<b>已落成的行还带着旧算法版本戳</b>的（存量追新规矩的通道）；
+    /// 以及<b>还有 failed 行没到封顶</b>的（单档切砸过、其余四档都在——旧口径看不见这种局，那一档会无声缺到永远）。
     /// 后者非有不可：同名件在 <c>TryBuildAsync</c> 里靠 <c>File.Exists</c> 直接跳过不重切，
     /// 只把 <see cref="CoverThumbTiers.AlgoVersion"/> 一老一新而不进名单，旧档会永远赖在盘上。
     /// 某档连续失败到 <paramref name="maxAttempts"/> 次就整体搁笔，别让一张坏封面每小时拖全站重切一遍。
+    /// 盘上真没件而台账说落了的那种欠账这里看不见（SQL 探不到磁盘），由
+    /// <see cref="ReconcileCoverThumbRowsWithDisk"/> 每轮对账把它们打成 failed 后间接进名单。
     /// </summary>
     public List<CoverThumbCandidate> ListVideosNeedingCoverThumbs(int limit = 40, int maxAttempts = 5)
     {
@@ -164,6 +216,9 @@ public sealed partial class StationDb
                      -- 这一支的判据方向不许写反：写成 LIKE 会把「已是最新」当成欠账，补员员就永远转个没完。
                      -- 也不用 instr 比子串：那会把旧版 a2 认成新版 a20 的「已是最新」。
                      OR EXISTS (SELECT 1 FROM cover_thumbs t WHERE t.video_id = v.id AND t.status = 'arrived' AND t.src_stamp NOT LIKE $algoLike)
+                     -- 单档切砸过、其余档都在：不点名的话那一档无声缺到永远（换封面或改判据才会重来）。
+                     -- 封顶的闸门在下一行：真切不动的稿照样整体搁笔，不会每小时拖一遍。
+                     OR EXISTS (SELECT 1 FROM cover_thumbs t WHERE t.video_id = v.id AND t.status = 'failed')
                    )
                AND NOT EXISTS (SELECT 1 FROM cover_thumbs t WHERE t.video_id = v.id AND t.attempts >= $cap)
              ORDER BY v.id

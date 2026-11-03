@@ -8,7 +8,9 @@ namespace LBS.Server;
 ///
 /// 开机稍候就开切：一轮 40 条，只要还有欠账就连轴转，切干净了才退到每 5 分钟看一眼。
 /// 新入站的稿件不靠这一轮——同步链与封面补员都就地调 <see cref="CoverThumbs.TryBuildAsync"/>，
-/// 这里只兜三类漏网：切片时服务没开、ffmpeg 当时没装、以及站长手删过 <c>data/thumbs</c>。
+/// 这里只兜四类漏网：切片时服务没开、ffmpeg 当时没装、站长手删过 <c>data/thumbs</c>（靠每轮开头的
+/// <see cref="StationDb.ReconcileCoverThumbRowsWithDisk"/> 对账打回才点得回来）、以及单档切砸过的旧局
+/// （failed 行也会进名单被点名重试，到封顶才搁笔）。
 ///
 /// 与 <see cref="CoverBackfillWorker"/> 的分别：那位要上网问 B 站，得看号池脸色、要节流；
 /// 这位纯本地 ffmpeg，一趟几十毫秒，不用求人。
@@ -47,6 +49,14 @@ public sealed class CoverThumbBackfillWorker(StationDb db, DataPaths paths, ILog
 
     private async Task<int> RunRoundAsync(CancellationToken stoppingToken)
     {
+        // 先对账再点名：欠账判定探不到磁盘，台账说落了、盘上却没件的幽灵行（手删 data/thumbs、磁盘事故）
+        // 得靠这一刀销掉才会被下面的名单点回来。销行也算工分：销完就地续下一轮重切，不多睡 5 分钟。
+        var swept = db.ReconcileCoverThumbRowsWithDisk();
+        if (swept > 0)
+        {
+            logger.LogInformation("封面缩略台账对账：{Count} 行说落了盘上却没有，已打成 failed 待重切", swept);
+        }
+
         var queue = db.ListVideosNeedingCoverThumbs(BatchPerRound);
         if (queue.Count == 0)
         {
@@ -72,6 +82,6 @@ public sealed class CoverThumbBackfillWorker(StationDb db, DataPaths paths, ILog
             await Task.Delay(ItemGap, stoppingToken);
         }
 
-        return built;
+        return built + swept; // 销了行也算干了活：当轮就续下一轮，把销掉的行切回来
     }
 }
