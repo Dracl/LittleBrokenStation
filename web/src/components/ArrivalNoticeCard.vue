@@ -28,6 +28,20 @@ function titleOf(card) {
   const t = (card.title || '').trim()
   return t || card.bvid
 }
+
+// 时长表记改 X:XX 钟点风（站长 11-03 点名）：后端定格的是「4m11s」速记，进卡一律洗成 4:11；
+// 带时洗成 1:02:03，认不出的原样递（已是 12:34 风或自定义表记不硬掰）。
+function fmtDur(t) {
+  const s = String(t || '').trim()
+  if (!s) return ''
+  let m = /^(\d+)h(\d+)m(\d+)s$/i.exec(s)
+  if (m) return `${+m[1]}:${m[2].padStart(2, '0')}:${m[3].padStart(2, '0')}`
+  m = /^(\d+)m(\d+)s$/i.exec(s)
+  if (m) return `${+m[1]}:${m[2].padStart(2, '0')}`
+  m = /^(\d+)s$/i.exec(s)
+  if (m) return `0:${m[1].padStart(2, '0')}`
+  return s
+}
 </script>
 
 <template>
@@ -54,7 +68,7 @@ function titleOf(card) {
           <!-- 封面：16:10 定宽，与首页卡阵同比例；没料时整块缺席（文字顶上来，不留灰坑） -->
           <span v-if="thumbOf(card)" class="relative h-[62px] w-[99px] shrink-0 overflow-hidden rounded-lg bg-[#eef0f2] dark:bg-[#23262e]">
             <img :src="thumbOf(card)" referrerpolicy="no-referrer" loading="lazy" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />
-            <span v-if="card.duration" class="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] leading-[15px] text-white">{{ card.duration }}</span>
+            <span v-if="card.duration" class="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] leading-[15px] text-white">{{ fmtDur(card.duration) }}</span>
           </span>
           <!-- 右栏：标题（两行截断，粉三角当家）+ meta 行（UP · 时长，压灰让位） -->
           <span class="flex min-w-0 flex-1 flex-col justify-center gap-1">
@@ -65,7 +79,7 @@ function titleOf(card) {
             <span class="flex min-w-0 items-center gap-1.5 text-[11px] text-inkFaint">
               <span v-if="card.up" class="truncate">{{ card.up }}</span>
               <span v-if="card.up && card.duration" class="shrink-0">·</span>
-              <span v-if="card.duration" class="shrink-0">{{ card.duration }}</span>
+              <span v-if="card.duration" class="shrink-0">{{ fmtDur(card.duration) }}</span>
               <span v-if="!card.up && !card.duration" class="truncate">{{ card.bvid }}</span>
             </span>
           </span>

@@ -111,6 +111,20 @@ public static class MemberMessageEndpoints
             return Results.Ok(new { mutes = db.GetNotifyMutes(me.Id), message = "已打好招呼" });
         });
 
+        // 清空信箱（11-03 站长问「隐藏还是真删」，小花选真删、站长准）：系统信单向投递，
+        // 收信人是唯一干系人，没有对端账本要顾——隐藏要给五条读路径盖戳漏一处就穿帮，
+        // 换来的只是没人要的反悔找回；真删账目天然干净，新信照来。二次确认压在前端防手滑。
+        app.MapPost("/api/member/messages/clear", (StationDb db, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is not { } me)
+            {
+                return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            var cleared = db.ClearInbox(me.Id);
+            return Results.Ok(new { message = $"已清空 {cleared} 封信", cleared });
+        });
+
         // 全站公告（站长室）：只向 active 席位播送，台账留痕。
         app.MapPost("/api/admin/messages/announce", (AnnounceRequest request, StationDb db, EventRecorder events,
             HttpContext http) =>

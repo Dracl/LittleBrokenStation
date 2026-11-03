@@ -155,6 +155,40 @@ function closePrefs() {
 }
 onUnmounted(() => window.removeEventListener('scroll', closePrefs, true))
 
+// 清空信箱（站长 11-03 拍板真删）：单向投递的系统信，收信人是唯一干系人，真删不留墓碑；
+// 清的是存量不是订阅——新信照来，嫌吵去通知设置关闸。二次确认防手滑（撤回/清会话同款）。
+async function clearInbox() {
+  if (!items.value.length) return
+  if (
+    !(
+      await requestConfirm({
+        title: '清空信箱',
+        sub: '真删，不是藏起来',
+        message: '这一本账整个抹掉，翻不回来。通知照旧会来——嫌吵去通知设置里关。',
+        confirmText: '清空',
+        cancelText: '再留留',
+        danger: true,
+      })
+    )
+  ) {
+    return
+  }
+  try {
+    const res = await fetch('/api/member/messages/clear', { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) {
+      flashNotice(data?.message || '清空没成，再试一次')
+      return
+    }
+    flashNotice(data?.message || '信箱已清空')
+    expandedIds.value = new Set() // 摊开的信随账一起收，不留孤页
+    await loadInbox()
+    refreshUnread()
+  } catch {
+    flashNotice('清空没成，再试一次')
+  }
+}
+
 async function toggleMute(key) {
   if (prefsSaving.value) return
   const turningOn = isMuted(key) // 现在是静音态 → 这一扳是重新打开
@@ -626,6 +660,13 @@ function peerLabel(p) {
                   @click="markAll"
                 >
                   全部已读
+                </button>
+                <button
+                  v-if="items.length"
+                  class="rounded-full border border-lineSoft px-3 py-1 text-xs text-inkSub transition hover:border-red-400 hover:text-red-500"
+                  @click="clearInbox"
+                >
+                  清空
                 </button>
               </div>
             </div>

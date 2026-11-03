@@ -169,6 +169,18 @@ public sealed partial class StationDb
         return command.ExecuteNonQuery();
     }
 
+    /// <summary>清空信箱：物理删自己这本账，回销掉几封（11-03 站长拍板真删，取捨理由见端点层注释）。
+    /// 与私信的单边盖章不同路：系统信是单向投递，收信人是唯一干系人，没有对端账本要顾；
+    /// 新信照来——清的是存量，不是订阅（那把闸在 notify_mutes）。</summary>
+    public int ClearInbox(long toMemberId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM messages WHERE to_member_id = $to;";
+        command.Parameters.AddWithValue("$to", toMemberId);
+        return command.ExecuteNonQuery();
+    }
+
     /// <summary>投稿回执取材：收信席位 + 标题 + 失败原因，一行拿齐。</summary>
     public VideoMailTarget? GetVideoMailTarget(long videoId)
     {
