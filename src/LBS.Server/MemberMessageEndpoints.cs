@@ -38,6 +38,9 @@ public static class MemberMessageEndpoints
                     readAtUtc = m.ReadAtUtc,
                     // 归档回执里的片链死了没：没带片链的信（公告/欢迎）给 null，前端不去判。
                     videoGone = m.VideoInStation == false,
+                    // 结构化卡面（11-03 到站播报）：msgType 认卡型，payloadJson 原样递给渲染器自解析；老信两列 null。
+                    msgType = m.MsgType,
+                    payloadJson = m.PayloadJson,
                 });
             return Results.Ok(new { items, unread = db.CountUnread(me.Id) });
         });

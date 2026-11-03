@@ -246,10 +246,23 @@ const KIND_META = {
   complete: { label: '入档', cls: 'bg-emerald-500/10 text-emerald-600' },
   fail: { label: '趔趄', cls: 'bg-red-500/10 text-red-500' },
   announce: { label: '公告', cls: 'bg-amber-400/15 text-amber-600' },
+  arrival: { label: '到货', cls: 'bg-stationPink/10 text-stationPink' },
 }
 
 function kindMeta(kind) {
   return KIND_META[kind] ?? { label: kind || '信', cls: 'bg-lineSoft text-inkSub' }
+}
+
+// 到货信的 body 是「一件一行」的兜底清单，塞进预览那一行就成了字堆（站长 11-03「不要一堆字混着」）：
+// 预览改报「首件标题 等 N 件」，完整货单点开信箱看卡面。
+function previewTail(m) {
+  if (m.kind === 'arrival') {
+    const lines = String(m.body || '').split('\n').filter(Boolean)
+    if (!lines.length) return ''
+    const first = lines[0].replace(/^\d+\.\s*/, '').replace(/\s*——.*$/, '')
+    return lines.length > 1 ? ` · ${first} 等 ${lines.length} 件` : ` · ${first}`
+  }
+  return m.body ? ` · ${m.body}` : ''
 }
 
 // 与卡阵同款相对时间（无共享 util，各组件各留一份口径）
@@ -384,7 +397,7 @@ function goMessages() {
                     <span class="mt-0.5 shrink-0 rounded px-1 py-0.5 text-[10px] leading-none" :class="kindMeta(m.kind).cls">{{ kindMeta(m.kind).label }}</span>
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-[12px] text-inkMain">{{ m.title || '一封没标题的信' }}</span>
-                      <span class="block truncate text-[11px] text-inkFaint">{{ m.fromName || '分站' }}{{ m.body ? ` · ${m.body}` : '' }}</span>
+                      <span class="block truncate text-[11px] text-inkFaint">{{ m.fromName || '分站' }}{{ previewTail(m) }}</span>
                     </span>
                     <span class="shrink-0 pt-0.5 text-[10px] text-inkFaint">{{ relTime(m.createdAtUtc) }}</span>
                   </button>

@@ -92,6 +92,7 @@ builder.Services.AddSingleton<ExportJobBoard>();
 builder.Services.AddSingleton<MediaReconcileGate>();
 builder.Services.AddHostedService<LedgerBackupWorker>();
 builder.Services.AddHostedService<WeeklyReportWorker>(); // 周报发报员：周一 09:00（UTC+8）后给全站播一条周报公告
+builder.Services.AddHostedService<ArrivalReportWorker>(); // 到站播报员：每 10 分钟看一眼，有无归属的新货到站就播一条通报
 // 分站海马体：业务侧 Record 一下就走，抄录员后台攒批落 events 表，供站长与未来 AI 分析。
 builder.Services.AddSingleton<EventRecorder>();
 builder.Services.AddHostedService<EventRecorderWorker>();

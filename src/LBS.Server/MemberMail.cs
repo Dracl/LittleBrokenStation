@@ -13,6 +13,8 @@ public static class MemberMail
     public const string KindComplete = "complete";
     public const string KindFail = "fail";
     public const string KindAnnounce = "announce";
+    /// <summary>到站播报（11-03）：订阅新货完整到站的全站通报，卡面载荷住 payload_json。</summary>
+    public const string KindArrival = "arrival";
 
     /// <summary>欢迎信：只在首次建档（邀请/注册兑现或首扫继位）那一刻寄一次。收件人是站内席位 id。</summary>
     public static void NotifyWelcome(StationDb db, ILogger? logger, long toMemberId)

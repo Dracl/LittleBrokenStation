@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import PeerPicker from '../components/PeerPicker.vue'
 import ShareCard from '../components/ShareCard.vue'
+import ArrivalNoticeCard from '../components/ArrivalNoticeCard.vue'
 import { member, loaded, unread, dmUnread, loginDialogOpen, loginDialogMode, load as loadMember, refreshUnread } from '../memberStore'
 import { requestConfirm } from '../confirmStore'
 import { friendlyTime } from '../utils/time'
@@ -63,6 +64,19 @@ const kindMeta = {
   complete: { label: '入档', cls: 'bg-emerald-500/10 text-emerald-600' },
   fail: { label: '趔趄', cls: 'bg-red-500/10 text-red-500' },
   announce: { label: '公告', cls: 'bg-amber-400/15 text-amber-600' },
+  arrival: { label: '到货', cls: 'bg-stationPink/10 text-stationPink' },
+}
+
+// 到站通报（msg_type='arrivals'）：认得出载荷才摊卡面，解析砸/空单就当普通信摊 body 兜底。
+// 卡面是播送那刻定格的快照（与 ShareCard 同族），读路径不现查——顶栏 30 秒轮询不陪跑。
+function arrivalCards(item) {
+  if (item?.msgType !== 'arrivals' || !item.payloadJson) return null
+  try {
+    const arr = JSON.parse(item.payloadJson)
+    return Array.isArray(arr) && arr.length ? arr.filter((c) => c && c.bvid) : null
+  } catch {
+    return null
+  }
 }
 
 function meta(kind) {
@@ -537,7 +551,11 @@ function peerLabel(p) {
                 </button>
 
                 <div v-if="expandedIds.has(item.id)" class="px-5 pb-4">
-                  <div class="mt-2.5 rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
+                  <!-- 到站通报：卡面优先（一件一行，不是一堆字混着）；认不出载荷退回纯文本 body -->
+                  <div v-if="arrivalCards(item)" class="mt-2.5">
+                    <ArrivalNoticeCard :cards="arrivalCards(item)" :arrived-at="item.createdAtUtc" />
+                  </div>
+                  <div v-else class="mt-2.5 rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
                     <p class="whitespace-pre-wrap text-[13px] leading-relaxed text-inkMain">{{ item.body }}</p>
                     <RouterLink
                       v-if="item.link && !item.videoGone"

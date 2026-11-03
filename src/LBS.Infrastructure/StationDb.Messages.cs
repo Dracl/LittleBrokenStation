@@ -11,7 +11,8 @@ namespace LBS.Infrastructure;
 /// </summary>
 public sealed partial class StationDb
 {
-    /// <summary>一封信：fromName 由 from_mid 现查 members.nickname（系统/公告信为 null）。</summary>
+    /// <summary>一封信：fromName 由 from_mid 现查 members.nickname（系统/公告信为 null）；
+    /// msgType/payloadJson 是结构化卡面载荷（11-03 到站播报开先河，照 dm 的 msg_type/dyn_json 形状），老信两列 NULL。</summary>
     public sealed record InboxMessage(
         long Id,
         long ToMemberId,
@@ -24,18 +25,21 @@ public sealed partial class StationDb
         string CreatedAtUtc,
         string? ReadAtUtc,
         // 信里那条 /watch/{bvid} 现在落不落得进去：由读路径现算（不存字段），null = 这封信不携片链。
-        bool? VideoInStation = null);
+        bool? VideoInStation = null,
+        string? MsgType = null,
+        string? PayloadJson = null);
 
     /// <summary>投稿回执的收信席位与素材：无归属行（SubmitterMemberId 为 null）不发信。</summary>
     public sealed record VideoMailTarget(long? SubmitterMemberId, string Bvid, string? Title, string? LastError);
 
-    public long SendToMember(long toMemberId, string kind, string title, string body, string? link = null)
+    public long SendToMember(long toMemberId, string kind, string title, string body, string? link = null,
+        string? msgType = null, string? payloadJson = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO messages (to_mid, to_member_id, from_mid, kind, title, body, link, created_at_utc)
-            VALUES (0, $to, NULL, $kind, $title, $body, $link, $now);
+            INSERT INTO messages (to_mid, to_member_id, from_mid, kind, title, body, link, created_at_utc, msg_type, payload_json)
+            VALUES (0, $to, NULL, $kind, $title, $body, $link, $now, $msgType, $payload);
             SELECT last_insert_rowid();
             """;
         command.Parameters.AddWithValue("$to", toMemberId);
@@ -44,17 +48,20 @@ public sealed partial class StationDb
         command.Parameters.AddWithValue("$body", body);
         command.Parameters.AddWithValue("$link", (object?)link ?? DBNull.Value);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$msgType", (object?)msgType ?? DBNull.Value);
+        command.Parameters.AddWithValue("$payload", (object?)payloadJson ?? DBNull.Value);
         return Convert.ToInt64(command.ExecuteScalar());
     }
 
-    /// <summary>全站播送：只发给 active 席位（封禁/待邀不发），返回送达席数。</summary>
-    public int BroadcastToActive(string kind, string title, string body)
+    /// <summary>全站播送：只发给 active 席位（封禁/待邀不发），返回送达席数。
+    /// msgType/payloadJson 是可选的结构化卡面（11-03 到站播报），不传就是传统纯文本公告。</summary>
+    public int BroadcastToActive(string kind, string title, string body, string? msgType = null, string? payloadJson = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO messages (to_mid, to_member_id, from_mid, kind, title, body, link, created_at_utc)
-            SELECT 0, id, NULL, $kind, $title, $body, NULL, $now
+            INSERT INTO messages (to_mid, to_member_id, from_mid, kind, title, body, link, created_at_utc, msg_type, payload_json)
+            SELECT 0, id, NULL, $kind, $title, $body, NULL, $now, $msgType, $payload
             FROM members
             WHERE status = $active;
             SELECT changes();
@@ -63,6 +70,8 @@ public sealed partial class StationDb
         command.Parameters.AddWithValue("$title", title);
         command.Parameters.AddWithValue("$body", body);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$msgType", (object?)msgType ?? DBNull.Value);
+        command.Parameters.AddWithValue("$payload", (object?)payloadJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$active", MemberStatus.Active);
         return Convert.ToInt32(command.ExecuteScalar());
     }
@@ -79,7 +88,8 @@ public sealed partial class StationDb
                    -- 这里用 EXISTS 而不是标量子查询：子查询查无此行会给 NULL，跟「没带片链」的 NULL 撞成一堆，分不开。
                    CASE WHEN m.kind = 'complete' AND m.link LIKE '/watch/%' THEN
                        EXISTS (SELECT 1 FROM videos v WHERE v.bvid = substr(m.link, 8) AND v.status = 'Arrived')
-                   END
+                   END,
+                   m.msg_type, m.payload_json
             FROM messages m
             LEFT JOIN members s ON s.mid = m.from_mid
             WHERE m.to_member_id = $to AND ($unreadOnly = 0 OR m.read_at_utc IS NULL)
@@ -94,7 +104,7 @@ public sealed partial class StationDb
         var list = new List<InboxMessage>();
         while (reader.Read())
         {
-            // record 声明序：(Id, ToMemberId, FromMid, FromName, Kind, Title, Body, Link, CreatedAtUtc, ReadAtUtc, VideoInStation)
+            // record 声明序：(Id, ToMemberId, FromMid, FromName, Kind, Title, Body, Link, CreatedAtUtc, ReadAtUtc, VideoInStation, MsgType, PayloadJson)
             list.Add(new InboxMessage(
                 reader.GetInt64(0),
                 reader.GetInt64(1),
@@ -106,7 +116,9 @@ public sealed partial class StationDb
                 reader.IsDBNull(6) ? null : reader.GetString(6),
                 reader.GetString(7),
                 reader.IsDBNull(8) ? null : reader.GetString(8),
-                reader.IsDBNull(10) ? null : reader.GetInt32(10) == 1));
+                reader.IsDBNull(10) ? null : reader.GetInt32(10) == 1,
+                reader.IsDBNull(11) ? null : reader.GetString(11),
+                reader.IsDBNull(12) ? null : reader.GetString(12)));
         }
 
         return list;
