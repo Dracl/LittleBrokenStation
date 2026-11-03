@@ -69,14 +69,23 @@ public static class CoverThumbs
 
         var arrived = 0;
         string? lastError = null;
-        foreach (var tier in CoverThumbTiers.All)
+        for (var t = 0; t < CoverThumbTiers.All.Length; t++)
         {
+            var tier = CoverThumbTiers.All[t];
             // 不放大（站长铁律 11-03：「缩略图宁愿大一点缩小，也不要小一点放大」）：档位由小到大排，
             // 只要有一维比原图窄/矮就整排收手。只看宽会漏掉扁图——16:9 的源比 16:10 的档更扁，
             // 800×450 切 768×480 那一档时 ffmpeg 的 force_original_aspect_ratio=increase 会把高从 450 抬到 480，
             // 那就是一次放大（1.07 倍，眼睛难辨而契约已破）。宽高一起判，让它退到 512 档或原图。
             if (tier.Width > dims.Value.Width || tier.Height > dims.Value.Height)
             {
+                // 收手不能只收这档：档位宽高都单调递增，这一档切不出来后面的每一档同样切不出来。
+                // 旧算法时代留下的 arrived 行必须整排销账——不然欠账判定永远点名，补员员
+                // built > 0 就连轴转，同一枚封面被白切几百遍；manifest 也会把盘上不存在的地址递出去。
+                for (var rest = t; rest < CoverThumbTiers.All.Length; rest++)
+                {
+                    db.ClearCoverThumbTier(videoId, CoverThumbTiers.All[rest].Token);
+                }
+
                 break;
             }
 

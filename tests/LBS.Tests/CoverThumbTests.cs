@@ -346,6 +346,41 @@ public sealed class CoverThumbTests : IDisposable
     }
 
     [Fact]
+    public async Task 收手档位的旧账必须销掉_扁图不会永远挂在待切名单上() // 11-03 实测：一枚 16:9 扁封面被补员员白切 880 次
+    {
+        if (!MediaSample.HasTools())
+        {
+            return;
+        }
+
+        // 1280×720 的扁封面：1280x800 档被铁律收手（高不够）。a1 时代它曾是 arrived（戳尾没带算法版本），
+        // 文件被 PruneStaleFiles 扫走了而台账行还赖着：欠账判定永远点名，补员员 200 毫秒一轮连轴转。
+        var videoId = SeedWithCover("BVStaleRow1", 1280, 720);
+        Assert.True((await Build(videoId)).Built);
+        Assert.Equal(4, ThumbFiles("BVStaleRow1").Length); // 四档齐，第五档本来就不该有
+
+        // 手工植回一枚旧时代的 arrived 行（盘上没件、戳没带算法版本），复现 a1 存量
+        _db.RegisterCoverThumbArrived(videoId, "BVStaleRow1_1280x800-deadbeef-1.webp", "1280x800", "deadbeef-1", "webp");
+        Assert.Contains(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId); // 旧戳 → 该点名
+        Assert.Contains("1280x800-", _db.GetCoverThumbManifest(videoId)!); // 盘上没有的地址正被递给前端
+
+        var again = await Build(videoId); // 再切一轮：收手档位的旧账应被一并销掉
+
+        Assert.True(again.Built);
+        Assert.DoesNotContain(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId); // 补员员该收敛了
+        Assert.DoesNotContain("1280x800-", _db.GetCoverThumbManifest(videoId)!); // 幽灵地址不再递前端
+
+        // 日后原图换成大的：旧行已销，INSERT 直接落新账，不用人工清盘
+        var source = Path.Combine(_videosDir, "BVStaleRow1", "BVStaleRow1-1-Cover.jpg");
+        MakeImage(source, 1600, 1000);
+        File.SetLastWriteTimeUtc(source, DateTime.UtcNow.AddSeconds(7)); // 换内容也换版本戳
+        var upgraded = await Build(videoId);
+        Assert.True(upgraded.Built);
+        Assert.Equal(5, upgraded.Arrived);
+        Assert.Contains("1280x800-", _db.GetCoverThumbManifest(videoId)!);
+    }
+
+    [Fact]
     public async Task 算法版本进版本戳_旧版档重新点名追平() // 改了切片判据，存量得自己追上来，不靠人工清盘
     {
         if (!MediaSample.HasTools())

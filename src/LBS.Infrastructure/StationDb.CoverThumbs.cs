@@ -66,6 +66,23 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// 销掉某一档的台账行（铁律收手用）。原图比这档窄/矮，这档就永远切不出来：
+    /// 旧算法时代留下的 arrived 行若不清，<see cref="ListVideosNeedingCoverThumbs"/> 会永远把这条稿点成欠账
+    /// （11-03 实测一枚 16:9 扁封面的 1280x800 旧行让补员员 200 毫秒一轮白转了 880 次），
+    /// <see cref="GetCoverThumbManifest"/> 还会把盘上早被 PruneStaleFiles 扫走的地址递给前端。
+    /// 盘上的同档旧件由调用方扫；日后原图换成大的，补员下一轮自己把这一档切回来再落账。
+    /// </summary>
+    public void ClearCoverThumbTier(long videoId, string tier)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM cover_thumbs WHERE video_id = $id AND tier = $tier;";
+        command.Parameters.AddWithValue("$id", videoId);
+        command.Parameters.AddWithValue("$tier", tier);
+        command.ExecuteNonQuery();
+    }
+
     /// <summary>稿件删除/进回收站时清账（盘上文件由调用方删，这里只管台账）。</summary>
     public void DeleteCoverThumbs(long videoId)
     {
