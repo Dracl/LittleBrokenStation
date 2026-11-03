@@ -1,3 +1,4 @@
+using System.Text.Json;
 using LBS.Infrastructure;
 
 namespace LBS.Server;
@@ -15,6 +16,10 @@ public static class MemberMail
     public const string KindAnnounce = "announce";
     /// <summary>到站播报（11-03）：订阅新货完整到站的全站通报，卡面载荷住 payload_json。</summary>
     public const string KindArrival = "arrival";
+
+    /// <summary>入档回执的卡面型（11-03 站长：「这条通知也做个排版」）：messages.msg_type 认这一枚决定
+    /// 渲染单件卡还是纯文本；载荷形状与到站播报的到货卡同源（一件也是数组），前端同一套行版式接两家。</summary>
+    public const string MsgTypeVideoReceipt = "video_receipt";
 
     /// <summary>欢迎信：只在首次建档（邀请/注册兑现或首扫继位）那一刻寄一次。收件人是站内席位 id。</summary>
     public static void NotifyWelcome(StationDb db, ILogger? logger, long toMemberId)
@@ -41,9 +46,28 @@ public static class MemberMail
             }
 
             var display = string.IsNullOrWhiteSpace(target.Title) ? target.Bvid : target.Title;
+            // 卡面快照在这封信寄出那一刻定格（到站播报/分享卡同族语义，读路径不现查）：
+            // 封面、UP、时长从此不随日后删档改口；取不到料（理论不可达的拆窗竞态）退回纯文本 body，信照寄不误。
+            var card = db.GetArrivalCardByVideoId(videoId);
+            var payloadJson = card is null
+                ? null
+                : JsonSerializer.Serialize(new[]
+                {
+                    new
+                    {
+                        bvid = card.Bvid,
+                        title = card.Title,
+                        cover = card.Cover,
+                        coverUrl = card.CoverUrl,
+                        coverThumbs = card.CoverThumbs,
+                        up = card.UpName,
+                        duration = card.DurationText,
+                    },
+                });
             db.SendToMember(submitterMemberId, KindComplete, "投稿已入档",
                 $"「{display}」完整入档：正片、弹幕、字幕与封面都已上架，随时可放映。",
-                $"/watch/{target.Bvid}", muteChannel: NotifyMutes.Submit);
+                $"/watch/{target.Bvid}", msgType: card is null ? null : MsgTypeVideoReceipt, payloadJson: payloadJson,
+                muteChannel: NotifyMutes.Submit);
         }, videoId);
     }
 

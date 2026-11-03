@@ -10,10 +10,12 @@ import { coverSrcOf } from '../utils/coverSrc'
 import { friendlyTime } from '../utils/time'
 
 const props = defineProps({
-  // 载荷数组：[{ bvid, title, cover, coverUrl, coverThumbs, up, duration }]（服务端播送那刻定格）
+  // 载荷数组：[{ bvid, title, cover, coverUrl, coverThumbs, up, duration }]（服务端播送/寄出那刻定格）
   cards: { type: Array, required: true },
   // 这批货的到站时刻（信件落库时间）：报头只报一次，行内不再各报各的
   arrivedAt: { type: String, default: '' },
+  // 报头面孔：arrivals＝到货播报（粉徽＋件数＋巡站语）；receipt＝入档回执（绿徽，与信箱「入档」徽同色族，站长 11-03「这条也做个排版」）
+  mode: { type: String, default: 'arrivals' },
 })
 
 // 缩略取数走全站同一张嘴 coverSrcOf：档位件 → 本地原图 → 热链，缺哪级降哪级（与馆藏壁卡同族口径）。
@@ -30,10 +32,18 @@ function titleOf(card) {
 
 <template>
   <div class="overflow-hidden rounded-xl border border-lineSoft bg-cardBg">
-    <!-- 报头：一枚到货徽 + 件数 + 到站时刻。时刻只在报头报一次，行内不重复（重复就是噪音）。 -->
+    <!-- 报头：面孔随 mode 换。到货报「N 件＋巡站语」；回执报「已入档＋上架语」（绿徽与列表行的入档徽同色族）。时刻只在报头报一次。 -->
     <div class="flex items-center gap-2 border-b border-lineSoft bg-stationPink/[0.04] px-4 py-2.5">
-      <span class="shrink-0 rounded-md bg-stationPink/10 px-1.5 py-0.5 text-[11px] font-medium text-stationPink">到货 {{ cards.length }} 件</span>
-      <span v-if="arrivedAt" class="min-w-0 flex-1 truncate text-[11px] text-inkFaint">{{ friendlyTime(arrivedAt) }}落站 · 订阅巡站的新货</span>
+      <span
+        v-if="mode === 'receipt'"
+        class="shrink-0 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600"
+      >已入档</span>
+      <span
+        v-else
+        class="shrink-0 rounded-md bg-stationPink/10 px-1.5 py-0.5 text-[11px] font-medium text-stationPink"
+      >到货 {{ cards.length }} 件</span>
+      <span v-if="mode === 'receipt'" class="min-w-0 flex-1 truncate text-[11px] text-inkFaint">正片、弹幕、字幕与封面都已上架，随时可放映</span>
+      <span v-else-if="arrivedAt" class="min-w-0 flex-1 truncate text-[11px] text-inkFaint">{{ friendlyTime(arrivedAt) }}落站 · 订阅巡站的新货</span>
       <span v-else class="min-w-0 flex-1 text-[11px] text-inkFaint">订阅巡站的新货</span>
     </div>
 

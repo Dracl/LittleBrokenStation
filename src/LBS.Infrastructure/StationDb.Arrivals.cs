@@ -38,6 +38,42 @@ public sealed partial class StationDb
         return Convert.ToInt64(command.ExecuteScalar());
     }
 
+    /// <summary>单件货的卡面取料（入档回执 11-03 用）：与 <see cref="ListArrivalsSince"/> 同一条 SELECT 的口径，
+    /// 按 id 取一件；查无此件回 null（调用方退回纯文本信）。不设归属/状态谓词——回执发件时货刚落库，
+    /// 取料只是取料，判不判得到人由送信员的闸管。</summary>
+    public ArrivalCard? GetArrivalCardByVideoId(long videoId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT v.id, v.bvid, v.title,
+                   (SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
+                   v.cover_url,
+                   (SELECT group_concat(t.rel_path, ',') FROM cover_thumbs t WHERE t.video_id = v.id AND t.status = 'arrived'),
+                   m.up_name,
+                   (SELECT p.duration_text FROM pages p WHERE p.video_id = v.id ORDER BY p.idx LIMIT 1)
+            FROM videos v
+            LEFT JOIN video_meta m ON m.video_id = v.id
+            WHERE v.id = $id;
+            """;
+        command.Parameters.AddWithValue("$id", videoId);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return new ArrivalCard(
+            reader.GetInt64(0),
+            reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5),
+            reader.IsDBNull(6) ? null : reader.GetString(6),
+            reader.IsDBNull(7) ? null : reader.GetString(7));
+    }
+
     /// <summary>
     /// 水位之后的新到货：status=Arrived、无归属行、id 大于水位，小到大取 take 条。
     /// 判活与取封面的口径与放映厅分享快照（<see cref="GetVideoShareSnapshot"/>）同源：

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import PeerPicker from '../components/PeerPicker.vue'
@@ -79,6 +79,18 @@ function arrivalCards(item) {
   }
 }
 
+// 入档回执（msg_type='video_receipt'，11-03 站长「这条也做个排版」）：认得出载荷就排单件回执卡
+//（与到货卡同一套行版式，报头换脸），认不出退回纯文本 body——老信没这两列，渲染照旧。
+function receiptCards(item) {
+  if (item?.msgType !== 'video_receipt' || !item.payloadJson) return null
+  try {
+    const arr = JSON.parse(item.payloadJson)
+    return Array.isArray(arr) && arr.length ? arr.filter((c) => c && c.bvid) : null
+  } catch {
+    return null
+  }
+}
+
 function meta(kind) {
   return kindMeta[kind] ?? { label: kind || '信', cls: 'bg-lineSoft text-inkSub' }
 }
@@ -90,20 +102,33 @@ const prefsOpen = ref(false)
 const prefsLoading = ref(false)
 const prefsSaving = ref(false)
 const mutes = ref([]) // 当前静音的频道名（空＝全开）
+const prefsStyle = ref({}) // 浮窗定位：Teleport 到 body 后用视口坐标钉在按钮正下
 
 const MUTE_CHANNELS = [
-  { key: 'arrival', icon: '📡', label: '到站播报', desc: '订阅新货落站的定时通报' },
-  { key: 'weekly', icon: '📰', label: '分站周报', desc: '每周一早的站内周报' },
-  { key: 'submit', icon: '📮', label: '投稿回执', desc: '入档与趔趄两类回执信' },
+  { key: 'arrival', icon: '📡', label: '到站播报' },
+  { key: 'weekly', icon: '📰', label: '分站周报' },
+  { key: 'submit', icon: '📮', label: '投稿回执' },
 ]
 
 function isMuted(key) {
   return mutes.value.includes(key)
 }
 
-async function openPrefs() {
-  prefsOpen.value = !prefsOpen.value
-  if (!prefsOpen.value) return
+// 浮窗仿顶栏铃铛预览卡（站长 11-03 点名同款）：w-80、rounded-xl、lineSoft 描边、同一道深阴影。
+// 不用 absolute 而 Teleport 到 body：信匣 section 自带 overflow-hidden，信少时浮窗会被剪尾；
+// 视口坐标钉在按钮右下 6px（与铃铛的 mt-1.5 同一指宽）。
+function openPrefs(event) {
+  if (prefsOpen.value) {
+    prefsOpen.value = false
+    return
+  }
+  const rect = event.currentTarget.getBoundingClientRect()
+  prefsStyle.value = { top: `${rect.bottom + 6}px`, right: `${window.innerWidth - rect.right}px` }
+  prefsOpen.value = true
+  loadPrefs()
+}
+
+async function loadPrefs() {
   prefsLoading.value = true
   try {
     const res = await fetch('/api/member/notify-prefs')
@@ -119,6 +144,16 @@ async function openPrefs() {
     prefsLoading.value = false
   }
 }
+
+// 页面滚起来了浮窗不陪跑（它是视口坐标，赖着就飘离按钮了）：一滚即收，点头像菜单也是这规矩。
+watch(prefsOpen, (open) => {
+  if (open) window.addEventListener('scroll', closePrefs, true)
+  else window.removeEventListener('scroll', closePrefs, true)
+})
+function closePrefs() {
+  prefsOpen.value = false
+}
+onUnmounted(() => window.removeEventListener('scroll', closePrefs, true))
 
 async function toggleMute(key) {
   if (prefsSaving.value) return
@@ -595,35 +630,6 @@ function peerLabel(p) {
               </div>
             </div>
 
-            <!-- 通知设置面板（就地展开，不用浮层：section 自带 overflow-hidden，浮层会被剪角） -->
-            <div v-if="prefsOpen" class="border-b border-lineSoft bg-lineSoft/30 px-5 py-4">
-              <p class="text-[11px] text-inkFaint">只管往后的新信，已到的信留在手边；重开不补寄历史。欢迎信与站长公告不可关。</p>
-              <p v-if="prefsLoading" class="mt-3 text-xs text-inkFaint">正在翻通知账…</p>
-              <ul v-else class="mt-3 space-y-2">
-                <li v-for="ch in MUTE_CHANNELS" :key="ch.key" class="flex items-center gap-3 rounded-xl border border-lineSoft bg-cardBg px-4 py-2.5">
-                  <span class="text-base">{{ ch.icon }}</span>
-                  <span class="min-w-0 flex-1">
-                    <span class="block text-[13px] text-inkMain">{{ ch.label }}</span>
-                    <span class="block text-[11px] text-inkFaint">{{ ch.desc }}</span>
-                  </span>
-                  <button
-                    role="switch"
-                    :aria-checked="String(!isMuted(ch.key))"
-                    :aria-label="`${ch.label}通知`"
-                    :disabled="prefsSaving"
-                    class="relative h-5 w-9 shrink-0 rounded-full transition disabled:opacity-50"
-                    :class="isMuted(ch.key) ? 'bg-lineSoft' : 'bg-stationPink'"
-                    @click="toggleMute(ch.key)"
-                  >
-                    <span
-                      class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
-                      :class="isMuted(ch.key) ? 'left-0.5' : 'left-[18px]'"
-                    />
-                  </button>
-                </li>
-              </ul>
-            </div>
-
             <p v-if="loading" class="px-5 py-10 text-center text-sm text-inkFaint">正在翻信箱…</p>
 
             <div v-else-if="!items.length" class="px-6 py-14 text-center">
@@ -655,6 +661,11 @@ function peerLabel(p) {
                   <!-- 到站通报：卡面优先（一件一行，不是一堆字混着）；认不出载荷退回纯文本 body -->
                   <div v-if="arrivalCards(item)" class="mt-2.5">
                     <ArrivalNoticeCard :cards="arrivalCards(item)" :arrived-at="item.createdAtUtc" />
+                  </div>
+                  <!-- 入档回执：同款行版式换报头面孔；片下架了补一句提示（读路径现算的死活，卡面本身是定格快照） -->
+                  <div v-else-if="receiptCards(item)" class="mt-2.5">
+                    <ArrivalNoticeCard mode="receipt" :cards="receiptCards(item)" />
+                    <p v-if="item.videoGone === false" class="mt-2 text-[11px] text-inkFaint">{{ VIDEO_GONE_HINT }}</p>
                   </div>
                   <div v-else class="mt-2.5 rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3">
                     <p class="whitespace-pre-wrap text-[13px] leading-relaxed text-inkMain">{{ item.body }}</p>
@@ -882,5 +893,43 @@ function peerLabel(p) {
         </template>
       </template>
     </main>
+
+    <!-- 通知设置浮窗（站长 11-03 点名仿顶栏铃铛预览卡）：w-80、rounded-xl、lineSoft 描边、同一段深阴影，
+         点外即收（fixed inset-0 z-30 遮罩，头像菜单同款）。Teleport 到 body 而非 absolute：
+         信匣 section 自带 overflow-hidden，信少时浮窗会被剪尾，视口坐标才稳。 -->
+    <Teleport to="body">
+      <template v-if="prefsOpen">
+        <div class="fixed inset-0 z-30" @click="prefsOpen = false"></div>
+        <div
+          class="fixed z-40 w-80 overflow-hidden rounded-xl border border-lineSoft bg-cardBg shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)]"
+          :style="prefsStyle"
+        >
+          <div class="border-b border-lineSoft/70 px-3.5 py-2">
+            <span class="text-[12px] font-medium text-inkMain">通知设置</span>
+          </div>
+          <div v-if="prefsLoading" class="px-3.5 py-6 text-center text-[11.5px] text-inkFaint">正在翻通知账…</div>
+          <ul v-else class="space-y-0.5 px-2 py-2">
+            <li v-for="ch in MUTE_CHANNELS" :key="ch.key" class="flex items-center gap-2.5 rounded-lg px-2 py-2 transition hover:bg-stationPink/5">
+              <span class="text-base">{{ ch.icon }}</span>
+              <span class="min-w-0 flex-1 text-[12.5px] text-inkMain">{{ ch.label }}</span>
+              <button
+                role="switch"
+                :aria-checked="String(!isMuted(ch.key))"
+                :aria-label="`${ch.label}通知`"
+                :disabled="prefsSaving"
+                class="relative h-5 w-9 shrink-0 rounded-full transition disabled:opacity-50"
+                :class="isMuted(ch.key) ? 'bg-lineSoft' : 'bg-stationPink'"
+                @click="toggleMute(ch.key)"
+              >
+                <span
+                  class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+                  :class="isMuted(ch.key) ? 'left-0.5' : 'left-[18px]'"
+                />
+              </button>
+            </li>
+          </ul>
+        </div>
+      </template>
+    </Teleport>
   </div>
 </template>
