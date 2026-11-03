@@ -617,6 +617,9 @@ public sealed partial class StationDb
         // 照 dm_messages 的 msg_type/dyn_json 先例补两列，老信两列 NULL 渲染照旧，到站播报是头一家用户。
         EnsureColumn(connection, "messages", "msg_type", "TEXT");
         EnsureColumn(connection, "messages", "payload_json", "TEXT");
+        // 通知静音（11-03 站长：「有些人嫌烦」）：席位自关到站播报/周报/投稿回执三路定时货，
+        // 存逗号分隔频道名（NULL/空＝全开）；只管往后，静音前已寄的信留在手边不追溯。
+        EnsureColumn(connection, "members", "notify_mutes", "TEXT");
         using (var uname = connection.CreateCommand())
         {
             // 大小写不敏感判重（NOCASE 对 ASCII 生效，汉字本无大小写）；登录也按这把尺子认人。

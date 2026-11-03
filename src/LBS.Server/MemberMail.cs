@@ -43,7 +43,7 @@ public static class MemberMail
             var display = string.IsNullOrWhiteSpace(target.Title) ? target.Bvid : target.Title;
             db.SendToMember(submitterMemberId, KindComplete, "投稿已入档",
                 $"「{display}」完整入档：正片、弹幕、字幕与封面都已上架，随时可放映。",
-                $"/watch/{target.Bvid}");
+                $"/watch/{target.Bvid}", muteChannel: NotifyMutes.Submit);
         }, videoId);
     }
 
@@ -62,7 +62,7 @@ public static class MemberMail
             var reason = FirstLine(error ?? target.LastError);
             db.SendToMember(submitterMemberId, KindFail, "投稿打了个趔趄",
                 $"「{display}」没能入档：{(string.IsNullOrWhiteSpace(reason) ? "引擎没说原因" : reason)}。稍后重试或换个链接再来。",
-                null);
+                null, muteChannel: NotifyMutes.Submit);
         }, videoId);
     }
 

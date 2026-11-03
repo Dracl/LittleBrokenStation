@@ -32,10 +32,18 @@ public sealed partial class StationDb
     /// <summary>投稿回执的收信席位与素材：无归属行（SubmitterMemberId 为 null）不发信。</summary>
     public sealed record VideoMailTarget(long? SubmitterMemberId, string Bvid, string? Title, string? LastError);
 
+    /// <summary>单发一封信。muteChannel（11-03 通知静音）：非空且收信席位关了那一路，这封就不寄，
+    /// 回 0＝没落库（正常信 id 从 1 起，0 不会撞号）；不传＝照寄（欢迎信那类不可关的货）。</summary>
     public long SendToMember(long toMemberId, string kind, string title, string body, string? link = null,
-        string? msgType = null, string? payloadJson = null)
+        string? msgType = null, string? payloadJson = null, string? muteChannel = null)
     {
         using var connection = Open(_dbPath);
+        // 静音闸：同一条连接上查闸，关路即静默收手——不寄则铃铛不亮、未读数干净。
+        if (muteChannel is not null && IsMuted(connection, toMemberId, muteChannel))
+        {
+            return 0;
+        }
+
         using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO messages (to_mid, to_member_id, from_mid, kind, title, body, link, created_at_utc, msg_type, payload_json)
@@ -54,16 +62,21 @@ public sealed partial class StationDb
     }
 
     /// <summary>全站播送：只发给 active 席位（封禁/待邀不发），返回送达席数。
-    /// msgType/payloadJson 是可选的结构化卡面（11-03 到站播报），不传就是传统纯文本公告。</summary>
-    public int BroadcastToActive(string kind, string title, string body, string? msgType = null, string? payloadJson = null)
+    /// msgType/payloadJson 是可选的结构化卡面（11-03 到站播报），不传就是传统纯文本公告；
+    /// muteChannel（11-03 通知静音）非空时跳过关了那一路的席位——站长公告不传此参，关不掉。</summary>
+    public int BroadcastToActive(string kind, string title, string body, string? msgType = null, string? payloadJson = null,
+        string? muteChannel = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
+        // 静音过滤压在 SELECT 里一把完成：整段精确比对（',a,b,' 含 ',a,'），REPLACE 防历史脏值夹空格。
         command.CommandText = """
             INSERT INTO messages (to_mid, to_member_id, from_mid, kind, title, body, link, created_at_utc, msg_type, payload_json)
             SELECT 0, id, NULL, $kind, $title, $body, NULL, $now, $msgType, $payload
             FROM members
-            WHERE status = $active;
+            WHERE status = $active
+              AND ($mute IS NULL OR notify_mutes IS NULL
+                   OR INSTR(',' || REPLACE(notify_mutes, ' ', '') || ',', ',' || $mute || ',') = 0);
             SELECT changes();
             """;
         command.Parameters.AddWithValue("$kind", kind);
@@ -72,6 +85,7 @@ public sealed partial class StationDb
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$msgType", (object?)msgType ?? DBNull.Value);
         command.Parameters.AddWithValue("$payload", (object?)payloadJson ?? DBNull.Value);
+        command.Parameters.AddWithValue("$mute", (object?)muteChannel ?? DBNull.Value);
         command.Parameters.AddWithValue("$active", MemberStatus.Active);
         return Convert.ToInt32(command.ExecuteScalar());
     }

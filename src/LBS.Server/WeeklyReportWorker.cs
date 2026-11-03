@@ -226,7 +226,9 @@ public sealed class WeeklyReportWorker(StationDb db, ILogger<WeeklyReportWorker>
         // 周号由它从公告标题「分站周报 · 2026-W44」自己认——正文里不留路径，也不留第二份指引。
         var body = string.Join('\n', lines);
 
-        var sent = db.BroadcastToActive(MemberMail.KindAnnounce, $"分站周报 · {target}", body);
+        // 周报挂 weekly 静音频道（11-03）：与站长公告同 kind 不同路——嫌周报吵的人能关它，
+        // 真公告（不带频道的 BroadcastToActive）照旧送达每一席，关不掉。
+        var sent = db.BroadcastToActive(MemberMail.KindAnnounce, $"分站周报 · {target}", body, muteChannel: NotifyMutes.Weekly);
         db.SetSetting(WatermarkKey, target);
         logger?.LogInformation("周报 {Week} 已播送，送达 {Count} 席", target, sent);
         return target;

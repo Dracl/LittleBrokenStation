@@ -83,6 +83,69 @@ function meta(kind) {
   return kindMeta[kind] ?? { label: kind || '信', cls: 'bg-lineSoft text-inkSub' }
 }
 
+// ─── 通知设置（站长 11-03：「有些人嫌烦」）───
+// 三路定时货席位自关：开关即时 PUT 保存，静音闸在寄出前——关了就不再落库，
+// 已到的信保留在手边，重开不补寄历史。欢迎信/站长公告/私信没有可关频道，不进面板。
+const prefsOpen = ref(false)
+const prefsLoading = ref(false)
+const prefsSaving = ref(false)
+const mutes = ref([]) // 当前静音的频道名（空＝全开）
+
+const MUTE_CHANNELS = [
+  { key: 'arrival', icon: '📡', label: '到站播报', desc: '订阅新货落站的定时通报' },
+  { key: 'weekly', icon: '📰', label: '分站周报', desc: '每周一早的站内周报' },
+  { key: 'submit', icon: '📮', label: '投稿回执', desc: '入档与趔趄两类回执信' },
+]
+
+function isMuted(key) {
+  return mutes.value.includes(key)
+}
+
+async function openPrefs() {
+  prefsOpen.value = !prefsOpen.value
+  if (!prefsOpen.value) return
+  prefsLoading.value = true
+  try {
+    const res = await fetch('/api/member/notify-prefs')
+    if (res.ok) {
+      const data = await res.json()
+      mutes.value = Array.isArray(data.mutes) ? data.mutes : []
+    } else {
+      flashNotice('通知账没读出来，稍后再试')
+    }
+  } catch {
+    flashNotice('通知账没读出来，稍后再试')
+  } finally {
+    prefsLoading.value = false
+  }
+}
+
+async function toggleMute(key) {
+  if (prefsSaving.value) return
+  const turningOn = isMuted(key) // 现在是静音态 → 这一扳是重新打开
+  const next = turningOn ? mutes.value.filter((c) => c !== key) : [...mutes.value, key]
+  prefsSaving.value = true
+  try {
+    const res = await fetch('/api/member/notify-prefs', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mutes: next }),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) {
+      flashNotice(data?.message || '通知偏好没存住，再试一次')
+      return
+    }
+    mutes.value = Array.isArray(data.mutes) ? data.mutes : next
+    const label = MUTE_CHANNELS.find((c) => c.key === key)?.label || key
+    flashNotice(turningOn ? `「${label}」重新打开了` : `「${label}」已静音`)
+  } catch {
+    flashNotice('通知偏好没存住，再试一次')
+  } finally {
+    prefsSaving.value = false
+  }
+}
+
 async function loadInbox() {
   if (!member.value) {
     items.value = []
@@ -514,13 +577,51 @@ function peerLabel(p) {
               <span class="text-[13px] text-inkSub">
                 {{ items.length ? `${items.length} 封信 · ${inboxUnread} 封未读` : '信笺都在这' }}
               </span>
-              <button
-                v-if="inboxUnread > 0"
-                class="rounded-full border border-lineSoft px-3 py-1 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink"
-                @click="markAll"
-              >
-                全部已读
-              </button>
+              <div class="flex items-center gap-2">
+                <button
+                  class="rounded-full border px-3 py-1 text-xs transition"
+                  :class="prefsOpen ? 'border-stationPink text-stationPink' : 'border-lineSoft text-inkSub hover:border-stationPink hover:text-stationPink'"
+                  @click="openPrefs"
+                >
+                  🔔 通知设置
+                </button>
+                <button
+                  v-if="inboxUnread > 0"
+                  class="rounded-full border border-lineSoft px-3 py-1 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink"
+                  @click="markAll"
+                >
+                  全部已读
+                </button>
+              </div>
+            </div>
+
+            <!-- 通知设置面板（就地展开，不用浮层：section 自带 overflow-hidden，浮层会被剪角） -->
+            <div v-if="prefsOpen" class="border-b border-lineSoft bg-lineSoft/30 px-5 py-4">
+              <p class="text-[11px] text-inkFaint">只管往后的新信，已到的信留在手边；重开不补寄历史。欢迎信与站长公告不可关。</p>
+              <p v-if="prefsLoading" class="mt-3 text-xs text-inkFaint">正在翻通知账…</p>
+              <ul v-else class="mt-3 space-y-2">
+                <li v-for="ch in MUTE_CHANNELS" :key="ch.key" class="flex items-center gap-3 rounded-xl border border-lineSoft bg-cardBg px-4 py-2.5">
+                  <span class="text-base">{{ ch.icon }}</span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block text-[13px] text-inkMain">{{ ch.label }}</span>
+                    <span class="block text-[11px] text-inkFaint">{{ ch.desc }}</span>
+                  </span>
+                  <button
+                    role="switch"
+                    :aria-checked="String(!isMuted(ch.key))"
+                    :aria-label="`${ch.label}通知`"
+                    :disabled="prefsSaving"
+                    class="relative h-5 w-9 shrink-0 rounded-full transition disabled:opacity-50"
+                    :class="isMuted(ch.key) ? 'bg-lineSoft' : 'bg-stationPink'"
+                    @click="toggleMute(ch.key)"
+                  >
+                    <span
+                      class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all"
+                      :class="isMuted(ch.key) ? 'left-0.5' : 'left-[18px]'"
+                    />
+                  </button>
+                </li>
+              </ul>
             </div>
 
             <p v-if="loading" class="px-5 py-10 text-center text-sm text-inkFaint">正在翻信箱…</p>

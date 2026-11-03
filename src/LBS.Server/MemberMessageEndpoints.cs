@@ -11,6 +11,7 @@ namespace LBS.Server;
 public static class MemberMessageEndpoints
 {
     private sealed record AnnounceRequest(string? Title, string? Body);
+    private sealed record NotifyPrefsRequest(IReadOnlyList<string>? Mutes);
 
     public static void MapMemberMessageEndpoints(this WebApplication app)
     {
@@ -66,6 +67,48 @@ public static class MemberMessageEndpoints
 
             var read = db.MarkAllRead(me.Id);
             return Results.Ok(new { message = $"已阅 {read} 封", read });
+        });
+
+        // 通知偏好（11-03 站长：「有些人嫌烦」）：席位自关到站播报/周报/投稿回执三路定时货。
+        // GET 回当前静音清单与全部频道（前端渲染开关用）；PUT 存清单，白名单外的频道顶回去。
+        // 欢迎信、站长公告、私信不在此列——它们本就没有可关的频道。
+        app.MapGet("/api/member/notify-prefs", (StationDb db, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is not { } me)
+            {
+                return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            return Results.Ok(new { mutes = db.GetNotifyMutes(me.Id), channels = NotifyMutes.All });
+        });
+
+        app.MapPut("/api/member/notify-prefs", (NotifyPrefsRequest request, StationDb db, HttpContext http) =>
+        {
+            if (MemberGate.Current(http) is not { } me)
+            {
+                return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            // 白名单闸在库层 Sanitize 之外再道明文的：越界频道直接 400，不无声吞掉——
+            // 前端递错频道是 bug，得让它响；修边/小写/去重这种脏活库层已经干完。
+            var wanted = (request.Mutes ?? Array.Empty<string>())
+                .Select(c => c?.Trim().ToLowerInvariant())
+                .Where(c => !string.IsNullOrEmpty(c))
+                .Distinct()
+                .ToList();
+            var illegal = wanted.Where(c => !NotifyMutes.IsKnown(c)).ToList();
+            if (illegal.Count > 0)
+            {
+                return Results.Json(new { message = $"没这个通知频道：{string.Join("、", illegal)}" },
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (!db.SetNotifyMutes(me.Id, wanted))
+            {
+                return Results.Json(new { message = "席位不在，招呼没处打" }, statusCode: StatusCodes.Status404NotFound);
+            }
+
+            return Results.Ok(new { mutes = db.GetNotifyMutes(me.Id), message = "已打好招呼" });
         });
 
         // 全站公告（站长室）：只向 active 席位播送，台账留痕。

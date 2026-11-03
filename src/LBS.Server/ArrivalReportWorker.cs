@@ -103,7 +103,7 @@ public sealed class ArrivalReportWorker(StationDb db, ILogger<ArrivalReportWorke
             duration = card.DurationText,
         }));
 
-        var sent = db.BroadcastToActive(MemberMail.KindArrival, title, body, MsgTypeArrivals, payloadJson);
+        var sent = db.BroadcastToActive(MemberMail.KindArrival, title, body, MsgTypeArrivals, payloadJson, NotifyMutes.Arrival);
         var newWatermark = batch[^1].VideoId;
         db.SetSetting(WatermarkKey, newWatermark.ToString());
         logger?.LogInformation("到站播报已播送：{Count} 件新货送达 {Seats} 席，水位盖到 {Watermark}",
