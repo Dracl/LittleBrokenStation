@@ -163,10 +163,9 @@ async function clearInbox() {
     !(
       await requestConfirm({
         title: '清空信箱',
-        sub: '真删，不是藏起来',
-        message: '这一本账整个抹掉，翻不回来。通知照旧会来——嫌吵去通知设置里关。',
+        message: '全部信件将被永久删除，无法恢复。\n新通知仍会正常送达，可在通知设置中关闭。',
         confirmText: '清空',
-        cancelText: '再留留',
+        cancelText: '取消',
         danger: true,
       })
     )
