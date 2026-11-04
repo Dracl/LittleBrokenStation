@@ -12,6 +12,7 @@ import VideoSettingsDialog from '../components/VideoSettingsDialog.vue'
 import PageList from '../components/PageList.vue'
 import VideoActions from '../components/VideoActions.vue'
 import ShareDialog from '../components/ShareDialog.vue'
+import SharePosterStudio from '../components/SharePosterStudio.vue'
 import DanmakuList from '../components/DanmakuList.vue'
 import UpNextList from '../components/UpNextList.vue'
 import EmptyTv from '../components/EmptyTv.vue'
@@ -431,6 +432,49 @@ function onShared(message) {
   showNotice('ok', message ?? '已塞进对方信箱')
 }
 
+// ─── 分享海报：从现成 watch 数据组一张海报的 model，画笔（utils/videoPoster.js）自己判同源。
+// 登录闸与 openShare 同一个口径：没站籍先弹登录窗，不把调参台递到门外人手上。全程零上送。
+const posterFor = ref(null)
+
+// 时长优先吃 payload：watch 载荷顶层没 durationText（那是 VideoEntry / 分 P 上的字段），
+// 就拿当前分 P 那一份；还没有就问播放器里的 <video>（已元数据就绪才有值），拿不到就不画时长片。
+function posterDuration(d) {
+  const pages = d.pages ?? []
+  const page = pages.find((p) => p.index === activeIndex.value) ?? pages[0]
+  const fromPayload = String(page?.durationText ?? '').trim()
+  if (fromPayload) return fromPayload
+  const sec = Number(document.querySelector('video')?.duration)
+  if (!Number.isFinite(sec) || sec <= 0) return ''
+  const total = Math.round(sec)
+  const pad = (n) => String(n).padStart(2, '0')
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+}
+
+function openPosterStudio() {
+  if (!member.value) {
+    loginDialogOpen.value = true
+    return
+  }
+  if (!data.value) return
+  const d = data.value
+  posterFor.value = {
+    bvid: d.bvid,
+    title: d.title || d.bvid,
+    description: d.description || '',
+    coverUrl: d.coverUrl || '', // 原样递：画笔里 sameOriginSrc 把关，热链不画
+    upName: d.upName || '',
+    upFace: d.upFace || '',
+    upMid: d.upMid ?? null,
+    viewCountText: d.viewCountText || '',
+    danmakuCount: d.danmakuCount ?? null,
+    statLike: d.statLike ?? null,
+    durationText: posterDuration(d),
+  }
+}
+
 onBeforeUnmount(() => {
   if (noticeTimer) clearTimeout(noticeTimer)
 })
@@ -801,7 +845,7 @@ const coverFresh = computed(() => {
 
               <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」；右侧访客下载 -->
               <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 dark:border-white/10 py-2">
-                <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" :store-key="data.bvid" @share="openShare" />
+                <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" :store-key="data.bvid" @share="openShare" @share-poster="openPosterStudio" />
                 <div class="relative flex shrink-0 items-center gap-2">
                   <!-- 投稿人自管两钮（往左提一位，让「合集」紧贴下载胶囊的左侧）：白底描边，hover 才上色，不抢下载胶囊的风头 -->
                   <template v-if="data.canManage">
@@ -920,6 +964,9 @@ const coverFresh = computed(() => {
       </template>
 
       <ShareDialog v-if="shareFor" :target="shareFor" @close="shareFor = null" @done="onShared" />
+
+      <!-- 视频分享海报调参台：与安利卡同区，弹层自己 Teleport 到 body -->
+      <SharePosterStudio v-if="posterFor" :model="posterFor" @close="posterFor = null" />
 
       <!-- 稿件设置：左缘第二颗把手开的。存好 / 档案动作跑完都走 onSettingsSaved 重拉 watch，
            面板不自己改本地对象（免得两处真相），改过的字与那几面覆写标一律等服务端那份回来 -->

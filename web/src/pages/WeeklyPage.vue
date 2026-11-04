@@ -1126,8 +1126,8 @@ function downloadPoster() {
     <!-- 海报调参台（11-04 重做）：左边拧参数、右边看实况，预览与下载走同一支笔，所见即所得 -->
     <div v-if="posterOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" @click.self="posterOpen = false">
       <div class="flex max-h-[92vh] w-full max-w-[1010px] overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/[.06] dark:bg-[#1a1e27] dark:ring-white/10">
-        <!-- 左栏：参数 -->
-        <div class="w-[288px] shrink-0 overflow-y-auto border-r border-lineSoft px-5 py-5">
+        <!-- 左栏：参数（滚动条隐身，能滚就行——站长 11-04 点单） -->
+        <div class="no-scrollbar w-[288px] shrink-0 overflow-y-auto border-r border-lineSoft px-5 py-5">
           <div class="flex items-baseline justify-between">
             <h3 class="text-[15px] font-semibold text-inkMain">海报调参台</h3>
             <span class="rounded-full bg-[#f1f2f4] px-2 py-0.5 text-[10px] font-medium text-inkFaint dark:bg-white/10">{{ posterSize.w }} × {{ posterSize.h }}</span>
@@ -1228,7 +1228,7 @@ function downloadPoster() {
 
         <!-- 右栏：实况预览 -->
         <div class="flex min-w-0 flex-1 flex-col bg-[#eceef1] dark:bg-[#12151c]">
-          <div class="flex min-h-0 flex-1 items-start justify-center overflow-y-auto px-8 py-7">
+          <div class="no-scrollbar flex min-h-0 flex-1 items-start justify-center overflow-y-auto px-8 py-7">
             <div class="relative">
               <div class="overflow-hidden rounded-xl shadow-[0_18px_48px_-12px_rgba(15,18,25,.45)] ring-1 ring-black/[.07] dark:ring-white/10">
                 <canvas ref="posterCanvas" class="block w-full max-w-[380px]"></canvas>
