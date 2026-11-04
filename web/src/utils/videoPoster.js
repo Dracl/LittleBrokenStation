@@ -51,7 +51,7 @@ const QR = { size: 122, bleedLeft: 68, inset: 14 }
 const COVER_R = 10
 const COVER_RATIO = 16 / 9
 const BADGE = { fontSize: 30, lineHeight: 46, paddingX: 30, maxTextW: 200, cornerR: 6 }
-const MASK_H = 80
+const MASK_H = 75 // 60 放二成五（站长 11-05 定：文字要多一层雾托），过渡曲线照旧余弦缓降
 const PILL = { marginLeft: 40, paddingX: 15, fontSize: 26, lineHeight: 38, radius: 10, bottom: 14 }
 const INFO = { fontSize: 28, marginLeft: 15, maxWidth: 600, bottom: 14 }
 const TITLE = { size: 34, lineHeight: 46, maxLines: 2, marginTop: 15, marginBottom: 10, marginX: 15 }
@@ -74,6 +74,8 @@ export function normalizeOpts(raw) {
     mode: raw.mode === 'light' || raw.mode === 'dark' ? raw.mode : 'auto',
     accent: /^#[0-9a-fA-F]{6}$/.test(String(raw.accent || '')) ? String(raw.accent) : null,
     sign: String(raw.sign ?? '').trim(),
+    // 简介显示行数（调参台）：1~10（站长 11-05 要拉条自由拉），缺省照 DESC.maxLines
+    descMaxLines: Number.isFinite(raw.descMaxLines) ? Math.min(10, Math.max(1, Math.round(raw.descMaxLines))) : null,
   }
 }
 
@@ -807,7 +809,7 @@ function layout(g, model, opts) {
   const titleFont = `${TITLE.size}px ${FONT_FAMILY}`
   const descFont = `${DESC.size}px ${FONT_FAMILY}`
   const titleLines = title && (!show || show.title) ? wrapLines(g, title, textW, TITLE.maxLines, titleFont) : []
-  const descLines = desc && (!show || show.desc) ? wrapLines(g, desc, textW, DESC.maxLines, descFont) : []
+  const descLines = desc && (!show || show.desc) ? wrapLines(g, desc, textW, opts?.descMaxLines ?? DESC.maxLines, descFont) : []
 
   const cardTop = PAD + HEADER_H + CONTENT_GAP
   const textBlockH = (titleLines.length ? TITLE.marginTop + titleLines.length * TITLE.lineHeight + TITLE.marginBottom : 0)
@@ -971,15 +973,23 @@ function paintCoverMaskRow(g, cover, T, L) {
   const x = cover.x
   const w = cover.w
   const y = cover.y + cover.h - MASK_H
-  // 遮罩不写死：照 MediaCardColors 随模式变 —— DARK 整档加重（.62 黑 / 胶囊 .72），LIGHT .5/.6。
-  const overlayAlpha = T.mode === 'DARK' ? 0.62 : 0.5
-  const pillAlpha = Math.min(0.74, overlayAlpha + 0.1)
+  // 遮罩不写死：照 MediaCardColors 随模式变，浓度在原件基础上再收一档（站长 11-05 追柔）
+  const overlayAlpha = T.mode === 'DARK' ? 0.52 : 0.42
+  // 时长片要半透不实心（站长 11-05 点名）：压到遮罩的七折以下，白字靠底下遮罩托住仍可读
+  const pillAlpha = Math.round(overlayAlpha * 0.72 * 100) / 100
   g.save()
   // 封面四角圆 10：遮罩贴在封面底，底两角随封面圆弧收边（原件 Row radius [0,0,10,10] 的clip等价）
   rr(g, cover.x, cover.y, cover.w, cover.h, COVER_R)
   g.clip()
+  // 渐变收柔（站长 11-05 四轮打磨）：余弦缓降曲线（cos²）采样——处处圆滑无陡段，
+  // 底缘浓度即顶，往上每寸都在褪，顶缘归零无缝
+  const a = (t) => Math.round(overlayAlpha * Math.cos((Math.PI / 2) * t) ** 2 * 100) / 100
   const grad = g.createLinearGradient(0, y + MASK_H, 0, y)
   grad.addColorStop(0, `rgba(0,0,0,${overlayAlpha})`)
+  grad.addColorStop(0.22, `rgba(0,0,0,${a(0.22)})`)
+  grad.addColorStop(0.45, `rgba(0,0,0,${a(0.45)})`)
+  grad.addColorStop(0.65, `rgba(0,0,0,${a(0.65)})`)
+  grad.addColorStop(0.85, `rgba(0,0,0,${a(0.85)})`)
   grad.addColorStop(1, 'rgba(0,0,0,0)')
   g.fillStyle = grad
   g.fillRect(x, y, w, MASK_H)

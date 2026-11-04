@@ -63,6 +63,7 @@ const defaults = () => ({
   accent: null,
   sign: '',
   scale: 2,
+  descMaxLines: 3,
 })
 const opts = reactive(defaults())
 
@@ -80,6 +81,7 @@ function optsPayload() {
     mode: opts.mode,
     accent: opts.accent,
     sign: opts.sign,
+    descMaxLines: opts.descMaxLines,
   }
 }
 
@@ -222,27 +224,24 @@ async function copyToClipboard() {
   flashCopy(copyState)
 }
 
-/** 图 + 链接同剪：ClipboardItem 一次装三副面孔 —— 粘聊天窗吃图，粘文本框吃 text/plain，
- * 粘富文本编辑器吃 text/html（不少粘贴端只认 html，光给 plain 它装看不见）。
- * 文字行用覆写后的标题（和海报所见一致），链接就是二维码里那条 watch 地址。 */
+/** 图 + 链接同剪：站长 11-05 贴板实验室实测定格 —— 只交两副面孔：
+ * text/html（海报原尺寸 jpeg base64 内联 <img> + 标题 + 链接）+ text/plain（标题+链接），
+ * 绝不带 image/png：QQ 见位图只吞图丢 HTML。
+ * 探针实测 R2000（2x 原尺寸）照显，故不缩图；固定 2x 尺寸（与导出倍率钮解耦，
+ * 聊天窗用不着 3x，下载钮才走 3x）；jpeg 0.85（PNG base64 原尺寸 ~4MB 会显不出）。 */
 const copyBothState = ref('idle')
 async function copyImageAndLink() {
   const bvid = String(props.model?.bvid ?? '').trim()
   const url = `${window.location.origin}/watch/${encodeURIComponent(bvid)}`
-  const shownTitle = String(opts.titleOverride || props.model?.title || '').trim()
   try {
     if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') throw new Error('unsupported')
-    const cv = await exportCanvas()
-    // toBlob 异步：直接把 promise 交给 ClipboardItem，Safari 要求 write 不离开用户手势上下文
-    const png = new Promise((resolve, reject) => {
-      cv.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob 空'))), 'image/png')
-    })
-    const esc = (s) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]))
-    const plain = shownTitle ? `${shownTitle}\n${url}` : url
-    const html = `<p>${esc(shownTitle)}</p><p><a href="${url}">${url}</a></p>`
+    const cv = document.createElement('canvas')
+    await renderVideoPoster(cv, props.model, assets.value, POSTER_EXPORT_SCALE, optsPayload())
+    // 站长 11-05 定案：文字只要链接本身，不要标题也不要换行分隔
+    const dataUrl = cv.toDataURL('image/jpeg', 0.85)
+    const html = `<p><img src="${dataUrl}"></p><p><a href="${url}">${url}</a></p>`
     await navigator.clipboard.write([new window.ClipboardItem({
-      'image/png': png,
-      'text/plain': new Blob([plain], { type: 'text/plain' }),
+      'text/plain': new Blob([url], { type: 'text/plain' }),
       'text/html': new Blob([html], { type: 'text/html' }),
     })])
     copyBothState.value = 'ok'
@@ -292,6 +291,26 @@ watch(opts, () => {
           <textarea v-model="opts.descOverride" rows="3" maxlength="120" :placeholder="model?.description || '留空用原简介'" class="mt-1 w-full resize-none rounded-xl border border-lineSoft bg-white px-3 py-2 text-[13px] leading-[18px] text-inkMain outline-none transition focus:border-stationPink dark:bg-white/5"></textarea>
           <label class="mt-2.5 block text-[12px] text-inkSub">角标文字</label>
           <input v-model="opts.badgeText" maxlength="4" placeholder="视频" class="mt-1 w-full rounded-xl border border-lineSoft bg-white px-3 py-2 text-[13px] text-inkMain outline-none transition focus:border-stationPink dark:bg-white/5" />
+
+          <label class="mt-2.5 block text-[12px] text-inkSub">简介行数</label>
+          <div class="mt-1 flex gap-1.5">
+            <button
+              v-for="n in [1, 2, 3, 4]"
+              :key="n"
+              type="button"
+              class="flex-1 rounded-xl border py-1.5 text-[12px] transition"
+              :class="opts.descMaxLines === n ? 'border-stationPink bg-stationPink/[.07] font-medium text-inkMain' : 'border-lineSoft text-inkSub hover:bg-[#f5f6f7] dark:hover:bg-white/5'"
+              :title="n === 3 ? '默认三行' : n === 4 ? '多给一行，末尾仍带省略号' : `只留 ${n} 行`"
+              @click="opts.descMaxLines = n"
+            >
+              {{ n }} 行
+            </button>
+          </div>
+          <!-- 自由拉条：分段钮之外自己拉，1~10 行随心（卡高自动伸缩） -->
+          <div class="mt-2 flex items-center gap-2">
+            <input v-model.number="opts.descMaxLines" type="range" min="1" max="10" step="1" class="h-1.5 flex-1 cursor-pointer accent-stationPink" title="简介行数：拖到几行就显几行" />
+            <span class="w-10 shrink-0 text-right text-[11px] tabular-nums text-inkFaint">{{ opts.descMaxLines }} 行</span>
+          </div>
 
           <p class="mt-5 text-[11px] font-medium text-inkFaint">画面元素</p>
           <div class="mt-1.5 space-y-0.5">
