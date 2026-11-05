@@ -3,11 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import VideoCard from '../components/VideoCard.vue'
+import DynamicFeedCard from '../components/DynamicFeedCard.vue'
 import PlayCountIcon from '../components/PlayCountIcon.vue'
 import { coverSrcOf } from '../utils/coverSrc'
 import { createPreviewHost } from '../utils/hoverPreview'
 import { defaultAvatar } from '../utils/avatar.js'
 import { fmtFans } from '../utils/fans.js'
+import { keepFeed, tailCursor } from '../utils/dynFeed.js'
 
 // ─── UP 空间：这位 UP 在【本站】存了多少片。放映厅名片上那颗蓝钮进来。
 // 版式 1:1 复刻 B 站空间主页（站长 11-05 点单）：全宽页头带 → 名片叠压（头像/名字/认证徽/签名/数字数据行）
@@ -159,6 +161,101 @@ function onHotCoverLeave(v) {
 }
 onBeforeUnmount(() => hotPreview.dispose())
 
+// ── 动态 tab（站长 11-06 点单）：与视频并排，摆这位 UP 本地已存的动态。
+// 数据走橱窗同款口 /api/dynamics?mid=（target_mid=这位，转发算他头上），后端零新增；
+// 卡与动态橱窗同一张 DynamicFeedCard，改卡面两边同亮。
+// 进页先发一发 limit=1 的探测：空列表就把 tab 压灰不可点（没被动态关注盯过 / 真没发过，同口径都是没货）。
+const tab = ref('videos') // videos | dynamics
+const dyn = ref([])
+const dynHasMore = ref(false)
+const dynLoading = ref(false)
+const dynLoadingMore = ref(false)
+const dynEmpty = ref(false)
+const DY_PAGE = 20
+// 翻页游标拿原始返回的尾巴（含被滤的开播条）：防整页开播时原地打转（口径住 utils/dynFeed.js）
+let dynCursor = null
+
+// 探测即预取（11-06 随开播条退场改版）：拉一整页、滤掉开播条再判货，有货直接灌进 feed，
+// 点开动态零等待。limit=1 的老探测一发若打在开播条上，会误判没货错压灰 tab，所以改成整页同口径。
+async function probeDynamics() {
+  dynEmpty.value = false
+  dyn.value = []
+  dynHasMore.value = false
+  dynCursor = null
+  try {
+    const res = await fetch(`/api/dynamics?mid=${encodeURIComponent(mid.value)}&limit=${DY_PAGE}`)
+    if (!res.ok) return
+    const data = await res.json().catch(() => null)
+    const kept = keepFeed(data?.items)
+    dynEmpty.value = !kept.length
+    dynHasMore.value = !!data?.hasMore
+    dynCursor = tailCursor(data?.items)
+    dyn.value = kept
+    // 兑底：万一开局就坐在动态 tab 上（深链预留）又实测没货，选中的旗退回视频。正常流永远 videos 起手，不触发。
+    if (tab.value === 'dynamics' && !kept.length) tab.value = 'videos'
+  } catch {
+    /* 探测断线当未知：tab 亮着，真点开了拉不到再压灰 */
+  }
+}
+
+async function loadDynamics() {
+  if (dynLoading.value) return
+  dynLoading.value = true
+  try {
+    const q = new URLSearchParams({ mid: String(mid.value), limit: String(DY_PAGE) })
+    const res = await fetch(`/api/dynamics?${q}`)
+    if (res.ok) {
+      const data = await res.json().catch(() => null)
+      dyn.value = keepFeed(data?.items)
+      dynHasMore.value = !!data?.hasMore
+      dynCursor = tailCursor(data?.items)
+      if (!dyn.value.length) {
+        dynEmpty.value = true // 实测确认没货 → tab 压灰
+        tab.value = 'videos' // 不变量：压灰的旗不许站在选中态（探测当时未知、点开才测空的岔路也拉回视频）
+      }
+    }
+  } catch {
+    /* 拉砸静默，feed 空着由空态牌接住 */
+  } finally {
+    dynLoading.value = false
+  }
+}
+
+// 翻页与橱窗同一对游标（beforeId + beforeTime），只多了 mid 点名
+async function loadDynamicsMore() {
+  if (!dynHasMore.value || !dynCursor || dynLoadingMore.value) return
+  dynLoadingMore.value = true
+  try {
+    const q = new URLSearchParams({ mid: String(mid.value), limit: String(DY_PAGE), beforeId: String(dynCursor.id), beforeTime: String(dynCursor.time) })
+    const res = await fetch(`/api/dynamics?${q}`)
+    if (res.ok) {
+      const data = await res.json().catch(() => null)
+      dyn.value = dyn.value.concat(keepFeed(data?.items))
+      dynHasMore.value = !!data?.hasMore
+      dynCursor = tailCursor(data?.items) ?? dynCursor
+    }
+  } catch {
+    /* 翻页断一下不吭声，按钮还亮着 */
+  } finally {
+    dynLoadingMore.value = false
+  }
+}
+
+function pickTab(t) {
+  if (t === 'dynamics' && dynEmpty.value) return
+  tab.value = t
+  if (t === 'dynamics' && !dyn.value.length && !dynLoading.value) loadDynamics()
+}
+
+// 卡里安利/补采的回话要有地方落：宿主不接 @toast 就静默丢了，同橱窗一条脾气浮一颗胶囊
+const spaceToast = ref(null)
+let spaceToastTimer = null
+function showToast(msg) {
+  spaceToast.value = msg
+  clearTimeout(spaceToastTimer)
+  spaceToastTimer = setTimeout(() => { spaceToast.value = null }, 2600)
+}
+
 async function load() {
   loading.value = true
   failed.value = false
@@ -174,6 +271,9 @@ async function load() {
     const data = await res.json().catch(() => null)
     up.value = data?.up ?? null
     items.value = data?.items ?? []
+    // 每次进页/换人都从视频 tab 起手，动态探测并行去探，不拦主棒
+    tab.value = 'videos'
+    probeDynamics()
   } catch {
     failed.value = true
     up.value = null
@@ -357,13 +457,28 @@ watch(mid, load)
           </div>
         </section>
 
-        <!-- ── tab 行：B 站空间有音频/相簿/专栏/动态一整排，本站没这些就不造，只立「视频」一面旗 ── -->
+        <!-- ── tab 行（站长 11-06 点单加「动态」）：B 站空间有音频/相簿/专栏一整排，本站没这些就不造；
+             动态本地有货才立旗：探测为空就压灰不可点，不摆一旗空门 ── -->
         <nav class="mt-5 flex items-center gap-6 border-b border-black/[0.06] dark:border-white/10">
-          <span class="-mb-px border-b-2 border-stationPink pb-2.5 text-[15px] font-semibold text-inkMain">
+          <button
+            class="-mb-px border-b-2 pb-2.5 text-[15px] transition"
+            :class="tab === 'videos' ? 'border-stationPink font-semibold text-inkMain' : 'border-transparent text-inkSub hover:text-inkMain'"
+            @click="pickTab('videos')"
+          >
             视频 <span class="ml-0.5 text-[12px] font-normal text-inkFaint">{{ items.length }}</span>
-          </span>
+          </button>
+          <button
+            class="-mb-px border-b-2 pb-2.5 text-[15px] transition"
+            :class="tab === 'dynamics' ? 'border-stationPink font-semibold text-inkMain' : dynEmpty ? 'cursor-not-allowed border-transparent text-inkFaint/50' : 'border-transparent text-inkSub hover:text-inkMain'"
+            :disabled="dynEmpty"
+            :title="dynEmpty ? '分站本地还没存过这位的动态：没被「动态关注」盯过，或巡捕还没到货' : ''"
+            @click="pickTab('dynamics')"
+          >
+            动态
+          </button>
         </nav>
 
+        <template v-if="tab === 'videos'">
         <!-- 卡阵：与合集详情同形的网格，卡面一根毛不改 -->
         <div v-if="items.length" class="mt-5 grid grid-cols-2 gap-x-4 gap-y-[38px] md:grid-cols-3 xl:grid-cols-5">
           <!-- 命中区收口（站长 11-02 定的 coverTitleText）：外层那根包整卡的 RouterLink 撤了，可点的是 VideoCard 内部的
@@ -388,6 +503,32 @@ watch(mid, load)
             去 B 站看看这位的空间
           </a>
         </div>
+        </template>
+
+        <!-- 动态 feed：与橱窗同一条竖列（卡宽上限 560，窄屏自然铺满），卡本体就是 DynamicFeedCard -->
+        <template v-else>
+          <p v-if="dynLoading" class="mt-5 py-14 text-center text-sm text-inkFaint">正在掀这位的动态墙…</p>
+          <div v-else-if="dyn.length" class="mx-auto mt-5 max-w-[560px]">
+            <DynamicFeedCard v-for="dd in dyn" :key="dd.id ?? dd.dynamicId" :d="dd" @toast="showToast" />
+            <div class="pb-4 pt-1 text-center">
+              <button
+                v-if="dynHasMore"
+                class="rounded-full border border-lineSoft bg-cardBg px-6 py-1.5 text-xs text-inkSub transition hover:border-stationPink hover:text-stationPink disabled:opacity-50"
+                :disabled="dynLoadingMore"
+                @click="loadDynamicsMore"
+              >
+                {{ dynLoadingMore ? '翻页中…' : '看更多' }}
+              </button>
+              <p v-else class="text-xs text-inkFaint">这位的动态见底了，巡捕每小时来补货</p>
+            </div>
+          </div>
+          <div v-else class="mt-5 rounded-xl border border-dashed border-black/10 dark:border-white/10 py-16 text-center">
+            <p class="text-[13px] text-inkSub">分站本地还没存过这位的动态</p>
+            <p class="mt-1 text-[12px] text-inkFaint">站长在站长室「动态关注」里登记这位后，等巡捕一轮就有货了</p>
+          </div>
+        </template>
+
+      <p v-if="spaceToast" class="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-inkMain/85 px-4 py-2 text-xs text-white shadow-lg">{{ spaceToast }}</p>
       </template>
     </main>
   </div>
