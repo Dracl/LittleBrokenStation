@@ -130,6 +130,23 @@ export function fmtNum(n) {
 }
 
 /**
+ * 明信片抖数：从种子（bvid）折出一枚稳定的小转角与纵向错位（FNV-1a 32 位）。
+ * 同一条片子每次导出都歪在同一个角度——与周报页新货墙「洗牌也不跳家」同一条脾气。
+ * rot ±1.2°（弧度）、dy ±3px：够看出是手摆的，不够看出是乱丢的。
+ */
+export function posterJitter(seed) {
+  const s = String(seed ?? '')
+  let h = 2166136261
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  const a = (h % 1000) / 1000
+  const b = ((h >>> 10) % 1000) / 1000
+  return { rot: (a - 0.5) * 0.042, dy: Math.round((b - 0.5) * 6) }
+}
+
+/**
  * 封面按 cover 方式裁切填进框里（跟 <img object-fit:cover> 一个意思）。
  * opts.clip：自己建裁切路径（不给就 8px 圆角矩形），皮肤要斜切平行四边形就从这儿塞。
  * opts.overlay：图落好之后再叠一层（网点、色罩都走它），仍在 clip 内，不会糊到框外。

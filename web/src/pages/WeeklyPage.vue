@@ -64,6 +64,40 @@ const isEmpty = computed(
   () => data.value && !data.value.news?.count && !data.value.hottest?.length && !data.value.danmakuAdded,
 )
 
+// 观看链漏斗（站长 11-06 点单案一）：进厅→播放→看了片子→看完，这两块里唯一自带叙事的数据。
+// 条长 = 对链首的保有，手法与口径同页内「游客过路率」（含 Math.max(4,…) 可见地板）；零动隐身，链上不足两级整段不摆。
+// 百分数只在相邻同族之间报（次→次、部→部）；次→部那一步跨单位，硬写百分数是撒谎，改报「平均每部 X.X 放」。
+// 漏斗顶上来的四枚，瓦片里同步撤走——同一页一个数只说一遍；链缩到不足两级时瓦片回落原样，四枚数收回去。
+const CHAIN_TILE_LABELS = new Set(['进厅', '播放', '看了片子', '看完'])
+const chainStages = computed(() => {
+  const p = data.value?.personal
+  const pd = data.value?.personalDuration
+  if (!p) return []
+  const raw = [
+    { label: '进厅', value: p.opens ?? 0, unit: '次', fam: 'act', cls: 'bg-stationPink/40', tip: '打开片页的次数，链的母集' },
+    { label: '播放', value: p.plays ?? 0, unit: '次', fam: 'act', cls: 'bg-stationPink/65', tip: '按下播放键的次数' },
+    { label: '看了片子', value: p.videosWatched ?? 0, unit: '部', fam: 'vid', cls: 'bg-stationPink/80', tip: '本周碰过的不同片子数' },
+    { label: '看完', value: pd?.finished ?? 0, unit: '部', fam: 'vid', cls: 'bg-stationPink', tip: '看到片长 90% 以后就算看完（拖到片尾即认）' },
+  ].filter((s) => s.value > 0)
+  if (raw.length < 2) return []
+  const base = raw[0].value
+  return raw.map((s, i) => {
+    const prev = i > 0 ? raw[i - 1] : null
+    let tag = '母集'
+    let tagTip = s.tip
+    if (prev) {
+      if (s.fam === 'vid' && prev.fam === 'act') {
+        tag = `平均每部 ${(prev.value / s.value).toFixed(1)} 放`
+        tagTip = '次到部是跨单位的一步，不报百分数'
+      } else {
+        tag = `上步的 ${Math.round((s.value / prev.value) * 100)}%`
+      }
+    }
+    return { ...s, pct: Math.max(4, Math.round((s.value / base) * 100)), tag, tagTip }
+  })
+})
+const chainVisible = computed(() => chainStages.value.length >= 2)
+
 // 个人战报卡：只摆登录者自己干过的（>0 才露面）；全零时整卡隐身，不给空账摆谱。
 // 时长三枚只认自己的心跳（别人与游客的一枪不进自己账）：text 存人话形（「1 小时 12 分」），value 仍给数字供零隐身判断。
 const personalRows = computed(() => {
@@ -84,7 +118,7 @@ const personalRows = computed(() => {
     { label: '发私信', value: p.dmSent, unit: '封' },
     { label: '评论入库', value: p.commentsPosted, unit: '条' },
     { label: '登录', value: p.logins, unit: '回' },
-  ].filter((r) => r.value > 0)
+  ].filter((r) => r.value > 0 && !(chainVisible.value && CHAIN_TILE_LABELS.has(r.label)))
 })
 
 // 流水卡：只摆有动静（>0）的条目，零动条目隐身
@@ -104,6 +138,18 @@ const activityRows = computed(() => {
     { label: '私信', value: a.dmSent, unit: '封' },
     { label: '新席位', value: a.newMembers, unit: '位' },
   ].filter((r) => r.value > 0)
+})
+
+// 同族底条（站长 11-06 点单案二）：只有同为「次/回」的行动共用一根标尺，拿族内最大当 100%——
+// 条子只当排序的余光，数字仍是主角；条/位/封不同族，上同一根轴就是假比较（评论入库 6311 一柱擎天，
+// 其余全塌成线），一律留纯数不上轴。地板取 2 不取 4：排序条要诚实，小量不许被地板撑胖。
+const ACTIVITY_BAR_UNITS = new Set(['次', '回'])
+const activityBars = computed(() => {
+  const fam = activityRows.value.filter((r) => ACTIVITY_BAR_UNITS.has(r.unit))
+  const max = Math.max(0, ...fam.map((r) => r.value))
+  const map = {}
+  if (max > 0) for (const r of fam) map[r.label] = Math.max(2, Math.round((r.value / max) * 100))
+  return map
 })
 
 // 环比涨跌：上桶零数又本桶零数 = 无从比；上桶零、本桶有数 = 新增（大数卡留用，卡头角标不摆）。
@@ -431,7 +477,7 @@ const posterOpts = ref({
   accent: 'pink',
   theme: 'paper',
   heroBlur: 3,
-  show: { hot: true, bars: true, wall: true, matrix: true, rank: true, news: true, chips: true },
+  show: { hot: true, bars: true, flow: true, wall: true, matrix: true, rank: true, news: true, mine: true, chips: true },
 })
 
 // 风格与强调色是一对本命：默认风格吃分站自己的粉蓝琥珀，构成主义只认红黄蓝那一色大声，
@@ -467,10 +513,12 @@ function posterThemeSwatch(key) {
 const posterSections = [
   { key: 'hot', label: '本周最多人看' },
   { key: 'bars', label: '七日动静' },
+  { key: 'flow', label: '分站流水' },
   { key: 'wall', label: '出没热力墙' },
   { key: 'matrix', label: '时段热度' },
   { key: 'rank', label: '本周人气榜' },
   { key: 'news', label: '本周新货' },
+  { key: 'mine', label: '我的动向' },
   { key: 'chips', label: '角落账' },
 ]
 
@@ -505,13 +553,16 @@ function posterModel() {
     viewers: d.activity?.uniqueViewers ?? 0,
     newsCount: d.news?.count ?? 0,
     danmakuAdded: d.danmakuAdded ?? 0,
-    hottest: (d.hottest ?? []).slice(0, 3),
-    news: (d.news?.items ?? []).slice(0, 4),
+    hottest: (d.hottest ?? []).slice(0, 5), // 后端每榜发 5 条（WeeklyHotTake），页面摆几条海报就摆几条（11-06 补）
+    news: (d.news?.items ?? []).slice(0, 12),
     dayBars: dayBars.value,
+    // 两份整账上墙（站长 11-06 点单「海报数据还少」）：画笔只吃算好的行，零动条目已在 computed 里隐过
+    flowRows: activityRows.value.map((r) => ({ label: r.label, value: r.value, unit: r.unit ?? '', text: r.text ?? '', pct: activityBars.value[r.label] ?? null })),
+    mineRows: personalRows.value.map((r) => ({ label: r.label, value: r.value, unit: r.unit ?? '', text: r.text ?? '', pct: null })),
     heatWall: heatWallGrid.value,
     heatMatrix: heatMatrixGrid.value,
-    topUps: (d.topUps ?? []).slice(0, 3),
-    topZones: (d.topZones ?? []).slice(0, 3),
+    topUps: (d.topUps ?? []).slice(0, 5),
+    topZones: (d.topZones ?? []).slice(0, 5),
     guest: d.guest ?? {},
     personal: d.personal ?? null,
     personalDuration: d.personalDuration ?? null,
@@ -531,12 +582,12 @@ function posterCoverSrc(url) {
   return /^https?:\/\//.test(url) ? '' : url
 }
 
-// 拉齐海报要用的全部图：热榜三条 + 新货四条 + 署名头像。画两遍：探针量身高，正文照身高开画布。
+// 拉齐海报要用的全部图：热榜五条 + 新货十二枚（新货墙抽样）+ 署名头像。画两遍：探针量身高，正文照身高开画布。
 function loadPosterImgs(d) {
   const jobs = []
   const wanted = new Map()
-  for (const h of (d.hottest ?? []).slice(0, 3)) if (h.coverUrl) wanted.set(h.bvid, h.coverUrl)
-  for (const n of (d.news?.items ?? []).slice(0, 4)) if (n.coverUrl) wanted.set(n.bvid, n.coverUrl)
+  for (const h of (d.hottest ?? []).slice(0, 5)) if (h.coverUrl) wanted.set(h.bvid, h.coverUrl)
+  for (const n of (d.news?.items ?? []).slice(0, 12)) if (n.coverUrl) wanted.set(n.bvid, n.coverUrl)
   for (const [bvid, url] of wanted) {
     if (posterImgs.value.has(bvid)) continue
     const src = posterCoverSrc(url)
@@ -838,6 +889,22 @@ function downloadPoster() {
               <span class="tabular-nums">占全站播放 {{ (data.personalVsAll.sharePermille / 10).toFixed(1) }}%</span>
             </span>
           </div>
+          <!-- 观看链漏斗（站长 11-06 点单案一）：与「游客过路率」同族手法；链上四枚已从瓦片里撤走，一数只说一遍 -->
+          <div v-if="chainVisible" class="border-b border-lineSoft/60 px-5 pb-3 pt-4">
+            <p class="pb-2 text-[10.5px] leading-none text-inkFaint">观看链 · 条长对链首（口径同游客过路率）；次→部跨单位那步报「平均每部几放」，不硬编百分数</p>
+            <div v-for="s in chainStages" :key="s.label" class="mb-1.5 flex items-center gap-2 last:mb-0">
+              <span class="w-[58px] shrink-0 text-right text-[11px] text-inkSub">{{ s.label }}</span>
+              <div class="h-[18px] min-w-0 flex-1 overflow-hidden rounded-[4px] bg-stationPink/[0.06] dark:bg-white/[0.06]">
+                <div class="h-full rounded-[4px] transition-all duration-500" :class="s.cls" :style="{ width: s.pct + '%' }"></div>
+              </div>
+              <span class="w-[62px] shrink-0 text-[12px] font-semibold tabular-nums text-inkMain">{{ s.value }}<span class="ml-0.5 text-[10px] font-normal text-inkFaint">{{ s.unit }}</span></span>
+              <span
+                class="w-[104px] shrink-0 truncate rounded-full px-1.5 py-0.5 text-center text-[10px]"
+                :class="s.tag === '母集' ? 'bg-black/[0.04] text-inkFaint dark:bg-white/[0.07]' : 'bg-stationPink/10 text-stationPink'"
+                :title="s.tagTip"
+              >{{ s.tag }}</span>
+            </div>
+          </div>
           <div class="grid grid-cols-2 gap-x-6 px-5 py-4 sm:grid-cols-4">
             <div v-for="row in personalRows" :key="row.label" class="py-1.5" :title="row.tip || ''">
               <p class="text-[11px] text-inkFaint">{{ row.label }}</p>
@@ -865,6 +932,13 @@ function downloadPoster() {
               <p class="tabular-nums mt-0.5 text-[19px] font-semibold leading-6 text-inkMain">
                 <CountUpNum :value="row.value" /><span class="ml-1 text-[11px] font-normal text-inkFaint">{{ row.unit }}</span>
               </p>
+              <div
+                v-if="activityBars[row.label]"
+                class="mt-1 h-[5px] overflow-hidden rounded-full bg-stationPink/[0.07] dark:bg-white/[0.07]"
+                title="同族排序条：次/回一家，拿族内最大当尺；条/位/封不同族，不上轴"
+              >
+                <div class="h-full rounded-full bg-stationPink/45 transition-all duration-500" :style="{ width: activityBars[row.label] + '%' }"></div>
+              </div>
             </div>
           </div>
         </div>

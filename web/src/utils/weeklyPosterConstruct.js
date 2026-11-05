@@ -11,7 +11,7 @@
    与编辑部那套共用 model 与 show.* 开关，两版随时对切；本文件不 import 编辑部。
    ───────────────────────────────────────────────────────────────────────── */
 
-import { FF, FFM, POSTER_CONSTRUCT_ACCENTS, fitText, kicker, fmtNum, drawCover } from './weeklyPosterKit.js'
+import { FF, FFM, POSTER_CONSTRUCT_ACCENTS, fitText, kicker, fmtNum, drawCover, posterJitter } from './weeklyPosterKit.js'
 
 const PAD = 42 // 页面四边留白（比编辑部紧一档，构成主义不留呼吸位）
 const SLANT = -11 * (Math.PI / 180) // 主力斜角，全版共用于楔形与斜杠
@@ -363,7 +363,7 @@ function hottest(g, M, T, W, y, imgs) {
   y = band(g, T, PAD, y, cw, '本周最多人看', 'MOST WATCHED')
   y += 22
   const rowH = 78
-  hot.slice(0, 3).forEach((h, i) => {
+  hot.slice(0, 5).forEach((h, i) => {
     const ry = y + i * rowH
     const thW = 116
     const thH = 64
@@ -391,9 +391,9 @@ function hottest(g, M, T, W, y, imgs) {
     g.textAlign = 'right'
     g.fillText(vt, W - PAD - 16, ry + 38)
     g.textAlign = 'left'
-    if (i < Math.min(hot.length, 3) - 1) slab(g, T.hair, tx, ry + thH + 4, cw - thW - 40, 1)
+    if (i < Math.min(hot.length, 5) - 1) slab(g, T.hair, tx, ry + thH + 4, cw - thW - 40, 1)
   })
-  return y + Math.min(hot.length, 3) * rowH
+  return y + Math.min(hot.length, 5) * rowH
 }
 
 /** 七日动静：实心柱加红帽，基线是一条粗黑杠。 */
@@ -536,13 +536,14 @@ function ranks(g, M, T, W, y, opts) {
   y += 24
   const colW = (cw - 32) / 2
   const rowH = 52
+  const rowsN = Math.min(5, Math.max(ups.length, zones.length, 1)) // 后端每榜发 5 条（WeeklyHotTake），页面摆几条海报就摆几条（11-06 补）
 
   const column = (list, x0, head0) => {
     if (!list.length) return
     kicker(g, head0, x0, y + 12, 9, T.inkFaint, '3px')
     slab(g, T.rule, x0, y + 20, colW, 3)
     const max = Math.max(1, ...list.map((u) => u.plays))
-    list.slice(0, 3).forEach((u, i) => {
+    list.slice(0, rowsN).forEach((u, i) => {
       const ry = y + 48 + i * rowH
       g.fillStyle = T.ink
       g.font = `${i === 0 ? 800 : 600} 14px ${FF}`
@@ -566,43 +567,53 @@ function ranks(g, M, T, W, y, opts) {
 
   column(ups, PAD, 'UP 主 · CREATORS')
   column(zones, PAD + colW + 32, '分区 · ZONES')
-  slab(g, T.rule, PAD + colW + 15, y + 6, 3, rowH * 3 + 34)
+  slab(g, T.rule, PAD + colW + 15, y + 6, 3, rowH * rowsN + 34)
 
-  return y + rowH * 3 + 44
+  return y + rowH * rowsN + 44
 }
 
-/** 本周新货：斜切小封面 + 编号 + 硬边标题行。 */
+/** 本周新货：周报页新货墙的海报版（站长 11-06 点单）——斜切拼贴墙。
+ *  4×3 共 12 枚 16/10 封面：平行四边形裁切 + 半调网点 + 红块编号，每枚拿 bvid 折出
+ *  定值倾角与错位（posterJitter，与页面墙同脾气：同一条片子永远歪在同一角度）。
+ *  蜂窝散置版试过（11-06 二轮），站长嫌费空间撤回，留网格版。 */
 function arrivals(g, M, T, W, y, imgs, opts) {
   const items = opts.show.news ? M.news ?? [] : []
   if (!items.length) return y
   const cw = W - PAD * 2
-  y = band(g, T, PAD, y, cw, '本周新货', 'NEW ARRIVALS')
-  y += 20
-  const rowH = 58
-  items.slice(0, 4).forEach((n, i) => {
-    const ry = y + i * rowH
-    const thW = 76
-    const thH = 44
-    drawCover(g, imgs.get(n.bvid), PAD + 10, ry, thW, thH, T, n.bvid, {
-      clip: (gg, x, yy, w, hh) => slantedClip(gg, x, yy, w, hh, 8),
-      overlay: (gg, x, yy, w, hh) => halftone(gg, x, yy, w, hh, T.screen, 8),
+  y = band(g, T, PAD, y, cw, '本周新货', 'ON THE WALL')
+  y += 24
+  const tiles = items.slice(0, 12)
+  const cols = 4
+  const gap = 10
+  const tileW = (cw - gap * (cols - 1)) / cols
+  const tileH = Math.round(tileW * 0.625)
+  const rowH = tileH + 44 // 瓦下一行留给标题，也够倾角与错位晃出来
+  tiles.forEach((n, i) => {
+    const j = posterJitter(n.bvid)
+    const x = PAD + (i % cols) * (tileW + gap)
+    const row = Math.floor(i / cols)
+    const ty = y + row * rowH + 5 + j.dy
+    g.save()
+    g.translate(x + tileW / 2, ty + tileH / 2)
+    g.rotate(j.rot)
+    g.translate(-tileW / 2, -tileH / 2)
+    drawCover(g, imgs.get(n.bvid), 0, 0, tileW, tileH, T, n.bvid, {
+      clip: (gg, xx, yy, w, hh) => slantedClip(gg, xx, yy, w, hh, 8),
+      overlay: (gg, xx, yy, w, hh) => halftone(gg, xx, yy, w, hh, T.screen, 8),
     })
-    slab(g, T.accent, PAD - 6, ry + 4, 5, thH - 8)
-    const tx = PAD + thW + 26
+    ordinal(g, T, i + 1, 0, 0, 22)
+    g.restore()
+    const baseY = y + row * rowH
     g.fillStyle = T.ink
-    g.font = `700 14px ${FF}`
-    g.fillText(fitText(g, n.title || n.bvid, cw - thW - 96), tx, ry + 22)
-    g.fillStyle = T.inkFaint
-    g.font = `600 10px ${FFM}`
-    g.fillText(`ARRIVAL № ${String(i + 1).padStart(2, '0')}`, tx, ry + 38)
-    g.textAlign = 'right'
-    g.fillStyle = T.ink
-    g.font = `800 16px ${FFM}`
-    g.fillText(String(i + 1).padStart(2, '0'), W - PAD, ry + 30)
-    g.textAlign = 'left'
-    if (i < Math.min(items.length, 4) - 1) slab(g, T.hair, tx, ry + thH + 4, cw - thW - 30, 1)
+    g.font = `700 11px ${FF}`
+    g.fillText(fitText(g, n.title || n.bvid, tileW - 4), x, baseY + tileH + 34 + j.dy)
   })
-  return y + Math.min(items.length, 4) * rowH
+  const bottom = y + Math.ceil(tiles.length / cols) * rowH
+  if ((M.newsCount ?? 0) > tiles.length) {
+    // 注记另起一行：贴着 bottom 画会压在末行标题上（11-06 harness 实抓）
+    kicker(g, `共 ${M.newsCount} 件 · 墙上摆这 ${tiles.length} 件`, W - PAD, bottom + 11, 9, T.inkFaint, '2px', 'right')
+  }
+  return bottom + 18
 }
 
 /** 角落账：三格小账，粗黑上下杠夹住。 */
@@ -615,6 +626,19 @@ function ledger(g, M, T, W, y, opts) {
   }
   if (M.personal && M.personalDuration) {
     chips.push({ label: '我的战报', value: M.personalValue, note: `看完 ${M.personalDuration.finished ?? 0} 部 · 登录 ${M.personal.logins ?? 0} 回` })
+  }
+  if (M.personal && ((M.personal.videosWatched ?? 0) > 0 || (M.personal.opens ?? 0) > 0)) {
+    // 观看链（站长 11-06 点单「海报也该补数据」）：链上四个数按序摆，字号降一档才装进栏宽；零动隐身同页内口径。
+    const opens = M.personal.opens ?? 0
+    const plays = M.personal.plays ?? 0
+    const vids = M.personal.videosWatched ?? 0
+    const fin = M.personalDuration?.finished ?? 0
+    chips.push({
+      label: '观看链',
+      value: `${opens}→${plays}→${vids}→${fin}`,
+      vsize: 15,
+      note: `每部 ${vids ? (plays / vids).toFixed(1) : 0} 放 · 看完率 ${vids ? Math.round((fin / vids) * 100) : 0}%`,
+    })
   }
   chips.push({
     label: '存货总账',
@@ -637,8 +661,8 @@ function ledger(g, M, T, W, y, opts) {
     g.font = `600 11px ${FF}`
     g.fillText(c.label, x + 16, y + 30)
     g.fillStyle = T.ink
-    g.font = `800 26px ${FFM}`
-    g.fillText(c.value, x + 16, y + 62)
+    g.font = `800 ${c.vsize ?? 26}px ${FFM}`
+    g.fillText(fitText(g, c.value, colW - 32), x + 16, y + 62)
     g.fillStyle = T.inkFaint
     g.font = `400 10px ${FF}`
     g.fillText(fitText(g, c.note, colW - 32), x + 16, y + 82)
@@ -649,6 +673,40 @@ function ledger(g, M, T, W, y, opts) {
 /* ── 入口 ─────────────────────────────────────────────────────────────── */
 
 /** 画完构成主义版的正文，返回落笔后的底部 y。预览与下载共用，不许改状态。 */
+/** 分站流水／我的动向：双栏账目（站长 11-06 点单「海报数据还少」——页面的流水账与个人账整搬）。
+ *  左标签右数字一行一条，数字粗黑当秤砣；次/回同族（pct 页面算好）垫红底条，其余族不上轴。 */
+function rowsGrid(g, T, W, y, cn, en, rows) {
+  if (!rows.length) return y
+  const cw = W - PAD * 2
+  y = band(g, T, PAD, y, cw, cn, en)
+  y += 22
+  const gap = 28
+  const colW = (cw - gap) / 2
+  const rowH = 32
+  const half = Math.ceil(rows.length / 2)
+  rows.forEach((r, i) => {
+    const col = i < half ? 0 : 1
+    const x = PAD + col * (colW + gap)
+    const ry = y + (i % half) * rowH
+    g.fillStyle = T.inkSoft
+    g.font = `600 11px ${FF}`
+    g.fillText(r.label, x + 10, ry + 17)
+    const disp = r.text || `${fmtNum(r.value)}${r.unit ? ` ${r.unit}` : ''}`
+    g.font = `800 14px ${FFM}`
+    g.fillStyle = T.ink
+    g.textAlign = 'right'
+    g.fillText(fitText(g, disp, colW - 64), x + colW, ry + 18)
+    g.textAlign = 'left'
+    if (r.pct != null) {
+      slab(g, T.gridEmpty, x, ry + 25, colW, 4)
+      slab(g, T.accent, x, ry + 25, Math.max(4, (colW * r.pct) / 100), 4)
+    } else {
+      slab(g, T.hair, x, ry + 26, colW, 1)
+    }
+  })
+  return y + half * rowH + 8
+}
+
 export function paintConstruct(g, M, W, imgs, opts) {
   const T = constructTheme(opts)
   let y = 0
@@ -665,6 +723,10 @@ export function paintConstruct(g, M, W, imgs, opts) {
     y = pulse(g, M, T, W, y, opts)
     y += 40
   }
+  if (opts.show.flow && (M.flowRows ?? []).length) {
+    y = rowsGrid(g, T, W, y, '分站流水', 'ACTIVITY LOG', M.flowRows)
+    y += 36
+  }
   if ((opts.show.wall && (M.heatWall ?? []).length) || (opts.show.matrix && M.heatMatrix?.cells?.length)) {
     y = grids(g, M, T, W, y, opts)
     y += 8
@@ -676,6 +738,10 @@ export function paintConstruct(g, M, W, imgs, opts) {
   if (opts.show.news && (M.news ?? []).length) {
     y = arrivals(g, M, T, W, y, imgs, opts)
     y += 40
+  }
+  if (opts.show.mine && (M.mineRows ?? []).length) {
+    y = rowsGrid(g, T, W, y, '我的动向', 'MY MOVES', M.mineRows)
+    y += 36
   }
   y = ledger(g, M, T, W, y, opts)
 

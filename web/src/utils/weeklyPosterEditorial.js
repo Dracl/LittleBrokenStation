@@ -190,7 +190,9 @@ function badge(g, x, y, size, text, bg, fg, radius = 6) {
  * 全分辨率高斯、再用竖向 alpha 渐隐把下缘抹掉露出底下的纸底——接缝天生就没有。
  */
 function heroBanner(g, M, T, W, opts, imgs) {
-  const H = 400
+  // 400 → 452（站长 11-06 圈图：标题与署名压住封面人物）：长出来的 52px 全让给字，
+  // 标题/副标语/署名整套下移压进下缘渐隐带，上半屏整块还给封面
+  const H = 452
   const hot = opts.show.hot ? M.hottest ?? [] : []
   const cover = imgs.get(hot[0]?.bvid)
 
@@ -265,29 +267,29 @@ function heroBanner(g, M, T, W, opts, imgs) {
   kicker(g, 'LITTLE BROKEN STATION', PAD + 17, 43, 9, T.heroKicker, '3.4px')
   kicker(g, M.weekLabel, W - PAD, 43, 10, T.heroKicker, '2px', 'right')
 
-  // 标题：本周的大标题压在图的下三分之一。左边一道强调色竖杠，跟下面各版块的小竖杠同一套语言
+  // 标题：沉到底部与右侧署名同高（站长 11-06 二轮圈图），左边一道强调色竖杠，跟下面各版块的小竖杠同一套语言
   const title = opts.title || '小破分站周报'
   g.fillStyle = T.accent
-  roundRect(g, PAD, 236, 4, 44, 2)
+  roundRect(g, PAD, 378, 4, 44, 2)
   g.fill()
   g.fillStyle = T.heroTitle
   g.font = `700 54px ${FF}`
-  g.fillText(fitText(g, title, W - PAD * 2 - 16), PAD + 16, 276)
+  g.fillText(fitText(g, title, W - PAD * 2 - 16), PAD + 16, 418)
 
-  // 副标语：留空就一行不留，不拿分站标语去填位（11-03 改）
+  // 副标语：标题下沉后只能站到标题头上；留空就一行不留，不拿分站标语去填位（11-03 改）
   const sub = String(opts.subtitle ?? '').trim()
   if (sub) {
     g.fillStyle = T.heroSub
     g.font = `400 13px ${FF}`
-    g.fillText(fitText(g, sub, W - PAD * 2 - 16), PAD + 16, 312)
+    g.fillText(fitText(g, sub, W - PAD * 2 - 16), PAD + 16, 366)
   }
 
-  // 署名：头像 + 名字，压在左下角（副标语底下，别撞上）
+  // 署名：头像 + 名字，压在右下角与左下标题对角平衡（站长 11-06 圈图点单搬右）
   if (opts.showSign && M.signName) {
     const av = imgs.get('__avatar')
     const r = 21
-    const cx = PAD + r
-    const cy = 368 - r
+    const cx = W - PAD - r
+    const cy = 420 - r
     g.save()
     g.beginPath()
     g.arc(cx, cy, r, 0, Math.PI * 2)
@@ -310,10 +312,12 @@ function heroBanner(g, M, T, W, opts, imgs) {
     g.beginPath()
     g.arc(cx, cy, r, 0, Math.PI * 2)
     g.stroke()
-    kicker(g, 'THIS WEEK BY', cx + r + 14, cy + 1, 8, T.heroSub, '2.4px')
+    kicker(g, 'THIS WEEK BY', cx - r - 14, cy + 1, 8, T.heroSub, '2.4px', 'right')
     g.fillStyle = T.heroTitle
     g.font = `500 13px ${FF}`
-    g.fillText(fitText(g, M.signName, 160), cx + r + 14, cy + 19)
+    g.textAlign = 'right'
+    g.fillText(fitText(g, M.signName, 160), cx - r - 14, cy + 19)
+    g.textAlign = 'left'
   }
 
   return H
@@ -403,7 +407,7 @@ function hotList(g, M, T, W, y, imgs) {
   sectionHead(g, T, PAD, y + 18, '本周最多人看', 'MOST WATCHED', W)
   y += 44
   const rowH = 68
-  hot.slice(0, 3).forEach((h, i) => {
+  hot.slice(0, 5).forEach((h, i) => {
     const ry = y + i * rowH
     const thW = 108
     const thH = 60
@@ -421,12 +425,12 @@ function hotList(g, M, T, W, y, imgs) {
     g.font = `400 10px ${FF}`
     g.fillText('位观众', W - PAD, ry + 44)
     g.textAlign = 'left'
-    if (i < Math.min(hot.length, 3) - 1) {
+    if (i < Math.min(hot.length, 5) - 1) {
       g.fillStyle = T.hair
       g.fillRect(tx, ry + thH + 3, cw - thW - 16, 1)
     }
   })
-  return y + Math.min(hot.length, 3) * rowH
+  return y + Math.min(hot.length, 5) * rowH
 }
 
 /** 七日动静：四段细柱一组，一周七组，颜色是同一条强调色的深浅。 */
@@ -591,9 +595,10 @@ function rankLists(g, M, T, W, y, opts) {
   const zones = opts.show.rank ? M.topZones ?? [] : []
   if (!ups.length && !zones.length) return y
   const cw = W - PAD * 2
+  const rowsN = Math.min(5, Math.max(ups.length, zones.length, 1)) // 后端每榜发 5 条（WeeklyHotTake），页面摆几条海报就摆几条（11-06 补）
   sectionHead(g, T, PAD, y + 18, '本周人气榜', 'TOP LISTS', W)
   y += 44
-  const h = 208
+  const h = rowsN * 54 + 52
   panel(g, T, PAD, y, cw, h)
   // 面板摆 PAD 处，两栏就得在面板里再留一条内边距。
   // 原来 colW 把面板边当列边，右栏的「N 播」正好压在面板边框上，看着像飞出去了（11-03 修）
@@ -606,7 +611,7 @@ function rankLists(g, M, T, W, y, opts) {
     kicker(g, head0, x0, y + 28, 9, T.faint, '2.6px')
     const max = Math.max(1, ...list.map((u) => u.plays))
     const rowH = 54
-    list.slice(0, 3).forEach((u, i) => {
+    list.slice(0, rowsN).forEach((u, i) => {
       const ry = y + 50 + i * rowH
       const isFirst = i === 0
       g.fillStyle = isFirst ? T.accent : T.chartTrack
@@ -636,38 +641,51 @@ function rankLists(g, M, T, W, y, opts) {
   drawList(ups, PAD + inner, 'UP 主 · CREATORS')
   drawList(zones, PAD + inner + colW + gap, '分区 · ZONES')
   g.fillStyle = T.hair
-  g.fillRect(PAD + inner + colW + gap / 2, y + 44, 1, h - 64)
+  g.fillRect(PAD + inner + colW + gap / 2, y + 44, 1, rowsN * 54 - 12)
 
   return y + h
 }
 
-/** 本周新货：小缩略图 + 标题，一条一条排下来。 */
-function newsList(g, M, T, W, y, imgs, opts) {
+/** 本周新货：周报页新货墙的海报版（站长 11-06 点单）。4 列 × 3 行共 12 枚 16/10 封面。
+ *  页面那面墙的明信片歪斜与错位是页面的脾气（蜂窝版试过，站长嫌费空间，11-06 撤回）；
+ *  本皮肤的立身之本是「版面自己站得住，不靠歪斜和阴影撑场面」，所以这面墙站得笔直：
+ *  网格对齐、发丝边、统一圆角。超过 12 枚时在墙下右对一注「共 N 件」，说清墙上是抽样。 */
+function newsWall(g, M, T, W, y, imgs, opts) {
   const items = opts.show.news ? M.news ?? [] : []
   if (!items.length) return y
   const cw = W - PAD * 2
   sectionHead(g, T, PAD, y + 18, '本周新货', 'NEW ARRIVALS', W)
   y += 44
-  const rowH = 54
-  items.slice(0, 4).forEach((n, i) => {
-    const ry = y + i * rowH
-    const thW = 70
-    const thH = 40
-    drawCover(g, imgs.get(n.bvid), PAD, ry, thW, thH, T, n.bvid)
+  const tiles = items.slice(0, 12)
+  const cols = 4
+  const gap = 12
+  const tileW = (cw - gap * (cols - 1)) / cols
+  const tileH = Math.round(tileW * 0.625)
+  const rowH = tileH + 34 // 瓦下一行留给标题与序号
+  tiles.forEach((n, i) => {
+    const x = PAD + (i % cols) * (tileW + gap)
+    const ty = y + Math.floor(i / cols) * rowH
+    drawCover(g, imgs.get(n.bvid), x, ty, tileW, tileH, T, n.bvid, { radius: 10 })
+    roundRect(g, x, ty, tileW, tileH, 10)
+    g.strokeStyle = T.panelEdge
+    g.lineWidth = 1
+    g.stroke()
     g.fillStyle = T.main
-    g.font = `400 13px ${FF}`
-    g.fillText(fitText(g, n.title || n.bvid, cw - thW - 16 - 96), PAD + thW + 16, ry + 25)
+    g.font = `500 11px ${FF}`
+    g.fillText(fitText(g, n.title || n.bvid, tileW - 26), x, ty + tileH + 17)
     g.textAlign = 'right'
     g.fillStyle = T.faint
-    g.font = `500 10px ${FFM}`
-    g.fillText(String(i + 1).padStart(2, '0'), W - PAD, ry + 25)
+    g.font = `500 9px ${FFM}`
+    g.fillText(String(i + 1).padStart(2, '0'), x + tileW, ty + tileH + 17)
     g.textAlign = 'left'
-    if (i < Math.min(items.length, 4) - 1) {
-      g.fillStyle = T.hair
-      g.fillRect(PAD + thW + 16, ry + thH + 6, cw - thW - 16, 1)
-    }
   })
-  return y + Math.min(items.length, 4) * rowH
+  y += Math.ceil(tiles.length / cols) * rowH
+  if ((M.newsCount ?? 0) > tiles.length) {
+    // 注记另起一行：贴着 rowH 底画会压在末行标题与序号上（11-06 harness 实抓）
+    kicker(g, `共 ${M.newsCount} 件 · 墙上摆这 ${tiles.length} 件`, W - PAD, y + 7, 9, T.faint, '1px', 'right')
+    y += 15
+  }
+  return y
 }
 
 /** 角落账：三格小账，框在一块面板里。 */
@@ -680,6 +698,20 @@ function ledger(g, M, T, W, y, opts) {
   }
   if (M.personal && M.personalDuration) {
     chips.push({ label: '我的战报', value: M.personalValue, note: `看完 ${M.personalDuration.finished ?? 0} 部 · 登录 ${M.personal.logins ?? 0} 回` })
+  }
+  if (M.personal && ((M.personal.videosWatched ?? 0) > 0 || (M.personal.opens ?? 0) > 0)) {
+    // 观看链（站长 11-06 点单「海报也该补数据」）：链上四个数按序摆，字号降一档才装进栏宽；
+    // 每部几放与看完率两个比率进注里。零动隐身，与页内链卡同一口径。
+    const opens = M.personal.opens ?? 0
+    const plays = M.personal.plays ?? 0
+    const vids = M.personal.videosWatched ?? 0
+    const fin = M.personalDuration?.finished ?? 0
+    chips.push({
+      label: '观看链',
+      value: `${opens}→${plays}→${vids}→${fin}`,
+      vsize: 13, // 箭头比数字宽得多：16px 装不进 121px 的栏宽，会把链尾省略掉（11-06 harness 实抓）
+      note: `每部 ${vids ? (plays / vids).toFixed(1) : 0} 放 · 看完率 ${vids ? Math.round((fin / vids) * 100) : 0}%`,
+    })
   }
   chips.push({
     label: '存货总账',
@@ -704,8 +736,8 @@ function ledger(g, M, T, W, y, opts) {
     g.font = `500 11px ${FF}`
     g.fillText(c.label, x + 22, y + 32)
     g.fillStyle = T.main
-    g.font = `700 24px ${FFM}`
-    g.fillText(c.value, x + 22, y + 64)
+    g.font = `700 ${c.vsize ?? 24}px ${FFM}`
+    g.fillText(fitText(g, c.value, colW - 44), x + 22, y + 64)
     g.fillStyle = T.faint
     g.font = `400 10px ${FF}`
     g.fillText(fitText(g, c.note, colW - 44), x + 22, y + 84)
@@ -719,6 +751,44 @@ function ledger(g, M, T, W, y, opts) {
  * 画完海报正文，返回落笔后的底部 y。
  * 预览和下载都调它，所以它必须是纯函数式的：不许改状态，只许画。
  */
+/** 分站流水／我的动向：双栏账目（站长 11-06 点单「海报数据还少」——把页面的流水账与个人账整搬）。
+ *  左标签右数字一行一条；次/回同族的行（pct 由页面算好）垫根细底条当排序的余光，
+ *  其余族不上轴——条/位/封同轴就是假比较，同页面「只给次/回放条」一条规矩。 */
+function rowsGrid(g, T, W, y, cn, en, rows) {
+  if (!rows.length) return y
+  sectionHead(g, T, PAD, y + 18, cn, en, W)
+  y += 42
+  const cw = W - PAD * 2
+  const gap = 28
+  const colW = (cw - gap) / 2
+  const rowH = 30
+  const half = Math.ceil(rows.length / 2)
+  rows.forEach((r, i) => {
+    const col = i < half ? 0 : 1
+    const x = PAD + col * (colW + gap)
+    const ry = y + (i % half) * rowH
+    g.fillStyle = T.soft
+    g.font = `400 11px ${FF}`
+    g.fillText(r.label, x, ry + 17)
+    const disp = r.text || `${fmtNum(r.value)}${r.unit ? ` ${r.unit}` : ''}`
+    g.font = `600 13px ${FFM}`
+    g.fillStyle = T.main
+    g.textAlign = 'right'
+    g.fillText(fitText(g, disp, colW - 56), x + colW, ry + 17)
+    g.textAlign = 'left'
+    if (r.pct != null) {
+      g.fillStyle = T.chartTrack
+      g.fillRect(x, ry + 24, colW, 2)
+      g.fillStyle = T.accent
+      g.fillRect(x, ry + 24, Math.max(3, (colW * r.pct) / 100), 2)
+    } else {
+      g.fillStyle = T.hair
+      g.fillRect(x, ry + 24, colW, 1)
+    }
+  })
+  return y + half * rowH
+}
+
 export function paintEditorial(g, M, W, imgs, opts) {
   const T = editorialTheme(opts)
   let y = 0
@@ -739,6 +809,10 @@ export function paintEditorial(g, M, W, imgs, opts) {
     y = pulseChart(g, M, T, W, y, opts)
     y += 40
   }
+  if (opts.show.flow && (M.flowRows ?? []).length) {
+    y = rowsGrid(g, T, W, y, '分站流水', 'ACTIVITY LOG', M.flowRows)
+    y += 40
+  }
   if ((opts.show.wall && (M.heatWall ?? []).length) || (opts.show.matrix && M.heatMatrix?.cells?.length)) {
     y = heatPanels(g, M, T, W, y, opts)
     y += 40
@@ -748,7 +822,11 @@ export function paintEditorial(g, M, W, imgs, opts) {
     y += 40
   }
   if (opts.show.news && (M.news ?? []).length) {
-    y = newsList(g, M, T, W, y, imgs, opts)
+    y = newsWall(g, M, T, W, y, imgs, opts)
+    y += 40
+  }
+  if (opts.show.mine && (M.mineRows ?? []).length) {
+    y = rowsGrid(g, T, W, y, '我的动向', 'MY MOVES', M.mineRows)
     y += 40
   }
   y = ledger(g, M, T, W, y, opts)
