@@ -15,8 +15,11 @@ namespace LBS.Infrastructure;
 /// </summary>
 public sealed partial class StationDb
 {
-    /// <summary>UP 空间页头：站内归档的名片快照。四个字段各取该 mid 最新一条非空值（早年稿子常有半截档案）。</summary>
-    public sealed record UpProfile(long Mid, string? Name, string? Face, string? Sign, long? Fans);
+    /// <summary>
+    /// UP 空间页头：站内归档的名片快照。五个字段各取该 mid 最新一条非空值（早年稿子常有半截档案）。
+    /// Official 是 B 站官方认证标题（如「bilibili直播高能主播」，无认证为 null）。
+    /// </summary>
+    public sealed record UpProfile(long Mid, string? Name, string? Face, string? Sign, long? Fans, string? Official);
 
     /// <summary>
     /// 该 UP 的站内名片快照。<b>站内一条这位的行都没有</b>时回 null —— 端点据此与「有这位但档案空白」区分开，
@@ -28,12 +31,14 @@ public sealed partial class StationDb
         using var command = connection.CreateCommand();
         // 四段各取「最新一条非空」而不是「最新一行的四件套」：名片补采是分头进行的，
         // 拿最新那一行可能恰好是个只写了名字的半截档案，把已有的头像与粉丝数一起埋了。
+        // 认证同这一口径（它是另一次出网采的，不能拿它去埋已经有的脸）。
         command.CommandText = """
             SELECT
                 (SELECT up_name FROM video_meta WHERE up_mid = $mid AND up_name IS NOT NULL AND up_name <> '' ORDER BY video_id DESC LIMIT 1),
                 (SELECT up_face FROM video_meta WHERE up_mid = $mid AND up_face IS NOT NULL AND up_face <> '' ORDER BY video_id DESC LIMIT 1),
                 (SELECT up_sign FROM video_meta WHERE up_mid = $mid AND up_sign IS NOT NULL AND up_sign <> '' ORDER BY video_id DESC LIMIT 1),
-                (SELECT up_fans FROM video_meta WHERE up_mid = $mid AND up_fans IS NOT NULL ORDER BY video_id DESC LIMIT 1);
+                (SELECT up_fans FROM video_meta WHERE up_mid = $mid AND up_fans IS NOT NULL ORDER BY video_id DESC LIMIT 1),
+                (SELECT up_official FROM video_meta WHERE up_mid = $mid AND up_official IS NOT NULL AND up_official <> '' ORDER BY video_id DESC LIMIT 1);
             """;
         command.Parameters.AddWithValue("$mid", mid);
         using var reader = command.ExecuteReader();
@@ -46,9 +51,12 @@ public sealed partial class StationDb
         var face = reader.IsDBNull(1) ? null : reader.GetString(1);
         var sign = reader.IsDBNull(2) ? null : reader.GetString(2);
         var fans = reader.IsDBNull(3) ? (long?)null : reader.GetInt64(3);
+        var official = reader.IsDBNull(4) ? null : reader.GetString(4);
+        // 「整位都没档案」的判据只看那四栏：认证没采过是常态（非主播 / 早年没这个采集员），
+        // 不能因为它空就把已有名片的整页打回 notfound。
         return name is null && face is null && sign is null && fans is null
             ? null
-            : new UpProfile(mid, name, face, sign, fans);
+            : new UpProfile(mid, name, face, sign, fans, official);
     }
 
     /// <summary>

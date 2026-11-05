@@ -1,14 +1,20 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import VideoCard from '../components/VideoCard.vue'
+import PlayCountIcon from '../components/PlayCountIcon.vue'
+import { coverSrcOf } from '../utils/coverSrc'
+import { createPreviewHost } from '../utils/hoverPreview'
 import { defaultAvatar } from '../utils/avatar.js'
 import { fmtFans } from '../utils/fans.js'
 
 // ─── UP 空间：这位 UP 在【本站】存了多少片。放映厅名片上那颗蓝钮进来。
+// 版式 1:1 复刻 B 站空间主页（站长 11-05 点单）：全宽页头带 → 名片叠压（头像/名字/认证徽/签名/数字数据行）
+// → tab 行 → 视频卡阵。本站没有的功能（关注/消息/音频/相簿/专栏）一律不造，tab 只留「视频」。
+// 页头带（站长 11-06 点单案一+案三，头图已同日整体废除）：从这位的本地头像取主色，现调一版专属柔渐变
+// （拿不到色落全站蓝调）+ 网点纹理；名片下挂「热门归档」条（按播放 top4，站内数据零出网）。
 // 两条口径都在后端，这里不挑：只列已到货的行（没缓存的不给人看）、别人的私有稿等于不存在。
-// 一口拿全（页头名片 + 卡阵），不分页 —— 分站总量还小，一次给完少一条错误分支。
 const route = useRoute()
 
 const up = ref(null) // 站内归档的名片快照；null = 分站从没收过这位（或档案四字全空）
@@ -21,9 +27,137 @@ const mid = computed(() => route.params.mid)
 const name = computed(() => up.value?.name || `UP 主 ${mid.value}`)
 const faceSrc = computed(() => (up.value?.face && !faceFailed.value ? up.value.face : defaultAvatar))
 const spaceUrl = computed(() => `https://space.bilibili.com/${mid.value}`)
+const officialTitle = computed(() => String(up.value?.official ?? '').trim())
 function onFaceError() {
   faceFailed.value = true
 }
+
+// ── 案三·取色纹理（11-06 站长点单）：从头像现调这位的专属渐变，纯前端 canvas 不落盘。
+// 取色失败（远程件 CORS 污染画布/默认头像/全灰头像）一律回空串，模板里的蓝调类就是天然兑底档。
+const paletteCache = new Map() // faceSrc → css 渐变；同一位反复进出页不重解码
+const bannerTint = ref('')
+let paletteToken = 0 // 换 mid 快时旧解码不许骑到新解码头上
+
+watch(
+  faceSrc,
+  async (src) => {
+    const token = ++paletteToken
+    bannerTint.value = ''
+    if (!src || src === defaultAvatar) return
+    if (paletteCache.has(src)) {
+      bannerTint.value = paletteCache.get(src)
+      return
+    }
+    try {
+      const tint = await tintOfFace(src)
+      if (token !== paletteToken) return
+      if (tint) {
+        paletteCache.set(src, tint)
+        bannerTint.value = tint
+      }
+    } catch {
+      /* 取不到色就蓝调：这不是故障，是常态（远程件/CORS/素人灰调头像） */
+    }
+  },
+  { immediate: true },
+)
+
+async function tintOfFace(src) {
+  const img = await loadImage(src)
+  if (!img.width || !img.height) return null
+  const c = document.createElement('canvas')
+  c.width = 36
+  c.height = 36
+  const g = c.getContext('2d', { willReadFrequently: true })
+  g.drawImage(img, 0, 0, 36, 36)
+  // 远程件没给 CORS 许可时这一行直接抛 SecurityError → 外层 catch 落蓝调
+  const { data } = g.getImageData(0, 0, 36, 36)
+  const buckets = new Map() // 粗桶取众数：整张脸的主色赢，发丝杂色赢不了
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 128) continue
+    const r = data[i]
+    const gr = data[i + 1]
+    const b = data[i + 2]
+    const mx = Math.max(r, gr, b)
+    const mn = Math.min(r, gr, b)
+    if (mx < 60 || mn > 205 || mx - mn < 28) continue // 近黑/近白/低彩的灰不参与气质
+    const key = `${r >> 5}:${gr >> 5}:${b >> 5}`
+    const e = buckets.get(key) || { n: 0, r: 0, g: 0, b: 0 }
+    e.n += 1
+    e.r += r
+    e.g += gr
+    e.b += b
+    buckets.set(key, e)
+  }
+  let best = null
+  for (const e of buckets.values()) if (!best || e.n > best.n) best = e
+  if (!best || best.n < 24) return null // 有彩像素不到 2% 不算有气质，不值得开妆
+  const h = hueOf(best.r / best.n, best.g / best.n, best.b / best.n)
+  // 三档都是同族色相的浅柔版：页头是幕布不是霓虹，名字与头像才是主角（深字压在浅底上永远读得清）
+  return `linear-gradient(118deg, hsl(${Math.round(h)} 55% 80%) 0%, hsl(${Math.round((h + 24) % 360)} 46% 87%) 52%, hsl(${Math.round((h + 334) % 360)} 36% 92%) 100%)`
+}
+
+function hueOf(r, g, b) {
+  const mx = Math.max(r, g, b)
+  const mn = Math.min(r, g, b)
+  const d = mx - mn
+  if (!d) return 205 // 全灰：蓝调收场
+  if (mx === r) return ((((g - b) / d) % 6) + 6) * 60
+  if (mx === g) return (((b - r) / d) + 2) * 60
+  return (((r - g) / d) + 4) * 60
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.referrerPolicy = 'no-referrer'
+    if (/^https?:/i.test(src)) img.crossOrigin = 'anonymous' // 远程件愿意给 CORS 就能取色，不给就按取不到算
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = src
+  })
+}
+
+// ── 案一·热门归档条（11-06 站长点单）：站内已到货的稿按播放数取 top4，零出网；
+// 不超过 4 条时不摆——网格本身就是全部货色，再摆一排就是复读。
+// 播放在站内只有折万文本（video_meta.view_count TEXT，B 站口径「2.9万」），排序就按同族口径折数
+//（与 StationDb.cs 的「文本播放数折算 SQL 表达式」同一把尺：亿 1e8 / 万 1e4，坏值 -1 沉底）。
+const hotPicks = computed(() => {
+  if (items.value.length <= 4) return []
+  return [...items.value].sort((a, b) => viewNum(b.viewCountText) - viewNum(a.viewCountText)).slice(0, 4)
+})
+
+function viewNum(t) {
+  const s = String(t ?? '').replace(/[,，\s]/g, '').trim()
+  if (!s || s === '—') return -1
+  const n = parseFloat(s)
+  if (Number.isNaN(n)) return -1
+  if (s.endsWith('亿')) return n * 1e8
+  if (s.endsWith('万')) return n * 1e4
+  return n
+}
+
+// ── 热门归档条悬停预览（站长 11-06 点单：这四枚迷你卡「没有悬停预览」）：
+// 机位与网格 VideoCard、分区横滚行同一家（utils/hoverPreview）：停够 350ms 才起播，
+// 走开立即按停淡回封面、200ms 内回来原地续播，全站只许一路在播，出错弃卡不重试。
+// 一个机位守这四张卡，指针进谁的封面进谁的播（BangumiHome 横滚行同形）；
+// 元素身份用 bvid 就够——top4 同源同列表无重号，不存在横滚行那种同片跨行串台。
+const hotPreview = createPreviewHost()
+const hotCoverKey = ref('') // 放大只跟「鼠标在封面上」走，不吃标题的悬停（与网格卡同一口径）
+const hotPreviewEls = new Map() // bvid → <video>：机位要拿到当前这张卡的元素才能按停与起播
+function bindHotPreview(bvid, el) {
+  if (el) hotPreviewEls.set(bvid, el)
+  else hotPreviewEls.delete(bvid) // 迟到的 null 只销自己那张，不抹别人
+}
+function onHotCoverEnter(v) {
+  hotCoverKey.value = v.bvid
+  hotPreview.enter(v.bvid, v.previewUrl || '', (id) => hotPreviewEls.get(id) || null)
+}
+function onHotCoverLeave(v) {
+  if (hotCoverKey.value === v.bvid) hotCoverKey.value = ''
+  hotPreview.leave(v.bvid)
+}
+onBeforeUnmount(() => hotPreview.dispose())
 
 async function load() {
   loading.value = true
@@ -60,9 +194,12 @@ watch(mid, load)
 
     <main class="mx-auto max-w-[1400px] px-6 py-6">
       <!-- 骨架：与合集详情同款呼吸块，不摆转圈 -->
-      <div v-if="loading" class="animate-pulse rounded-2xl bg-black/[0.05] dark:bg-white/[0.06] p-6">
-        <div class="h-6 w-1/3 rounded bg-black/[0.06] dark:bg-white/[0.08]"></div>
-        <div class="mt-3 h-3.5 w-1/2 rounded bg-black/[0.06] dark:bg-white/[0.08]"></div>
+      <div v-if="loading" class="animate-pulse overflow-hidden rounded-2xl bg-black/[0.05] dark:bg-white/[0.06]">
+        <div class="h-[180px] bg-black/[0.06] dark:bg-white/[0.08]"></div>
+        <div class="p-6 pt-14">
+          <div class="h-6 w-1/3 rounded bg-black/[0.06] dark:bg-white/[0.08]"></div>
+          <div class="mt-3 h-3.5 w-1/2 rounded bg-black/[0.06] dark:bg-white/[0.08]"></div>
+        </div>
       </div>
 
       <!-- 后端没应答 / 编号不是数字（路由 :long 约束不匹配会 404）：一句话 + 一颗重试 -->
@@ -78,42 +215,75 @@ watch(mid, load)
       </div>
 
       <template v-else>
-        <!-- 页头：蓝调柜面（与名片上那颗蓝钮同色），头像 / 名字 / 签名 / 三枚胶囊，右侧留一个去 B 站的出口 -->
-        <div class="rounded-2xl bg-gradient-to-br from-stationBlue/12 via-stationBlue/[0.05] to-transparent p-5 ring-1 ring-stationBlue/10">
-          <div class="flex flex-wrap items-start justify-between gap-4">
-            <div class="flex min-w-0 gap-3.5">
+        <!-- ── B 站式页头：全宽页头带 + 名片叠压 ── -->
+        <section class="overflow-hidden rounded-2xl bg-cardBg shadow-[0_2px_12px_-4px_rgba(15,18,25,.12)] ring-1 ring-black/[0.05] dark:bg-[#1b1f27] dark:ring-white/10">
+          <!-- 页头带（站长 11-06 点单案三）：头像取色专属渐变叠网点纹理，
+               取不到色保留蓝调类兑底；暗色加一层压黑防浅底刺眼。纯妆面零数据零出网。
+               名字大字水印二轮（11-06）退役：雾线正好从字腰切过，半融的名字读成噪声不读成妆，
+               大封面本体也没有字；妆感若要找回见 git 历史（92/118px 黑体斜体 white/45）。
+               外层 relative 包壳是给 .head-soft 定位用的：过渡带不能住在 head-fade 里面——
+               mask 会连子层一起裁，带的下截（探进名片区那半截）会被页头带的 mask 杀在接缝上。 -->
+          <div class="relative">
+          <div
+            class="head-fade relative h-[180px] bg-gradient-to-br from-stationBlue/25 via-stationBlue/10 to-transparent md:h-[210px]"
+            :style="bannerTint ? { background: bannerTint } : null"
+          >
+            <div
+              class="absolute inset-0"
+              style="background-image: radial-gradient(rgba(255, 255, 255, 0.38) 1.1px, transparent 1.1px); background-size: 14px 14px"
+              aria-hidden="true"
+            ></div>
+            <div class="absolute inset-0 bg-gradient-to-t from-black/[0.06] via-transparent to-transparent" aria-hidden="true"></div>
+            <div class="absolute inset-0 hidden bg-black/25 dark:block" aria-hidden="true"></div>
+          </div>
+          <!-- 模糊过渡带（站长 11-06 二轮眼验：「光 mask 溶还太怪，像大封面那样做个模糊」）：
+               横跨页头带与名片白底的接缝，用 backdrop-filter 把底下的渐变/网点就地雾化成一条磨砂带，
+               与首页大封面 .hero-soft（HomePage）同一族手法：上缘渐进、下缘渐出，雾随色一起泄进白底。 -->
+          <div class="head-soft" aria-hidden="true"></div>
+          </div>
+
+          <!-- 名片：头像骑压页头带下缘（B 站式 -mt-12 叠压），右侧数据横排，最右留去 B 站出口。
+               relative z-10 不可省：名片是叠在页头带上的，不提前层就是名字与认证徽被背板活埋（11-05 真机截图实抓）。 -->
+          <div class="relative z-10 flex flex-wrap items-end justify-between gap-x-6 px-6 pb-5">
+            <div class="-mt-12 flex min-w-0 items-end gap-4">
               <img
                 :src="faceSrc"
                 :alt="name"
                 loading="lazy"
                 referrerpolicy="no-referrer"
-                class="h-14 w-14 shrink-0 rounded-full bg-white/5 object-cover ring-2 ring-stationBlue/20"
+                class="h-24 w-24 shrink-0 rounded-full bg-white/10 object-cover shadow-[0_4px_16px_-4px_rgba(15,18,25,.35)] ring-4 ring-white dark:ring-[#1b1f27]"
                 @error="onFaceError"
               />
-              <div class="min-w-0">
-                <h1 class="flex items-center gap-2 text-[20px] font-semibold text-inkMain">
+              <div class="min-w-0 pb-1">
+                <h1 class="flex flex-wrap items-center gap-2 text-[24px] font-semibold leading-tight text-inkMain md:text-[26px]">
                   <span class="min-w-0 truncate">{{ name }}</span>
-                  <span v-if="up" class="shrink-0 rounded-full bg-cardBg px-2 py-0.5 text-[11px] font-normal text-inkFaint ring-1 ring-black/[0.06] dark:ring-white/10">
+                  <span
+                    v-if="officialTitle"
+                    class="inline-flex shrink-0 items-center gap-1 rounded-[4px] bg-stationBlue/10 px-1.5 py-[3px] text-[11px] font-normal text-stationBlue"
+                    :title="officialTitle"
+                  >
+                    <svg viewBox="0 0 24 24" class="h-3 w-3" fill="currentColor">
+                      <path d="M12 2l2.4 2.1 3.1-.5 1.2 2.9 2.9 1.2-.5 3.1L23.2 13l-2.1 2.4.5 3.1-2.9 1.2-1.2 2.9-3.1-.5L12 24.2 9.6 22.1l-3.1.5-1.2-2.9-2.9-1.2.5-3.1L.8 13l2.1-2.4-.5-3.1 2.9-1.2 1.2-2.9 3.1.5z" transform="scale(.92) translate(1 -1)" />
+                      <path d="M10.6 14.6l-2.2-2.2-1.3 1.3 3.5 3.5 6-6-1.3-1.3z" fill="#fff" />
+                    </svg>
+                    {{ officialTitle }}
+                  </span>
+                  <span v-if="up" class="shrink-0 rounded-full bg-black/[0.04] px-2 py-0.5 text-[11px] font-normal text-inkFaint ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/10">
                     站内归档
                   </span>
                 </h1>
-                <p class="mt-1 max-w-[720px] text-[13px] leading-relaxed text-inkSub">{{ up?.sign || '这个 UP 主还没有签名' }}</p>
-                <div class="mt-2.5 flex flex-wrap items-center gap-2 text-[12px] text-inkFaint">
-                  <span class="flex items-center gap-1 rounded-full bg-cardBg px-2.5 py-1 ring-1 ring-black/[0.06] dark:ring-white/10">
-                    <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.8">
-                      <rect x="3" y="5" width="18" height="14" rx="2.5" />
-                      <path d="M10 9.5l5 2.5-5 2.5z" fill="currentColor" stroke="none" />
-                    </svg>
-                    在库 {{ items.length }} 件
+                <p class="mt-1.5 max-w-[720px] truncate text-[13px] text-inkSub">{{ up?.sign || '这个 UP 主还没有签名' }}</p>
+                <!-- B 站式数据行：数字加粗 + 灰标签横排（本站有的说本站的，关注/点赞那套没有就不造） -->
+                <div class="mt-3 flex items-center gap-7 text-[12px] text-inkFaint">
+                  <span class="leading-none">
+                    <b class="mr-1 text-[17px] font-semibold text-inkMain">{{ items.length }}</b>在库视频
                   </span>
-                  <span v-if="up?.fans != null" class="flex items-center gap-1 rounded-full bg-cardBg px-2.5 py-1 ring-1 ring-black/[0.06] dark:ring-white/10">
-                    <svg viewBox="0 0 24 24" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.8">
-                      <circle cx="12" cy="8.5" r="3.5" />
-                      <path d="M5 19.5c1.4-3.2 4-4.5 7-4.5s5.6 1.3 7 4.5" stroke-linecap="round" />
-                    </svg>
-                    粉丝 {{ fmtFans(up.fans) }}
+                  <span v-if="up?.fans != null" class="leading-none">
+                    <b class="mr-1 text-[17px] font-semibold text-inkMain">{{ fmtFans(up.fans) }}</b>粉丝
                   </span>
-                  <span class="rounded-full bg-cardBg px-2.5 py-1 font-mono ring-1 ring-black/[0.06] dark:ring-white/10">UID {{ mid }}</span>
+                  <span class="leading-none">
+                    <b class="mr-1 font-mono text-[15px] font-medium text-inkSub">{{ mid }}</b>UID
+                  </span>
                 </div>
               </div>
             </div>
@@ -122,12 +292,77 @@ watch(mid, load)
               :href="spaceUrl"
               target="_blank"
               rel="noreferrer"
-              class="shrink-0 rounded-lg border border-lineSoft bg-cardBg px-3 py-1.5 text-[12px] text-inkSub transition hover:border-stationBlue/50 hover:text-stationBlue"
+              class="mb-1 shrink-0 rounded-lg border border-lineSoft bg-cardBg px-3.5 py-1.5 text-[12px] text-inkSub transition hover:border-stationBlue/50 hover:text-stationBlue"
             >
               去 B 站空间
             </a>
           </div>
-        </div>
+
+          <!-- 热门归档条（站长 11-06 点单案一）：空白的页头下半区喂内容——本站归档里播放 top4，
+               点击与网格卡同路（/watch/{bvid}）；不超 4 条整段不摆，复读机不上架。 -->
+          <div v-if="hotPicks.length" class="px-6 pb-5">
+            <div class="mb-2.5 flex items-baseline justify-between">
+              <h2 class="text-[14px] font-semibold text-inkMain">TA 的热门归档</h2>
+              <span class="text-[11px] text-inkFaint">按本站归档的播放数排</span>
+            </div>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-3 md:grid-cols-4">
+              <RouterLink v-for="v in hotPicks" :key="'hot-' + v.bvid" :to="`/watch/${v.bvid}`" class="group block min-w-0">
+                <div
+                  class="relative aspect-[16/10] overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]"
+                  @mouseenter="onHotCoverEnter(v)"
+                  @mouseleave="onHotCoverLeave(v)"
+                >
+                  <img
+                    v-if="coverSrcOf(v, 260)"
+                    :src="coverSrcOf(v, 260)"
+                    :alt="v.title || v.bvid"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                    class="h-full w-full object-cover transition duration-300"
+                    :class="hotCoverKey === v.bvid ? 'scale-[1.04]' : ''"
+                  />
+                  <!-- 悬停预览层：与网格卡阵同一族——只挂在被悬停那一张的封面里，其余卡连元素都不建；
+                       不抢点击不吃焦点，preload=none 不悬停一个字节都不拉；播放数徽标在 DOM 序后面，雾不起来盖它。 -->
+                  <video
+                    v-if="v.previewUrl && !hotPreview.isGaveUp(v.bvid) && hotPreview.isHost(v.bvid)"
+                    :key="v.bvid + v.previewUrl"
+                    :ref="(el) => bindHotPreview(v.bvid, el)"
+                    :src="v.previewUrl"
+                    muted
+                    loop
+                    playsinline
+                    preload="none"
+                    disablepictureinpicture
+                    tabindex="-1"
+                    aria-hidden="true"
+                    class="pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-200"
+                    :class="hotPreview.isOn(v.bvid) ? 'opacity-100' : 'opacity-0'"
+                    @loadeddata="hotPreview.markShown(v.bvid)"
+                    @playing="hotPreview.markShown(v.bvid)"
+                    @error="hotPreview.fail(v.bvid)"
+                  ></video>
+                  <span
+                    v-if="v.viewCountText && v.viewCountText !== '—'"
+                    class="absolute bottom-1 left-1.5 flex items-center gap-1 text-[11px] font-medium text-white"
+                    style="text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85)"
+                  >
+                    <PlayCountIcon class="h-[13px] w-[13px]" />{{ v.viewCountText }}
+                  </span>
+                </div>
+                <p class="mt-1.5 line-clamp-1 text-[12.5px] leading-[18px] text-inkSub transition group-hover:text-stationPink">
+                  {{ v.title || v.bvid }}
+                </p>
+              </RouterLink>
+            </div>
+          </div>
+        </section>
+
+        <!-- ── tab 行：B 站空间有音频/相簿/专栏/动态一整排，本站没这些就不造，只立「视频」一面旗 ── -->
+        <nav class="mt-5 flex items-center gap-6 border-b border-black/[0.06] dark:border-white/10">
+          <span class="-mb-px border-b-2 border-stationPink pb-2.5 text-[15px] font-semibold text-inkMain">
+            视频 <span class="ml-0.5 text-[12px] font-normal text-inkFaint">{{ items.length }}</span>
+          </span>
+        </nav>
 
         <!-- 卡阵：与合集详情同形的网格，卡面一根毛不改 -->
         <div v-if="items.length" class="mt-5 grid grid-cols-2 gap-x-4 gap-y-[38px] md:grid-cols-3 xl:grid-cols-5">
@@ -157,3 +392,32 @@ watch(mid, load)
     </main>
   </div>
 </template>
+
+<style scoped>
+/* 页头带下缘溶进名片白底：与首页大幕 .hero-frame（BangumiHome）同一家族的手法——
+   mask 从下半程逐步透到全透，比硬切边柔和得多。条纹/暗层都在被 mask 的容器里，
+   一起淡出不会各自截断；头像区自带提层不受影响。
+   二轮眼验（11-06）：单靠 mask 只是 alpha 衰减，网点和水印的底缘会露出「正在消融」的脏边，
+   所以另铺一条 .head-soft 磨砂带把真模糊叠在接缝上，mask 只负责颜色收尾。 */
+.head-fade {
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 52%, rgb(0 0 0 / 0.78) 66%, rgb(0 0 0 / 0.55) 77%, rgb(0 0 0 / 0.33) 86%, rgb(0 0 0 / 0.14) 93%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 52%, rgb(0 0 0 / 0.78) 66%, rgb(0 0 0 / 0.55) 77%, rgb(0 0 0 / 0.33) 86%, rgb(0 0 0 / 0.14) 93%, transparent 100%);
+}
+
+/* 模糊过渡带：大封面模式（HomePage .hero-soft）的跨缝版——同一条 11px 雾 + 1.12 饱和，
+   只是这里雾的不是图而是页头带自己：backdrop-filter 就地取底下已画的渐变/网点雾化重绘，
+   零复制零双影。左右各出 4% 防雾在裁切边变暗；上缘压在页头带 56% 高处渐进，下缘探进名片区
+   四成多处渐出，头像（z-10）骑在雾上不受扰。不支持 backdrop-filter 的浏览器退化回纯 mask 淡出。 */
+.head-soft {
+  position: absolute;
+  top: 56%;
+  left: -4%;
+  right: -4%;
+  height: 88%;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(11px) saturate(1.12);
+  backdrop-filter: blur(11px) saturate(1.12);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 22%, #000 58%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 22%, #000 58%, transparent 100%);
+}
+</style>

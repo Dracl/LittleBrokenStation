@@ -55,6 +55,15 @@ public sealed class StatusSyncWorker(
     private const int UpCardRescueBatch = 2;
     private int _passesSinceUpCardRescue;
 
+    // UP 认证的存量回填（11-05）：这一栏是后加的采集项，而脸早已本地化的老 UP 在 NeedsRefetch 那里算「能用」，
+    // 补采轮永远不登他们的门 —— 不专门跑一轮，功能对老用户等于不存在。照 m54-migrated 的先例在 settings 立碑：
+    // 跑完一轮才盖哨兵（没号跳过不算跑过，下次开机接着补），之后永不再扰 B 站。
+    // 哨兵原名 up-head-official-migrated（头图与认证同轮）；头图已于 11-06 废除，老站的旧碑由 NeedsUpOfficialBackfill 搬过来，不重跑。
+    internal const string UpOfficialMigratedKey = "up-official-migrated";
+    internal const string LegacyUpOfficialMigratedKey = "up-head-official-migrated";
+    private static readonly TimeSpan UpOfficialBackfillDelay = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan UpOfficialBackfillStartupDelay = TimeSpan.FromSeconds(20);
+
     private sealed record StallWatch(long Bytes, DownloadPhase Phase, DateTimeOffset StuckSince, bool Flagged);
 
     // 真值暂记簿：引擎实发的画质/音频档（Metadata.Resolution/.AudioCodec，替换完可用性降级后的真相，
@@ -84,6 +93,10 @@ public sealed class StatusSyncWorker(
             logger.LogInformation("UP 名片开局蹭库：{Count} 条老账改了同站现货", borrowed);
         }
 
+        // 认证的存量欠账：开局补一轮。它要逐位出网（一位一枪 + 300ms 歇），几百位能跑到几分钟，
+        // 所以不排在巡视主循环前面（不能让下载对账等它），也不与开机的补探/复活抢那几秒问 —— 20 秒后开跑。
+        _ = Task.Run(() => BackfillUpOfficialAsync(stoppingToken), CancellationToken.None);
+
         using var timer = new PeriodicTimer(Interval);
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
@@ -102,6 +115,116 @@ public sealed class StatusSyncWorker(
         }
     }
 
+    /// <summary>哨兵还没盖（或上一轮因没号根本没跑）才算欠账。抽成静态小口是为了让这条判据能被测到。
+    /// 老站升级不重跑：头图时代那块碑（<c>up-head-official-migrated</c>）里有值就把值搬到新碑、拆旧碑 ——
+    /// 当年那一轮已经把认证采进库了，不能因为改名让老用户重跑一遍扰 B 站。</summary>
+    internal static bool NeedsUpOfficialBackfill(StationDb db)
+    {
+        if (db.GetSetting(UpOfficialMigratedKey) is not null)
+        {
+            return false;
+        }
+
+        var legacy = db.GetSetting(LegacyUpOfficialMigratedKey);
+        if (legacy is null)
+        {
+            return true;
+        }
+
+        db.SetSetting(UpOfficialMigratedKey, legacy);
+        db.RemoveSetting(LegacyUpOfficialMigratedKey);
+        return false;
+    }
+
+    /// <summary>
+    /// 一次性存量回填：把 <see cref="StationDb.ListMidsLackingOfficial"/> 那份名单逐位走现有的
+    /// <see cref="LbsUpInfoFetcher.FetchAsync"/>（认证就在这趟里），采到了就走
+    /// <see cref="StationDb.SetUpOfficial"/> 只刷那一列（名片其余栏一个字节不碰）。
+    /// 门闸与节奏照封面补员：没采集号整轮跳过（<b>不盖哨兵</b>，下次开机再试），位与位之间 300ms，
+    /// 整轮挂在 <see cref="LbsCollectPolicy.RunForActivityAsync"/> 的出号上下文里（LbsQueryClient 第一行就 RequireCookie）。
+    /// 采不到只记账不报错：无认证是常态不是故障——<b>「出门了但没带回货」照盖</b>，不然每次开机都扰一遍 B 站（11-05 深夜交叉验证的教训：filled==0 就不盖会让无认证普通 UP 永不收敛，每次开机 3N 发出网）。
+    /// 盖不盖由 <see cref="ShouldStampOfficialSentinel"/> 裁决（抽成纯函数供测格钉死）：整轮一张名片都没采成不盖（接口不认这趟，盖了是装「干完活」）。
+    /// 风控计数那道门闸已随头图一同退役：banner 链路没了之后这轮不再打 acc/info，card 口的 -799 也无计数器可记。
+    /// </summary>
+    private async Task BackfillUpOfficialAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(UpOfficialBackfillStartupDelay, cancellationToken);
+            if (!NeedsUpOfficialBackfill(db))
+            {
+                return;
+            }
+
+            var mids = db.ListMidsLackingOfficial();
+            if (mids.Count == 0)
+            {
+                db.SetSetting(UpOfficialMigratedKey, DateTimeOffset.UtcNow.ToString("O"));
+                return;
+            }
+
+            // 号池空了不装忙（封面补员同款姿势）：先问一句再出号，也不把哨兵盖上一了百了。
+            if (!policy.HasAccount())
+            {
+                logger.LogInformation("UP 认证存量回填：站里没可用的采集号，这 {Total} 位先欠着（哨兵不盖，下次开机再试）", mids.Count);
+                return;
+            }
+
+            await policy.RunForActivityAsync(() => FillUpOfficialAsync(mids, cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 关门收兵：哨兵没盖，下次开机接着补。
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "UP 认证存量回填没跑成（不致命），下次开机再试");
+        }
+    }
+
+    private async Task FillUpOfficialAsync(IReadOnlyList<long> mids, CancellationToken cancellationToken)
+    {
+        var filled = 0;
+        var attempted = 0; // 本轮名片正经采到的位数：「真没有」与「接口全不认」的唯一分辨凭证（11-05 深夜交叉验证补）
+        foreach (var mid in mids)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var profile = await upInfo.FetchAsync(mid, cancellationToken);
+            if (profile is not null)
+            {
+                attempted++;
+            }
+
+            // 只写拿到货的那几位：认证是 null（无认证的人）时连窄口都不必开（COALESCE 下写 null 本就是空操作）；
+            // 算进「补了 X 位」就是把空手记成战功。整轮一行 UPDATE 没发也不报错 —— 无认证是常态。
+            if (profile?.Official is not null && db.SetUpOfficial(mid, profile.Official) > 0)
+            {
+                filled++;
+            }
+
+            await Task.Delay(UpOfficialBackfillDelay, cancellationToken);
+        }
+
+        // 盖戳判据抽成纯函数（真值表由测格钉死）：整轮零张名片不盖（card 接口不认这趟，盖了永锁缺账）；
+        // 有名片就盖——无认证没货是常态，不盖就是每次开机 3N 发出网永不收敛。
+        if (!ShouldStampOfficialSentinel(attempted))
+        {
+            logger.LogWarning("UP 认证存量回填：补了 {Filled} 位 / 共 {Total} 位，名片只成了 {Attempted} 张——判为接口不认，这轮不盖哨兵，下次开机再试",
+                filled, mids.Count, attempted);
+            return;
+        }
+
+        // 跑完整轮才立碑（与 m54-migrated 同款：干完活再盖戳，中途挂掉下次还能重跑）。
+        db.SetSetting(UpOfficialMigratedKey, DateTimeOffset.UtcNow.ToString("O"));
+        logger.LogInformation("UP 认证存量回填：补了 {Filled} 位 / 共 {Total} 位", filled, mids.Count);
+    }
+
+    /// <summary>哨兵盖戳判据（纯函数供测格钉死，NeedsUpOfficialBackfill 同族）：
+    /// 一张名片都没采成（attempted==0）不盖——card 接口整轮不认，盖了是把「没采到」焊成「干完活」；
+    /// 有名片就盖——非主播/无认证没货是常态，不盖就是每次开机重扰 B 站永不收敛。
+    /// 旧签名里的 throttleHits 参数已随 banner 链路退役：没了两发 acc/info，风控计数恒为 0，留着只会把判据说模糊。</summary>
+    internal static bool ShouldStampOfficialSentinel(int attempted) => attempted > 0;
+
     private async Task SyncOnceAsync(CancellationToken cancellationToken)
     {
         await SyncMainVideosAsync(cancellationToken);
@@ -119,6 +242,7 @@ public sealed class StatusSyncWorker(
         }
 
         _passesSinceUpCardRescue = 0;
+
         foreach (var videoId in db.ListUpCardsBeyondSalvage(UpCardRescueBatch))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -531,7 +655,8 @@ public sealed class StatusSyncWorker(
     }
 
     /// <summary>
-    /// UP 主名片采集：到站时顺手采一次头像/简介/粉丝。失败也销账（up_face 置空串），
+    /// UP 主名片采集：到站时顺手采一次头像/简介/粉丝，顺带 B 站官方认证（就一张 card）。
+    /// 失败也销账（up_face 置空串），
     /// 免得每次打开观看页都去扰 B 站；要重采删 video_meta 对应行即可。
     /// 除了 NULL，陈旧值（/avatars/ 下文件已不存在）也算没采好，会再出去采一趟。
     /// </summary>
@@ -547,6 +672,8 @@ public sealed class StatusSyncWorker(
         // 没现货可蹭才继续下面的出门流程。
         if (db.FindSharedUpCardByMid(mid.Value, videoId) is { } shared)
         {
+            // 只拄名片那三栏：official 不传就是 NULL（SetUpInfo 对 null 的现口径）。
+            // 被抄的这行本来就没脸（所以才会走蹭），它的认证大概也一并没；真丢了由另一行或补采轮兜着。
             db.SetUpInfo(videoId, shared.Face, shared.Sign, shared.Fans);
             logger.LogInformation("馆藏 {VideoId} UP 名片同站蹭成：{Face}", videoId, shared.Face);
             return;
@@ -565,16 +692,18 @@ public sealed class StatusSyncWorker(
         var profile = await upInfo.FetchAsync(mid.Value, CancellationToken.None);
         if (profile is null)
         {
+            // 失败只销 face 那一笔（NeedsRefetch 只看它）；official 不传就是 NULL，重采时再长回来。
             db.SetUpInfo(videoId, string.Empty, null, null);
         }
         else
         {
-            db.SetUpInfo(videoId, profile.FaceRel, profile.Sign, profile.Fans);
+            db.SetUpInfo(videoId, profile.FaceRel, profile.Sign, profile.Fans, profile.Official);
             logger.LogInformation(
-                "馆藏 {VideoId} UP 主名片入库：{Name}·{Fans} 粉丝",
+                "馆藏 {VideoId} UP 主名片入库：{Name}·{Fans} 粉丝{Official}",
                 videoId,
                 profile.Name ?? "?",
-                profile.Fans?.ToString() ?? "?");
+                profile.Fans?.ToString() ?? "?",
+                profile.Official is null ? "" : $"·{profile.Official}");
         }
 
         // 互动数据与创作团队不再挂在本方法尾上：它们自己有一趟（TryFetchStatAsync），

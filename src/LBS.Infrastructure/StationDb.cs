@@ -345,6 +345,8 @@ public sealed partial class StationDb
         EnsureColumn(connection, "video_meta", "up_face", "TEXT");
         EnsureColumn(connection, "video_meta", "up_sign", "TEXT");
         EnsureColumn(connection, "video_meta", "up_fans", "INTEGER");
+        // UP 档案的认证栏（UP 空间页头 B 站化）：B 站官方认证标题（如「bilibili直播高能主播」），同由 LbsUpInfoFetcher 采。
+        EnsureColumn(connection, "video_meta", "up_official", "TEXT");
         // B 站互动数据快照（view 接口 stat 字段真采）：stat_probed=1 表示已尝试过，失败也不重复扰 B 站。
         EnsureColumn(connection, "video_meta", "stat_like", "INTEGER");
         EnsureColumn(connection, "video_meta", "stat_coin", "INTEGER");
@@ -635,6 +637,10 @@ public sealed partial class StationDb
             upIdx.ExecuteNonQuery();
         }
 
+        // 头图栏已于 11-06 站长拍板整体废除（功能下线，认证保留）：老库里那一列连同旧值一并拍掉。
+        // 幂等：PRAGMA 查到列存在才 DROP（新库本没这列，重跑也不响）；这列从没进过索引/视图/触发器，DROP COLUMN 不会撞限制。
+        DropColumn(connection, "video_meta", "up_head");
+
         // 回填只跑一次：settings KV 立碑守卫（跑前查、跑后置位），整段一个事务不给半吊子留缝。
         var migrated = false;
         using (var probe = connection.CreateCommand())
@@ -698,6 +704,37 @@ public sealed partial class StationDb
             alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {type};";
             alter.ExecuteNonQuery();
         }
+    }
+
+    /// <summary>
+    /// <see cref="EnsureColumn"/> 的反向件：只在 <c>PRAGMA table_info</c> 真查到那列时才 DROP，所以新库首开与重跑都安静（幂等）。
+    /// 只给「功能整体废除、连旧值也不留」的列用；这类列不得带索引/视图/触发器，否则 SQLite 会直接拒 DROP（站内废除列守这条）。
+    /// </summary>
+    private static void DropColumn(SqliteConnection connection, string table, string column)
+    {
+        var exists = false;
+        using (var check = connection.CreateCommand())
+        {
+            check.CommandText = $"PRAGMA table_info({table});";
+            using var reader = check.ExecuteReader();
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(1), column, StringComparison.Ordinal))
+                {
+                    exists = true;
+                    break;
+                }
+            }
+        }
+
+        if (!exists)
+        {
+            return;
+        }
+
+        using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} DROP COLUMN {column};";
+        alter.ExecuteNonQuery();
     }
 
     /// <summary>
@@ -2578,15 +2615,22 @@ public sealed partial class StationDb
         }
     }
 
-    /// <summary>UP 主名片登记：face 存本地化路径（或热链），fans 可空；失败重试时覆盖式更新。</summary>
-    public void SetUpInfo(long videoId, string? face, string? sign, long? fans)
+    /// <summary>
+    /// UP 主名片登记：face 存本地化路径（或热链），fans 可空；失败重试时覆盖式更新。
+    /// official（B 站官方认证标题）同走这一口径：
+    /// <b>一栏不传就写 NULL</b>（与 face/sign/fans 对 null 的现行为对齐，不是「null 则不动列」），
+    /// 所以「失败销账」由调用方递空串、采到就递真值；老调用点不传那一栏时它同被销成 NULL，
+    /// 由补采轮重填（读侧是「该 mid 最新一条非空」，一行被抹不等于整位丢了）。
+    /// </summary>
+    public void SetUpInfo(long videoId, string? face, string? sign, long? fans, string? official = null)
     {
         using var connection = Open(_dbPath);
         using var cmd = connection.CreateCommand();
-        cmd.CommandText = "UPDATE video_meta SET up_face = $face, up_sign = $sign, up_fans = $fans WHERE video_id = $id;";
+        cmd.CommandText = "UPDATE video_meta SET up_face = $face, up_sign = $sign, up_fans = $fans, up_official = $official WHERE video_id = $id;";
         cmd.Parameters.AddWithValue("$face", (object?)face ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$sign", (object?)sign ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$fans", (object?)fans ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$official", (object?)official ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$id", videoId);
         cmd.ExecuteNonQuery();
     }
@@ -2766,6 +2810,53 @@ public sealed partial class StationDb
         }
 
         return stuck;
+    }
+
+    /// <summary>
+    /// 认证的欠账名单：mid 已知、但 <c>up_official</c> 还没落的<b>去重 mid</b>
+    /// （新稿的 UP 排前面先补）。给开局那一次性存量回填用（<c>StatusSyncWorker</c>）：
+    /// 脸早已本地化的老 UP，<c>LbsUpInfoFetcher.NeedsRefetch</c>（在 Engine 层）判能用、补采轮永不登门，
+    /// 这一栏对老用户等于不存在，得专门跑一轮去敲 B 站。
+    /// <b>这张表不自动收敛</b>：无认证的人永远采不到认证，跑一轮它们照旧在名单里 ——
+    /// 要不要再跑由 settings 哨兵 <c>up-official-migrated</c> 说了算，这里只照实报欠账。
+    /// </summary>
+    public IReadOnlyList<long> ListMidsLackingOfficial()
+    {
+        var mids = new List<long>();
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT up_mid FROM video_meta
+            WHERE up_mid IS NOT NULL AND up_official IS NULL
+            GROUP BY up_mid
+            ORDER BY MAX(video_id) DESC;
+            """;
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            mids.Add(reader.GetInt64(0));
+        }
+
+        return mids;
+    }
+
+    /// <summary>
+    /// 认证的<b>窄口</b>：一根 UPDATE 只动 <c>up_official</c> 一列，同一位 UP 的所有行全量刷新。
+    /// 为什么不走 <see cref="SetUpInfo"/>：它无条件写名片那几列，而存量回填手边没有 face/sign/fans 的现值，
+    /// 拿 null 去传就是把名片抹平（与当年 SaveSubmissionMetadata 埋名片同一类事故）。
+    /// 这一列<b>只补不抹</b>（COALESCE，11-05 深夜交叉验证抓到 P0 后收口）：旧版「采到什么写什么」在空手时
+    /// 把已到位的现值全行写成 NULL——全行写场景没有读侧「最新非空」兑底可仗（它只救得了个别行被抹，
+    /// 救不了全行被抹），叠上哨兵后不可自愈，只能写入口自己守。
+    /// 重复跑幂等；UPDATE 命中即计行（同值也算），「补了 X 位」口径不变。回写到几行。
+    /// </summary>
+    public int SetUpOfficial(long mid, string? official)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE video_meta SET up_official = COALESCE($official, up_official) WHERE up_mid = $mid;";
+        command.Parameters.AddWithValue("$official", (object?)official ?? DBNull.Value);
+        command.Parameters.AddWithValue("$mid", mid);
+        return command.ExecuteNonQuery();
     }
 
     /// <summary>互动数据登记：五维真数 + 销账标记；失败重试时覆盖式更新。</summary>

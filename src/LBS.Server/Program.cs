@@ -733,7 +733,13 @@ void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy poli
         try
         {
             var profile = await policy.RunForVideoAsync(data.Id, () => upInfo.FetchAsync(mid, CancellationToken.None));
-            db.SetUpInfo(data.Id, profile?.FaceRel ?? string.Empty, profile?.Sign, profile?.Fans);
+            // official 不传同老口径（SetUpInfo 对 null 写 NULL）：整趟挂了就销 face 那一笔，下轮重采。
+            db.SetUpInfo(
+                data.Id,
+                profile?.FaceRel ?? string.Empty,
+                profile?.Sign,
+                profile?.Fans,
+                profile?.Official);
             if (profile is null)
             {
                 logger.LogWarning("馆藏 {VideoId} UP 主名片补采未成（已销账）", data.Id);

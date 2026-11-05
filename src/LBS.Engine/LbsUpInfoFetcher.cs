@@ -5,8 +5,9 @@ using Microsoft.Extensions.Logging;
 
 namespace LBS.Engine;
 
-/// <summary>采集到的 UP 主名片：faceRel 优先本地化（/avatars/...），下载失败回退 B 站热链；拿不到的字段为 null。</summary>
-public sealed record UpProfile(string? Name, string? FaceRel, string? Sign, long? Fans);
+/// <summary>采集到的 UP 主名片：faceRel 优先本地化（/avatars/...），下载失败回退 B 站热链；拿不到的字段为 null。
+/// official 是 B 站官方认证标题（card.official.title 或 official_verify.desc，无认证为 null）。</summary>
+public sealed record UpProfile(string? Name, string? FaceRel, string? Sign, long? Fans, string? Official);
 
 /// <summary>B 站互动数据快照（view 接口 stat 字段）：全部真采，拿不到给 null。
 /// Staff 是同一次 view 响应顺带带回的创作团队（联合创作稿才有，普通稿是空列表）——
@@ -24,8 +25,10 @@ public sealed record VideoStat(
 public sealed record VideoStaffItem(long? Mid, string? Name, string? Role, string? FaceRel);
 
 /// <summary>
-/// UP 主名片采集器：走官方 web-interface/card 拿头像、简介、粉丝数（复用引擎登录态客户端），
+/// UP 主名片采集器：走官方 web-interface/card 拿头像、简介、粉丝数与官方认证（card.official.title），
+/// 复用引擎登录态客户端，
 /// 头像落盘交给 LbsCommentArchiver（与视频/动态评论区共用 data/avatars 的 sha1 命名 + 原图存档那一套库，不再自存 up-{mid}.jpg）。失败不逞强：返回 null，前端按“—”降级。
+/// 唯一匿名例外是认证：登录态下 B 站藏 card.official，认证另走一发只读 official 的匿名 card（见 <see cref="ResolveOfficialAsync"/>）。
 /// </summary>
 public sealed class LbsUpInfoFetcher(
     LbsQueryClient client,
@@ -33,6 +36,13 @@ public sealed class LbsUpInfoFetcher(
     ILogger<LbsUpInfoFetcher> logger)
 {
     private const string Referer = "https://www.bilibili.com";
+
+    /// <summary>匿名认证补读专用的 UA：要像浏览器，不能像脚本（card 是客人口， UA 太素容易被风控页糊脸）。</summary>
+    private const string GuestUserAgent =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+    /// <summary>只给匿名认证补读用的一把裸客户端：不带 cookie、不进号池分流，专读 card.official 一个字段（见 <see cref="ResolveOfficialAsync"/>）。</summary>
+    private static readonly HttpClient GuestHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     private const string AvatarsPrefix = "/avatars/";
 
@@ -101,7 +111,13 @@ public sealed class LbsUpInfoFetcher(
             long? fans = card.TryGetProperty("fans", out var f) && f.TryGetInt64(out var fv) ? fv : null;
 
             var faceRel = face is null ? null : await CacheFaceAsync(face, mid, cancellationToken);
-            return new UpProfile(name, faceRel ?? face, string.IsNullOrWhiteSpace(sign) ? null : sign, fans);
+            // 认证是锦上添花：拿不到只置 null，不许把已经采到的名片一并顶掉（helper 自带 try/catch）。
+            return new UpProfile(
+                name,
+                faceRel ?? face,
+                string.IsNullOrWhiteSpace(sign) ? null : sign,
+                fans,
+                await ResolveOfficialAsync(card, mid, cancellationToken));
         }
         catch (OperationCanceledException)
         {
@@ -131,6 +147,81 @@ public sealed class LbsUpInfoFetcher(
             logger.LogWarning(ex, "UP 主 {Mid} 头像本地化失败，热链回退", mid);
             return null;
         }
+    }
+
+    /// <summary>
+    /// 认证的取货路线（11-05 真机对版破案）：card 接口对认证有 <b>两副面孔</b>，同一无名请求会按 B 站心情轮换——
+    /// 一副把认证装在 official.title（浏览器形态），另一副只给 official:null 把认证改装进 official_verify.desc（站里实测见到的就是这副）；
+    /// 登录态（采集号 cookie）实测只回 official:null。所以认证靠匿名补读一发 card + 两副面孔都认（见 <see cref="OfficialTitle"/>）。
+    /// 这是「禁匿名出网」铁律的一处定点例外：card 本就是客人接口（匿名实测通、不吃 -352），这一发只读认证字段，
+    /// 不碰任何互动口，拿不到只回 null 不惊动名片主链路。登录态响应里的认证仍作首选读（万一哪天 B 站直给，零改动回落）。
+    /// </summary>
+    private async Task<string?> ResolveOfficialAsync(JsonElement card, long mid, CancellationToken cancellationToken)
+    {
+        var fromLogin = OfficialTitle(card);
+        if (fromLogin is not null)
+        {
+            return fromLogin;
+        }
+
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.bilibili.com/x/web-interface/card?mid={mid}&photo=false");
+            req.Headers.TryAddWithoutValidation("User-Agent", GuestUserAgent);
+            req.Headers.TryAddWithoutValidation("Referer", Referer);
+            using var res = await GuestHttp.SendAsync(req, cancellationToken);
+            if (!res.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var raw = await res.Content.ReadAsStringAsync(cancellationToken);
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.TryGetProperty("code", out var code) && code.GetInt32() != 0)
+            {
+                return null;
+            }
+
+            return doc.RootElement.TryGetProperty("data", out var data) && data.TryGetProperty("card", out var guestCard)
+                ? OfficialTitle(guestCard)
+                : null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // 无认证与风控页都长这样，不值得 Warning 刷屏；认证是锦上添花，主名片不许受牵连。
+            logger.LogDebug(ex, "UP 主 {Mid} 匿名认证补读空手（无认证/风控页属常态）", mid);
+            return null;
+        }
+    }
+
+    /// <summary>B 站官方认证标题：card 响应有两副面孔（11-05 实拍：浏览器形态把认证装在 <c>official.title</c>，
+    /// 站里见到的匿名形态只给 official:null 却把认证装在 <c>official_verify.desc</c>）。两副都认，
+    /// 任一形态给出非空标题就算有认证（「bilibili直播高能主播」「bilibili知名UP主」实走 official_verify；
+    /// 影视飓风「2025百大…」实走 official.title；早先按 type==0 一票否决会把真认证全杀成 null，双案实证）。
+    /// type=-1 或标题空白统一回 null；两副都没有也回 null —— 页头据此不画认证那一行，而不是画个空章。</summary>
+    public static string? OfficialTitle(JsonElement card)
+    {
+        return OfficialFrom(card, "official", "title") ?? OfficialFrom(card, "official_verify", "desc");
+    }
+
+    private static string? OfficialFrom(JsonElement card, string container, string titleField)
+    {
+        if (!card.TryGetProperty(container, out var official) || official.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (official.TryGetProperty("type", out var type) && type.TryGetInt32(out var typeValue) && typeValue == -1)
+        {
+            return null;
+        }
+
+        var title = Str(official, titleField);
+        return string.IsNullOrWhiteSpace(title) ? null : title.Trim();
     }
 
     /// <summary>轻量查等级：同走 card 接口、同一张嘴（client + Referer + 无 cookie），只取 level_info.current_level、退 card.level。
