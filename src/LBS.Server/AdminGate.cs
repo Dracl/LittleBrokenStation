@@ -91,8 +91,12 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
 
         // 卡阵的删档/续下/重新排队/采评/加档归站长；投稿（POST /api/videos 精确）与
         // 弹幕收发（含 /api/videos/danmaku 删除，自带本人/主人规则）留访客。
-        // 例外：投稿人自管三件事（刷评论快照 / 重拉弹幕 / 删自己的稿）从站长室摘出来，
+        // 例外：投稿人自管五件事（刷评论快照 / 重拉弹幕 / 删自己的稿 / 续下 / 重新排队）从站长室摘出来，
         // 改由 MemberGate 要求会员 + 端点内自己核归属（少了这一摘一补，要么投稿人进不来，要么匿名敞着）。
+        // 续下与重新排队（POST …/revive 与 …/requeue）本轮跟着摘：站长室那圈 IsOwner 短路本来就把
+        // 「投稿人想续自己的下载」一起挡死了，摘出来之后归属门落在端点里的 CanManageVideo
+        // （ManageGate.CanManage 对没席位的人一律回假，匿名顶多拿 403，不是敞着）。
+        // /codecs（加档点单）仍留在站长门里；…/media-refresh 早就是「会员门 + 端点归属门」那一张形。
         if (path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase))
         {
             if (HttpMethods.IsDelete(request.Method)
@@ -103,9 +107,7 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
             }
 
             if (HttpMethods.IsPost(request.Method)
-                && (path.Contains("/revive", StringComparison.OrdinalIgnoreCase)
-                    || path.Contains("/requeue", StringComparison.OrdinalIgnoreCase)
-                    || path.Contains("/codecs", StringComparison.OrdinalIgnoreCase)
+                && (path.Contains("/codecs", StringComparison.OrdinalIgnoreCase)
                     || (path.Contains("/comments", StringComparison.OrdinalIgnoreCase) && !IsSelfOwnedCommentsRefresh(path))))
             {
                 return true;

@@ -61,8 +61,8 @@ public sealed class MemberGate(StationDb db)
             return true;
         }
 
-        // 投稿人自管（刷评论快照 / 删自己的稿）与楼中楼按需补采：从站长室摘出来后必须在这里补上门闩，
-        // 否则就成了匿名可调用。归属不是这里的事，端点自己拿 MemberGate.Current 再核一遗。
+        // 投稿人自管（刷评论快照 / 重拉弹幕 / 删自己的稿 / 续下 / 重新排队）与楼中楼按需补采：
+        // 从站长室摘出来后必须在这里补上门闩，否则就成了匿名可调用。归属不是这里的事，端点自己拿 MemberGate.Current 再核一遗。
         if (HttpMethods.IsDelete(request.Method) && IsVideoIdOnlyPath(path))
         {
             return true;
@@ -76,14 +76,18 @@ public sealed class MemberGate(StationDb db)
             return true;
         }
 
-        // 重拉弹幕 / 重拉封面与媒体（POST …/danmaku-refresh 与 …/media-refresh）也在这份点名清单里：
-        // 少了这一条，匿名就能拿着别人的 id 驱分站出去跑 B 站，还能把健康馆藏踢回队列重下（归属归端点里的 CanManageVideo）。
+        // 重拉弹幕 / 重拉封面与媒体（POST …/danmaku-refresh 与 …/media-refresh）与续下/重新排队（…/revive、…/requeue）
+        // 也在这份点名清单里：少了这一条，匿名就能拿别人的 id 驱分站出去跑 B 站、把健康馆藏踢回队列重下，
+        // 或把被取消的稿悄悄捐回排队（归属归端点里的 CanManageVideo）。revive/requeue 刚从 AdminGate 摘给投稿人，
+        // 不在这里补闩就会退化成匿名 403/404 两套脸。
         if (HttpMethods.IsPost(request.Method)
             && path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase)
             && (path.EndsWith("/comments", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/comments/subs", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/danmaku-refresh", StringComparison.OrdinalIgnoreCase)
-                || path.EndsWith("/media-refresh", StringComparison.OrdinalIgnoreCase)))
+                || path.EndsWith("/media-refresh", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/revive", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/requeue", StringComparison.OrdinalIgnoreCase)))
         {
             return true;
         }

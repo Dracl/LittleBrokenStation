@@ -61,7 +61,11 @@ function persistLiked() {
   }
 }
 
+// 代次护城（照 WatchPage 的 relatedSeq）：切 P 时旧评论表的迟到回包不能盖新页
+let loadSeq = 0
+
 async function load(src) {
+  const seq = ++loadSeq
   if (!src) {
     state.value = 'empty'
     snapshot.value = null
@@ -72,12 +76,14 @@ async function load(src) {
   floors.value = {}
   try {
     const res = await fetch(src)
+    if (seq !== loadSeq) return
     if (!res.ok) {
       state.value = 'failed'
       return
     }
 
     const json = await res.json()
+    if (seq !== loadSeq) return
     const list = Array.isArray(json.replies) ? json.replies : []
     if (!list.length && !json.top) {
       snapshot.value = json
@@ -91,6 +97,7 @@ async function load(src) {
     state.value = 'ready'
     autoLoadSmallFloors()
   } catch {
+    if (seq !== loadSeq) return
     state.value = 'failed'
   }
 }
@@ -155,6 +162,7 @@ async function fetchSubs(reply, page) {
   if (fl.loading) return
   if (page === 1) fl.autoTried = true
   fl.loading = true
+  const srcAtRequest = props.src // 这发楼子是为哪一页拉的：回包迟到时只对得上号才准写进 reply
   try {
     const res = await fetch(`/api/videos/${props.videoId}/comments/subs`, {
       method: 'POST',
@@ -162,6 +170,7 @@ async function fetchSubs(reply, page) {
       body: JSON.stringify({ rpid: reply.rpid, page }),
     })
     const body = await res.json().catch(() => null)
+    if (props.src !== srcAtRequest) return
     if (res.ok && body) {
       reply.sub = body.replies ?? []
       fl.loaded = true

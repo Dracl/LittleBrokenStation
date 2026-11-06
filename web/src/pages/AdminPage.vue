@@ -395,12 +395,14 @@ async function savePvSettings() {
     })
     const data = await res.json().catch(() => null)
     pvSay(res.ok ? 'ok' : 'err', data?.message ?? (res.ok ? '参数已落库' : '参数没存上'))
-    if (res.ok) {
-      pvDraftDirty = false
-      await loadPreviewStats()
-    }
+    // 无论成败都放草稿旗：扣着它 loadPreviewStats 就不回填，开关被乐观翻过去后再没人能扳回来
+    // （轮询看着对、屏上错）。失败后拉一次真相纠偏，后端真没起时它自己会显破折号。
+    pvDraftDirty = false
+    await loadPreviewStats()
   } catch {
     pvSay('err', '分站后端没有应答')
+    pvDraftDirty = false // 同上：不放旗就纠不回来
+    await loadPreviewStats()
   } finally {
     pvSaving.value = false
   }
@@ -885,7 +887,7 @@ async function dlCancelOne(id) {
 }
 
 // ─── 身份门：会员会话说了算（401=访客请扫码，403=普通成员送客去个人空间）───
-const adminAuth = ref('loading') // loading | ok | needOwner | member
+const adminAuth = ref('loading') // loading | ok | needOwner | member | offline
 
 function openLogin(mode) {
   loginDialogMode.value = mode
@@ -1065,13 +1067,21 @@ async function backupNow() {
 
 async function backupConfig() {
   if (backupBusy.value || !backupState.value) return
-  const res = await fetch('/api/backups/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ intervalHours: backupState.value.intervalHours, keep: backupState.value.keep }),
-  })
-  const body = await res.json().catch(() => null)
-  backupText.value = body?.message ?? '备份安排已更新'
+  backupBusy.value = true // 与 backupNow 同一把闸：安排没落定前不让再点，也不让两轮写互踩
+  try {
+    const res = await fetch('/api/backups/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intervalHours: backupState.value.intervalHours, keep: backupState.value.keep }),
+    })
+    const body = await res.json().catch(() => null)
+    backupText.value = body?.message ?? (res.ok ? '备份安排已更新' : '备份安排没存上')
+    if (res.ok) await loadBackups()
+  } catch {
+    backupText.value = '分站后端没有应答，安排没更新'
+  } finally {
+    backupBusy.value = false
+  }
 }
 
 async function backupDelete(name) {
@@ -1091,7 +1101,8 @@ async function backupDelete(name) {
   ) {
     return
   }
-  const res = await fetch(`/api/backups/${name}`, { method: 'DELETE' })
+  // 快照名来自后端列表，拼进 URL 前照样得编一下（与下面 backupDownload 的 /file 同一口径）
+  const res = await fetch(`/api/backups/${encodeURIComponent(name)}`, { method: 'DELETE' })
   const body = await res.json().catch(() => null)
   backupText.value = body?.message ?? '已销'
   await loadBackups()
@@ -1400,11 +1411,14 @@ function startExport() {
 }
 
 // 大包在后台流式写盘，这里 2 秒一探，完了刷新档案柜
+let disposed = false // 组件收了帘：自递归的探测不再续下一拍，也不再去拨已消失实例的 ref
 function pollExportJob(jobId) {
   expTimer = setTimeout(async () => {
+    if (disposed) return
     try {
       const res = await fetch(`/api/admin/export/jobs/${jobId}`)
       const d = await res.json().catch(() => null)
+      if (disposed) return
       if (!res.ok) {
         expBusy.value = false
         expText.value = d?.error ?? '任务丢了'
@@ -1573,8 +1587,10 @@ async function bootAdmin() {
     stats.value = probe.ok ? await probe.json() : null
     adminAuth.value = 'ok' // 牌对上了就要把门落下——早期只写了两张拒客分支，放行时反被卡在 loading
   } catch {
-    /* 后端打盹：照常进页面，各卡自己空着 */
-    adminAuth.value = 'ok'
+    // 探身份这一发都没回来，就是不知道对面是谁：拿 'ok' 放行只会换成一整页空仪表盘冒充正常。
+    // 停在错误态，也不起下面的取数与轮询，交给重试钮重跑开机核身。
+    adminAuth.value = 'offline'
+    return
   }
   fetch('/api/health')
     .then((r) => r.json())
@@ -1754,6 +1770,7 @@ watch(member, () => {
 })
 
 onUnmounted(() => {
+  disposed = true
   window.removeEventListener('scroll', onGroupSpyScroll)
   if (groupSpyRaf) cancelAnimationFrame(groupSpyRaf)
   if (dlTimer) clearInterval(dlTimer)
@@ -1763,6 +1780,9 @@ onUnmounted(() => {
   clearTimeout(expTimer)
   clearTimeout(exportArmTimer)
   clearTimeout(pendingTimer)
+  clearTimeout(purgeTimer) // 回收站二次确认的 5 秒自解除，卸载后不该替已消失的实例摸钮
+  if (announceTimer) clearTimeout(announceTimer) // 公告那一发的延时提示：一并掐掉
+  if (dynArmedTimer) clearTimeout(dynArmedTimer) // 动态二次确认的 5 秒自解除
 })
 </script>
 
@@ -1790,6 +1810,16 @@ onUnmounted(() => {
             你已是分站成员，这里是站长室——普通成员请进个人空间。
           </p>
           <RouterLink to="/me" class="lbs-btn inline-block w-full">进个人空间</RouterLink>
+        </template>
+        <template v-else-if="adminAuth === 'offline'">
+          <div class="mb-5 flex items-center justify-center gap-2">
+            <span class="lbs-dot lbs-dot-off"></span>
+            <span class="text-sm tracking-widest text-white/90">分站没应答</span>
+          </div>
+          <p class="mb-5 text-xs leading-5 text-white/35">
+            身份还没核对上——分站后端此刻没回话，不拿空仪表盘冒充正常。等它缓过来再重试。
+          </p>
+          <button class="lbs-btn w-full" @click="bootAdmin()">重试核对</button>
         </template>
         <p v-else class="py-4 text-xs text-white/30">正在核对手牌……</p>
       </div>

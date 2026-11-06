@@ -18,8 +18,18 @@ public sealed class CommentArchiveService(
     LbsCollectPolicy policy,
     ILogger<CommentArchiveService> logger)
 {
+    /// <summary>按片防重入闸：评论快照与楼中楼补采写的是同一份 {base}.comments.json，
+    /// 读-改-写不能并发——两双手各自 Load/Merge/Save，后写把先写并进去的楼中楼整块洗掉，
+    /// 而 artifacts 行一登记自动路径就再不重采（采集号闸只护出网段，护不到落笔段）。</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, byte> videoGates = new();
+
     public async Task<CommentArchiveOutcome> TryArchiveAsync(long videoId, bool force, CancellationToken cancellationToken)
     {
+        if (!videoGates.TryAdd(videoId, 0))
+        {
+            return new CommentArchiveOutcome(false, "这条正在采评论，稍等片刻再点", 0);
+        }
+
         try
         {
             var brief = db.GetVideoBrief(videoId);
@@ -80,11 +90,18 @@ public sealed class CommentArchiveService(
                 count = merge.Total;
                 message = $"「{brief.Value.Bvid}」评论已增量合并：新增 {merge.Added} 条、更新 {merge.Refreshed} 条，留档共 {merge.Total} 条"
                     + (merge.KeptGone > 0 ? $"（B 站已撤 {merge.KeptGone} 条，档里继续留着）" : "");
-                File.WriteAllText(target, LbsCommentArchiver.Serialize(merge.Merged));
+                if (!AtomicTextFile.TryWrite(target, LbsCommentArchiver.Serialize(merge.Merged)))
+                {
+                    // 登记前写砸：artifacts 行还没落，下次重拉会从头来过，旧档一个字不损。
+                    return new CommentArchiveOutcome(false, "评论快照文件被别的进程占着，这次替换作废，旧档原样完好", count);
+                }
             }
             else
             {
-                File.WriteAllText(target, LbsCommentArchiver.Serialize(snapshot));
+                if (!AtomicTextFile.TryWrite(target, LbsCommentArchiver.Serialize(snapshot)))
+                {
+                    return new CommentArchiveOutcome(false, "评论快照文件被别的进程占着，这次落笔作废，稍后可重试", count);
+                }
             }
 
             db.RegisterCommentsArtifact(videoId, ToRelative(target, paths.Videos));
@@ -101,6 +118,10 @@ public sealed class CommentArchiveService(
             logger.LogWarning(ex, "馆藏 {VideoId} 评论归档炸了（不影响馆藏）", videoId);
             return new CommentArchiveOutcome(false, "评论归档出错，分站日志里有详情", 0);
         }
+        finally
+        {
+            videoGates.TryRemove(videoId, out _);
+        }
     }
 
     /// <summary>观看页点开楼中楼时的按需补采：拉 B 站这一楼的第 page 页，并回快照文件。</summary>
@@ -111,6 +132,13 @@ public sealed class CommentArchiveService(
         CancellationToken cancellationToken)
     {
         const string empty = "这一楼没有回复";
+        // 与 TryArchiveAsync 共用同一把按片闸：楼中楼回写的就是那份已登记的快照，
+        // 与自动归档并发会把彼此的结果洗掉（Load→MergeSubs→Save 整段都得串起来）。
+        if (!videoGates.TryAdd(videoId, 0))
+        {
+            return (false, "这条正在更新评论快照，过片刻再开楼中楼", [], false);
+        }
+
         try
         {
             var brief = db.GetVideoBrief(videoId);
@@ -154,6 +182,10 @@ public sealed class CommentArchiveService(
         {
             logger.LogWarning(ex, "馆藏 {VideoId} 楼中楼补采出错", videoId);
             return (false, "楼中楼补采出错，分站日志里有详情", [], false);
+        }
+        finally
+        {
+            videoGates.TryRemove(videoId, out _);
         }
     }
 

@@ -555,7 +555,8 @@ public sealed class LbsCommentArchiver(
             var dest = Path.Combine(paths.Emotes, AvatarHash(url) + OriginalExtension(url));
             try
             {
-                if (!File.Exists(dest))
+                // 0 字节也当未命中重下（与头像/配图那两处同口径）：半截/空件若算命中，sha1 命名会让这个 URL 永久顶坏件。
+                if (!File.Exists(dest) || new FileInfo(dest).Length == 0)
                 {
                     await client.DownloadFileAsync(Request(url), dest, cancellationToken);
                 }
@@ -694,8 +695,12 @@ public static class CommentSnapshotOps
 
     public static void Save(string absolutePath, CommentSnapshot snapshot)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
-        File.WriteAllText(absolutePath, LbsCommentArchiver.Serialize(snapshot));
+        // 与 CommentArchiveService 落盘同一口径的原子替换：这份回写的目标是被 artifacts 登记过的档，
+        // 半截件会被 Load 判成「没快照」而自动路径又被「已存在」挡住，永久救不回。
+        if (!AtomicTextFile.TryWrite(absolutePath, LbsCommentArchiver.Serialize(snapshot)))
+        {
+            throw new IOException("评论快照文件被别的进程占着，这次楼中楼回写作废");
+        }
     }
 
     /// <summary>增量归档的结果：Added 是新面孔，Refreshed 两边都有取最新，KeptGone 是 B 站已撤但留档继续养着的。</summary>

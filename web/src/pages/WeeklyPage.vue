@@ -397,7 +397,11 @@ const newsWallItems = computed(() =>
 const hotCoverKey = ref(null) // 鼠标当前压在哪条热榜的封面上 → 封面放大（倍率与缓动跟新货那条对齐）
 const hotTitleKey = ref(null) // 鼠标当前压在哪条热榜的标题字上 → 只有标题染粉
 
+// 代次护城（照 WatchPage 的 relatedSeq）：连点上/下一周时，慢的那个回包不能把新周盖掉
+let loadSeq = 0
+
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
   error.value = ''
   try {
@@ -405,18 +409,23 @@ async function load() {
       ? `/api/weekly?w=${encodeURIComponent(absoluteWeek.value)}`
       : `/api/weekly?week=${week.value}`
     const res = await fetch(url)
+    if (seq !== loadSeq) return
     if (res.ok) {
-      data.value = await res.json()
+      const payload = await res.json()
+      if (seq !== loadSeq) return
+      data.value = payload
     } else {
       data.value = null
       const body = await res.json().catch(() => null)
+      if (seq !== loadSeq) return
       error.value = body?.message || `周报没拉到（HTTP ${res.status}）`
     }
   } catch {
+    if (seq !== loadSeq) return
     data.value = null
     error.value = '分站没搭腔，周报没拉到'
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false // 新一轮在飞时不把它的 loading 摸掉
   }
 }
 

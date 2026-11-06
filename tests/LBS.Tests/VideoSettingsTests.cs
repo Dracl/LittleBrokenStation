@@ -368,9 +368,9 @@ public sealed class VideoSettingsTests : IDisposable
     // ─── ④ revive / requeue 的钥匙判定（本仓无 HTTP harness，钉门判据本身）───
 
     [Theory]
-    // 续下 / 重新排队 / 加档点单：整段在站长门里（AdminGate 点名 POST），会员门不管它们
-    [InlineData("POST", "/api/videos/123/revive", true, false)]
-    [InlineData("POST", "/api/videos/123/requeue", true, false)]
+    // 续下 / 重新排队：投稿人自管（已从 AdminGate 摘给归属门，匿名由 MemberGate POST 清单挡 401）；加档点单：仍站长专属
+    [InlineData("POST", "/api/videos/123/revive", false, true)]
+    [InlineData("POST", "/api/videos/123/requeue", false, true)]
     [InlineData("POST", "/api/videos/123/codecs", true, false)]
     // 稿件设置这口 PATCH：吃会员门（与同形状的删稿 DELETE /api/videos/{id} 一字不差：匿名一律 401），
     // 不吃站长门（投稿人本人得进得来）；归属归端点里的 CanManageVideo（下面那条用例钉它）。
@@ -417,19 +417,18 @@ public sealed class VideoSettingsTests : IDisposable
     }
 
     [Fact]
-    public void 站长在站长室点续下与重排_不受新门影响()
+    public void 站长点续下与重排_归属门移交后照样进得来()
     {
-        // 这条钉的是「站长室自己的调用不受影响」怎么得出的：
-        // ① AdminGate 把 POST …/revive 与 …/requeue 点名成站长事务（IsAdminRequest = true），
-        //    前置中间件据此要求 MemberGate.IsOwner —— 今天本来就只有站长进得来；
-        // ② 站长在 ManageGate.CanManage 里 IsOwner 短路为真，钥匙永远握着。
-        // 两头都真 ⇒ 端点里补的那把 CanManageVideo 只会多挡别人，挡不到站长室自己。
+        // 归属门移交后的现状（与 AdminGate 同步）：
+        // ① AdminGate 不再点名 POST …/revive 与 …/requeue（摘除后不再进站长室，投稿人自管），
+        //    MemberGate 的 POST 清单改点这两口——匿名 401，任何会员能走到归属门；
+        // ② 站长在 ManageGate.CanManage 里 IsOwner 短路为真，站长室钮照旧点得动。
         var id = Arrive("BVset0000600", "站长要续下的那首");
         var ownerSeat = Seat("站长");
         var owner = Member(ownerSeat, MemberRoles.Owner);
 
-        Assert.True(_gate.IsAdminRequest(Request("POST", "/api/videos/600/revive")));
-        Assert.True(_gate.IsAdminRequest(Request("POST", "/api/videos/600/requeue")));
+        Assert.False(_gate.IsAdminRequest(Request("POST", "/api/videos/600/revive")));
+        Assert.False(_gate.IsAdminRequest(Request("POST", "/api/videos/600/requeue")));
         Assert.True(MemberGate.IsOwner(owner));
         Assert.True(ManageGate.CanManage(_db, id, owner));
     }

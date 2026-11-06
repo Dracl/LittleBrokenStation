@@ -17,12 +17,15 @@ RUN pnpm build
 # ---------- 后端发布 ----------
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS server-build
 WORKDIR /src
+# 版本号由 CI 用 git describe 递进来（见 .github/workflows/oci.yml），/api/health 报的就是它；
+# 本地不传就吃 0.0.1 老默认，不致于因缺 tag 而构不出来。
+ARG VERSION=0.0.1
 # 编译图横跨 src → vendor/downkyicore（Engine 工程直弓 DownKyi.Worker），两棵树都得在
 COPY lbs.slnx ./
 COPY vendor/ vendor/
 COPY src/ src/
 RUN dotnet publish src/LBS.Server -c Release -r linux-x64 --self-contained true \
-    -p:PublishReadyToRun=false -o /publish
+    -p:PublishReadyToRun=false -p:Version=$VERSION -o /publish
 COPY --from=web-build /src/web/dist /publish/wwwroot
 
 # ---------- 运行时 ----------
@@ -40,10 +43,13 @@ RUN apt-get update \
 ENV LBS_DATA_DIR=/data \
     DOWNKYI_DATA_DIR=/data/downkyi \
     ASPNETCORE_CONTENTROOT=/app \
-    ASPNETCORE_URLS=http://0.0.0.0:8090 \
     DOTNET_gcServer=1
+# ASPNETCORE_URLS 已从这页 ENV 摘除：Program.cs 的 UseUrls 只读 LBS_URLS，它是纯死配置，
+# 留着只会让人改了它、端口纹丝不动地猜谜。听哪个端口全由 LBS_URLS 说了算，默认 8090。
 
 VOLUME /data
+# 默认监听端口（纯文档作用，docker 不靠它转发）：真听哪个端口由 $LBS_URLS 定，
+# 换端口 -e LBS_URLS=http://0.0.0.0:9000，同时把 -p 的宿主侧也换掉。
 EXPOSE 8090
 COPY --from=server-build /publish /app
 # 许可证随镜像分发（GPL-3.0 与上游 GPL 的合规义务）；.dockerignore 里给根 md 开了白名单才拷得到
@@ -54,6 +60,8 @@ COPY vendor/downkyicore/LICENSE /app/licenses/downkyicore/
 RUN chmod 0755 /app/LBS.Server
 WORKDIR /data
 USER lbs
+# 健康检查的端口从 $LBS_URLS 现推（换端口的官方姿势就是覆盖这个变量）：硬编码 8090 的话，
+# 站长一换端口健康检查就恒假，compose 的 health 条件与运维监控会集体误报。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
-    CMD curl -fsS http://127.0.0.1:8090/api/health || exit 1
+    CMD sh -c 'port=$(echo "${LBS_URLS:-http://0.0.0.0:8090}" | sed "s/.*://"); curl -fsS "http://127.0.0.1:${port}/api/health" || exit 1'
 ENTRYPOINT ["/app/LBS.Server"]

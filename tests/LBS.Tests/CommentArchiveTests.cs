@@ -72,7 +72,7 @@ public sealed class CommentArchiveTests : IDisposable
         Assert.Equal(1, snapshot.Top!.Rpid);
         Assert.True(snapshot.Top.IsTop);
         Assert.Equal([2L, 3L, 4L], snapshot.Replies.Select(r => r.Rpid).ToArray());
-        Assert.False(snapshot.Replies.Any(r => r.IsTop));
+        Assert.DoesNotContain(snapshot.Replies, r => r.IsTop);
         Assert.Single(snapshot.Replies[1].Sub!);
         Assert.Equal(31, snapshot.Replies[1].Sub![0].Rpid);
         Assert.Equal(3L, snapshot.Replies[1].ReplyCount);

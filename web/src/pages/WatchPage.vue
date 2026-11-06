@@ -659,6 +659,9 @@ onMounted(() => {
 watch(() => route.params.bvid, () => {
   openReported = false
   coverStamp.value = 0 // 换一部片子：上一部的戳不该跟着新的走（普通浏览就该是条干净的 URL）
+  // 抽屉勾选是上一支片的账：不清 null，面板只在 null 才拉，换片后拿旧勾选冒充新片
+  myCollections.value = null
+  collectionsOpen.value = false
   loadWatch()
 })
 

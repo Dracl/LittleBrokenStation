@@ -20,6 +20,28 @@ export default defineConfig({
         target: 'http://localhost:8090',
         changeOrigin: true,
       },
+      // 封面缩略档 / 头像 / UP 主脸（含历史脸）/ 表情定格 / 评论图：与 /media 同一批后端静态盘，
+      // 不代理的话 dev 页里这些全是碎图
+      '/thumbs': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+      },
+      '/avatars': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+      },
+      '/emotes': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+      },
+      '/cmt-img': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+      },
+      '/up_faces': {
+        target: 'http://localhost:8090',
+        changeOrigin: true,
+      },
     },
   },
   build: {

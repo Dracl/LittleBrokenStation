@@ -5,7 +5,12 @@
 web/dist/
 
 # 本地数据与本地目录：容器只认 /data volume，这些一律不进 context
+# 不锚定的 **/data/ 与 .gitignore 同口径：dotnet run 可能在 src/LBS.Server 下自举出一座站，
+# 只钉根上的 data/ 挡不住那座（**/*.db 拦得住台账，拦不住媒体件与 WAL 边车）。
 data/
+**/data/
+**/*.db-wal
+**/*.db-shm
 data-e2e/
 artifacts/
 OH-Works/

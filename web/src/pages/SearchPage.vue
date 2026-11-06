@@ -11,7 +11,11 @@ const videos = ref([])
 const loading = ref(false)
 const sort = ref('') // '' = 最新入库，'plays' = 最多播放
 
+// 代次护城（照 WatchPage 的 relatedSeq）：连打关键字 / 切排序时，慢的那个回包不能盖掉新结果
+let searchSeq = 0
+
 async function search() {
+  const seq = ++searchSeq
   if (!q.value) {
     videos.value = []
     loading.value = false
@@ -20,11 +24,14 @@ async function search() {
   loading.value = true
   try {
     const res = await fetch(`/api/search?q=${encodeURIComponent(q.value)}&sort=${sort.value}`)
-    videos.value = res.ok ? await res.json() : []
+    const body = res.ok ? await res.json() : []
+    if (seq !== searchSeq) return
+    videos.value = body
   } catch {
+    if (seq !== searchSeq) return
     videos.value = []
   } finally {
-    loading.value = false
+    if (seq === searchSeq) loading.value = false // 新一轮在飞时不把它的 loading 摸掉
   }
 }
 

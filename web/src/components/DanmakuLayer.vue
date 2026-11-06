@@ -660,17 +660,34 @@ function reportPicked() {
 const injectedLocal = new Set()
 function injectLocal(all) {
   const t = props.video?.currentTime ?? 0
+  const added = []
   for (const li of props.localItems ?? []) {
     if (!all && injectedLocal.has(li.id)) continue
     if (!li.text) continue
     injectedLocal.add(li.id)
     const start = Number.isFinite(li.t) ? li.t : t
-    items.push({ start, end: start + 12, mode: 'scroll', x: null, y: null, color: '#FFFFFF', text: li.text, badge: true, fromOwner: li.fromOwner === true, face: typeof li.face === 'string' && li.face ? li.face : null, localId: li.id, canDelete: li.canDelete !== false, lane: null, gone: false, width: null, bmp: undefined })
+    const item = { start, end: start + 12, mode: 'scroll', x: null, y: null, color: '#FFFFFF', text: li.text, badge: true, fromOwner: li.fromOwner === true, face: typeof li.face === 'string' && li.face ? li.face : null, localId: li.id, canDelete: li.canDelete !== false, lane: null, gone: false, width: null, bmp: undefined }
+    items.push(item)
+    added.push(item)
+  }
+  if (!added.length) return
+  // lowerBound/resetActive/ptr 全建立在 items 按 start 升序的前提上，push 到尾部会把新弹幕甩在有序区之外，
+  // 观看中新发的站内弹幕永远查不到。条数在数千内，整体重排成本可忽略。
+  items.sort((a, b) => a.start - b.start)
+  // 重排会把新项插到 ptr 前面：指针不复位就会把已上屏的项再发一次，而 start 正等于此刻的新项反而被跳过。
+  // 新项本来就没入活跃集，逐个补发一遍；ptr 回到「第一条 start > lastT」的位置。
+  if (lastT >= 0) {
+    ptr = lowerBound(lastT)
+    for (const it of added) if (it.start <= lastT) active.push(it)
   }
 }
 watch(() => props.localItems.length, () => injectLocal(false))
 
+// 代次护城：快速切 P 时旧的 .ass 迟到，不能覆盖新页已就绪的弹幕表。
+let loadSeq = 0
+
 async function load() {
+  const seq = ++loadSeq
   items = []
   lanes.clear()
   invalidateBitmaps()
@@ -687,12 +704,18 @@ async function load() {
   try {
     // 同一份 .ass 高能条也在读：走共享缓存，每 P 只走一发网络
     const text = await loadAssText(props.src)
-    if (text === null) return
+    if (seq !== loadSeq) return
+    // 拉取失败也要把站内弹幕补回去，否则一次网络抖动让本地弹幕整批消失。
+    if (text === null) {
+      injectLocal(true)
+      return
+    }
     const parsed = parseAss(text)
     items = parsed.list
     assRes.x = parsed.resX
     assRes.y = parsed.resY
   } catch {
+    if (seq !== loadSeq) return
     items = []
     assRes.x = 0
     assRes.y = 0

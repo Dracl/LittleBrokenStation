@@ -541,6 +541,15 @@ watch(() => props.page?.index, () => {
 })
 
 watch(currentSrc, () => {
+  const old = video.value
+  const pageIdx = props.page?.index ?? 0
+  // 切 P 前给旧 P 补一发：心跳只在正常播放时报，暂停/拖拽里切走最多丢 15 秒进度。
+  // 拖拽中的 currentTime 是半个手指位置，报出去就是错值，直接跳过。
+  if (old && pageIdx !== loadedPageIdx && !dragging && Number(old.currentTime) > 0) {
+    reportProgress(loadedPageIdx)
+  }
+  // 换源只重建 <video>，旧元素不会被自动 pause：不先按停它还在后台解码/报事件（声音叠音、心跳继续报进度）。
+  old?.pause()
   const plan = restorePlan
   restorePlan = null
   if (!plan) return
@@ -601,18 +610,21 @@ function onEnded() {
 const PROGRESS_BEAT_MS = 15000
 let progressBeat = 0
 
-function progressPayload() {
+// 元素里实际装的是哪一 P：切 P 时 props.page 已是新的，补报旧 P 要靠它
+let loadedPageIdx = props.page?.index ?? 0
+
+function progressPayload(pageIdxOverride) {
   const v = video.value
   if (!v || !props.videoId) return null
   const durationSec = Number(v.duration)
   const positionSec = Number(v.currentTime)
   if (!Number.isFinite(durationSec) || durationSec <= 0) return null
   if (!Number.isFinite(positionSec) || positionSec < 0) return null
-  return { pageIdx: props.page?.index ?? 0, positionSec, durationSec }
+  return { pageIdx: pageIdxOverride ?? props.page?.index ?? 0, positionSec, durationSec }
 }
 
-function reportProgress() {
-  const body = progressPayload()
+function reportProgress(pageIdxOverride) {
+  const body = progressPayload(pageIdxOverride)
   if (!body) return
   fetch(`/api/videos/${props.videoId}/progress`, {
     method: 'POST',
@@ -926,6 +938,11 @@ function seekBy(delta) {
   seekTo(base + delta)
 }
 
+// 地址栏的 ?t= 只在初次挂载时取一次：切 P / 切编码都会 :key 重建 video 元素，
+// 每次 loadedmetadata 都重读 search 会把人反复拽回同一个时间点。
+const tParamRaw = new URLSearchParams(window.location.search).get('t')
+let tParam = tParamRaw !== null && Number.isFinite(Number(tParamRaw)) ? Number(tParamRaw) : null
+
 function onLoadedMetadata() {
   const v = video.value
   duration.value = v.duration || 0
@@ -933,9 +950,12 @@ function onLoadedMetadata() {
   v.playbackRate = rate.value
   v.volume = volume.value
   v.muted = muted.value
-  const t = new URLSearchParams(window.location.search).get('t')
-  if (t && Number.isFinite(Number(t))) seekTo(Number(t))
-  else flushResume() // 地址栏的 ?t= 才是硬指令，没它才轮到续播点
+  loadedPageIdx = props.page?.index ?? 0 // 这一页确实装进元素了，补报进度拿它当旧 P
+  if (tParam != null) {
+    const t = tParam
+    tParam = null // 一次性消费，后面重建元素不再提
+    seekTo(t)
+  } else flushResume() // 地址栏的 ?t= 才是硬指令，没它才轮到续播点
 }
 
 // ─── 续播：观看页算好了该从哪一秒起（位置地板、95% 上限都在它那里判）───
@@ -1489,6 +1509,7 @@ onBeforeUnmount(() => {
   clearTimeout(hideTimer)
   clearTimeout(stuckTimer)
   clearTimeout(seekMergeTimer)
+  volClearTimer() // 音量弹层 200ms 延迟收起那一发，卸载后不再回来拨已消失的实例
   endHoldGesture()
   window.removeEventListener('mouseup', onHoldMouseUp)
   window.removeEventListener('resize', onViewportChange)

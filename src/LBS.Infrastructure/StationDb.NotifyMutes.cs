@@ -21,10 +21,12 @@ public static class NotifyMutes
         !string.IsNullOrEmpty(channel) && All.Contains(channel, StringComparer.Ordinal);
 
     /// <summary>入库前去污：修边、小写、踢未知、去重——脏值（历史手改、越界请求）无声丢掉。</summary>
+    /// <remarks><c>IsKnown</c> 吃的是 <c>string?</c>，编译器推不出「过闸后必非空」，那一步 <c>!</c> 把已过滤的事实递上去（行为一个字不变）。</remarks>
     public static IReadOnlyList<string> Sanitize(IEnumerable<string?> raws) =>
         (raws ?? Enumerable.Empty<string?>())
             .Select(c => c?.Trim().ToLowerInvariant())
             .Where(c => !string.IsNullOrEmpty(c) && IsKnown(c))
+            .Select(static c => c!)
             .Distinct(StringComparer.Ordinal)
             .ToList();
 }

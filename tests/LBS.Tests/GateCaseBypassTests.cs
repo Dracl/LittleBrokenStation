@@ -17,6 +17,11 @@ namespace LBS.Tests;
 ///    大小写不敏感的文件系统上时，/media/bv….mp4 照样从盘上取得出文件，而台账按字面比不中就是 fail-open 放行。
 /// ③ 站长口令：settings 里存量那枚无盐 SHA256 验得过、验对那一刻透明换铸 PBKDF2（现网真站点不能被加固锁死）；
 ///    新上的锁至少 <see cref="AdminGate.MinPasswordLength"/> 位。
+///    ③ 段的状态必读：口令闸是**退役留档组件**。站长端点的现行守门人是 owner 会员会话
+///    （Program.cs 的站长门只认 MemberGate.IsOwner，口令会话开不了任何 /api/admin 口），
+///    AdminGate 的解锁会话链如今只服务 /api/gate/status|unlock|lock|release 那几口门面。
+///    这里钉的是留档组件自身的正确性（公网复位启用那天还要靠它），别把它读成「站长端点有口令闸把守」；
+///    owner 会话那条真守门链只有部件级断言（VideoSettingsTests 的 IsOwner），端点级回归是欠账。
 /// </summary>
 public sealed class GateCaseBypassTests : IDisposable
 {
@@ -68,7 +73,8 @@ public sealed class GateCaseBypassTests : IDisposable
     [InlineData("GET", "/API/stats/preview", true, false)]
     [InlineData("GET", "/API/Station/throttle", true, false)]
     [InlineData("GET", "/API/Downloads/9", true, false)]
-    [InlineData("POST", "/API/videos/123/revive", true, false)] // 站长专属的 POST 也要吃换体
+    [InlineData("POST", "/API/videos/123/codecs", true, false)] // 站长专属的 POST 也要吃换体（revive/requeue 已移交投稿人自管，归会员门那一组）
+    [InlineData("POST", "/API/videos/123/revive", false, true)] // 续下：会员门吃换体（匿名 401），归属在端点
     [InlineData("DELETE", "/API/videos/123/codecs/hevc", true, false)]
     // 会员门：放映厅、投稿与配套设施，换体一律算会员事务（匿名据此 401）。
     [InlineData("GET", "/API/watch/BV1x411c7mD", false, true)]
@@ -107,6 +113,33 @@ public sealed class GateCaseBypassTests : IDisposable
     }
 
     // ─── ② 私有稿件的小写 media 路径 ──────────────────────────────
+
+    [Fact]
+    public void 私有稿的缩略件_从_thumbs_进来也必须挡_公开件与查无此件照旧放行()
+    {
+        // /thumbs 是生产闸的第三支（Program.cs 认 /media、/previews、/thumbs 三个前缀）：
+        // 缩略件住在 videos 外、不在 artifacts 里，认它靠的是 cover_thumbs 那条腿，
+        // 少了这一支，私有稿的封面缩略就被「台账不管这个件」的 fail-open 口径匿身放走。
+        var hidden = Arrive("BVcase000020", "藏的一首缩略", visibility: VideoVisibility.Private);
+        _db.RegisterCoverThumbArrived(hidden, "BVcase000020_1280x800-deadbeef-1.webp", "1280x800", "deadbeef-1", "webp");
+
+        // 正写与换体各钉一对（NTFS / Docker 卷上小写也真取得出文件，NOCASE 腿同 /media 同一张嘴）
+        Assert.True(PrivateMediaBlocked("/thumbs/BVcase000020_1280x800-deadbeef-1.webp"));
+        Assert.True(PrivateMediaBlocked("/THUMBS/BVCASE000020_1280X800-DEADBEEF-1.WEBP"));
+
+        // 路人席位（非东家非站长）照样挡在闸外；本人/站长取回自己那一腿在首个 media 用例里已钉
+        var passerby = Member(Seat("路人"), MemberRoles.Member);
+        Assert.True(PrivateMediaBlocked("/thumbs/BVcase000020_1280x800-deadbeef-1.webp", passerby));
+
+        // 台账不认的缩略件（还没切出来那类）：null 不许当私有，放行
+        Assert.False(PrivateMediaBlocked("/thumbs/BVcase000098_1280x800-deadbeef-1.webp"));
+
+        // 公开稿的缩略件不挡（NOCASE 腿不得把公开件一块儿黑掉）
+        var open = Arrive("BVcase000021", "人人看得的缩略");
+        _db.RegisterCoverThumbArrived(open, "BVcase000021_1280x800-deadbeef-1.webp", "1280x800", "deadbeef-1", "webp");
+        Assert.False(PrivateMediaBlocked("/thumbs/BVcase000021_1280x800-deadbeef-1.webp"));
+        Assert.False(PrivateMediaBlocked("/thumbs/BVCASE000021_1280X800-DEADBEEF-1.WEBP"));
+    }
 
     [Fact]
     public void 私有稿的媒体件_换体路径必须挡住_台账不认的件照旧放行()
@@ -276,6 +309,11 @@ public sealed class GateCaseBypassTests : IDisposable
         else if (path.StartsWith("/previews/", StringComparison.OrdinalIgnoreCase))
         {
             rel = path["/previews/".Length..];
+        }
+        else if (path.StartsWith("/thumbs/", StringComparison.OrdinalIgnoreCase))
+        {
+            // 与生产同等待遇：缩略与悬停预览都是派生物、都住在 videos 外，私有稿一样不许透。
+            rel = path["/thumbs/".Length..];
         }
         else
         {

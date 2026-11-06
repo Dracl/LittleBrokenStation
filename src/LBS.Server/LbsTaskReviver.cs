@@ -37,7 +37,12 @@ public sealed class LbsTaskReviver(
         if (taskIds.Count == 0)
         {
             // 台账挂着下载中却没有引擎任务（提交半途被杀等），直接回炉重投最干净。
-            db.ResetToPending(videoId);
+            // 只从 Downloading 拉回：读到与落笔之间状态若已被巡视/复活抢改（比如刚判到站），让它赢。
+            if (!db.ResetToPending(videoId, [LBS.Domain.VideoStatus.Downloading]))
+            {
+                return (false, "状态刚被另一笔操作改走（可能已到站），不用续下，刷新看看");
+            }
+
             await queue.EnqueueAsync(videoId, cancellationToken);
             return (true, "没有引擎任务在途，已退回待提交重新排队");
         }
@@ -114,7 +119,13 @@ public sealed class LbsTaskReviver(
             }
         }
 
-        db.ResetToPending(videoId);
+        // 硬重投的台账落笔也走守卫：上面删引擎行的工夫里巡视若已把片判到站，这里不能把 Arrived 盖回 Pending。
+        if (!db.ResetToPending(videoId, [LBS.Domain.VideoStatus.Downloading]))
+        {
+            logger.LogInformation("馆藏 {VideoId} 硬重投落笔时状态已被改走（多半刚判到站），就此收手", videoId);
+            return (false, "状态刚被另一笔操作改走（可能刚下完），刷新看看再决定");
+        }
+
         await queue.EnqueueAsync(videoId, cancellationToken);
         logger.LogInformation("馆藏 {VideoId} 整视频重投：{Stuck} 个任务软续不动已删行", videoId, stuck);
         return (true, "旧任务已清理，馆藏退回待提交重新进站");

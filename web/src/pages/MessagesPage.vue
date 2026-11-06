@@ -413,8 +413,11 @@ async function clearThread() {
 
 async function refreshConversation(silent = true) {
   if (!activePeer.value || !member.value) return
+  const peerAtRequest = activePeer.value.memberId // 1s 一发轮询，慢响应迟到时人可能已切会话/已登出
   try {
-    const res = await fetch(`/api/dm/thread/${activePeer.value.memberId}`)
+    const res = await fetch(`/api/dm/thread/${peerAtRequest}`)
+    // 只认「发时那个人还在屏幕上」的回包，否则旧会话的消息会泼进新会话
+    if (activePeer.value?.memberId !== peerAtRequest || !member.value) return
     if (res.ok) {
       const data = await res.json()
       const next = data.messages ?? []
@@ -538,6 +541,38 @@ function switchTab(tab) {
   }
 }
 
+// 登出/换号却不离开 /messages：信件、会话列表、开着的那路对话和草稿都是旧人的，得当场擦净。
+// 新席位登进来再按当前页签重新拉一遍（与 onMounted 同一套路）。
+// mounted 之前不动手：开机 loadMember 把 null 填成人也走这里，那份空擦与重复取数交给 onMounted 自己跑。
+let mounted = false
+
+watch(member, (m) => {
+  if (!mounted) return
+  stopDmPoll() // 旧人的追新心跳先掐，免得把它的会话又拉回来
+  items.value = []
+  inboxUnread.value = 0
+  expandedIds.value = new Set()
+  mutes.value = []
+  prefsOpen.value = false
+  threads.value = null
+  activePeer.value = null
+  conversation.value = []
+  convoLoading.value = false
+  directoryOpen.value = false
+  draft.value = ''
+  sending.value = false
+  if (!m) {
+    loading.value = false // 访客态：空列表，不要转圈装成还在加载
+    return
+  }
+  loadInbox()
+  if (activeTab.value === 'dm') {
+    loadThreads()
+    refreshUnread()
+    restartDmPoll()
+  }
+})
+
 onMounted(async () => {
   if (!loaded.value) await loadMember()
   await loadInbox()
@@ -560,6 +595,7 @@ onMounted(async () => {
     const hit = items.value.find((m) => m.id === msgId)
     if (hit && !expandedIds.value.has(hit.id)) await toggle(hit)
   }
+  mounted = true // 开机这一摧跑完，才轮到 watch(member) 接手登出/换号的擦净与重拉
 })
 
 onUnmounted(() => {

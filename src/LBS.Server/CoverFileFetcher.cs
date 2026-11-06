@@ -60,7 +60,10 @@ public static class CoverFileFetcher
         }
 
         // 临时件落盘、验过货再换正主：半成品永远不会被 artifacts 行（和缺件回炉）看见。
-        var part = dest + ".part";
+        // 名字带随机后缀：同一片可能同时被「封面补员」（每小时）与「重拉封面与媒体」（站长钮）抓，
+        // 共用同一个 <名>.part 时两者互踩（FileShare.None 当场抛，而先完那位的 finally 还会删掉对方正在写的件），
+        // 看上去就是一场「没抓成」的假失败。后缀留 .part 结尾：静态区那道半成品闸认的就是这个后缀。
+        var part = $"{dest}.{Guid.NewGuid().ToString("N")[..8]}.part";
         try
         {
             await client.DownloadFileAsync(

@@ -55,4 +55,8 @@ export async function logout() {
   member.value = null
   unread.value = 0 // 登出即刻摘铃铛，不等下一轮心跳
   dmUnread.value = 0
+  // 点赞/收藏这类本地足迹是按人记的，不清就等于把上一个人的喜好穿给下一个登录者
+  localStorage.removeItem('lbs-action-lit') // VideoActions.vue 的已赞表
+  localStorage.removeItem('lbs-comment-likes') // CommentSection.vue 的评论点赞
+  localStorage.removeItem('lbs-dyn-likes') // DynamicFeedCard.vue 的动态点赞
 }

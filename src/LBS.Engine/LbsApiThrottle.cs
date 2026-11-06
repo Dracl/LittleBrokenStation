@@ -69,8 +69,12 @@ public class LbsApiThrottle(TimeProvider timeProvider, ILogger<LbsApiThrottle> l
     }
 
     /// <summary>
-    /// 每次 B 站接口请求前过闸：预热 → 等冷却（若在做客）→ 等最小间隔 → 放行并预约下一班。
+    /// 每次 B 站接口请求前过闸：预热 → 算出该等到什么时候（闸内）→ 回闸外自己睡 → 再进闸取位。
     /// 后台工（爬工/下载/评论）耐心等到放行；急性子（手动端点）先查 <see cref="IsCoolingDown"/> 自己走人。
+    /// <b>睡觉一律在闸外</b>：以前把等待包在 <c>gate</c> 里，一次风控命中（冷却最长 1 小时）
+    /// 就是把全局闸按住一小时——DownloadWorker 的提交链、动态巡捕、评论归档、UP 名片全部排在闸后
+    /// 干等，日志一句没有。现在闸只在「算班表与推 nextAllowedAt」那一瞬间拿着（推进仍原子），
+    /// 等待的各位各自在外面睡，到点再逐个进闸取位：一个位子只会放行一个人，不会一起冲进闸。
     /// </summary>
     public async Task EnterAsync(Uri target, CancellationToken cancellationToken)
     {
@@ -81,44 +85,57 @@ public class LbsApiThrottle(TimeProvider timeProvider, ILogger<LbsApiThrottle> l
 
         await EnsureWarmupAsync(cancellationToken);
 
-        await gate.WaitAsync(cancellationToken);
-        try
+        while (true)
         {
-            while (true)
+            TimeSpan? wait;
+            await gate.WaitAsync(cancellationToken);
+            try
             {
-                var now = timeProvider.GetUtcNow();
-                TimeSpan? wait = null;
-                lock (riskLock)
+                wait = ReserveSlotLocked();
+            }
+            finally
+            {
+                gate.Release();
+            }
+
+            if (wait is null)
+            {
+                return; // 这一班是我的，放行
+            }
+
+            await WaitAsync(wait.Value, cancellationToken); // 闸外睡觉，不堵别人问班表
+        }
+    }
+
+    /// <summary>
+    /// 闸内那一小段（只在 riskLock 下动班表）：该等的回一个正时长（调用方回闸外睡），
+    /// 能走的那一刻把 <c>nextAllowedAt</c> 推到下一班并回 null（= 放行）。
+    /// 推进与取位同在这把锁里，所以多个等待者醒在同一刻也只会一个个拿到位子。
+    /// </summary>
+    private TimeSpan? ReserveSlotLocked()
+    {
+        lock (riskLock)
+        {
+            var now = timeProvider.GetUtcNow();
+            if (cooldownUntil is { } until)
+            {
+                // 做客中：先睡到冷却尽头（过期清牌留到能走那一刻再做，与旧口径一致）
+                if (now < until)
                 {
-                    if (cooldownUntil is { } until && now < until)
-                    {
-                        wait = until - now;
-                    }
-                    else if (now < nextAllowedAt)
-                    {
-                        wait = nextAllowedAt - now;
-                    }
-
-                    if (wait is null && cooldownUntil is { } u && timeProvider.GetUtcNow() >= u)
-                    {
-                        // 冷却已过期，清牌（下轮命中重新从基础时长起步由 ReportRisk 的翻倍逻辑管）。
-                        cooldownUntil = null;
-                    }
-
-                    if (wait is null)
-                    {
-                        nextAllowedAt = timeProvider.GetUtcNow() + TimeSpan.FromMilliseconds(
-                            Random.Shared.Next(options.MinIntervalMs, options.MaxIntervalMs + 1));
-                        return;
-                    }
+                    return until - now;
                 }
 
-                await WaitAsync(wait.Value, cancellationToken);
+                cooldownUntil = null;
             }
-        }
-        finally
-        {
-            gate.Release();
+
+            if (now < nextAllowedAt)
+            {
+                return nextAllowedAt - now;
+            }
+
+            nextAllowedAt = now + TimeSpan.FromMilliseconds(
+                Random.Shared.Next(options.MinIntervalMs, options.MaxIntervalMs + 1));
+            return null;
         }
     }
 

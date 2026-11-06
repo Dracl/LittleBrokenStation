@@ -232,12 +232,16 @@ public static class MemberAccountEndpoints
         }
     }
 
-    /// <summary>发会话 cookie——与扫码链路同一张票同一姿势（HttpOnly/Lax/30 天）。</summary>
+    /// <summary>发会话 cookie——与扫码链路同一张票同一姿势（HttpOnly/Lax/30 天；TLS 下自动 Secure）。</summary>
     internal static void AppendSessionCookie(HttpContext http, string token) =>
         http.Response.Cookies.Append(MemberGate.Cookie, token, new CookieOptions
         {
             HttpOnly = true,
             SameSite = SameSiteMode.Lax,
+            // 席位会话能拿全站权限，明文信道上不该走：反代 TLS 下上 Secure，局域网 http 直连不误伤
+            // （与扫码那一口、站长锁、弹幕签同一口径）。.NET 10 已无 CookieOptions.SecurePolicy，
+            // SameAsRequest 自己算；反代身后 Request.IsHttps 靠 X-Forwarded-Proto（见信任区）。
+            Secure = http.Request.IsHttps,
             Path = "/",
             MaxAge = MemberGate.SessionTtl,
         });

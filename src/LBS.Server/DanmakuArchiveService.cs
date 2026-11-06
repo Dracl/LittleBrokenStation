@@ -30,9 +30,19 @@ public sealed class DanmakuArchiveService(
     ISettingsStore settings,
     ILogger<DanmakuArchiveService> logger)
 {
+    /// <summary>按片在途闸：重拉是 Load→合并→Save 的读改写，双击钮/两人同点会各拿旧清单各写一版，
+    /// 后写把先写的并集洗掉；半截清单被 AppendsOnly 当祖传档时更会把旧档里 B 站已删的弹幕永久丢出清单。
+    /// 现成范式照 Program.cs 的 upCardInFlight/statInFlight。</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, byte> refreshing = new();
+
     /// <summary>重拉一条馆藏的全部分 P；B 站空手而归、缺 cid、被占用都不算炸，只是回报里说清楚。</summary>
     public async Task<DanmakuArchiveOutcome> TryRefreshAsync(long videoId, CancellationToken cancellationToken)
     {
+        if (!refreshing.TryAdd(videoId, 0))
+        {
+            return new DanmakuArchiveOutcome(false, "这条已有弹幕重拉在跑，稍等片刻再点", 0, 0, 0);
+        }
+
         try
         {
             var brief = db.GetVideoBrief(videoId);
@@ -95,6 +105,10 @@ public sealed class DanmakuArchiveService(
         {
             logger.LogWarning(ex, "馆藏 {VideoId} 弹幕增量归档炸了（不影响馆藏）", videoId);
             return new DanmakuArchiveOutcome(false, "弹幕归档出错，分站日志里有详情", 0, 0, 0);
+        }
+        finally
+        {
+            refreshing.TryRemove(videoId, out _);
         }
     }
 
@@ -464,13 +478,12 @@ public sealed class DanmakuArchiveService(
 
         public static void Save(string sidecarPath, DanmakuArchiveFile file)
         {
-            var directory = Path.GetDirectoryName(sidecarPath);
-            if (!string.IsNullOrEmpty(directory))
+            // 原子落笔（与评论快照、ass 重写同一口径）：清单半截会被下次 Load 判成「没清单」，
+            // AppendsOnly 把祖传 ass 当只追加档，而 known 成空表 → 旧档里 B 站已删的弹幕永久丢出清单。
+            if (!AtomicTextFile.TryWrite(sidecarPath, JsonSerializer.Serialize(file, Json)))
             {
-                Directory.CreateDirectory(directory);
+                throw new IOException("弹幕清单文件被别的进程占着，这次保存作废");
             }
-
-            File.WriteAllText(sidecarPath, JsonSerializer.Serialize(file, Json), new UTF8Encoding(false));
         }
     }
 }

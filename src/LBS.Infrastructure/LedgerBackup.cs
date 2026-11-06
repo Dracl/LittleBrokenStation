@@ -16,7 +16,14 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
 
     private static readonly int[] IntervalChoices = [6, 24, 72, 168];
     private static readonly int[] KeepChoices = [7, 14, 30];
-    private static readonly Regex SafeName = new(@"^station-\d{8}-\d{6}(?:-\d+)?\.db$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// 快照名的尺子：正形 <c>station-yyyyMMdd-HHmmss.db</c>，同秒连拍靠 <c>-1/-2</c> 数字后缀错开
+    /// （字典序还能排），数字位也被人占了（同刻并发抢同一枚）就上 8 位十六进制随机。
+    /// <b>三个口径共用这一把尺</b>（<see cref="List"/> / <see cref="FullPathOf"/> / <see cref="Delete"/>），
+    /// 新增后缀形状必须同时进这里，不然抢出来那张快照会成「柜里看不见、也销不掉」的幽灵件。
+    /// </summary>
+    private static readonly Regex SafeName = new(@"^station-\d{8}-\d{6}(?:-\d+|-[0-9a-f]{8})?\.db$", RegexOptions.Compiled);
 
     public int IntervalHours
     {
@@ -72,27 +79,25 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
         Directory.CreateDirectory(dir);
 
         var stamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss");
-        var name = $"station-{stamp}.db";
-        var suffix = 1;
-        while (File.Exists(Path.Combine(dir, name)))
-        {
-            name = $"station-{stamp}-{suffix}.db";
-            suffix++;
-        }
-
-        var target = Path.Combine(dir, name);
-        using (var source = new SqliteConnection($"Data Source={paths.DatabaseFile};Mode=ReadOnly;Default Timeout=10"))
-        using (var destination = new SqliteConnection($"Data Source={target};Default Timeout=10"))
+        var target = ClaimSlot(dir, stamp);
+        var name = Path.GetFileName(target);
+        // 备份 API 与并发写者抢锁会给 BUSY：Default Timeout 就是 SQLite 的忙等窗口，
+        // 不设的话高负载下间歇性炸雷（测试并行里撞过一回，生产上 worker 常年写着，周期快照同理）。
+        var sourceCs = $"Data Source={paths.DatabaseFile};Mode=ReadOnly;Default Timeout=10";
+        var destCs = $"Data Source={target};Default Timeout=10";
+        using (var source = new SqliteConnection(sourceCs))
+        using (var destination = new SqliteConnection(destCs))
         {
             source.Open();
             destination.Open();
-            // 备份 API 与并发写者抢锁会给 BUSY：Default Timeout 就是 SQLite 的忙等窗口，
-            // 不设的话高负载下间歇性炸雷（测试并行里撞过一回，生产上 worker 常年写着，周期快照同理）。
             source.BackupDatabase(destination);
         }
 
-        // 连接池会替刚拍完的快照扣着文件句柄，不清掉的话紧接着的 Prune 想删也删不动
-        SqliteConnection.ClearAllPools();
+        // 连接池会替刚拍完的快照扣着文件句柄，不清掉的话紧接着的 Prune 想删也删不动。
+        // 只清本方法自己那两池：ClearAllPools 是进程级副作用，会把全站 worker 正复用的
+        // station.db 主池一起掠平（每小时巡班 + 每次导出都抢一遗，白白制造一波重连风暴）。
+        ClearOwnPool(sourceCs);
+        ClearOwnPool(destCs);
 
         // 尺寸先记账：后头的修剪万一把它当陈旧件盯上，日志也不会读到没的文件
         var bytes = new FileInfo(target).Length;
@@ -101,6 +106,52 @@ public sealed class LedgerBackup(DataPaths paths, StationDb db, ILogger<LedgerBa
         db.SetSetting("last-backup-utc", DateTimeOffset.UtcNow.ToString("O"));
         logger.LogInformation("台账快照落柜 {Name}（{Kb} KB）", name, bytes / 1024);
         return name;
+    }
+
+    /// <summary>
+    /// 抢一个快照位，交回绝对路径。以前是「<c>while (File.Exists)</c> 看一眼、再开写」——两个备份员
+    /// （整点巡班与站长导出）同秒抢同一枚时，各自看那一刻都不存在，然后一起往同一个文件备份：
+    /// 后写的把先写的盖掉，导出那侧还会把对方正在打包的快照删掉。
+    /// 现在交绨给操作系统拍板：<see cref="FileMode.CreateNew"/> 只能由一个人成功，输了就换下一个名字重试。
+    /// 名字兜底次序：正形 → -1..-98 数字后缀（同秒连拍的常态，字典序还能排）→ 8 位随机 hex。
+    /// </summary>
+    private static string ClaimSlot(string dir, string stamp)
+    {
+        for (var attempt = 1; attempt <= 200; attempt++)
+        {
+            var name = attempt switch
+            {
+                1 => $"station-{stamp}.db",
+                <= 99 => $"station-{stamp}-{attempt - 1}.db",
+                _ => $"station-{stamp}-{Guid.NewGuid().ToString("N")[..8]}.db",
+            };
+            var target = Path.Combine(dir, name);
+            try
+            {
+                // 只预占不写：建完就关门，背写本体交给 SQLite。
+                using var claim = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                return target;
+            }
+            catch (IOException)
+            {
+                // 这一枚已被人占了（同秒并发）或是上次炸下的残件：换下一个名字再来
+            }
+        }
+
+        throw new IOException($"档案柜里 {stamp} 这一秒的快照位都占满了，稍后再拍");
+    }
+
+    /// <summary>清一条连接串自己的池（不碰别人的）。没建过池就是空操作，异常不拦拍快照。</summary>
+    private static void ClearOwnPool(string connectionString)
+    {
+        try
+        {
+            SqliteConnection.ClearPool(new SqliteConnection(connectionString));
+        }
+        catch (SqliteException)
+        {
+            // 清不动只是 Prune 本轮删不掉它，整点巡班还会补刀
+        }
     }
 
     public IReadOnlyList<BackupFile> List()

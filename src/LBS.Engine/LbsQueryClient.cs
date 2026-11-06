@@ -46,8 +46,53 @@ public sealed class LbsQueryClient(LbsAccountRouter router, LbsApiThrottle throt
         await throttle.EnterAsync(GetUri(request), cancellationToken);
         var cookie = RequireCookie();
         using var res = await SendAsync(request, cookie, cancellationToken);
-        await using var fs = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
-        await res.Content.CopyToAsync(fs, cancellationToken);
+
+        // 先写同目录的 <名>.<guid8>.tmp，验过货再 File.Move 转正。
+        // 以前是 FileMode.Create 直写目标路径：下载中途断网/取消/进程被杀，目标路径上就躺着一副
+        // 空壳或半截图，而这些缓存件按 sha1(url) 命名——下次 File.Exists 直接当命中，坏件就永久住下了
+        // （头像/表情/评论图三区都中过这一招）。同目录改名不多拷一份。
+        // 名字留 .tmp 结尾：静态区那道半成品闸（Program.cs 的 IsStaleTransientPath）认的就是这个后缀。
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var temp = $"{destinationPath}.{Guid.NewGuid().ToString("N")[..8]}.tmp";
+        try
+        {
+            await using (var fs = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                await res.Content.CopyToAsync(fs, cancellationToken);
+            }
+
+            // 空壳不算到货：宁可回一句失败让调用方重下，也不给缓存区留一个「存在但 0 字节」的陷阱。
+            if (new FileInfo(temp).Length == 0)
+            {
+                throw new IOException("文件抓回来是个空壳（0 字节），不算到货");
+            }
+
+            File.Move(temp, destinationPath, overwrite: true);
+        }
+        finally
+        {
+            TryDeleteTemp(temp);
+        }
+    }
+
+    /// <summary>残件删不动只是占个位：名字带 guid，下一单不会撞上它，静态区也拿不到它。</summary>
+    private static void TryDeleteTemp(string temp)
+    {
+        try
+        {
+            if (File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+        }
+        catch (IOException)
+        {
+        }
     }
 
     private async Task<HttpResponseMessage> SendAsync(

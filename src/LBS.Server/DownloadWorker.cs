@@ -60,74 +60,108 @@ public sealed class DownloadWorker(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // 崩溃恢复：上次进程挂掉前排队的 Pending 全部重新入队
-        var recovered = db.GetPendingVideos();
-        foreach (var candidate in recovered)
+        // 崩溃恢复：上次进程挂掉前排队的 Pending 全部重新入队。
+        // 以下开机四段全包壳：它们都在 ExecuteAsync 首个 await 之前，一个库瞬拒就能把宿主启动顶死/让 worker 静默退役，
+        // 而这些恰是最容易岔的（仓挂载瞬断、引擎 Storage 被残进程占着）。宁可降级开站，余行交给复活/看门狗。
+        var recovered = 0;
+        try
         {
-            await queue.EnqueueAsync(candidate.Id, stoppingToken);
+            foreach (var candidate in db.GetPendingVideos())
+            {
+                await queue.EnqueueAsync(candidate.Id, stoppingToken);
+                recovered++;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "开机 Pending 重投没跑完（继续开站，余行交给复活/看门狗）");
         }
 
         // 导入/缺件回炉：只在开机换过库的那次点名磁盘实物（闸门见 MediaReconcileGate），
         // 普通开机一律跳过——仓挂载瞬断时点名会把满仓健康件误拉重下。
-        var returned = mediaGate.ReconcileOnBoot
-            ? MissingMediaReconciler.Reconcile(db, paths, logger)
-            : Array.Empty<long>();
-        foreach (var videoId in returned)
+        IReadOnlyList<long> returned = Array.Empty<long>();
+        try
         {
-            await queue.EnqueueAsync(videoId, stoppingToken);
+            returned = mediaGate.ReconcileOnBoot
+                ? MissingMediaReconciler.Reconcile(db, paths, logger)
+                : Array.Empty<long>();
+            foreach (var videoId in returned)
+            {
+                await queue.EnqueueAsync(videoId, stoppingToken);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "缺件回炉点名没跑完（继续开站，下次换库开机再点）");
         }
 
         // 加档开机重投：加档行活在内存 channel 里，进程挂掉时遗留的 Downloading 行从此没人捾——
         // 同步员只对空任务行挂着等，回炉只认租约到期行。开机把不让路的行全部重新入队走一遍提交链：
         // 没任务的行直接重提；有任务的行会被引擎判重让路排队，看门狗与回炉都有出口，不留永久僵尸。
-        var codecRecovered = db.GetCodecQueueRows()
-            .Where(r => !r.Waiting)
-            .Select(r => (r.VideoId, r.Codec))
-            .Distinct()
-            .ToList();
-        foreach (var (videoId, codec) in codecRecovered)
+        var codecRecoveredCount = 0;
+        try
         {
-            await queue.EnqueueCodecAsync(videoId, codec, stoppingToken);
+            var codecRecovered = db.GetCodecQueueRows()
+                .Where(r => !r.Waiting)
+                .Select(r => (r.VideoId, r.Codec))
+                .Distinct()
+                .ToList();
+            foreach (var (videoId, codec) in codecRecovered)
+            {
+                await queue.EnqueueCodecAsync(videoId, codec, stoppingToken);
+                codecRecoveredCount++;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "加档开机重投没跑完（继续开站，租约到期行自有回炉出口）");
         }
 
         // 引擎孤儿任务清扫：引擎判重不看相位，躺在在途表里的死任务会把同视频的重试点单拦在让路循环
         // （锁R&B 事故：死任务的行重试点单时清了旧任务号，尸首成了无主孤魂，台账照不到）。
         // 开机点名引擎全部在途任务：站里台账没署名的就是孤儿，逐枚打断队列→挂起→销账。
         // 摆在重投之前：此时绝无在途提交，不会误杀刚交账的新任务。
-        var referenced = new HashSet<string>(
-            StatusSyncWorker.ParseTaskIds(string.Join("", db.GetReferencedEngineTaskIds().SelectMany(json => StatusSyncWorker.ParseTaskIds(json).Select(id => $"\"{id}\"")))),
-            StringComparer.OrdinalIgnoreCase);
         var swept = 0;
-        foreach (var orphan in await lookup.GetUnfinishedAsync(stoppingToken))
+        try
         {
-            if (referenced.Contains(orphan.Id.Value))
+            var referenced = new HashSet<string>(
+                StatusSyncWorker.ParseTaskIds(string.Join("", db.GetReferencedEngineTaskIds().SelectMany(json => StatusSyncWorker.ParseTaskIds(json).Select(id => $"\"{id}\"")))),
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var orphan in await lookup.GetUnfinishedAsync(stoppingToken))
             {
-                continue;
-            }
+                if (referenced.Contains(orphan.Id.Value))
+                {
+                    continue;
+                }
 
-            try
-            {
-                await taskQueue.CancelAsync(orphan.Id);
-            }
-            catch (Exception)
-            {
-                // 本就没在跑，取消不掉无妨
-            }
+                try
+                {
+                    await taskQueue.CancelAsync(orphan.Id);
+                }
+                catch (Exception)
+                {
+                    // 本就没在跑，取消不掉无妨
+                }
 
-            try
-            {
-                await state.CancelAsync(orphan.Id, stoppingToken);
-                await state.DeleteAsync(orphan.Id, stoppingToken);
-                swept++;
-                logger.LogWarning("开机销掉无主引擎任务 {TaskId}：台账无署名，留着会拦同视频重单", orphan.Id.Value);
-            }
-            catch (Exception)
-            {
-                // 销不动留给下轮开机/看门狗，不拦开站
+                try
+                {
+                    await state.CancelAsync(orphan.Id, stoppingToken);
+                    await state.DeleteAsync(orphan.Id, stoppingToken);
+                    swept++;
+                    logger.LogWarning("开机销掉无主引擎任务 {TaskId}：台账无署名，留着会拦同视频重单", orphan.Id.Value);
+                }
+                catch (Exception)
+                {
+                    // 销不动留给下轮开机/看门狗，不拦开站
+                }
             }
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "开机孤儿引擎任务清扫没跑完（留给下轮开机/看门狗）");
+        }
 
-        logger.LogInformation("后台提交 Worker 到站，接管 {Recovered} 条待提交视频，加档重投 {CodecRecovered} 组，缺件回炉 {Returned} 条，Failed 残账销 {Swept} 枚（换库开机={Swapped}）", recovered.Count, codecRecovered.Count, returned.Count, swept, mediaGate.ReconcileOnBoot);
+        logger.LogInformation("后台提交 Worker 到站，接管 {Recovered} 条待提交视频，加档重投 {CodecRecovered} 组，缺件回炉 {Returned} 条，Failed 残账销 {Swept} 枚（换库开机={Swapped}）", recovered, codecRecoveredCount, returned.Count, swept, mediaGate.ReconcileOnBoot);
 
         var mainLoop = Task.Run(() => ConsumeMainAsync(stoppingToken), stoppingToken);
         var codecLoop = Task.Run(() => ConsumeCodecAsync(stoppingToken), stoppingToken);

@@ -137,7 +137,13 @@ public sealed class MediaRefreshService(
         }
 
         // 与开机缺件回炉同一条链（DataExchange 那条），不自加 MarkForceRedownload：口径别自创。
-        db.ResetToPending(videoId);
+        // 只从 Arrived 拉回：读到与落笔之间行若被重投/复活改走状态，不硬掰——有人接着管就当已回炉。
+        if (!db.ResetToPending(videoId, [LBS.Domain.VideoStatus.Arrived]))
+        {
+            logger?.LogInformation("馆藏 {VideoId}（{Bvid}）重拉媒体：回炉前状态已被改走，不插一脚", videoId, bvid);
+            return MediaQueued;
+        }
+
         await queue.EnqueueAsync(videoId, cancellationToken);
         logger?.LogInformation("馆藏 {VideoId}（{Bvid}）重拉封面与媒体：盘上缺件，已回炉重下", videoId, bvid);
         return MediaQueued;

@@ -7,10 +7,17 @@ export function colonTime(text) {
   const s = /(\d+)\s*s/i.exec(text)
   if (!h && !m && !s) return text
   const pad = (n) => String(n).padStart(2, '0')
-  const hh = h ? +h[1] : 0
-  const mm = m ? +m[1] : 0
-  const ss = s ? +s[1] : 0
-  return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${mm}:${pad(ss)}`
+  // 上面那些正则只抬数字，负号会被吃掉（「-95s」会显成 01:35）：引擎不该发负时长，真发就当 0。
+  const hh = Math.max(0, h ? +h[1] : 0)
+  const mm = Math.max(0, m ? +m[1] : 0)
+  const ss = Math.max(0, s ? +s[1] : 0)
+  // 先汇成总秒再折回时/分/秒：引擎偶尔发「90s」「75m」这种没进位的数，
+  // 直接拼字面会显成 0:90 / 75:00。
+  const total = hh * 3600 + mm * 60 + ss
+  const H = Math.floor(total / 3600)
+  const M = Math.floor((total % 3600) / 60)
+  const S = total % 60
+  return H > 0 ? `${H}:${pad(M)}:${pad(S)}` : `${M}:${pad(S)}`
 }
 
 // B 站投稿时间的取数口径（首页卡阵与「接下来播放」共用，别再各写一份）：

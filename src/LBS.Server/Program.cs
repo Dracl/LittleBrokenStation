@@ -143,7 +143,12 @@ builder.Services.AddRateLimiter(options =>
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(http =>
     {
         var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        var authed = http.Request.Cookies.ContainsKey("lbs_dmid") || http.Request.Cookies.ContainsKey("lbs_admin");
+        // 「登录宽」那一档得拿真实席位当凭据，不能看 cookie 名字：lbs_dmid 是任何人都能自己
+        // 在浏览器里塑一张的访客弹幕签（lbs_admin 同理），拿它当登录凭据等于把
+        // 「匿名写 20/分钟」的闸门交给攻击者自己拧到 300/分钟。
+        // 盖章中间件（成员门）就挂在限流闸之前且只对 /api/ 生效，走到这里的请求要么已被
+        // MemberGate.Stamp 塞过 Items，要么就是真访客——Current 只读 Items，零额外库查。
+        var authed = MemberGate.Current(http) is not null;
         var write = HttpMethods.IsPost(http.Request.Method) || HttpMethods.IsPut(http.Request.Method)
             || HttpMethods.IsDelete(http.Request.Method) || HttpMethods.IsPatch(http.Request.Method);
         var (permit, queue) = (authed, write) switch
@@ -618,6 +623,10 @@ app.MapPost("/api/gate/unlock", (GateRequest request, AdminGate gate, HttpContex
     {
         HttpOnly = true,
         SameSite = SameSiteMode.Lax,
+        // 与会员会话同一张尺：TLS 下上 Secure（防中间人把站长会话 cookie 扫走），局域网 http 直连不误伤。
+        // .NET 10 的 CookieOptions 已没有 SecurePolicy，SameAsRequest 得自己算；反代身后 Request.IsHttps
+        // 由 X-Forwarded-Proto 撑腰（信任区见 LBS_TRUSTED_PROXY_CIDRS），不会把 https 站点误判成明文。
+        Secure = http.Request.IsHttps,
         Path = "/",
         MaxAge = TimeSpan.FromDays(7),
     });
@@ -956,7 +965,12 @@ app.MapPost("/api/videos/{id:long}/requeue", async (long id, HttpContext http, S
         // Skipped 的成因在引擎那一侧：download_history 里有同名行就判无需下载。光重投还是原样被打回，
         // 所以这路必须带 RedownloadCompleted 走正门（引擎自己给加档重下用的就是这条），而不是伸手改它的库。
         // 挂牌必须在 ResetToPending 之后：那一步走状态机统一入口，会把这枚旗顺手清零。
-        db.ResetToPending(id);
+        // 只从 Skipped 拉回：读到与落笔之间状态被另一笔改走（比如已被重投）就不硬勊。
+        if (!db.ResetToPending(id, [VideoStatus.Skipped]))
+        {
+            return Results.BadRequest(new { message = "状态刚被另一笔操作改走，刷新看看再决定" });
+        }
+
         db.MarkForceRedownload(id);
         await queue.EnqueueAsync(id, cancellationToken);
         return Results.Ok(new { message = "这馆先前被引擎判为已下过，已绕开判重重新排队（正片会重下一遍）" });
@@ -967,7 +981,12 @@ app.MapPost("/api/videos/{id:long}/requeue", async (long id, HttpContext http, S
         return Results.BadRequest(new { message = "只有被取消的馆藏才需要重新排队" });
     }
 
-    db.ResetToPending(id);
+    // 只从 Canceled 拉回：与上面 Skipped 同一守卫道理，免得把刚被别处推走的行抢进排队。
+    if (!db.ResetToPending(id, [VideoStatus.Canceled]))
+    {
+        return Results.BadRequest(new { message = "状态刚被另一笔操作改走，刷新看看再决定" });
+    }
+
     await queue.EnqueueAsync(id, cancellationToken);
     return Results.Ok(new { message = "已重新排队，下一班进站" });
 });
@@ -1104,6 +1123,9 @@ static string EnsureDmid(HttpContext http)
     {
         HttpOnly = true,
         SameSite = SameSiteMode.Lax,
+        // 弹幕署名凭据也是凭据：TLS 下上 Secure，局域网 http 不误伤（与站长/会员会话同一口径）。
+        // .NET 10 没 SecurePolicy，SameAsRequest 自己算（反代身后靠 X-Forwarded-Proto 认 scheme）。
+        Secure = http.Request.IsHttps,
         Expires = DateTimeOffset.UtcNow.AddDays(180),
         Path = "/",
     });
@@ -1255,6 +1277,14 @@ app.MapGet("/api/videos/{id:long}/danmaku", (long id, HttpContext http, StationD
 
 app.MapPost("/api/videos/{id:long}/danmaku", (long id, LocalDanmakuRequest request, HttpContext http, StationDb db) =>
 {
+    // 写侧也要看客尺子：以前只验「有这条稿」，谁拿个 id 都能往藏着的稿子上钉弹幕
+    // （GET 那一口早就走 CanViewVideo 了，写口得同形同文案）：藏着的稿子与查无同一张 404 脸，
+    // 不许回 403（那是「有这条但不给你看」的泄密信号）。
+    if (!CanViewVideo(http, db, id))
+    {
+        return Results.NotFound(new { message = "馆藏里没这个视频" });
+    }
+
     var text = request.Text.Trim();
     if (text.Length is 0 or > 100)
     {

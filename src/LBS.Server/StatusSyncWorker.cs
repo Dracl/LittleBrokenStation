@@ -87,10 +87,18 @@ public sealed class StatusSyncWorker(
 
         // 开局对账：头像文件换过 sha1 命名，早年 up-{mid}.jpg 那代老账全部丢链——先从同站现货里蹭一波（零出门），
         // 免得 UpCard 永远 404 顶灰占位；真正没现货可蹭的留给到站重采的老路。
-        var borrowed = db.BackfillUpCardsFromShared();
-        if (borrowed > 0)
+        // 包壳：开局对账炸了不能拖着整个同步员下岗，本轮不蹭就是了，下一轮/到站重采都有出口。
+        try
         {
-            logger.LogInformation("UP 名片开局蹭库：{Count} 条老账改了同站现货", borrowed);
+            var borrowed = db.BackfillUpCardsFromShared();
+            if (borrowed > 0)
+            {
+                logger.LogInformation("UP 名片开局蹭库：{Count} 条老账改了同站现货", borrowed);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "UP 名片开局蹭库没跑成（不影响巡视，到站重采会补）");
         }
 
         // 认证的存量欠账：开局补一轮。它要逐位出网（一位一枪 + 300ms 歇），几百位能跑到几分钟，
@@ -257,8 +265,14 @@ public sealed class StatusSyncWorker(
             var taskIds = ParseTaskIds(taskIdsJson);
             if (taskIds.Count == 0)
             {
-                // 没有引擎任务却挂着下载中，属于脏数据，直接判到站比卡死诚实
-                db.MarkArrived(videoId);
+                // 没有引擎任务却挂着下载中，属于脏数据，直接判到站比卡死诚实。
+                // 守卫照走：读快照与落笔之间若复活专员已把行退回 Pending，这一盖就该丢。
+                if (!db.MarkArrived(videoId, VideoStatus.Downloading))
+                {
+                    logger.LogInformation("馆藏 {VideoId} 判到站时发现状态已被抢先改走，本轮不通知不归档", videoId);
+                    continue;
+                }
+
                 MemberMail.NotifyVideoArrived(db, logger, videoId);
                 _stalled.Remove(videoId);
                 continue;
@@ -298,15 +312,29 @@ public sealed class StatusSyncWorker(
             // 循环里 null 有两种含义（全完成/在途），用显式标记区分
             if (target == VideoStatus.Failed)
             {
-                db.MarkFailed(videoId, failure!);
-                MemberMail.NotifyVideoFailed(db, logger, videoId, failure);
-                _stalled.Remove(videoId);
-                _qualitySeen.Remove(videoId);
-                logger.LogWarning("馆藏 {VideoId} 引擎侧失败：{Failure}", videoId, failure);
+                if (db.MarkFailed(videoId, failure!, VideoStatus.Downloading))
+                {
+                    MemberMail.NotifyVideoFailed(db, logger, videoId, failure);
+                    _stalled.Remove(videoId);
+                    _qualitySeen.Remove(videoId);
+                    logger.LogWarning("馆藏 {VideoId} 引擎侧失败：{Failure}", videoId, failure);
+                }
+                else
+                {
+                    logger.LogInformation("馆藏 {VideoId} 判失败时发现状态已被抢先改走，不盖不改账", videoId);
+                }
             }
             else if (AllGone(taskIds, lookup, cancellationToken).GetAwaiter().GetResult())
             {
-                db.MarkArrived(videoId);
+                // 守卫：巡视读的是本轮开头的快照，读到与落笔之间复活专员可能已把行退回 Pending
+                // （硬重投先删引擎行再 ResetToPending）。这一盖若盖在刚退回的行上，盘上没文件、引擎没任务，
+                // 馆藏会卡在假到站再也起不来——落笔要求当前仍是 Downloading，抢输了就整段跳过。
+                if (!db.MarkArrived(videoId, VideoStatus.Downloading))
+                {
+                    logger.LogInformation("馆藏 {VideoId} 到站盖章被抢先（多半是重投交错），本轮不归档不通知", videoId);
+                    continue;
+                }
+
                 MemberMail.NotifyVideoArrived(db, logger, videoId);
                 _stalled.Remove(videoId);
                 // 引擎实发规格趁热盖章（在途拄的那份）：清晰度菜单直接照报「1080P 60帧」，
@@ -342,7 +370,7 @@ public sealed class StatusSyncWorker(
                             // 互动数据与创作团队单独走一趟：同站名下的稿 UP 名片会提前 return，
                             // 挂在它后面那些稿就永远采不到 staff。
                             await TryFetchStatAsync(videoId);
-                            var outcome = await commentArchive.TryArchiveAsync(videoId, force: false, CancellationToken.None);
+                            var outcome = await commentArchive.TryArchiveAsync(videoId, force: false, cancellationToken);
                             if (!outcome.Ok)
                             {
                                 logger.LogWarning("馆藏 {VideoId} 评论归档没成：{Message}", videoId, outcome.Message);
@@ -353,7 +381,7 @@ public sealed class StatusSyncWorker(
                             logger.LogWarning(ex, "馆藏 {VideoId} 评论归档抛出异常（已忽略）", videoId);
                         }
                     },
-                    CancellationToken.None);
+                    cancellationToken);
             }
             else if (inFlight is not null)
             {
@@ -499,7 +527,7 @@ public sealed class StatusSyncWorker(
 
                 _codecQualitySeen.Remove(rowId);
                 // 定档那一刻文件还热在页缓存里，趁热探分轨码率；起进程不许卡 5 秒一轮的巡视，甩后台。
-                _ = Task.Run(() => streams.ProbeCodecFile(rowId, videoId, pageIdx, codec), CancellationToken.None);
+                _ = Task.Run(() => streams.ProbeCodecFile(rowId, videoId, pageIdx, codec), cancellationToken);
             }
             else
             {

@@ -15,7 +15,12 @@ public static class WeeklyReportEndpoints
     private const int DefaultWeekBack = 0;
 
     /// <summary>海报署名头像的转运客户端：B 站图床跨域，直画 canvas 会脏像素（toDataURL 报错），只能同源中转。</summary>
-    private static readonly HttpClient PosterAvatarHttp = new() { Timeout = TimeSpan.FromSeconds(8) };
+    // 不跟 302：IsBilibiliFaceHost 那道白名单只量了调用方递进来的那个 URL，图床只要肯发一条
+    // Location 就能把分站捐去内网（SSRF）——白名单验完不跳，才是真白名单。
+    private static readonly HttpClient PosterAvatarHttp = new(new HttpClientHandler { AllowAutoRedirect = false })
+    {
+        Timeout = TimeSpan.FromSeconds(8),
+    };
 
     /// <summary>week 参数夹校（纯函数直测）：null 落缺省，越界夹回 0..4。</summary>
     internal static int ClampWeek(int? week) => Math.Clamp(week ?? DefaultWeekBack, 0, StationDb.WeeklyMaxWeekBack);

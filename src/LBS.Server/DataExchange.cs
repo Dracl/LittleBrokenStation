@@ -746,7 +746,8 @@ public static class MissingMediaReconciler
 
         foreach (var id in missing)
         {
-            db.ResetToPending(id);
+            // 只从 Arrived 拉回：点名读到与落笔之间行若已被重拉/重投改走状态，不硬掰。
+            db.ResetToPending(id, [LBS.Domain.VideoStatus.Arrived]);
         }
 
         logger?.LogInformation("数据交换缺件点名：{Count} 个到站视频磁盘缺件，已回炉重下", missing.Count);

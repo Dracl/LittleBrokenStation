@@ -12,7 +12,13 @@ web/dist/
 *.local
 
 # 本地数据目录（开发期 ./data，容器内为 volume /data）
+# 不锚定的 data/ 是后来补的门闩：`dotnet run --project src/LBS.Server` 在库里没现成库时，
+# ResolveDataRoot 会在 src/LBS.Server 下当场自举一座站（station.db 连成员 cookie 都在里面），
+# 只钉 /data/ 挡不住那座——当年 OH-Works 就是这么被 git add -A 扫进去的，同一坑不再踩第二回。
 /data/
+data/
+**/*.db-wal
+**/*.db-shm
 
 # 编辑器与系统
 .idea/
@@ -34,4 +40,7 @@ OH-Works/
 
 # 服务器以仓库根为 cwd 启动时（dotnet run 之外的裸起法），StaticFileMiddleware 会当场造出一个空 wwwroot，
 # 前端产物在 bin 里的 wwwroot，根上这份纯属误造——堵在门口，免得 git add -A 把它收进提交。
+# 不锚定的 wwwroot/ 同上面 data/ 的道理：`dotnet run --project` 时 content root 在 src/LBS.Server，
+# 误造的 wwwroot 就长在项目目录下，只钉根上的挡不住。
 /wwwroot/
+wwwroot/

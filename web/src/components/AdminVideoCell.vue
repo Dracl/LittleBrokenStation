@@ -48,11 +48,13 @@ const toolsOn = computed(() => coverOn.value || btnOn.value)
         <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
     </button>
-    <!-- 重新排队：被取消的（status 5）捐回队列；被引擎判为「已下过」的（status 4）另挂重下旗绕开判重 -->
+    <!-- 重新排队：被取消的（status 5）捐回队列；被引擎判为「已下过」的（status 4）另挂重下旗绕开判重。
+         在飞时拿 reviveBusy 按死（页面里续下/重排两钮共用同一把在途集合），不让人连点重发 POST -->
     <button
       v-if="(video.status === 5 || video.status === 4) && canManage"
-      class="absolute left-2 top-2 rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:text-black"
+      class="absolute left-2 top-2 rounded-md bg-black/60 p-1.5 text-white/70 backdrop-blur transition hover:text-black disabled:opacity-40"
       :class="[video.status === 4 ? 'hover:bg-amber-400' : 'hover:bg-emerald-400', toolsOn ? 'block' : 'hidden']"
+      :disabled="reviveBusy"
       :title="video.status === 4
         ? '销档重下：引擎说这部已经下过，绕开判重再下一遍（正片会重下）'
         : '重新排队：被取消的馆藏捐回队列'"

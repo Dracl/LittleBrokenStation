@@ -214,6 +214,10 @@ public static class MemberEndpoints
                     {
                         HttpOnly = true,
                         SameSite = SameSiteMode.Lax,
+                        // 扫码登录这一口也必须上 Secure：它与 AppendSessionCookie 发的是同一张席位票，
+                        // 两边口径不一致就等于「换机登录比注册更容易被扫走」。
+                        // .NET 10 已无 CookieOptions.SecurePolicy，SameAsRequest 自己算（反代身后靠 X-Forwarded-Proto）。
+                        Secure = http.Request.IsHttps,
                         Path = "/",
                         MaxAge = MemberGate.SessionTtl,
                     });

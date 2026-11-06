@@ -7,7 +7,9 @@ export const HEAT = { peakPx: 32, alpha: 0.15, smooth: 5, playedAlpha: 0.4 }
 
 // 同页同文件只 fetch 一次：弹幕引擎（DanmakuLayer）与高能条共用这一份文本缓存。
 // 失败不记账（剔掉缓存），下次进页还能重试，不把一次抖动冻成整场哑巴。
+// 容量封顶：整页翻下来 .ass 文本能攒好几 MB，按插入序淘汰最旧的一份（弹幕文本重复度高，命中率不受影响）。
 const cache = new Map()
+const CACHE_LIMIT = 100
 
 export function loadAssText(url) {
   if (!url) return Promise.resolve(null)
@@ -16,7 +18,8 @@ export function loadAssText(url) {
     p = fetch(url)
       .then((r) => (r.ok ? r.text() : null))
       .catch(() => null)
-    p.then((t) => { if (t === null) cache.delete(url) })
+    p.then((t) => { if (t === null) cache.delete(url) }) // 只留成功结果：没成形的不配占席
+    if (cache.size >= CACHE_LIMIT) cache.delete(cache.keys().next().value)
     cache.set(url, p)
   }
   return p

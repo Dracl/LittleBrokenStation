@@ -1334,10 +1334,9 @@ public sealed partial class StationDb
     }
 
     /// <summary>引擎侧全部 task 完成，馆藏落盘就绪。</summary>
-    public void MarkArrived(long id)
-    {
-        ExecuteUpdate(id, VideoStatus.Arrived, null, null);
-    }
+    /// <param name="expectFrom">非 null 时只有当前状态在集内才改（多写手交错时的乐观守卫）；返 false = 状态已被别人抢先改走。</param>
+    public bool MarkArrived(long id, VideoStatus? expectFrom = null)
+        => ExecuteUpdate(id, VideoStatus.Arrived, null, null, expectFrom is { } f ? [f] : null) > 0;
 
     /// <summary>同步器用：所有还在下载中的记录及其引擎 task id 列表（JSON）。</summary>
     public IReadOnlyList<(long Id, string? TaskIdsJson)> GetDownloadingVideos()
@@ -1358,16 +1357,12 @@ public sealed partial class StationDb
     }
 
     /// <summary>引擎判定无需下载（判重/不支持），不重试。</summary>
-    public void MarkSkipped(long id, string reason)
-    {
-        ExecuteUpdate(id, VideoStatus.Skipped, null, reason);
-    }
+    public bool MarkSkipped(long id, string reason, VideoStatus? expectFrom = null)
+        => ExecuteUpdate(id, VideoStatus.Skipped, null, reason, expectFrom is { } f ? [f] : null) > 0;
 
     /// <summary>提交失败，可由站长在站长室重试。</summary>
-    public void MarkFailed(long id, string error)
-    {
-        ExecuteUpdate(id, VideoStatus.Failed, null, error);
-    }
+    public bool MarkFailed(long id, string error, VideoStatus? expectFrom = null)
+        => ExecuteUpdate(id, VideoStatus.Failed, null, error, expectFrom is { } f ? [f] : null) > 0;
 
     /// <summary>同步员停滞提示专用：只动 last_error 不动状态（下载中才用，到站/失败时另有人清零）。</summary>
     public void SetLastError(long id, string? error)
@@ -1381,10 +1376,9 @@ public sealed partial class StationDb
     }
 
     /// <summary>续下打不动时的硬重投通道：记录退回待提交并清引擎任务与错误，重投判重从此看不见旧行（行靠 Reviver 先删）。</summary>
-    public void ResetToPending(long id)
-    {
-        ExecuteUpdate(id, VideoStatus.Pending, null, null);
-    }
+    /// <param name="expectFrom">非 null 时只有当前状态在集内才改；返 false = 状态已被别人抢先改走，调用方别再往下推。</param>
+    public bool ResetToPending(long id, IReadOnlyCollection<VideoStatus>? expectFrom = null)
+        => ExecuteUpdate(id, VideoStatus.Pending, null, null, expectFrom) > 0;
 
     /// <summary>导入缺件点名花名册：完成态视频（id, bvid），供磁盘实物核对。</summary>
     public IReadOnlyList<(long Id, string Bvid)> GetArrivedVideosForMediaScan()
@@ -1514,17 +1508,36 @@ public sealed partial class StationDb
     /// <summary>
     /// 状态机唯一改状态入口：连带把 force_redownload 清零——那枚旗只活一次提交，
     /// 无论这轮是到站、失败还是回炉重投，都不能让它搭到下一趟顺风车。
+    /// expectFrom 非 null 时追加「当前状态在集内」守卫（照 CancelPendingDownloads 的既有先例），
+    /// 返影响行数：巡视快照读到半路、另一写手已抢改时返 0，调用方据此跳过后续副作用（通知/归档），
+    /// 免得把已被重投的馆藏盖成假到站。
     /// </summary>
-    private void ExecuteUpdate(long id, VideoStatus status, string? taskIdsJson, string? error)
+    private int ExecuteUpdate(long id, VideoStatus status, string? taskIdsJson, string? error, IReadOnlyCollection<VideoStatus>? expectFrom = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE videos SET status = $status, engine_task_ids = $taskIds, last_error = $error, force_redownload = 0 WHERE id = $id;";
+        var sql = "UPDATE videos SET status = $status, engine_task_ids = $taskIds, last_error = $error, force_redownload = 0 WHERE id = $id";
+        if (expectFrom is { Count: > 0 })
+        {
+            var names = new List<string>(expectFrom.Count);
+            var slot = 0;
+            foreach (var from in expectFrom)
+            {
+                var name = "$from" + slot.ToString();
+                names.Add(name);
+                command.Parameters.AddWithValue(name, from.ToString());
+                slot++;
+            }
+
+            sql += " AND status IN (" + string.Join(",", names) + ")";
+        }
+
+        command.CommandText = sql + ";";
         command.Parameters.AddWithValue("$status", status.ToString());
         command.Parameters.AddWithValue("$taskIds", (object?)taskIdsJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$error", (object?)error ?? DBNull.Value);
         command.Parameters.AddWithValue("$id", id);
-        command.ExecuteNonQuery();
+        return command.ExecuteNonQuery();
     }
 
     /// <summary>删除前取记录（含引擎任务列表）；不存在返回 null。</summary>

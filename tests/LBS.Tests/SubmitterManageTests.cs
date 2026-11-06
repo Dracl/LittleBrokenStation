@@ -52,9 +52,9 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("POST", "/api/videos/123/comments", false, true)]
     [InlineData("POST", "/api/videos/123/comments/subs", false, true)]
     [InlineData("POST", "/api/videos/123/danmaku-refresh", false, true)]
-    // 站长专属：续下/重新排队/加档/按编码删档，一个字都不能松
-    [InlineData("POST", "/api/videos/123/revive", true, false)]
-    [InlineData("POST", "/api/videos/123/requeue", true, false)]
+    // 站长专属：加档/按编码删档，一个字都不能松（revive/requeue 已移交投稿人自管：匿名由 MemberGate POST 清单挡 401，归属归端点 CanManageVideo）
+    [InlineData("POST", "/api/videos/123/revive", false, true)]
+    [InlineData("POST", "/api/videos/123/requeue", false, true)]
     [InlineData("POST", "/api/videos/123/codecs", true, false)]
     [InlineData("DELETE", "/api/videos/123/codecs/hevc", true, false)]
     // 站内弹幕（自带本人/主人规则）与只读配套设施：照旧

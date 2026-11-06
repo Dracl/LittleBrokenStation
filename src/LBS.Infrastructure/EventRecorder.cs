@@ -82,7 +82,17 @@ public sealed class EventRecorder
                     break;
                 }
 
-                _db.InsertEventsBatch(batch);
+                try
+                {
+                    _db.InsertEventsBatch(batch);
+                }
+                catch (Exception ex)
+                {
+                    // 丢一批好过抄录员下岗：database is locked（超 busy_timeout）/磁盘满这类瞬拒
+                    // 若不包壳会直接跳出循环让 ConsumeAsync 退役，此后 Record() 只往 bounded channel 堆，
+                    // 堆满后 DropWrite 静默全丢。吃下这一波，继续转。
+                    _logger.LogWarning(ex, "台账落盘一波 {Count} 笔没成（跳过这一波继续转）", batch.Count);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -97,8 +107,15 @@ public sealed class EventRecorder
 
         if (flushed.Count > 0)
         {
-            _db.InsertEventsBatch(flushed);
-            _logger.LogInformation("收站前冲刷 {Count} 笔事件入台账", flushed.Count);
+            try
+            {
+                _db.InsertEventsBatch(flushed);
+                _logger.LogInformation("收站前冲刷 {Count} 笔事件入台账", flushed.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "收站前冲刷 {Count} 笔没落成台账（尽力而为）", flushed.Count);
+            }
         }
     }
 
