@@ -13,6 +13,7 @@ import {
   renderVideoPoster,
   rgbCss,
 } from '../utils/videoPoster.js'
+import { loadStudioPrefs, saveStudioPrefs } from '../utils/studioPrefs.js'
 // qrcode.min.js 是 davidshimjs qrcodejs 原版经典脚本（没有模块导出），按资源 URL 注入 classic script
 // 让它把 QRCode 落到 window 上（与 LoginDialog 同一套路、同一份 vendored 文件）。
 import qrcodeScriptUrl from '../libs/qrcode.min.js?url'
@@ -65,7 +66,9 @@ const defaults = () => ({
   scale: 2,
   descMaxLines: 3,
 })
-const opts = reactive(defaults())
+// 拧过一次就认账（preference persistence，住 utils/studioPrefs）：下次开棚接着上一副样子；
+// 「全部复位」把旋钮拨回出厂再落账，不算赖账
+const opts = reactive(loadStudioPrefs('lbs-share-poster-prefs', defaults()))
 
 function resetOpts() {
   Object.assign(opts, defaults())
@@ -268,6 +271,7 @@ onBeforeUnmount(() => {
 watch(() => props.model, () => boot())
 // 任一旋钮挪动：QR 点阵色可能跟着变（accent/mode），先补码再防抖重画
 watch(opts, () => {
+  saveStudioPrefs('lbs-share-poster-prefs', opts)
   refreshQr().then(schedulePaint)
 }, { deep: true })
 </script>

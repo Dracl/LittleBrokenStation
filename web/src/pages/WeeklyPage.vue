@@ -7,6 +7,7 @@ import { member } from '../memberStore'
 import { coverSrcOf } from '../utils/coverSrc'
 import { defaultAvatar } from '../utils/avatar'
 import { faceFor } from '../utils/faceChoice'
+import { loadStudioPrefs, saveStudioPrefs } from '../utils/studioPrefs'
 import CountUpNum from '../components/CountUpNum.vue'
 import WallWindow from '../components/WallWindow.vue'
 import {
@@ -474,7 +475,7 @@ const POSTER_HERO_BLUR = [
   { px: 3, label: '薄雾', hint: '3px 高斯，默认' },
   { px: 8, label: '虚化', hint: '8px 高斯，最托字' },
 ]
-const posterOpts = ref({
+const POSTER_DEFAULTS = {
   title: '',
   subtitle: '',
   sign: '',
@@ -485,7 +486,9 @@ const posterOpts = ref({
   theme: 'paper',
   heroBlur: 3,
   show: { hot: true, bars: true, flow: true, wall: true, matrix: true, rank: true, news: true, mine: true, chips: true },
-})
+}
+// 拧过一次就认账（preference persistence，与本机赞同族）：下次开台接着上一副样子拧，存本机不上传
+const posterOpts = ref(loadStudioPrefs('lbs-weekly-poster-prefs', POSTER_DEFAULTS))
 
 // 风格与强调色是一对本命：默认风格吃分站自己的粉蓝琥珀，构成主义只认红黄蓝那一色大声，
 // 切风格时把 accent 归到那一套的默认档，免得出现「米纸底配分站粉」这种两边都不像的组合。
@@ -711,6 +714,7 @@ let posterPreviewTimer = 0
 watch(
   posterOpts,
   () => {
+    saveStudioPrefs('lbs-weekly-poster-prefs', posterOpts.value)
     clearTimeout(posterPreviewTimer)
     posterPreviewTimer = setTimeout(async () => {
       if (!posterOpen.value || !posterCanvas.value) return
