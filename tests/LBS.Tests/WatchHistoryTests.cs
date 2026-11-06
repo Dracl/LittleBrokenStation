@@ -7,8 +7,8 @@ namespace LBS.Tests;
 
 /// <summary>
 /// 观看历史（续播点位）：校验与落库直测，仿 DanmakuReportTests 造库造席位（临时目录 + Initialize + BindMember，Dispose 里 ClearAllPools）。
-/// 钉住这几件事：刚开个头（&lt;5 秒）且库里没行 → 什么都不落；库里已有行则连早于地板的位置也照常覆盖（不把旧点顶成空气）；
-/// 一人一片一行——再报只盖旧位并翻新 updated_at_utc；位置过 95% 视为看完，照常盖戳留档不删行（历史记所有，续播闸在前端）；
+/// 钉住这几件事：刚开个头（&lt;5 秒）且这一 P 的坑是空的 → 什么都不落（坑各管各，别的 P 有行不算）；本坑已有行则连早于地板的位置也照常覆盖（不把旧点顶成空气）；
+/// 一 P 一坑——同 P 再报才盖旧位并翻新 updated_at_utc，不同 P 各记各位互不相犯，列表收成一片一卡展最近那一 P；
 /// durationSec 说不清（≤0 / NaN / ∞ / 没给）一律 400 中文，越界位置夹进 [0, duration]；
 /// 列表按 updated_at 倒序并 JOIN 出现成片名与封面（本地件优先），片删了历史里就看不见；席位之间互不可见；单删与清点数清楚。
 /// </summary>
@@ -83,36 +83,75 @@ public sealed class WatchHistoryTests : IDisposable
         Assert.Equal(5, row.PositionSec);
         Assert.Equal(600, row.DurationSec);
 
-        // 已有行时 4.9 秒照常被写回去：拖回首片尾也是「他就看到这儿」，不能让旧位留在库里骗人。
-        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 2, 4.9, 600));
-        var back = _db.GetWatchHistoryOne(me, video);
+        // 本坑已有行时 4.9 秒照常被写回去：拖回首片尾也是「他就看到这儿」，不能让旧位留在库里骗人。
+        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 1, 4.9, 600));
+        var back = _db.GetWatchHistoryOne(me, video, 1);
         Assert.Equal(4.9, back!.PositionSec);
-        Assert.Equal(2, back.PageIdx);
+        Assert.Equal(1, back.PageIdx);
+
+        // 地板按坑独立：P2 是处女坑，4.9 秒不占——P1 有行不算它的旧位。
+        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Ignored, Report(me, video, 2, 4.9, 600));
+        Assert.Null(_db.GetWatchHistoryOne(me, video, 2));
     }
 
     [Fact]
-    public void 一人一片一行_新位盖旧位并翻新时间()
+    public void 多P片子一P一坑_各记各位互不相犯()
+    {
+        var video = AddVideo("BVhist02b", "三分P的长片");
+        var me = Seat("跳着看的");
+
+        Report(me, video, 0, 100, 600);
+        Report(me, video, 1, 200, 600);
+        // 两个 P 各占各坑：共存，谁也盖不掉谁。
+        Assert.Equal(100, _db.GetWatchHistoryOne(me, video, 0)!.PositionSec);
+        Assert.Equal(200, _db.GetWatchHistoryOne(me, video, 1)!.PositionSec);
+
+        // 同坑再报只盖那一 P，别 P 纹丝不动。
+        Report(me, video, 0, 300, 600);
+        Assert.Equal(300, _db.GetWatchHistoryOne(me, video, 0)!.PositionSec);
+        Assert.Equal(200, _db.GetWatchHistoryOne(me, video, 1)!.PositionSec);
+
+        // 不带 P 的查法取最近更新那一 P（进页默认落点就是最近看的那一集）。
+        Thread.Sleep(20); // 同秒内两笔会把「最近」判糊，留点余量
+        Report(me, video, 1, 450, 600);
+        var latest = _db.GetWatchHistoryOne(me, video);
+        Assert.Equal(1, latest!.PageIdx);
+        Assert.Equal(450, latest.PositionSec);
+
+        // 列表收成一片一卡：三个坑也只摆一卡，露面的是最近那一 P。
+        var only = Assert.Single(_db.GetWatchHistory(me));
+        Assert.Equal(video, only.VideoId);
+        Assert.Equal(1, only.PageIdx);
+    }
+
+    [Fact]
+    public void 同坑新位盖旧位并翻新时间_别P自岿然不动()
     {
         var video = AddVideo("BVhist02", "反复看的片子");
         var me = Seat("回锅的");
 
         Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 1, 30, 600));
-        var first = _db.GetWatchHistoryOne(me, video);
+        var first = _db.GetWatchHistoryOne(me, video, 1);
         Assert.NotNull(first);
 
         Thread.Sleep(20); // 时间戳精度到 100ns，留点余量让「翻新」看得见摸得着
-        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 3, 120.5, 600));
-        var second = _db.GetWatchHistoryOne(me, video);
+        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 1, 120.5, 600));
+        var second = _db.GetWatchHistoryOne(me, video, 1);
         Assert.NotNull(second);
 
-        Assert.Equal(3, second!.PageIdx); // 分 P 也跟着换
+        Assert.Equal(1, second!.PageIdx); // 还是那一 P 的坑
         Assert.Equal(120.5, second.PositionSec);
         Assert.Equal(600, second.DurationSec);
         Assert.True(
             DateTime.Parse(second.UpdatedAtUtc) > DateTime.Parse(first!.UpdatedAtUtc),
             $"updated_at_utc 没翻新：{first.UpdatedAtUtc} → {second.UpdatedAtUtc}");
 
-        // 一人一片只有一行：报两次不攒第二行。
+        // 换个 P 另开坑：老 P 的位原地躺着，谁也不挨着谁。
+        Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 3, 45, 600));
+        Assert.Equal(120.5, _db.GetWatchHistoryOne(me, video, 1)!.PositionSec);
+        Assert.Equal(45, _db.GetWatchHistoryOne(me, video, 3)!.PositionSec);
+
+        // 列表一片只摆一卡：同片几笔不摆成 P 陈列架。
         var only = Assert.Single(_db.GetWatchHistory(me));
         Assert.Equal(video, only.VideoId);
     }
@@ -138,12 +177,12 @@ public sealed class WatchHistoryTests : IDisposable
         Assert.Equal(600 * 0.95, done!.PositionSec);
         Assert.Contains(_db.GetWatchHistory(me), r => r.VideoId == video); // 列表里也得露面
 
-        // 看完后回看中段：同一个坑盖戳降回普通进度，不另开新行。
+        // 看完后回看中段：换个 P 另开坑各记各位；列表里同片仍只收一卡（最近那 P 露面）。
         Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Saved, Report(me, video, 2, 90, 600));
-        var rewatch = _db.GetWatchHistoryOne(me, video);
+        var rewatch = _db.GetWatchHistoryOne(me, video, 2);
         Assert.Equal(90, rewatch!.PositionSec);
-        Assert.Equal(2, rewatch.PageIdx);
-        Assert.Single(_db.GetWatchHistory(me)); // 一人一片永远一行
+        Assert.Equal(600 * 0.95, _db.GetWatchHistoryOne(me, video, 1)!.PositionSec); // P1 的完结位原地躺着
+        Assert.Single(_db.GetWatchHistory(me)); // 两个坑也只摆一卡
 
         // 位置比时长还大（前端把缓冲末尾抖出去这种脏数）：夹进时长 → 照样按看完盖戳留档。
         Assert.Equal(WatchHistoryEndpoints.ProgressOutcome.Finished, Report(me, video, 2, 9999, 600));
@@ -219,10 +258,12 @@ public sealed class WatchHistoryTests : IDisposable
         var b = AddVideo("BVhist09", "乙片");
         var me = Seat("要清历史的");
         Report(me, a, 1, 100, 600);
+        Report(me, a, 3, 80, 600); // 甲片两个坑：单删一把全销，不留半截
         Report(me, b, 1, 200, 600);
 
         Assert.True(_db.DeleteWatchHistory(me, a));
         Assert.Null(_db.GetWatchHistoryOne(me, a));
+        Assert.Null(_db.GetWatchHistoryOne(me, a, 3)); // 这部片的每个 P 都跟着销
         Assert.NotNull(_db.GetWatchHistoryOne(me, b)); // 单删不牵连别部
         Assert.False(_db.DeleteWatchHistory(me, a));    // 再删一次：没这行，如实回 false
 
@@ -251,5 +292,68 @@ public sealed class WatchHistoryTests : IDisposable
         _db.ClearWatchHistory(mine);
         Assert.Null(_db.GetWatchHistoryOne(mine, video));
         Assert.Equal(400, _db.GetWatchHistoryOne(other, video)!.PositionSec);
+    }
+
+    [Fact]
+    public void 老库一行制迁到一P一坑_旧行搬家不丢且形状翻新()
+    {
+        // 仿 VideoSettingsTests 的装老库路数：先手工种一口旧主键（member_id, video_id）的表与一条存量，
+        // 再走 Initialize 的迁移门——老行得原样搬进新坑，主键换成三列，重跑还须幂等。
+        var dir = Path.Combine(Path.GetTempPath(), "lbs-watchhistory-migrate-" + Guid.NewGuid().ToString("N"));
+        var videosDir = Path.Combine(dir, "videos");
+        Directory.CreateDirectory(videosDir);
+        try
+        {
+            var paths = new DataPaths(dir, videosDir, dir, dir, dir);
+            using (var seed = new SqliteConnection($"Data Source={paths.DatabaseFile}"))
+            {
+                seed.Open();
+                using var cmd = seed.CreateCommand();
+                cmd.CommandText = """
+                    CREATE TABLE watch_history (
+                        member_id    INTEGER NOT NULL,
+                        video_id     INTEGER NOT NULL,
+                        page_idx     INTEGER NOT NULL,
+                        position_sec REAL NOT NULL,
+                        duration_sec REAL NOT NULL,
+                        updated_at_utc TEXT NOT NULL,
+                        PRIMARY KEY (member_id, video_id)
+                    );
+                    INSERT INTO watch_history VALUES (7, 42, 2, 88.5, 600, '2026-11-05T00:00:00.0000000+00:00');
+                    """;
+                cmd.ExecuteNonQuery();
+            }
+
+            var db = new StationDb(paths);
+            db.Initialize();
+
+            // 老行还在：同一人同一片的坑原封搬过来，四个数一毫不差。
+            var moved = db.GetWatchHistoryOne(7, 42, 2);
+            Assert.NotNull(moved);
+            Assert.Equal(88.5, moved!.PositionSec);
+            Assert.Equal(600, moved.DurationSec);
+
+            // 新坑能另开：同片另一 P 落行不受老坑拦截——这正是旧主键做不到的事。
+            db.UpsertWatchHistory(7, 42, 5, 120, 600);
+            Assert.Equal(120, db.GetWatchHistoryOne(7, 42, 5)!.PositionSec);
+            Assert.Equal(88.5, db.GetWatchHistoryOne(7, 42, 2)!.PositionSec);
+
+            // 重跑幂等：再 Initialize 一次不炸不丢。
+            db.Initialize();
+            Assert.Equal(88.5, db.GetWatchHistoryOne(7, 42, 2)!.PositionSec);
+
+            SqliteConnection.ClearAllPools();
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dir, true);
+            }
+            catch (IOException)
+            {
+                // 临时目录删不掉不影响结论
+            }
+        }
     }
 }

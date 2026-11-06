@@ -63,8 +63,8 @@ public static class WatchHistoryEndpoints
             return (null, ProgressOutcome.Finished);
         }
 
-        // 刚开个头：库里没行就不占坑（有行则照常覆盖，别把上次看到的点顶没了还留着旧数）。
-        if (position < StartFloorSec && db.GetWatchHistoryOne(memberId, videoId) is null)
+        // 刚开个头：这一 P 的坑是空的就不占（别的 P 有行不算，坑各管各的）；本 P 有行则照常覆盖，别把上次看到的点顶没了还留着旧数。
+        if (position < StartFloorSec && db.GetWatchHistoryOne(memberId, videoId, page) is null)
         {
             return (null, ProgressOutcome.Ignored);
         }
@@ -108,7 +108,8 @@ public static class WatchHistoryEndpoints
         });
 
         // 取进度：没看过回 null（前端按「从头播」处置，不编一个 0 出来冒充）。
-        app.MapGet("/api/videos/{id:long}/progress", (long id, StationDb db, HttpContext http) =>
+        // pageIdx 给了就查那一 P 的坑（切 P 续播用），不给取最近更新的那一 P（进页默认落点用）。
+        app.MapGet("/api/videos/{id:long}/progress", (long id, int? pageIdx, StationDb db, HttpContext http) =>
         {
             if (MemberGate.Current(http) is not { } me)
             {
@@ -121,7 +122,7 @@ public static class WatchHistoryEndpoints
                 return Results.Json(new { message = "馆藏里没这个视频" }, statusCode: StatusCodes.Status404NotFound);
             }
 
-            var progress = db.GetWatchHistoryOne(me.Id, id);
+            var progress = db.GetWatchHistoryOne(me.Id, id, pageIdx);
             return progress is null
                 ? Results.Json((object?)null)
                 : Results.Ok(new { pageIdx = progress.PageIdx, positionSec = progress.PositionSec, durationSec = progress.DurationSec });

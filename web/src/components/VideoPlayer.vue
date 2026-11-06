@@ -533,11 +533,12 @@ function clickVersion(codec) {
   }
 }
 
-// 版本账按分 P 记，切 P 回主版本
+// 版本账按分 P 记，切 P 回主版本。续播指针也要归零：旧 P 没落的 seek 不许飞进新 P，
+// 新 P 的点位由观看页重查后拿 resumeSec 重喂（它的 watch 自己会接）。
 watch(() => props.page?.index, () => {
   activeCodec.value = null
   restorePlan = null
-  resumePending = 0 // 手动切选集就是从头看，不把上一集的续播点硬塞到新 P 上
+  resumePending = 0
 })
 
 watch(currentSrc, () => {

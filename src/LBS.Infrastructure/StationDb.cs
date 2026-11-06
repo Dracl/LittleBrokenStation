@@ -217,7 +217,9 @@ public sealed partial class StationDb
             report.ExecuteNonQuery();
         }
 
-        // 观看历史：一人一片一行（位置随看随覆盖），只存「看到哪了」这四个数。
+        // 观看历史：一人一片每 P 一行（同 P 再报才覆盖），只存「看到哪了」这四个数。
+        // 2026-11-06 站长拿多 P 片子试出旧口径的坑：一人一片一行时 P2 的位置盖掉 P1，而进放映厅恒落第一 P，
+        // 行上的 page_idx 对不上就从头播——多 P 续播几乎不可用。改成一 P 一坑，各记各位。
         // 看完的也留行（2026-10-29 站长改口：历史记所有不只没看完的，过线由端点盖戳留档），行也不存片名与封面：
         // 那些随馆藏走，读列表时 JOIN videos 现取（片被删了行就跟着看不见，不留死行）。
         using (var history = connection.CreateCommand())
@@ -230,12 +232,14 @@ public sealed partial class StationDb
                     position_sec REAL NOT NULL,
                     duration_sec REAL NOT NULL,
                     updated_at_utc TEXT NOT NULL,
-                    PRIMARY KEY (member_id, video_id)
+                    PRIMARY KEY (member_id, video_id, page_idx)
                 );
                 CREATE INDEX IF NOT EXISTS idx_watchhistory_member ON watch_history (member_id, updated_at_utc);
                 """;
             history.ExecuteNonQuery();
         }
+
+        MigrateWatchHistoryPerPage(connection);
 
         // 站内合集：会员自己攒的片单。集只存名、简介与东家；item 只存 (collection_id, video_id) 这一对，
         // 片名封面一律读时 JOIN videos 现取（片被删了这条 item 就自然看不见，不留死行，与观看历史同一哲学）。
@@ -755,6 +759,60 @@ public sealed partial class StationDb
         using var alter = connection.CreateCommand();
         alter.CommandText = $"ALTER TABLE {table} DROP COLUMN {column};";
         alter.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// watch_history 主键的一次性迁移（仿 <see cref="EnsureColumn"/> 的幂等风格）：老库的主键是
+    /// (member_id, video_id)——一人一片一行，多 P 片子后报的 P 盖掉前一个 P 的续播位。重建为
+    /// (member_id, video_id, page_idx) 一 P 一坑；老表同一部片只有一行，搬过去天然无撞键。
+    /// 新库首开建的已是新表（DDL 里主键带着 page_idx），检测即返回；四步重建走一把事务，中途炸了老行原样躺着。
+    /// </summary>
+    private static void MigrateWatchHistoryPerPage(SqliteConnection connection)
+    {
+        string? schema;
+        using (var check = connection.CreateCommand())
+        {
+            check.CommandText = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'watch_history';";
+            schema = check.ExecuteScalar() as string;
+        }
+
+        // 列定义各占一行，「member_id, video_id, page_idx」这个连珠只在主键句里出现：查它等于查主键形状。
+        if (schema is null || schema.Contains("member_id, video_id, page_idx", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        using var transaction = connection.BeginTransaction();
+        using (var rebuild = connection.CreateCommand())
+        {
+            rebuild.Transaction = transaction;
+            rebuild.CommandText = """
+                CREATE TABLE watch_history_paged (
+                    member_id    INTEGER NOT NULL,
+                    video_id     INTEGER NOT NULL,
+                    page_idx     INTEGER NOT NULL,
+                    position_sec REAL NOT NULL,
+                    duration_sec REAL NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    PRIMARY KEY (member_id, video_id, page_idx)
+                );
+                INSERT INTO watch_history_paged (member_id, video_id, page_idx, position_sec, duration_sec, updated_at_utc)
+                    SELECT member_id, video_id, page_idx, position_sec, duration_sec, updated_at_utc FROM watch_history;
+                DROP TABLE watch_history;
+                ALTER TABLE watch_history_paged RENAME TO watch_history;
+                """;
+            rebuild.ExecuteNonQuery();
+        }
+
+        // 索引随老表一起被 DROP 了，同名重建（IF NOT EXISTS：新库路径上它也已被建过，重跑安静）。
+        using (var index = connection.CreateCommand())
+        {
+            index.Transaction = transaction;
+            index.CommandText = "CREATE INDEX IF NOT EXISTS idx_watchhistory_member ON watch_history (member_id, updated_at_utc);";
+            index.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
     }
 
     /// <summary>

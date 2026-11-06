@@ -95,13 +95,16 @@ async function loadWatch(silent = false, withRelated = !silent) {
 
 function selectPage(index) {
   activeIndex.value = index
-  // 换源后等 autoplay 无望，交给用户按播放；这里只把弹幕时间归零自然发生
+  // 换源后等 autoplay 无望，交给用户按播放；这里只把弹幕时间归零自然发生。
+  // 切 P 同时重问那一 P 的续播坑：一 P 一坑各记各位，看过一半的 P 回去接着放，没看过的从头放。
+  if (data.value) loadResumePoint(data.value.id, index)
 }
 
-// ─── 续播：进页问一次「上次看到哪」，够条件就把播放器丢过去并在播放器下缘浮一枚小泡 ───
-// 判据都在这一层：刚开头（≤10 秒）与接近片尾（≥95%）都不跳；位置不在落地那一分 P 上也不跳
-// （手动切选集是另一件事，不该被续播插一脚）。真正的 seek 由播放器在元数据就位后落。
+// ─── 续播：进页与切 P 都问一次「这一 P 上次看到哪」，够条件就把播放器丢过去并在播放器下缘浮一枚小泡 ───
+// 判据都在这一层：刚开头（≤10 秒）与接近片尾（≥95%）都不跳；服务端按 pageIdx 查坑，回话里的 P 再对一遍双保险。
+// 真正的 seek 由播放器在元数据就位后落（它盯着 resumeSec 的变动，切 P 重问的新点位到了自己会接）。
 const resumeSec = ref(0)
+let resumeSeq = 0 // 代次护城：快速连切 P 时旧应答迟到不盖新 P 的点位
 const resumeTip = ref(null) // { sec }：null = 不摆泡
 const resumeTipFading = ref(false)
 let resumeTipFadeTimer = 0
@@ -124,11 +127,13 @@ function restartFromStart() {
 }
 
 async function loadResumePoint(videoId, pageIndex) {
+  const seq = ++resumeSeq
   resumeSec.value = 0
   clearResumeTip()
   try {
-    const res = await fetch(`/api/videos/${videoId}/progress`)
+    const res = await fetch(`/api/videos/${videoId}/progress?pageIdx=${pageIndex}`)
     const p = res.ok ? await res.json() : null
+    if (seq !== resumeSeq) return // 期间又切了 P：这一发是旧页的迟到应答，丢
     if (!p) return // 没看过（或后端没应答）：从头播就是正确答案
     if (Number(p.pageIdx) !== pageIndex) return
     const sec = Number(p.positionSec)
