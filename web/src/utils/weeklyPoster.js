@@ -28,6 +28,8 @@ export {
   POSTER_THEMES,
   POSTER_STYLES,
   POSTER_CONSTRUCT_ACCENTS,
+  POSTER_QR,
+  posterQr,
 } from './weeklyPosterKit.js'
 
 /** 认不住就回这一套，宁可画成老样子也不画成空白。 */

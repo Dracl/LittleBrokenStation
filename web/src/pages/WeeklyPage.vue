@@ -15,11 +15,16 @@ import {
   POSTER_CONSTRUCT_ACCENTS,
   POSTER_THEMES,
   POSTER_STYLES,
+  POSTER_QR,
   paintPoster,
   posterBackdrop,
   posterFooter,
+  posterQr,
   posterTheme,
 } from '../utils/weeklyPoster'
+import { ensurePosterFont } from '../utils/videoPoster'
+// qrcode.min.js 是登录窗/分享棚同款经典脚本（顶层 var QRCode，无模块导出），按资源 URL 注入
+import qrcodeScriptUrl from '../libs/qrcode.min.js?url'
 
 // 分站周报：一张卡的工夫看完这一周——新货、弹幕增量、全站家底，外加 Top5 最多人看。
 // 数据全走 /api/weekly（成员登录才给看）；周切换 0..4 **全是已过完的整周**：0=上一个刚过完的周，1..4 再往前数。
@@ -474,6 +479,7 @@ const posterOpts = ref({
   subtitle: '',
   sign: '',
   showSign: true,
+  showQr: true,
   style: 'editorial',
   accent: 'pink',
   theme: 'paper',
@@ -630,7 +636,11 @@ function renderPosterOn(canvas, S) {
   const model = posterModel()
   const probe = document.createElement('canvas').getContext('2d')
   const bodyH = paintPoster(probe, model, W, posterImgs.value, opts)
-  const H = Math.max(560, bodyH) + 92
+  // 底部二维码（11-06 站长点单，当日二改）：开着且码就绪才给画布加高一条码带——码紧跟正文，
+  // 发丝线与日期降到码下压底（footer 拿整高，那条空白带就是这么消的）；码没生成好就当没这回事。
+  const qrOn = !!(opts.showQr && qrCanvasCache)
+  const qrBand = qrOn ? POSTER_QR.band : 0
+  const H = Math.max(560, bodyH) + 92 + qrBand
   canvas.width = Math.round(W * S)
   canvas.height = Math.round(H * S)
   const g = canvas.getContext('2d')
@@ -638,7 +648,46 @@ function renderPosterOn(canvas, S) {
   posterBackdrop(g, W, H, opts)
   paintPoster(g, model, W, posterImgs.value, opts)
   posterFooter(g, model, posterTheme(opts), W, H)
+  if (qrOn) posterQr(g, W, H, qrCanvasCache)
   posterSize.value = { w: Math.round(W * 2), h: Math.round(H * 2) }
+}
+
+// ── 底部二维码（11-06 站长点单）：海报最底下大码 = 本周周报地址，开关在调参台 ──
+// 生成器借登录窗/分享棚的 qrcodejs（零新依赖）：同步点阵画进隐藏容器，咱把它的 canvas 借给画笔。
+// 码文 = origin/weekly?w=本周周号（与地址栏绝对周同款形，扫码直达那一周而非最新一期）。
+const qrBox = ref(null)
+let qrCanvasCache = null
+let qrTextCache = ''
+let qrScript = null
+function loadQrScript() {
+  if (window.QRCode) return Promise.resolve()
+  if (!qrScript) {
+    qrScript = new Promise((resolve, reject) => {
+      const el = document.createElement('script')
+      el.src = qrcodeScriptUrl
+      el.onload = () => resolve()
+      el.onerror = () => { qrScript = null; reject(new Error('二维码脚本没加载成')) }
+      document.head.appendChild(el)
+    })
+  }
+  return qrScript
+}
+async function ensureQr() {
+  const o = posterOpts.value
+  if (!o.showQr || !data.value) return
+  const w = WEEK_ID_RE.test(data.value.weekLabel ?? '') ? `?w=${encodeURIComponent(data.value.weekLabel)}` : ''
+  const text = `${location.origin}/weekly${w}`
+  if (qrCanvasCache && qrTextCache === text) return
+  // 换周先作废旧码：新码没成之前不许拿旧周的码充数（扫码扫到上一周就是假凭据）
+  if (text !== qrTextCache) { qrCanvasCache = null; qrTextCache = '' }
+  try { await loadQrScript() } catch { return }
+  const el = qrBox.value
+  if (!el || !window.QRCode) return
+  el.innerHTML = ''
+  // 248 方阵 = 2× 的 124 logical：导出 2 倍时点阵 crisp 不糊；黑码白底是扫码对比度的老规矩
+  new window.QRCode(el, { text, width: 248, height: 248, correctLevel: window.QRCode.CorrectLevel.H, colorDark: '#171310', colorLight: '#ffffff' })
+  const cv = el.querySelector('canvas')
+  if (cv) { qrCanvasCache = cv; qrTextCache = text }
 }
 
 async function openPosterStudio() {
@@ -647,6 +696,9 @@ async function openPosterStudio() {
   posterBusy.value = true
   try {
     await loadPosterImgs(data.value)
+    // 开画前两件铺垫：海报字体（与视频分享同字，模块级单例二调即过）+ 底部码现做
+    await ensurePosterFont()
+    await ensureQr()
   } finally {
     posterBusy.value = false
   }
@@ -660,15 +712,21 @@ watch(
   posterOpts,
   () => {
     clearTimeout(posterPreviewTimer)
-    posterPreviewTimer = setTimeout(() => {
-      if (posterOpen.value && posterCanvas.value) renderPosterOn(posterCanvas.value, 1.6)
+    posterPreviewTimer = setTimeout(async () => {
+      if (!posterOpen.value || !posterCanvas.value) return
+      await ensurePosterFont()
+      await ensureQr()
+      // 与 openPosterStudio/导出同倍率（1.6 是旧账遗留：调个参预览反而糊一档）
+      renderPosterOn(posterCanvas.value, POSTER_RENDER_SCALE)
     }, 150)
   },
   { deep: true },
 )
 
-function downloadPoster() {
+async function downloadPoster() {
   try {
+    await ensurePosterFont()
+    await ensureQr()
     const cv = document.createElement('canvas')
     renderPosterOn(cv, 2)
     const a = document.createElement('a')
@@ -1222,6 +1280,12 @@ function downloadPoster() {
               <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" :style="{ left: posterOpts.showSign ? '18px' : '2px' }"></span>
             </button>
           </div>
+          <div class="flex items-center justify-between py-1">
+            <span class="text-[12px] text-inkSub" title="海报最底下居中一枚大码，扫它直达本周周报那一页">底部二维码（扫到本周周报）</span>
+            <button type="button" class="relative h-5 w-9 rounded-full transition" :class="posterOpts.showQr ? 'bg-stationPink' : 'bg-[#d9dde3]'" @click="posterOpts.showQr = !posterOpts.showQr">
+              <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" :style="{ left: posterOpts.showQr ? '18px' : '2px' }"></span>
+            </button>
+          </div>
 
           <p class="mt-5 text-[11px] font-medium text-inkFaint">风格</p>
           <div class="mt-2 flex gap-1.5">
@@ -1300,6 +1364,9 @@ function downloadPoster() {
           </div>
           <p class="mt-4 text-[10px] leading-4 text-inkFaint/80">导出为 2 倍分辨率 PNG（宽 {{ POSTER_WIDTH * 2 }} px）。</p>
         </div>
+
+        <!-- 二维码点阵的隐藏工位（qrcodejs 要真容器，画完借它的 canvas，同分享棚手法） -->
+        <div ref="qrBox" class="pointer-events-none fixed left-[-9999px] top-0 h-[300px] w-[300px] opacity-0" aria-hidden="true"></div>
 
         <!-- 右栏：实况预览 -->
         <div class="flex min-w-0 flex-1 flex-col bg-[#eceef1] dark:bg-[#12151c]">

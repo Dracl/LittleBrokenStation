@@ -284,10 +284,11 @@ function heroBanner(g, M, T, W, opts, imgs) {
     g.fillText(fitText(g, sub, W - PAD * 2 - 16), PAD + 16, 366)
   }
 
-  // 署名：头像 + 名字，压在右下角与左下标题对角平衡（站长 11-06 圈图点单搬右）
+  // 署名：头像 + 名字，压在右下角与左下标题对角平衡（站长 11-06 圈图点单搬右；
+  // 当日二单放大：头像直径 54 = 标题字号 54 同高，名字与 kicker 跟着长大）
   if (opts.showSign && M.signName) {
     const av = imgs.get('__avatar')
-    const r = 21
+    const r = 27
     const cx = W - PAD - r
     const cy = 420 - r
     g.save()
@@ -301,9 +302,9 @@ function heroBanner(g, M, T, W, opts, imgs) {
       g.fillStyle = T.heroChip
       g.fillRect(cx - r, cy - r, r * 2, r * 2)
       g.fillStyle = T.heroTitle
-      g.font = `600 15px ${FF}`
+      g.font = `600 19px ${FF}`
       g.textAlign = 'center'
-      g.fillText(M.signName.slice(0, 1), cx, cy + 5)
+      g.fillText(M.signName.slice(0, 1), cx, cy + 7)
       g.textAlign = 'left'
     }
     g.restore()
@@ -312,11 +313,11 @@ function heroBanner(g, M, T, W, opts, imgs) {
     g.beginPath()
     g.arc(cx, cy, r, 0, Math.PI * 2)
     g.stroke()
-    kicker(g, 'THIS WEEK BY', cx - r - 14, cy + 1, 8, T.heroSub, '2.4px', 'right')
+    kicker(g, 'THIS WEEK BY', cx - r - 16, cy - 4, 10, T.heroSub, '3px', 'right')
     g.fillStyle = T.heroTitle
-    g.font = `500 13px ${FF}`
+    g.font = `500 20px ${FF}`
     g.textAlign = 'right'
-    g.fillText(fitText(g, M.signName, 160), cx - r - 14, cy + 19)
+    g.fillText(fitText(g, M.signName, 220), cx - r - 16, cy + 21)
     g.textAlign = 'left'
   }
 

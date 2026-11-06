@@ -9,7 +9,9 @@
 /** 海报基准宽度（px）。导出 PNG 时按这个宽度乘倍率放大。 */
 export const POSTER_WIDTH = 750
 
-export const FF = '"Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif'
+// 首位 HarmonyOS Sans SC 与视频分享海报同字（utils/videoPoster.ensurePosterFont 按需注入，模块级单例）：
+// 调用方开画前 await 一次，没注入成时自然降级后面几档，不阻塞不报错。
+export const FF = '"HarmonyOS Sans SC","Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif'
 export const FFM = '"Segoe UI","Helvetica Neue",Arial,sans-serif'
 
 /**
@@ -189,5 +191,30 @@ export function drawCover(g, img, x, y, w, h, T, label, opts = {}) {
     g.textAlign = 'left'
   }
   if (typeof opts.overlay === 'function') opts.overlay(g, x, y, w, h)
+  g.restore()
+}
+
+/**
+ * 落款二维码（11-06 站长点单，当日二改）：海报最底下居中一枚大码，内容 = 本周周报地址。
+ * 二改缘由：首版码挂在发丝线上方，中间一条空白带被站长打回「空空的好难看」——
+ * 现在码紧跟正文，发丝线与日期降到码下压底（renderPosterOn 把整高递给 footer，不再扣码带）。
+ * 白盘位置从发丝线往上算：hair 对齐各皮肤 footer 的发丝线（H-62），gap 是盘底到发丝线的呼吸。
+ * 码体由调用方（WeeklyPage 拿 qrcodejs 现成组件）生成好后递 canvas，画笔只管摆盘。
+ */
+export const POSTER_QR = { size: 124, pad: 14, band: 178, ring: 10, hair: 62, gap: 28 }
+
+export function posterQr(g, W, H, qrCanvas) {
+  const S = POSTER_QR.size
+  const box = S + POSTER_QR.pad * 2
+  const bx = Math.round((W - box) / 2)
+  // 盘底从发丝线往上留 gap 呼吸（站长 11-06 两轮下挪钦定：35→25）；发丝线位与各皮肤 footer 的 H-62 对齐
+  const by = H - POSTER_QR.hair - POSTER_QR.gap - box
+  g.save()
+  g.fillStyle = '#ffffff'
+  roundRect(g, bx, by, box, box, POSTER_QR.ring)
+  g.fill()
+  if (qrCanvas && qrCanvas.width > 0) {
+    g.drawImage(qrCanvas, bx + POSTER_QR.pad, by + POSTER_QR.pad, S, S)
+  }
   g.restore()
 }
