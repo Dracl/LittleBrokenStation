@@ -263,6 +263,26 @@ public sealed partial class StationDb
             collections.ExecuteNonQuery();
         }
 
+        // UP 历史脸档案：一位 UP 在本站存过的历张脸（周巡脸员每周去 card 口问一次，换脸就添一行）。
+        // 为什么单开一张表而不塞进 video_meta：那张是「一条稿件一行」的档案快照，up_face 只留最新那张脸，
+        // 而且它的行随稿件走 —— 销档 / 进回收站时档案跟着被扰走，「这位三年前长什么样」就没了；
+        // 同一个人换过的几张脸更没地方摆（一列一个值，塞 JSON 数组就查不了也比不了新旧）。
+        // 脸件本身只落 data/up_faces（与 thumbs / previews 同一族派生物区），这里只记「谁、哪张脸、何时首见/再见」。
+        using (var upFace = connection.CreateCommand())
+        {
+            upFace.CommandText = """
+                CREATE TABLE IF NOT EXISTS up_faces (
+                    mid        INTEGER NOT NULL,
+                    face_rel   TEXT    NOT NULL,
+                    first_seen TEXT    NOT NULL,
+                    last_seen  TEXT    NOT NULL,
+                    UNIQUE (mid, face_rel)
+                );
+                CREATE INDEX IF NOT EXISTS idx_up_faces_mid ON up_faces (mid, last_seen DESC);
+                """;
+            upFace.ExecuteNonQuery();
+        }
+
         // 逐件生成耗时（秒，ffmpeg 从起跑到交件的墙钟时间）：站长室「单件耗时」只吃这一列的真数，
         // 绝拿 seconds（产物时长）冒充。早先建的库没这列，缺就补。
         EnsureColumn(connection, "previews", "cost_seconds", "REAL");

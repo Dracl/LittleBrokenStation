@@ -57,6 +57,14 @@ public sealed record DataPaths(string Root, string Videos, string Downkyi, strin
     /// </summary>
     public string ThumbsStaging => Path.Combine(Root, "thumbs", ".staging");
 
+    /// <summary>
+    /// UP 历史脸档案区（周巡脸员每周从 card 口取一张脸存这里）：与 <see cref="Avatars"/> 分开一座——
+    /// 那座是「评论区当前在用的脸」（同图异处共用、sha1 命名天然去重），这座是「某人历史上存过的脸」，
+    /// 台账在 up_faces 表，件名依旧走 AvatarFileName 那套 sha1 规矩。
+    /// 同样是派生物：不进 videos、不进 artifacts、不进 AdminStats 的容量账，随时可删可再生（只是脸得重下）。
+    /// </summary>
+    public string UpFaces => Path.Combine(Root, "up_faces");
+
     public static DataPaths Resolve()
     {
         var (root, hint) = ResolveDataRoot(Directory.GetCurrentDirectory(), Environment.GetEnvironmentVariable(RootEnvVar));
@@ -72,7 +80,7 @@ public sealed record DataPaths(string Root, string Videos, string Downkyi, strin
             RootHint = hint,
         };
 
-        foreach (var dir in new[] { paths.Root, paths.Videos, paths.Downkyi, paths.Cookies, paths.Cache, paths.Avatars, paths.Emotes, paths.CmtImg, paths.Recycle, paths.Previews, paths.Thumbs, paths.ThumbsStaging })
+        foreach (var dir in new[] { paths.Root, paths.Videos, paths.Downkyi, paths.Cookies, paths.Cache, paths.Avatars, paths.Emotes, paths.CmtImg, paths.Recycle, paths.Previews, paths.Thumbs, paths.ThumbsStaging, paths.UpFaces })
         {
             Directory.CreateDirectory(dir);
         }

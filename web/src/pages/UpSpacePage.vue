@@ -10,6 +10,7 @@ import { createPreviewHost } from '../utils/hoverPreview'
 import { defaultAvatar } from '../utils/avatar.js'
 import { fmtFans } from '../utils/fans.js'
 import { keepFeed, tailCursor } from '../utils/dynFeed.js'
+import { faceFor, chosenFace, chooseFace } from '../utils/faceChoice.js'
 
 // ─── UP 空间：这位 UP 在【本站】存了多少片。放映厅名片上那颗蓝钮进来。
 // 版式 1:1 复刻 B 站空间主页（站长 11-05 点单）：全宽页头带 → 名片叠压（头像/名字/认证徽/签名/数字数据行）
@@ -27,10 +28,20 @@ const faceFailed = ref(false)
 
 const mid = computed(() => route.params.mid)
 const name = computed(() => up.value?.name || `UP 主 ${mid.value}`)
-const faceSrc = computed(() => (up.value?.face && !faceFailed.value ? up.value.face : defaultAvatar))
+const faceSrc = computed(() => {
+  // 本机钦选压过服务器脸（小本本住 utils/faceChoice，全员可换只改本机）；取色页头也跟着钦选脸走
+  const face = faceFor(mid.value, up.value?.face)
+  return face && !faceFailed.value ? face : defaultAvatar
+})
 const spaceUrl = computed(() => `https://space.bilibili.com/${mid.value}`)
 const officialTitle = computed(() => String(up.value?.official ?? '').trim())
 function onFaceError() {
+  // 钦选的件被清站拍掉了：收回本机钦选、让服务器现行脸顶上，再砸才落默认小人
+  if (chosenFace(mid.value)) {
+    chooseFace(mid.value, null)
+    faceFailed.value = false
+    return
+  }
   faceFailed.value = true
 }
 
@@ -256,6 +267,41 @@ function showToast(msg) {
   spaceToastTimer = setTimeout(() => { spaceToast.value = null }, 2600)
 }
 
+// ── 头像相册弹层（切脸列表 11-06）：点名片脸开弹层，点谁是谁 —— 只写本机小本本，
+// 服务器不记一笔（与动态本机制同脾气）。档案由周巡检逐周攒（up_faces），盘上没件的条目后端已滤。
+const faceAlbumOpen = ref(false)
+const faceAlbum = ref([])
+const faceAlbumLoading = ref(false)
+const faceAlbumLoaded = ref(false)
+const faceAlbumFailed = ref(false)
+async function openFaceAlbum() {
+  faceAlbumOpen.value = true
+  if (faceAlbumLoaded.value || faceAlbumLoading.value) return
+  faceAlbumLoading.value = true
+  faceAlbumFailed.value = false
+  try {
+    const res = await fetch(`/api/up/${mid.value}/faces`)
+    if (res.ok) {
+      faceAlbum.value = await res.json().catch(() => [])
+      faceAlbumLoaded.value = true
+    } else {
+      faceAlbumFailed.value = true
+    }
+  } catch {
+    faceAlbumFailed.value = true
+  } finally {
+    faceAlbumLoading.value = false
+  }
+}
+function pickFace(rel) {
+  chooseFace(mid.value, rel)
+  faceFailed.value = false // 换脸重开失败位，新件拉不到由 onFaceError 接手
+  showToast(rel ? `这台浏览器上，${name.value}就是这张脸了` : '回到跟服务器现行脸')
+}
+function isChosen(rel) {
+  return chosenFace(mid.value) === rel
+}
+
 async function load() {
   loading.value = true
   failed.value = false
@@ -271,6 +317,11 @@ async function load() {
     const data = await res.json().catch(() => null)
     up.value = data?.up ?? null
     items.value = data?.items ?? []
+    // 换人时相册与弹层一并归零，上一位的档案不许骑到新一位头上
+    faceAlbumOpen.value = false
+    faceAlbum.value = []
+    faceAlbumLoaded.value = false
+    faceAlbumFailed.value = false
     // 每次进页/换人都从视频 tab 起手，动态探测并行去探，不拦主棒
     tab.value = 'videos'
     probeDynamics()
@@ -346,14 +397,21 @@ watch(mid, load)
                relative z-10 不可省：名片是叠在页头带上的，不提前层就是名字与认证徽被背板活埋（11-05 真机截图实抓）。 -->
           <div class="relative z-10 flex flex-wrap items-end justify-between gap-x-6 px-6 pb-5">
             <div class="-mt-12 flex min-w-0 items-end gap-4">
-              <img
-                :src="faceSrc"
-                :alt="name"
-                loading="lazy"
-                referrerpolicy="no-referrer"
-                class="h-24 w-24 shrink-0 rounded-full bg-white/10 object-cover shadow-[0_4px_16px_-4px_rgba(15,18,25,.35)] ring-4 ring-white dark:ring-[#1b1f27]"
-                @error="onFaceError"
-              />
+              <!-- 点名片脸开头像档案弹层（切脸只改本机，住 utils/faceChoice）；「本机」角标 = 正用着钦选脸 -->
+              <button
+                class="relative shrink-0 cursor-pointer rounded-full border-0 bg-transparent p-0"
+                :title="`看 ${name} 的头像档案（换脸只在这台浏览器生效）`"
+                @click="openFaceAlbum"
+              >
+                <img
+                  :src="faceSrc"
+                  :alt="name"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  class="h-24 w-24 rounded-full bg-white/10 object-cover shadow-[0_4px_16px_-4px_rgba(15,18,25,.35)] ring-4 ring-white transition hover:brightness-105 dark:ring-[#1b1f27]"
+                  @error="onFaceError"
+                />
+              </button>
               <div class="min-w-0 pb-1">
                 <h1 class="flex flex-wrap items-center gap-2 text-[24px] font-semibold leading-tight text-inkMain md:text-[26px]">
                   <span class="min-w-0 truncate">{{ name }}</span>
@@ -527,6 +585,46 @@ watch(mid, load)
             <p class="mt-1 text-[12px] text-inkFaint">站长在站长室「动态关注」里登记这位后，等巡捕一轮就有货了</p>
           </div>
         </template>
+
+        <!-- 头像档案弹层：点谁是谁，只写本机小本本（与动态本机赞同脾气，服务器不记一笔） -->
+        <div v-if="faceAlbumOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="faceAlbumOpen = false">
+          <div class="w-full max-w-[420px] rounded-2xl bg-cardBg p-5 shadow-xl">
+            <div class="flex items-start justify-between gap-3">
+              <h3 class="text-[15px] font-semibold text-inkMain">{{ name }} 的头像档案</h3>
+              <button class="rounded px-1 text-[15px] leading-none text-inkFaint transition hover:text-inkMain" aria-label="关闭" @click="faceAlbumOpen = false">✕</button>
+            </div>
+            <p class="mt-1 text-[12px] leading-relaxed text-inkFaint">点谁是谁——只存在这台浏览器，别人看不到。B 站没有历史头像接口，巡捕每周巡访时见到谁的脸就记谁，档案一天天厚起来。</p>
+            <div v-if="faceAlbumLoading" class="py-9 text-center text-[13px] text-inkFaint">正在翻档案库…</div>
+            <div v-else-if="faceAlbumFailed" class="py-9 text-center text-[13px] text-inkFaint">档案库没应声，稍后再翻</div>
+            <template v-else>
+              <div class="mt-4 grid grid-cols-3 gap-3">
+                <!-- 头一格永远是服务器现行脸：点它 = 收回钦选、回到跟服务器 -->
+                <button class="group block min-w-0 text-left" @click="pickFace(null)">
+                  <img
+                    :src="up?.face || defaultAvatar"
+                    :alt="`${name} 服务器现行脸`"
+                    referrerpolicy="no-referrer"
+                    class="aspect-square w-full rounded-xl border-2 object-cover transition"
+                    :class="!chosenFace(mid) ? 'border-stationPink' : 'border-transparent group-hover:border-stationPink/50'"
+                  />
+                  <span class="mt-1 block truncate text-[10.5px] text-inkFaint">服务器现行</span>
+                </button>
+                <button v-for="f in faceAlbum" :key="f.faceRel" class="group block min-w-0 text-left" @click="pickFace(f.faceRel)">
+                  <img
+                    :src="f.faceRel"
+                    :alt="`${name} 档案脸`"
+                    referrerpolicy="no-referrer"
+                    loading="lazy"
+                    class="aspect-square w-full rounded-xl border-2 object-cover transition"
+                    :class="chosenFace(mid) === f.faceRel ? 'border-stationPink' : 'border-transparent group-hover:border-stationPink/50'"
+                  />
+                  <span class="mt-1 block truncate text-[10.5px] text-inkFaint">约 {{ String(f.firstSeen || '').slice(0, 10) }} 相识</span>
+                </button>
+              </div>
+              <p v-if="!faceAlbum.length" class="mt-3 text-center text-[11.5px] text-inkFaint">档案库还空着——巡捕每周巡几轮，见过的脸就会记进来</p>
+            </template>
+          </div>
+        </div>
 
       <p v-if="spaceToast" class="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-inkMain/85 px-4 py-2 text-xs text-white shadow-lg">{{ spaceToast }}</p>
       </template>

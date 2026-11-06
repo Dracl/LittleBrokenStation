@@ -161,6 +161,9 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
                     AddTree(zip, paths.Avatars, "caches/avatars/", tally);
                     AddTree(zip, paths.Emotes, "caches/emotes/", tally);
                     AddTree(zip, paths.Cache, "caches/cache/", tally);
+                    // UP 历史脸（周巡脸员的存件）同属缓存一族：台账（up_faces）跟着 station.db 走，件就得跟着 caches 走，
+                    // 两边分家导入就会把对不上号的幽灵地址递给人家。
+                    AddTree(zip, paths.UpFaces, "caches/up_faces/", tally);
                 }
 
                 if (options.WithPreviews)
@@ -616,6 +619,7 @@ public static class PendingImportSwapper
             CopyMerge(Path.Combine(staging, "caches", "avatars"), paths.Avatars);
             CopyMerge(Path.Combine(staging, "caches", "emotes"), paths.Emotes);
             CopyMerge(Path.Combine(staging, "caches", "cache"), paths.Cache);
+            CopyMerge(Path.Combine(staging, "caches", "up_faces"), paths.UpFaces); // UP 历史脸回座（台账在 station.db 里，件得跟着一起换芯）
             CopyMerge(Path.Combine(staging, "previews"), paths.Previews);
 
             // ④ 引擎任务台账清掉：新库的行在引擎眼里是生面孔，不清会被「已存在」误拦（也正好躲开回炉判重撞车）

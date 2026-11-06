@@ -5,6 +5,7 @@ import TopBar from '../components/TopBar.vue'
 import DynamicFeedCard from '../components/DynamicFeedCard.vue'
 import { member } from '../memberStore'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
+import { faceFor } from '../utils/faceChoice.js'
 import { keepFeed, tailCursor } from '../utils/dynFeed.js'
 
 const route = useRoute()
@@ -172,7 +173,7 @@ const focusHit = ref(null)
           :title="`${t.nickname || t.mid} · ${t.count} 条`"
           @click="pickFilter(t.mid)"
         >
-          <img :src="t.faceUrl || defaultAvatar" referrerpolicy="no-referrer" loading="lazy" class="h-5 w-5 rounded-full object-cover" alt="" @error="onAvatarError" />
+          <img :src="faceFor(t.mid, t.faceUrl) || defaultAvatar" referrerpolicy="no-referrer" loading="lazy" class="h-5 w-5 rounded-full object-cover" alt="" @error="onAvatarError" />
           <span class="max-w-[110px] truncate">{{ t.nickname || `B站号 ${t.mid}` }}</span>
         </button>
       </div>

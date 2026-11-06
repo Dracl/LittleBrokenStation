@@ -25,11 +25,13 @@ import LevelBadge from './LevelBadge.vue'
 import ShareDialog from './ShareDialog.vue'
 import BIcon from './BIcon.vue'
 import { biDynForward, biDynComment, biDynLike, biDynLikeFill } from '../assets/bicons'
+import { useRouter } from 'vue-router'
 import { member, loginDialogOpen } from '../memberStore'
 import { friendlyTime } from '../utils/time'
 import CollapsibleRichText from './CollapsibleRichText.vue'
 import { normUrl, inferImageBadge } from '../utils/dynpic'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
+import { faceFor } from '../utils/faceChoice.js'
 
 const props = defineProps({
   d: { type: Object, required: true },
@@ -233,7 +235,19 @@ function avatarClass(mid) {
 }
 
 function authorFace() {
-  return d.authorFaceUrl || props.faceByMid[d.authorMid] || ''
+  // 本机钦选压过服务器脸（小本本住 utils/faceChoice，全员可换只改本机）
+  return faceFor(d.authorMid, d.authorFaceUrl || props.faceByMid[d.authorMid] || '')
+}
+
+function origAuthorFace() {
+  return faceFor(d.origAuthorMid, d.origAuthorFace) || defaultAvatar
+}
+
+// 脸与名字是进 UP 空间的门（站长 11-06 点名：动态页点头像/名字该落到 TA 的站内空间）；
+// 没 mid 的人（转发原主偶尔查无此号）点了不跳，不送进空页吃「找不到人」。
+const router = useRouter()
+function goUpSpace(mid) {
+  if (mid != null && Number(mid) > 0) router.push(`/up/${mid}`)
 }
 </script>
 
@@ -244,18 +258,24 @@ function authorFace() {
     :class="['border-lineSoft', highlight ? 'ring-2 ring-stationPink/60' : '']"
     style="padding-left: 88px"
   >
-    <!-- 头像独柱（官方 bili-dyn-item-draw 布局）：88px 左栏居中挂脸，正文/底栏都从 88px 起对齐 -->
+    <!-- 头像独柱（官方 bili-dyn-item-draw 布局）：88px 左栏居中挂脸，正文/底栏都从 88px 起对齐；点头脸进 TA 的站内空间 -->
     <div class="absolute left-0 top-0 flex h-[88px] w-[88px] items-center justify-center">
       <AvatarImg
         :face="authorFace()"
         :name="d.authorName || String(d.authorMid ?? '?')"
-        :class="['h-12 w-12 shrink-0 rounded-full object-cover text-base text-white', avatarClass(d.authorMid)]"
+        :class="['h-12 w-12 shrink-0 cursor-pointer rounded-full object-cover text-base text-white transition hover:brightness-105', avatarClass(d.authorMid)]"
+        :title="d.authorName ? `去 ${d.authorName} 的站内空间` : ''"
+        @click="goUpSpace(d.authorMid)"
       />
     </div>
     <!-- 头行：昵称 + 时间（官高 62px）；视频卡右上挂内外签 -->
     <header class="flex min-h-[62px] items-start justify-between pt-4">
       <span class="min-w-0 flex-1">
-        <span class="block truncate text-[15px] font-semibold leading-5 text-inkMain">{{ d.authorName || `B站号 ${d.authorMid}` }}</span>
+        <span
+          class="block cursor-pointer truncate text-[15px] font-semibold leading-5 text-inkMain transition-colors hover:text-stationPink"
+          :title="d.authorName ? `去 ${d.authorName} 的站内空间` : ''"
+          @click="goUpSpace(d.authorMid)"
+        >{{ d.authorName || `B站号 ${d.authorMid}` }}</span>
         <span class="mt-[3px] block text-[13px] leading-[18px] text-inkFaint">{{ friendlyTime(d.publishedAtUtc) }}</span>
       </span>
       <span
@@ -273,14 +293,19 @@ function authorFace() {
       <div class="rounded-md bg-[#f6f7f8] dark:bg-[#23262e] p-3">
         <div v-if="d.origAuthorName || splitForward(d.text).fromName" class="mb-2 flex items-center gap-1.5">
           <img
-            :src="d.origAuthorFace || defaultAvatar"
+            :src="origAuthorFace()"
             referrerpolicy="no-referrer"
             loading="lazy"
-            class="h-[18px] w-[18px] shrink-0 rounded-full object-cover"
+            class="h-[18px] w-[18px] shrink-0 cursor-pointer rounded-full object-cover transition hover:brightness-105"
             alt=""
+            :title="d.origAuthorName ? `去 ${d.origAuthorName} 的站内空间` : ''"
+            @click="goUpSpace(d.origAuthorMid)"
             @error="onAvatarError"
           />
-          <span class="text-xs text-inkSub">转发自 {{ d.origAuthorName || splitForward(d.text).fromName }}</span>
+          <span
+            class="cursor-pointer text-xs text-inkSub transition-colors hover:text-stationPink"
+            @click="goUpSpace(d.origAuthorMid)"
+          >转发自 {{ d.origAuthorName || splitForward(d.text).fromName }}</span>
         </div>
         <!-- 原文无文字时不再咬死「已被删」：有视频/图体就只留卡（删了文字不等于删了货），
              连体都没有才是真删了，给个不带审讯味道的提示。 -->

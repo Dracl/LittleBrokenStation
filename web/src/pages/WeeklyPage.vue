@@ -6,6 +6,7 @@ import DeltaTag from '../components/WeeklyDeltaTag.vue'
 import { member } from '../memberStore'
 import { coverSrcOf } from '../utils/coverSrc'
 import { defaultAvatar } from '../utils/avatar'
+import { faceFor } from '../utils/faceChoice'
 import CountUpNum from '../components/CountUpNum.vue'
 import WallWindow from '../components/WallWindow.vue'
 import {
@@ -1171,8 +1172,8 @@ function downloadPoster() {
             <ul>
               <li v-for="s in staleRows" :key="s.mid" class="flex items-center gap-3 border-b border-lineSoft/60 px-4 py-2.5 last:border-b-0">
                 <img
-                  v-if="s.faceUrl"
-                  :src="s.faceUrl"
+                  v-if="faceFor(s.mid, s.faceUrl)"
+                  :src="faceFor(s.mid, s.faceUrl)"
                   :alt="s.nickname || String(s.mid)"
                   class="h-8 w-8 shrink-0 rounded-full bg-[#f1f2f3] object-cover dark:bg-[#23262e]"
                   loading="lazy"

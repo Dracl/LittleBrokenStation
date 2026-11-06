@@ -93,6 +93,7 @@ builder.Services.AddSingleton<MediaReconcileGate>();
 builder.Services.AddHostedService<LedgerBackupWorker>();
 builder.Services.AddHostedService<WeeklyReportWorker>(); // 周报发报员：周一 09:00（UTC+8）后给全站播一条周报公告
 builder.Services.AddHostedService<ArrivalReportWorker>(); // 到站播报员：每 10 分钟看一眼，有无归属的新货到站就播一条通报
+builder.Services.AddHostedService<UpFaceSweepWorker>(); // UP 巡脸员：跨周逐位去 card 口取一张脸，存 up_faces 区与台账（没采集号整轮欠着）
 // 分站海马体：业务侧 Record 一下就走，抄录员后台攒批落 events 表，供站长与未来 AI 分析。
 builder.Services.AddSingleton<EventRecorder>();
 builder.Services.AddHostedService<EventRecorderWorker>();
@@ -250,6 +251,32 @@ app.MapGet("/api/up/{mid:long}/videos", (long mid, StationDb db, HttpContext htt
         items = TagManageable(db, db.ListVideosByUpMid(mid, ViewerScope(http)), http),
     }));
 
+// UP 历史脸档案：这位在本站存过的历张脸（周巡脸员攒下的），按再见时刻新者在前。
+// 台账说有过 ≠ 盘上还有：站长手删过 data/up_faces、导包只带了台账都会留下幽灵行，所以逐张验货
+// （File 在位且 Length>0 才算有件），无档案回空数组（前端当「没历史」，不是一条错误）。门禁已在 MemberGate 点名 /api/up/ 前缀 GET。
+app.MapGet("/api/up/{mid:long}/faces", (long mid, StationDb db, DataPaths paths) =>
+    Results.Ok(db.ListUpFaces(mid).Where(f => HasUpFace(paths.UpFaces, f.FaceRel)).ToList()));
+
+/// <summary>历史脸验货（端点专用）：件名只认 <c>/up_faces/{裸文件名}</c> 这一种形状 —— 越界（.. / 绝对路径 / 子目录）与认不出的一律当没件，
+/// 0 字节的半截壳也当没件（与巡脸侧「0 字节归缺件」同一把尺）。</summary>
+static bool HasUpFace(string dir, string faceRel)
+{
+    const string prefix = "/up_faces/";
+    if (string.IsNullOrEmpty(faceRel) || !faceRel.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+    {
+        return false;
+    }
+
+    var leaf = faceRel[prefix.Length..];
+    if (leaf.Length == 0 || leaf.Contains('/') || leaf.Contains('\\') || leaf.Contains("..", StringComparison.Ordinal) || Path.IsPathRooted(leaf))
+    {
+        return false;
+    }
+
+    var file = new FileInfo(Path.Combine(dir, leaf));
+    return File.Exists(file.FullName) && file.Length > 0;
+}
+
 // 站内搜索：只命中已到站视频，空格分词 AND；空查询给空结果让前端少一条错误分支。
 // 长度截断防滥用，排序白名单（plays / 缺省新到站）在 StationDb 里控制。
 app.MapGet("/api/search", (string? q, string? sort, StationDb db, EventRecorder events, HttpContext http) =>
@@ -362,6 +389,17 @@ app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(dataPaths.Avatars),
     RequestPath = "/avatars",
+    ContentTypeProvider = mediaTypes,
+    ServeUnknownFileTypes = true,
+    DefaultContentType = "application/octet-stream",
+});
+
+// UP 历史脸档案区（周巡脸员落件，切脸列表的相册与本机钦选都从这里取图）：
+// 与 /avatars 同一把尺——台账说有过 ≠ 盘上还有，死链由端点验货与前端 @error 双层兑底。
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(dataPaths.UpFaces),
+    RequestPath = "/up_faces",
     ContentTypeProvider = mediaTypes,
     ServeUnknownFileTypes = true,
     DefaultContentType = "application/octet-stream",
@@ -2056,7 +2094,7 @@ app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataP
 
     // 4. 资源文件清盘：视频库 + 缓存小图区 + 预览成片区 + e2e 临时件。cookies 与引擎设置不碰。
     var (files, bytes, busy) = PurgeDirectoryTree(paths.Videos);
-    foreach (var dir in new[] { paths.Avatars, paths.Emotes, paths.CmtImg, paths.Cache, paths.Previews })
+    foreach (var dir in new[] { paths.Avatars, paths.Emotes, paths.CmtImg, paths.Cache, paths.Previews, paths.UpFaces })
     {
         var (f, b, z) = PurgeDirectoryTree(dir);
         files += f;

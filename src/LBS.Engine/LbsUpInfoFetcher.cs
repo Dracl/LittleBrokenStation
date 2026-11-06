@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using DownKyi.Application.Bilibili;
+using LBS.Infrastructure;
 using Microsoft.Extensions.Logging;
 
 namespace LBS.Engine;
@@ -29,10 +30,12 @@ public sealed record VideoStaffItem(long? Mid, string? Name, string? Role, strin
 /// 复用引擎登录态客户端，
 /// 头像落盘交给 LbsCommentArchiver（与视频/动态评论区共用 data/avatars 的 sha1 命名 + 原图存档那一套库，不再自存 up-{mid}.jpg）。失败不逞强：返回 null，前端按“—”降级。
 /// 唯一匿名例外是认证：登录态下 B 站藏 card.official，认证另走一发只读 official 的匿名 card（见 <see cref="ResolveOfficialAsync"/>）。
-/// </summary>
+/// 另有一腿周巡脸 <see cref="SweepFaceAsync"/>：同一条 card 口只取 face，脸存 data/up_faces、历史记 up_faces 表（不动 video_meta）。</summary>
 public sealed class LbsUpInfoFetcher(
     LbsQueryClient client,
     LbsCommentArchiver assetCache,
+    DataPaths paths,
+    StationDb db,
     ILogger<LbsUpInfoFetcher> logger)
 {
     private const string Referer = "https://www.bilibili.com";
@@ -45,6 +48,9 @@ public sealed class LbsUpInfoFetcher(
     private static readonly HttpClient GuestHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     private const string AvatarsPrefix = "/avatars/";
+
+    /// <summary>历史脸档案的件地址前缀（与 <see cref="AvatarsPrefix"/> 同族写法，一座区一张嘴）。</summary>
+    private const string UpFacesPrefix = "/up_faces/";
 
     /// <summary>
     /// 该不该出去重采 UP 名片。三态分清：null 是没采过，要采；空串是上一趟失败销账，不重采（要重采把该行置回 NULL）；
@@ -147,6 +153,108 @@ public sealed class LbsUpInfoFetcher(
             logger.LogWarning(ex, "UP 主 {Mid} 头像本地化失败，热链回退", mid);
             return null;
         }
+    }
+
+    /// <summary>
+    /// 周巡脸（由 <c>UpFaceSweepWorker</c> 每周叫一次）：走与 <see cref="FetchAsync"/> 同一条 card 口、同一张嘴（client + Referer），
+    /// 却<b>只取</b> <c>data.card.face</c>
+    /// 这一件事 —— 名片、签名、粉丝与认证那些 FetchAsync 的活一个不沾，每周 N 位 × 一发就够；
+    /// 也不写 <c>video_meta</c> 一个字节（那是「当前名片」，这里是「历史脸册」，两张表各管各的）。
+    /// 拿不到脸（URL 空 / 接口不认 / 下载砸了）一律 null，调用方下一轮再来。
+    /// </summary>
+    public async Task<string?> SweepFaceAsync(long mid, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url = $"https://api.bilibili.com/x/web-interface/card?mid={mid}&photo=false";
+            var raw = await client.GetStringAsync(new BilibiliHttpRequest(url, Referer), cancellationToken);
+            using var doc = JsonDocument.Parse(raw);
+
+            if (doc.RootElement.TryGetProperty("code", out var code) && code.GetInt32() != 0)
+            {
+                logger.LogWarning("巡脸的 card 接口非零返回 code={Code}（mid={Mid}）", code.GetInt32(), mid);
+                return null;
+            }
+
+            if (!doc.RootElement.TryGetProperty("data", out var data) || !data.TryGetProperty("card", out var card))
+            {
+                return null;
+            }
+
+            return await StoreFaceAsync(
+                mid,
+                Str(card, "face"),
+                paths,
+                db,
+                (faceUrl, dest, token) => client.DownloadFileAsync(new BilibiliHttpRequest(faceUrl, Referer), dest, token),
+                DateTimeOffset.UtcNow.ToString("O"),
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "UP 主 {Mid} 巡脸失败（不致命）", mid);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 巡脸的下半场（取数与存件分家，是为了让测格拿个假下载器就能直捣口径，不必真出网）：
+    /// ▸ 脸 URL 空 → null 且不记账（没件可存也没脸可记）；
+    /// ▸ 件名沿用 <see cref="LbsCommentArchiver.AvatarFileName"/>（sha1 前 20 + 原扩展），件住 <see cref="DataPaths.UpFaces"/>，
+    ///   同图异周天然同一个件名 —— 于是「没换脸」这一轮根本不发下载；
+    /// ▸ <b>缺件或 0 字节才下载</b>（下载器一进去就把文件建出来，半路炸的空壳归「缺件」一类，不另发明 .part）；
+    ///   下载没成手就整趟作废：回 null、连账都不记，免得台账挂着一张盘上查无的脸；
+    /// ▸ 只要件最终在盘上（含「URL 未变、件早已存过」）就一律 <c>UpsertUpFace</c> 刷 last_seen，
+    ///   回 <c>/up_faces/{name}</c> —— 换没换脸都算「这位本周还站着」。
+    /// </summary>
+    public static async Task<string?> StoreFaceAsync(
+        long mid,
+        string? faceUrl,
+        DataPaths paths,
+        StationDb db,
+        Func<string, string, CancellationToken, Task> downloadFace,
+        string nowUtcIso,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(faceUrl))
+        {
+            return null;
+        }
+
+        var name = LbsCommentArchiver.AvatarFileName(faceUrl);
+        var rel = UpFacesPrefix + name;
+        var dest = Path.Combine(paths.UpFaces, name);
+        Directory.CreateDirectory(paths.UpFaces);
+
+        if (!File.Exists(dest) || new FileInfo(dest).Length == 0)
+        {
+            try
+            {
+                await downloadFace(faceUrl, dest, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // 单张脸存不上是常态（吼不吼由调用方那一层定），这里只保证不拿半截件冒充战功。
+                return null;
+            }
+
+            // 下载器「没抛异常」不等于有货：0 字节壳照旧当缺件，账不记，下一轮重下。
+            if (!File.Exists(dest) || new FileInfo(dest).Length == 0)
+            {
+                return null;
+            }
+        }
+
+        db.UpsertUpFace(mid, rel, nowUtcIso);
+        return rel;
     }
 
     /// <summary>

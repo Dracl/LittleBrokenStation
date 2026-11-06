@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { defaultAvatar } from '../utils/avatar.js'
 import { fmtFans } from '../utils/fans.js'
+import { faceFor } from '../utils/faceChoice.js'
 
 const props = defineProps({
   upName: { type: String, default: null },
@@ -19,7 +20,11 @@ const faceFailed = ref(false)
 watch(() => props.upFace, () => (faceFailed.value = false))
 
 // 热链拉不到/根本没头像：顶全站默认小人，不再渲首字占位。
-const faceSrc = computed(() => (props.upFace && !faceFailed.value ? props.upFace : defaultAvatar))
+// 先过本机钦选闸（utils/faceChoice）：在空间页给这位换了脸，放映厅这块也跟着换。
+const faceSrc = computed(() => {
+  const face = faceFor(props.upMid, props.upFace)
+  return face && !faceFailed.value ? face : defaultAvatar
+})
 function onFaceError() {
   if (!props.upFace || faceFailed.value) return // 已经在画默认图，不再来回折腾
   faceFailed.value = true
@@ -44,7 +49,8 @@ const mateFailed = ref({})
 watch(() => props.staff, () => (mateFailed.value = {}))
 
 function mateFace(p, i) {
-  return p.face && !mateFailed.value[i] ? p.face : defaultAvatar
+  const face = faceFor(p.mid, p.face)
+  return face && !mateFailed.value[i] ? face : defaultAvatar
 }
 
 function onMateError(i) {
