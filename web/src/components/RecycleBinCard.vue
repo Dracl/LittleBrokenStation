@@ -3,11 +3,15 @@
 // 数据源 GET /api/admin/recycle（按 deletedAtUtc 倒序）；三键 = 单件恢复 / 单件彻底删 / 一键清空，
 // 两颗破坏键走全站那张自制确认窗（confirmStore），不再顶浏览器原生外壳；通知沿用站长室各卡自持 { kind, text } 那套（AdminPage 同款），不另起样式。
 // 措辞口径向 askDeleteVideo 看齐：只有这一卡上的才是真没了，得说透；往回收站里抖的那类（抖进回收站可捞）不拉玫红。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { requestConfirm } from '../confirmStore'
 import { friendlyTime } from '../utils/time'
 
 const items = ref(null) // null = 没拉到（加载中或后端没应答），[] = 确实空仓
+// 件数递上层：站长室顶栏那枚「回收站」胶囊要个真锁数，而这卡自持数据、上层看不见里面；
+// 卡被折起时仍挂在 DOM 里（上层用 v-show），所以锁着盖子徽章也是真的。
+const emit = defineEmits(['count'])
+watch(items, (v) => emit('count', v?.length ?? 0), { immediate: true })
 const loading = ref(false)
 const denied = ref(false) // 401/403：身份不对，别把拒客报成空仓
 const notice = ref(null) // { kind: 'ok' | 'err', text }

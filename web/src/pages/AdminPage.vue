@@ -1447,10 +1447,23 @@ const eventsActor = ref('') // '' = 全部；guest 访客 / member 席位 / admi
 const eventsPrefix = ref('') // 事件名前缀：watch. 是全部观映账，admin. 是被门挡下的那些，login. 是进门那一串
 const eventsLimit = ref(200)
 const eventsOpen = ref(null) // 展开看详情的那一行 id：只开一行，读起来不散
-const eventsExpanded = ref(false) // 流水本体默认收起（11-09 站长拍板）：一千多条铺在抽屉里太吃屏，筛子先给看，流水要按一下才摆
+// 摆多少行由这一格管：默认十条，每按一次往上加 50 行（11-09 站长：不要一展开就是 200 行的墙）
+const EVENTS_PEEK = 10
+const EVENTS_STEP = 50
+const eventsShownCount = ref(EVENTS_PEEK)
 
 // 事件名中文化：库里存的是后端那 ASCII 名（它是账本的字面，不能改），这儿只给站长看的那一层换皮。
 // 认不出来的原样贴出（并在 title 与详情里留原名），绝不替它编一个像样的说法。
+const eventsShown = computed(() => eventsRows.value?.slice(0, eventsShownCount.value) ?? [])
+const allEventsShown = computed(() => (eventsRows.value?.length ?? 0) <= eventsShownCount.value)
+// 同一枚钮干两件事：没摆全就往上加 50 行，摆全了就一拍退回十条（所以下面那句文案在两端都说得准）
+function stepEvents() {
+  if (allEventsShown.value) {
+    eventsShownCount.value = EVENTS_PEEK
+    return
+  }
+  eventsShownCount.value = Math.min(eventsShownCount.value + EVENTS_STEP, eventsRows.value?.length ?? 0)
+}
 const EVENT_LABEL = {
   'site.visit': '访问分站', 'search.query': '搜索', 'card.click': '点卡片',
   'watch.open': '进放映厅', 'home.open': '进首页', 'watch.heartbeat': '观映心跳',
@@ -1517,6 +1530,7 @@ async function loadEventsLedger() {
     const data = await res.json().catch(() => null)
     eventsRows.value = Array.isArray(data?.events) ? data.events : []
     eventsTotal.value = data?.total ?? eventsRows.value.length
+    eventsShownCount.value = EVENTS_PEEK // 重拉或换筛子都回到十条：刚筛出来那一批该从头看，不该沿用上回加到的位置
   } catch {
     eventsRows.value = null
     eventsNotice.value = '分站后端没有应答'
@@ -2226,7 +2240,7 @@ const ADMIN_GROUP_KEY = 'lbs-admin-group' // 定位条高亮记住上次点过�
 function savedAdminGroup() {
   try {
     const saved = localStorage.getItem(ADMIN_GROUP_KEY)
-    return ['overview', 'harvest', 'quiet'].includes(saved) ? saved : 'overview'
+    return ['overview', 'harvest', 'quiet', 'recycle', 'events'].includes(saved) ? saved : 'overview'
   } catch {
     return 'overview' // 隐私模式里 localStorage 会抛：照常从柜台开始
   }
@@ -2235,11 +2249,20 @@ function savedAdminGroup() {
 const activeGroup = ref(savedAdminGroup())
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
 const quietOpen = ref(false) // 「货架」抽屉：悬停预览、下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面；下载设置压底
+const dlSettingsOpen = ref(false) // 下载设置整块太长（十几个字段密排），进抽屉还要滚一屏：默认折上，要改再展开（11-09 站长点名）
+const recycleOpen = ref(false) // 回收站那一堆（整片 / 弹幕 / 加档）默认折起：页尾不该常驻三张卡（11-09 站长点名）
+const recycleBinCount = ref(0) // 整片回收站的件数：那卡自持数据，靠它 emit 上来，只为顶上那枚徽章
+// 回收站徽章：三座加在一起。卡折起时仍挂在 DOM 里（v-show 不是 v-if），所以锁着盖子这数也是真的
+const recycleBadge = computed(() => (dmRecycle.value?.length ?? 0) + (codecRecycle.value?.length ?? 0) + (recycleBinCount.value ?? 0))
 watch(quietOpen, (open) => { if (open && announceBatches.value === null) loadAnnounceBatches() }) // 抽屉掀开才拉：这节就在抽屉里，盖子没开就拉纯属白跑一趟
-watch(quietOpen, (open) => { if (open && eventsRows.value === null) loadEventsLedger() }) // 抽屉掀开才拉：台账一千多条，盖子没开就拉它纯属白跑
+// 事件台账 11-09 也从抽屉里拎出来了（站长点名：查账是常事，不该藏在「设好就不碰」那一堆里），改到下面进页就拉
 watch(quietOpen, (open) => { if (open && pendingInvites.value === null) loadPendingInvites() }) // 抽屉掀开才拉：这节就在抽屉里
-watch(quietOpen, (open) => { if (open && dmRecycle.value === null) loadDmRecycle() }) // 抽屉掀开才拉：这卡也在抽屉里
-watch(quietOpen, (open) => { if (open && codecRecycle.value === null) loadCodecRecycle() }) // 加档回收站同一张抽屉，同样掀开才拉
+// 三座回收站 11-09 从「货架」搬到碎纸机那一块：常在页尾不进抽屉，所以进页就拉（列表小，而且站长随时想看有没有误删）
+onMounted(() => {
+  if (dmRecycle.value === null) loadDmRecycle()
+  if (codecRecycle.value === null) loadCodecRecycle()
+  if (eventsRows.value === null) loadEventsLedger() // 台账也常在页尾，进页就拉（默认只露十条，不阻渲染）
+})
 // 加档牌面上的人话编码名：后端回的是 'avc'/'hevc'/'av1'，没见过的原样贴出，不替它编个名
 const CODEC_LABEL = { avc: 'AVC', hevc: 'HEVC', av1: 'AV1' }
 function codecLabel(codec) {
@@ -2252,8 +2275,11 @@ const adminNav = computed(() => [
   { ...ADMIN_GROUPS[0], n: null, tone: '' },
   { ...ADMIN_GROUPS[1], n: dlWaiting.value > 0 ? dlWaiting.value : null, tone: 'hot' },
   // 抽屉也占一枚胶囊：点了先把盖子掀开再滚过去，否则定位锚不在
+  { id: 'events', title: '事件台账', hint: '', order: 40, n: null, tone: '' },
   { id: 'quiet', title: '货架', hint: '', order: 55, n: (pv.value?.pending ?? 0) > 0 ? pv.value.pending : null, tone: 'warn' },
-])
+  // 回收站与事件台账 11-09 从抽屉/页尾常驻里拆出来各占一枚：它们一个是误删后的后路、一个是天天能查的账
+  { id: 'recycle', title: '回收站', hint: '', order: 65, n: recycleBadge.value > 0 ? recycleBadge.value : null, tone: 'warn' },
+].sort((a, b) => a.order - b.order)) // 排序按各组在页面上的实座次（order）来，不手写顺序：上一版胶囊排成「货架→回收站→事件台账」，而台账在页面上其实排在货架上面，对不上就是骗眼睛
 
 async function gotoGroup(id) {
   if (id === 'danger') {
@@ -2261,6 +2287,9 @@ async function gotoGroup(id) {
   }
   if (id === 'quiet') {
     quietOpen.value = true // 抽屉收起时里面那六张卡不在 DOM 里，先得把盖子掀开才能滚过去
+  }
+  if (id === 'recycle') {
+    recycleOpen.value = true // 回收站折起时只有一条胶囊，得先掀盖才能滚到卡阵
   }
   await nextTick()
   document.getElementById(`grp-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -2279,7 +2308,7 @@ function onGroupSpyScroll() {
   groupSpyRaf = requestAnimationFrame(() => {
     groupSpyRaf = 0
     let current = 'overview'
-    for (const g of [...ADMIN_GROUPS.map((x) => x.id), 'quiet', 'danger']) {
+    for (const g of [...ADMIN_GROUPS.map((x) => x.id), 'quiet', 'recycle', 'events', 'danger']) {
       const el = document.getElementById(`grp-${g}`)
       if (el && el.getBoundingClientRect().top <= 120) current = g
     }
@@ -2883,12 +2912,18 @@ onUnmounted(() => {
 
       <!-- 事件台账（11-08）：后端早有取数口，前端一直没接线；站长查「谁撞过门」如今不必手搓 sqlite。
            只读不写：这里没有任何改库的钮，看客与执法分开，误按的可能留零。 -->
-      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[63]">
+      <!-- 事件台账 11-09 从「货架」抽屉拎出来常驻（站长点名：查账是常事，不该压在「设好就不碰」那一堆底下），自带组头与导航胶囊 -->
+      <div id="grp-events" class="order-[40] md:col-span-2 flex items-baseline gap-2.5 pt-3">
+        <h2 class="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">事件台账</h2>
+        <span class="font-mono text-[11px] text-white/20">谁撞过门 · 谁改过稿 · 谁在试密码（只读）</span>
+        <span class="ml-1 h-px flex-1 bg-white/5"></span>
+      </div>
+      <section class="lbs-card md:col-span-2 order-[41]">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             事件台账
             <span class="ml-1 rounded-full border border-white/10 px-2 py-0.5 text-[10px] normal-case tracking-normal text-white/40">
-              {{ eventsRows === null ? '没拉到' : `共 ${eventsTotal} 条，摆 ${eventsRows.length} 条` }}
+              {{ eventsRows === null ? '没拉到' : `共 ${eventsTotal} 条，摆 ${eventsShown.length} 条` }}
             </span>
           </h3>
           <div class="flex flex-wrap items-center gap-2">
@@ -2921,20 +2956,21 @@ onUnmounted(() => {
             <button
               class="lbs-btn-ghost !px-3 !py-1 !text-xs"
               :disabled="!eventsRows || !eventsRows.length"
-              :title="eventsExpanded ? '把流水折起来，只留上方筛子' : '摆出流水列表'"
-              @click="eventsExpanded = !eventsExpanded"
+              :title="allEventsShown ? '一拍回到只看最近十条' : `再多摆 ${EVENTS_STEP} 行`"
+              @click="stepEvents"
             >
-              {{ eventsExpanded ? '收起流水' : `展开流水${eventsRows ? `（${eventsRows.length}）` : ''}` }}
+              {{ allEventsShown ? '收起流水' : `再摆 ${EVENTS_STEP} 条` }}
             </button>
           </div>
         </div>
         <p v-if="eventsNotice" class="mb-2 text-[11px] text-rose-300/70">{{ eventsNotice }}</p>
-        <p v-if="eventsRows && eventsRows.length && !eventsExpanded" class="text-[11px] text-white/30">
-          流水已折起（共 {{ eventsTotal }} 条）。上头两个筛子照样能用，要看具体哪一条再按「展开流水」。
+        <!-- 这句只是旁注，不能与列表争位置（上一版写成 v-else-if，结果不展开时一句旁注把整张流水顶掉了） -->
+        <p v-if="eventsRows && eventsRows.length && !allEventsShown" class="mb-1 text-[11px] text-white/30">
+          只露了最近 {{ EVENTS_PEEK }} 条（共 {{ eventsTotal }} 条）。要往回翻就按「再摆 {{ EVENTS_STEP }} 条」，一次不拍一整面墙。
         </p>
-        <ul v-else-if="eventsRows && eventsRows.length" class="flex flex-col gap-1">
+        <ul v-if="eventsRows && eventsRows.length" class="flex flex-col gap-1">
           <li
-            v-for="row in eventsRows"
+            v-for="row in eventsShown"
             :key="row.id"
             class="cursor-pointer rounded-lg border border-transparent px-2 py-1 transition hover:border-white/10 hover:bg-white/[0.03]"
             @click="eventsOpen = eventsOpen === row.id ? null : row.id"
@@ -2968,7 +3004,7 @@ onUnmounted(() => {
       </section>
 
       <!-- 弹幕回收站（11-08）：单删弹幕从此有后路。与整片回收站分家两张卡（那卡管稿件连文件一起销账）。 -->
-      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[64]">
+      <section v-show="recycleOpen" class="lbs-card md:col-span-2 order-[67]">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             弹幕回收站
@@ -3032,7 +3068,7 @@ onUnmounted(() => {
 
       <!-- 加档版本回收站（11-08）：投稿人删得动自己那版的件，反悔章只站长握得住。
            一行卡 = 一次删除（一组），恢复与销毁都是整组一次，与点单同粒度。 -->
-      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[65]">
+      <section v-show="recycleOpen" class="lbs-card md:col-span-2 order-[68]">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">
             加档回收站
@@ -3491,7 +3527,17 @@ onUnmounted(() => {
       <!-- 下载设置：字段密又一年改不了几回，整块收进「货架」抽屉压底 -->
       <section v-if="quietOpen && eng && engDraft" class="lbs-card md:col-span-2 order-[62]">
         <div class="mb-4 flex items-center justify-between">
-          <h3 class="lbs-title !mb-0">下载设置</h3>
+          <h3 class="lbs-title !mb-0">
+            下载设置
+            <button
+              type="button"
+              class="ml-1 align-baseline text-[11px] font-normal text-white/30 transition hover:text-white/60"
+              :title="dlSettingsOpen ? '把这十几个字段折起来，只留标题' : '展开改参数'"
+              @click="dlSettingsOpen = !dlSettingsOpen"
+            >
+              {{ dlSettingsOpen ? '收起' : '展开' }}
+            </button>
+          </h3>
           <div class="flex items-center gap-2">
             <button
               class="lbs-btn-ghost"
@@ -3502,13 +3548,15 @@ onUnmounted(() => {
             </button>
             <button
               class="lbs-btn"
-              :disabled="engBusy"
+              :disabled="engBusy || !dlSettingsOpen"
+              :title="dlSettingsOpen ? '' : '先把上面展开，藏着字段时不递保存'"
               @click="saveEngine"
             >
               {{ engBusy ? '保存中……' : '保存设置' }}
             </button>
           </div>
         </div>
+        <template v-if="dlSettingsOpen">
         <p class="mb-4 text-xs leading-5 text-white/30">
           这些参数直接写进下载引擎自己的设置：标注「即时」的改动对新下载立即生效，「新提交」的只影响之后投稿的视频，「重启」的要重启分站进程。保存目录、代理、cookie 不在这里：分站锁死 data/videos，不碰代理，B 站号只从成员账号池来（个人空间扫码绑）。
         </p>
@@ -3701,6 +3749,10 @@ onUnmounted(() => {
             </label>
           </div>
         </div>
+        </template>
+        <p v-else class="text-xs leading-5 text-white/30">
+          这十几个参数设好就不碰（并发、重试、限速、分轨码率、日志那些），要改按标题旁的「展开」。
+        </p>
       </section>
 
       <section v-if="quietOpen && backupState" class="lbs-card order-[59]">
@@ -3881,7 +3933,27 @@ onUnmounted(() => {
       </section>
 
       <!-- 回收站：删档后的恢复口，挨着危险区放——破坏性操作集中在一处，翻柜子时顺手就能确认 -->
-      <RecycleBinCard v-if="quietOpen" class="order-[60]" />
+      <!-- 回收站这一片 11-09 从「货架」抽屉搬到碎纸机上面（站长点名：三座回收站该跟碎纸机放一处，方便找），
+           同一夜又加了盖子：页尾不该常驻三张卡，折起只留一条胶囊，顶上导航也有「回收站」可跳。
+           三张卡仍挂在 DOM 里（v-show 而非 v-if）：拉数不停，顶上那枚徽章才是真数，不是展开时才现编。 -->
+      <button
+        v-if="!recycleOpen"
+        id="grp-recycle"
+        type="button"
+        class="order-[65] md:col-span-2 flex items-center gap-2.5 rounded-2xl border border-white/10 bg-white/[0.02] px-5 py-3 text-left text-xs text-white/45 transition hover:border-white/25 hover:text-white/70"
+        @click="gotoGroup('recycle')"
+      >
+        <span class="h-3 w-[3px] rounded-full bg-white/25"></span>
+        回收站 · 稿件 / 弹幕 / 加档
+        <span class="ml-1 font-mono text-[11px] text-white/25">{{ recycleBadge > 0 ? `躺着 ${recycleBadge} 件` : '空仓' }}</span>
+        <span class="ml-auto font-mono text-[11px] text-white/25">点开展开</span>
+      </button>
+      <div v-else id="grp-recycle" class="order-[65] md:col-span-2 flex items-baseline gap-2.5 pt-3">
+        <h2 class="lbs-title !mb-0">回收站</h2>
+        <span class="ml-2 font-mono text-[11px] text-white/22">稿件 · 弹幕 · 加档 —— 删掉的东西先落在这儿，能恢复也能销毁</span>
+        <button type="button" class="ml-2 text-[11px] text-white/30 transition hover:text-white/60" @click="recycleOpen = false">盖回去</button>
+      </div>
+      <RecycleBinCard v-show="recycleOpen" class="order-[66]" @count="recycleBinCount = $event" />
 
       <!-- 货架：悬停预览、下载设置、成员席位、全站公告、备份与搬家这些设好就不碰的，整批收在这儿；下载设置压底 -->
       <button
