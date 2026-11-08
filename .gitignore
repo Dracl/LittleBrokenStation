@@ -19,6 +19,16 @@ web/dist/
 data/
 **/*.db-wal
 **/*.db-shm
+# 台账与凭据兜底：`.dockerignore` 早把这两条钉了，`.gitignore` 却漏着——只要 station.db 或 cookies/
+# 长出 data/ 之外的一份（手工导包、artifacts 换个位置、换种起站方式），`git add -A` 就连成员的
+# B 站 cookie 一起端走。当年 OH-Works 被扫进去就是这一类事故，同一个坑不排第三回。
+# （vendor 里那几个测试夹具 .db 已在版本库里，ignore 只挡未跟踪文件，不伤它们。）
+**/*.db
+**/cookies/
+# dotnet test --collect / --logger trx 的落点（LBS.Tests 已引 coverlet.collector）。
+TestResults/
+# 不经 artifacts/ 起站时，server.out.log / server.err.log 会直接落在仓库根。
+*.log
 
 # 编辑器与系统
 .idea/

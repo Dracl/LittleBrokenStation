@@ -1186,7 +1186,9 @@ function stampText() {
 }
 
 /**
- * 海报字体（HarmonyOS Sans SC Medium，4MB 全量 CJK+假名子集，Apache-2.0）。
+ * 海报字体（HarmonyOS Sans SC Medium，4MB 全量 CJK+假名子集）。
+ * 许可如实写：华为《HarmonyOS Sans 字体软件许可协议》（免费商用，禁改本体、禁单独转售），
+ * 不是 Apache-2.0——那个错标是从上游 dynamic-bot 的注释里拄来的，详见 THIRD-PARTY-NOTICES.md 的「字体」节。
  * 只走 import.meta.url 让 vite 打指纹，不手写 /src/ 路径；它只被 renderVideoPoster 碰，
  * 而 renderVideoPoster 只在海报弹窗里跑 —— 首屏关键路径上没这个东西（4MB 进首屏就是事故）。
  * 模块级单例：预览重画几遍、导出几回都只下载一次。

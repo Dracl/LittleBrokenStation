@@ -233,31 +233,73 @@ public sealed class StationAccountTests : IDisposable
     }
 
     [Fact]
-    public void IpFailBoard_BlocksAfterTenth_And_AcrossWindowResets()
+    public void IpFailBoard_阶梯冷却_错一次就上锁且只封作案IP()
     {
-        var board = new MemberAccountEndpoints.IpFailBoard(TimeSpan.FromMinutes(5), 10);
-        for (var i = 0; i < 9; i++)
-        {
-            Assert.False(board.Snapshot("1.2.3.4").Blocked);
-            board.RegisterFailure("1.2.3.4");
-        }
+        var board = new MemberAccountEndpoints.IpFailBoard(TimeSpan.FromMinutes(30),
+            new[] { TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(30) });
 
-        Assert.False(board.Snapshot("1.2.3.4").Blocked); // 第 10 次还差一口气（满 10 才封）
+        Assert.False(board.Snapshot("1.2.3.4").Blocked);
         board.RegisterFailure("1.2.3.4");
-        Assert.True(board.Snapshot("1.2.3.4").Blocked);
+
+        var first = board.Snapshot("1.2.3.4");
+        Assert.True(first.Blocked); // 错一次就上锁（扫码不经此闸，站长扫得进来）
+        Assert.Equal(1, first.Count);
+        Assert.InRange(first.RetryAfter, TimeSpan.Zero, TimeSpan.FromMinutes(1));
+
+        // 冷却中再撞门不延长刑期，也不把计数吹大（否则脚本能把封禁无限往后推）
+        board.RegisterFailure("1.2.3.4");
+        Assert.Equal(1, board.Snapshot("1.2.3.4").Count);
+
         // 只封作案的 IP，别家照进
         Assert.False(board.Snapshot("5.6.7.8").Blocked);
+    }
 
-        // 窗口一过账目作废：用极小窗模拟「歇会儿再来」
-        var shortBoard = new MemberAccountEndpoints.IpFailBoard(TimeSpan.FromMilliseconds(30), 3);
-        for (var i = 0; i < 3; i++)
-        {
-            shortBoard.RegisterFailure("9.9.9.9");
-        }
+    [Fact]
+    public void IpFailBoard_阶梯随失败次数加长到封顶档()
+    {
+        var board = new MemberAccountEndpoints.IpFailBoard(TimeSpan.FromMinutes(30),
+            new[] { TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(2000) });
 
-        Assert.True(shortBoard.Snapshot("9.9.9.9").Blocked);
-        Thread.Sleep(120);
-        Assert.False(shortBoard.Snapshot("9.9.9.9").Blocked);
+        board.RegisterFailure("slow");
+        Assert.InRange(board.Snapshot("slow").RetryAfter, TimeSpan.Zero, TimeSpan.FromMilliseconds(20));
+
+        Thread.Sleep(40); // 第一档过了，才能吃第二枪
+        Assert.False(board.Snapshot("slow").Blocked);
+        board.RegisterFailure("slow");
+        var second = board.Snapshot("slow");
+        Assert.Equal(2, second.Count);
+        Assert.InRange(second.RetryAfter, TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(200));
+
+        Thread.Sleep(240); // 第二档过了
+        board.RegisterFailure("slow");
+        Assert.Equal(3, board.Snapshot("slow").Count);
+        Thread.Sleep(2100); // 第三档过了
+        board.RegisterFailure("slow");
+        var fourth = board.Snapshot("slow");
+        Assert.Equal(4, fourth.Count); // 计数照加
+        Assert.InRange(fourth.RetryAfter, TimeSpan.FromMilliseconds(1900), TimeSpan.FromMilliseconds(2000)); // 刑期封顶
+    }
+
+    [Fact]
+    public void IpFailBoard_窗口一过账目作废_成功登录销账()
+    {
+        var board = new MemberAccountEndpoints.IpFailBoard(TimeSpan.FromMilliseconds(40),
+            new[] { TimeSpan.FromMilliseconds(1) });
+        board.RegisterFailure("9.9.9.9");
+        board.RegisterFailure("9.9.9.9");
+        Assert.Equal(2, board.Snapshot("9.9.9.9").Count);
+
+        Thread.Sleep(120); // 窗口一过，旧账整段作废
+        var fresh = board.Snapshot("9.9.9.9");
+        Assert.False(fresh.Blocked);
+        Assert.Equal(0, fresh.Count);
+
+        board.RegisterFailure("9.9.9.9");
+        Assert.Equal(1, board.Snapshot("9.9.9.9").Count); // 从 1 重开，不背着旧账
+
+        board.Clear("9.9.9.9"); // 登进去了就销账
+        Assert.False(board.Snapshot("9.9.9.9").Blocked);
+        Assert.Equal(0, board.Snapshot("9.9.9.9").Count);
     }
 
     // ── 改密 / 代重置 ───────────────────────────────────────────

@@ -1,7 +1,8 @@
 # Third-Party Notices
 
 小破分站 Little Broken Station 依赖或复用的第三方组件及其许可。
-本文件随依赖变化同步更新；官方二进制素材（B 站 logo、位图、图片、icon sprite、字体）不在本仓库分发。
+本文件随依赖变化同步更新。B 站官方位图素材（logo、截图、icon sprite）不在本仓库分发；
+仓库内确实分发的第三方素材（复原图标、默认头像、海报字体）逐件列在下面「界面图标」「图像素材」「字体」三节。
 
 ## 代码复用与移植
 
@@ -17,6 +18,16 @@
 sprite 或字体文件。这些图形的权利归 bilibili 所有，此处仅作互操作与版式复原之用；如权利人认为需要下架，
 请开 issue，我们会移除并改为自绘替身。仓库内不留官方二进制素材原件（`tools/dev/` 的历史抓取脚本里
 的原始 SVG 源文也已移除）。
+
+同批从 B 站播放页 DOM 复原、随仓库分发的还有两小组：`web/src/assets/levels/level_1..6.svg`（六级等级徽）与
+`web/src/assets/icons/up-badge.svg`（认证徽底下的白色字形）。它们与 `bicons.js` 同性质：路径数据、不是官方位图，
+图形权利同样归 bilibili，下架承诺一字不差地适用。
+
+## 图像素材
+
+| 文件 | 出处 | 说明 |
+| --- | --- | --- |
+| `web/src/assets/default-avatar.jpg` | 2ch 「捏他酱」（アッカーリン）形象的灰色剪影 | 站内无头像时的占位脸。形象与构图版权归原权利方，不属本项目；如需更换只有一处引用，换成自绘小人即可。
 
 ## 前端第三方
 
@@ -67,5 +78,16 @@ sprite 或字体文件。这些图形的权利归 bilibili 所有，此处仅作
 
 ## 字体
 
-容器镜像使用 Debian 仓库的 fonts-noto-cjk（SIL Open Font License 1.1）作为中文回退，
+| 文件 | 出处 | 许可 | 用途 |
+| --- | --- | --- | --- |
+| `web/src/assets/fonts/HarmonyOS_SansSC_Medium.woff2` | 华为 HarmonyOS Sans SC Medium | 《HarmonyOS Sans 字体软件许可协议》（个人与企业免费商用；不得修改字体本体、不得单独转售分发） | 分享海报与周报海报的署名字体，弹窗内按需注入、不进首屏关键路径 |
+
+字体著作权归 Huawei 所有。仓库里那份 woff2 是**我们自己切的子集**（fontTools `pyftsubset` 按 Unicode 区间筛字，
+未改动任何字形数据），原始 TTF 不入库。若要把「子集化算不算修改字体本体」这条灰线彻底绕开，
+换成华为官方未切分的原文件即可（前端只有一处引用）。
+
+> 一处勘误：`web/src/utils/videoPoster.js` 早先的注释把这枚字体标成 Apache-2.0，那是从上游 dynamic-bot
+> 仓库的标注里拄来的，不准——HarmonyOS Sans 走的是华为自家的字体许可协议，与 Apache-2.0 是两回事。已改正。
+
+容器镜像另外使用 Debian 仓库的 fonts-noto-cjk（SIL Open Font License 1.1）作为中文回退，
 由系统包管理器安装，仓库不打包分发字体文件。

@@ -8,15 +8,25 @@ namespace LBS.Server;
 /// <summary>
 /// 站内账户端点（M5.4）：注册、账密登录、改密、站长代重置——分站身份从 B 站 mid 手里独立出来，
 /// 账密是真身份的入口，扫码降级为可选绑定（扫码链路一字未动，两把钥匙开同一张门）。
-/// 账密登录按 IP 限流（仿事件上报口：5 分钟窗口最多 10 次失败尝试），防字典慢磨。
+/// 账密登录按 IP 上阶梯冷却（错一次歇 1 分钟、两次歇 5 分钟、三次起歇 30 分钟），防字典慢磨；
+/// 扫码链路不经此闸——站长与朋友永远扫得进站，不会把自己锁在站外。
 /// </summary>
 public static class MemberAccountEndpoints
 {
     private static readonly Regex UsernamePattern =
         new(@"^[\u4E00-\u9FFFA-Za-z0-9_]{2,24}$", RegexOptions.Compiled);
 
-    private static readonly TimeSpan FailWindow = TimeSpan.FromMinutes(5);
-    private const int MaxFailsPerWindow = 10;
+    // 阶梯冷却：同一 IP 在 FailWindow 内第 1 次密码错歇 1 分钟、第 2 次歇 5 分钟、第 3 次及以后歇 30 分钟。
+    // 判据是「错一次就上锁」而非「攒满 N 次才锁」：分站只给自己与朋友用，账密口挨不着公网字典，
+    // 手滑一次只赔一分钟可以忍，拿字典慢磨的每半小时只能试一发。要拉回「错一次即半小时」，
+    // 把三档拉平成同一个 30 分钟即可，判据与测格不必动。
+    private static readonly TimeSpan FailWindow = TimeSpan.FromMinutes(30);
+    private static readonly IReadOnlyList<TimeSpan> CooldownTiers = new[]
+    {
+        TimeSpan.FromMinutes(1),
+        TimeSpan.FromMinutes(5),
+        TimeSpan.FromMinutes(30),
+    };
 
     private sealed record RegisterRequest(string? Code, string? Username, string? Password);
 
@@ -28,7 +38,7 @@ public static class MemberAccountEndpoints
 
     public static void MapMemberAccountEndpoints(this WebApplication app)
     {
-        var failBoard = new IpFailBoard(FailWindow, MaxFailsPerWindow);
+        var failBoard = new IpFailBoard(FailWindow, CooldownTiers);
 
         // ── 注册：有主之站凭码落席，无主之站首位免码继位（与扫码首扫语义对齐）──
         app.MapPost("/api/member/register", (RegisterRequest? request, StationDb db, MemberGate gate,
@@ -86,12 +96,17 @@ public static class MemberAccountEndpoints
             EventRecorder events, HttpContext http) =>
         {
             var ip = http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-            var now = DateTimeOffset.UtcNow;
             var slot = failBoard.Snapshot(ip);
             if (slot.Blocked)
             {
-                return Results.Json(new { message = "试太多次了，歇会儿再来" },
-                    statusCode: StatusCodes.Status429TooManyRequests);
+                // 把还要歇多久如实报出去：朋友手滑被锁时看得懂要等多久，不至于以为站坏了。
+                // 冷却中的撞门不记事件：否则脚本能把事件表当成堆肥堆，本身就成了 DoS。
+                var mins = Math.Max(1, (int)Math.Ceiling(slot.RetryAfter.TotalMinutes));
+                return Results.Json(new
+                {
+                    message = $"试太多次了，{mins} 分钟后再来",
+                    retryAfterSec = (int)Math.Ceiling(slot.RetryAfter.TotalSeconds),
+                }, statusCode: StatusCodes.Status429TooManyRequests);
             }
 
             var username = request?.Username?.Trim() ?? "";
@@ -111,6 +126,7 @@ public static class MemberAccountEndpoints
             }
 
             db.TouchMemberLoginById(member.Id);
+            failBoard.Clear(ip); // 登进去了就销账：不让人背着旧账登录，也不拿成功登录当洗白机器（本站只信席位）
             var (token, _) = gate.IssueSession(member.Id);
             AppendSessionCookie(http, token);
             events.Record(EventActors.Member, member.Mid, EventNames.LoginPassword, "member", member.Id.ToString(),
@@ -209,27 +225,47 @@ public static class MemberAccountEndpoints
             : (null, (StatusCodes.Status403Forbidden, "分站是邀请制：首次进站需要站长发的邀请码"));
     }
 
-    /// <summary>按 IP 记密码失败账的黑板（仿事件上报口的节流）：窗口内满额即封，成功登录不清账也不影响。</summary>
-    internal sealed class IpFailBoard(TimeSpan window, int max)
+    /// <summary>
+    /// 按 IP 记密码失败账的黑板：阶梯冷却。同窗内第 1 次错上 1 分钟锁、第 2 次 5 分钟、第 3 次及以后 30 分钟。
+    /// 三条硬口径：① 冷却之中再撞门不延长刑期（否则脚本能把封禁无限往后推）；② 窗口一过整段账作废重开；
+    /// ③ 成功登录清账。只封作案 IP，别家照进。
+    /// </summary>
+    internal sealed class IpFailBoard(TimeSpan window, IReadOnlyList<TimeSpan> cooldownTiers)
     {
-        private readonly ConcurrentDictionary<string, (int Count, DateTimeOffset Start)> _board = new();
+        private readonly ConcurrentDictionary<string, (int Count, DateTimeOffset WindowStart, DateTimeOffset Until)> _board = new();
 
-        public (bool Blocked, int Count) Snapshot(string ip)
+        public (bool Blocked, int Count, TimeSpan RetryAfter) Snapshot(string ip)
         {
             var now = DateTimeOffset.UtcNow;
-            var slot = _board.TryGetValue(ip, out var old) && now - old.Start <= window
-                ? old
-                : (Count: 0, Start: now);
-            return (slot.Count >= max, slot.Count);
+            if (!_board.TryGetValue(ip, out var slot) || now - slot.WindowStart > window)
+            {
+                return (false, 0, TimeSpan.Zero); // 没账，或窗口已过整段作废
+            }
+
+            return now < slot.Until ? (true, slot.Count, slot.Until - now) : (false, slot.Count, TimeSpan.Zero);
         }
 
         public void RegisterFailure(string ip)
         {
             var now = DateTimeOffset.UtcNow;
             _board.AddOrUpdate(ip,
-                _ => (1, now),
-                (_, old) => now - old.Start > window ? (1, now) : (old.Count + 1, old.Start));
+                _ => (1, now, now + Tier(1)),
+                (_, old) =>
+                {
+                    if (now < old.Until)
+                    {
+                        return old; // 冷却中不延长
+                    }
+
+                    var stale = now - old.WindowStart > window;
+                    var count = stale ? 1 : old.Count + 1;
+                    return (count, stale ? now : old.WindowStart, now + Tier(count));
+                });
         }
+
+        public void Clear(string ip) => _board.TryRemove(ip, out _);
+
+        private TimeSpan Tier(int count) => cooldownTiers[Math.Clamp(count - 1, 0, cooldownTiers.Count - 1)];
     }
 
     /// <summary>发会话 cookie——与扫码链路同一张票同一姿势（HttpOnly/Lax/30 天；TLS 下自动 Secure）。</summary>
