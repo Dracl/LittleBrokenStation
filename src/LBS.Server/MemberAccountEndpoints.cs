@@ -229,14 +229,16 @@ public static class MemberAccountEndpoints
     /// 按 IP 记密码失败账的黑板：阶梯冷却。同窗内第 1 次错上 1 分钟锁、第 2 次 5 分钟、第 3 次及以后 30 分钟。
     /// 三条硬口径：① 冷却之中再撞门不延长刑期（否则脚本能把封禁无限往后推）；② 窗口一过整段账作废重开；
     /// ③ 成功登录清账。只封作案 IP，别家照进。
+    /// 时钟可注（TimeProvider，与节流闸/采集员同一家族）：测格拿假表推时间，不拿 Thread.Sleep 赌调度。
     /// </summary>
-    internal sealed class IpFailBoard(TimeSpan window, IReadOnlyList<TimeSpan> cooldownTiers)
+    internal sealed class IpFailBoard(TimeSpan window, IReadOnlyList<TimeSpan> cooldownTiers, TimeProvider? clock = null)
     {
+        private readonly TimeProvider _clock = clock ?? TimeProvider.System;
         private readonly ConcurrentDictionary<string, (int Count, DateTimeOffset WindowStart, DateTimeOffset Until)> _board = new();
 
         public (bool Blocked, int Count, TimeSpan RetryAfter) Snapshot(string ip)
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = _clock.GetUtcNow();
             if (!_board.TryGetValue(ip, out var slot) || now - slot.WindowStart > window)
             {
                 return (false, 0, TimeSpan.Zero); // 没账，或窗口已过整段作废
@@ -247,7 +249,7 @@ public static class MemberAccountEndpoints
 
         public void RegisterFailure(string ip)
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = _clock.GetUtcNow();
             _board.AddOrUpdate(ip,
                 _ => (1, now, now + Tier(1)),
                 (_, old) =>

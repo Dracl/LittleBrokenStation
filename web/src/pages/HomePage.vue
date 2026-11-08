@@ -160,6 +160,11 @@ const commentBusy = ref(new Set())
 // 续下：救活卡死的下载（引擎任务崩溃遗留），后端自行判断软续/重投。
 const reviveBusy = ref(new Set())
 
+// 待认领名单：重投那一口回 409 requireClaim（这稿没有投稿人席位，只有站长能补）时把 id 收进来，
+// 卡面上那枚「重投」换成「挂我名下重投」；认领成功即摘。轮询整组替换不动这份集合——
+// 要不要人动手是服务端回的旗，不是台账自己会翻的状态。
+const claimAsk = ref([])
+
 async function reviveVideo(video) {
   if (reviveBusy.value.has(video.id)) return
   const busy = new Set(reviveBusy.value)
@@ -186,8 +191,40 @@ async function requeueVideo(video) {
   try {
     const res = await fetch(`/api/videos/${video.id}/requeue`, { method: 'POST' })
     const body = await res.json().catch(() => null)
+    if (res.status === 409 && body?.requireClaim) {
+      // 无归属的失败稿不算投不了，算等人动手：后端单列了一枚 requireClaim 旗，这里就把这条挂成待认领，
+      // 卡面换成「挂我名下重投」，文案照贴后端那句（warn 一档，不是失败的红）。
+      if (!claimAsk.value.includes(video.id)) claimAsk.value = [...claimAsk.value, video.id]
+      showNotice('warn', body.message ?? '这条稿子没有投稿人席位')
+      return
+    }
     showNotice(res.ok ? 'ok' : 'err', body?.message ?? (res.ok ? '已重新排队' : '排队没成'))
     if (res.ok) refreshVideos()
+  } catch {
+    showNotice('err', '分站后端没有应答')
+  } finally {
+    const done = new Set(reviveBusy.value)
+    done.delete(video.id)
+    reviveBusy.value = done
+  }
+}
+
+// 认领（站长专属）：给无归属的稿子补上投稿人席位（不传 memberId 即挂到当前站长自己名下），
+// 后端补完顺手把 Failed 行退回队列。成词与拒词都是后端写好的中文，前端只负责贴进 toast。
+// 与重投共用 reviveBusy 那把在途锁，不让人连点把 POST 重发。
+async function claimVideo(video) {
+  if (reviveBusy.value.has(video.id)) return
+  const busy = new Set(reviveBusy.value)
+  busy.add(video.id)
+  reviveBusy.value = busy
+  try {
+    const res = await fetch(`/api/videos/${video.id}/claim`, { method: 'POST' })
+    const body = await res.json().catch(() => null)
+    showNotice(res.ok ? 'ok' : 'err', body?.message ?? (res.ok ? '已挂到你名下重新排队' : '认领没成'))
+    if (res.ok) {
+      claimAsk.value = claimAsk.value.filter((id) => id !== video.id)
+      refreshVideos()
+    }
   } catch {
     showNotice('err', '分站后端没有应答')
   } finally {
@@ -417,9 +454,11 @@ watch(sentinelEl, (el) => {
             :comment-busy="commentBusy.has(video.id)"
             :revive-busy="reviveBusy.has(video.id)"
             :can-manage="!!video.canManage"
+            :claim-ask="claimAsk"
             @fetch-comments="fetchComments"
             @revive="reviveVideo"
             @requeue="requeueVideo"
+            @claim="claimVideo"
             @remove="removeVideo"
           />
         </div>
@@ -433,9 +472,11 @@ watch(sentinelEl, (el) => {
             :comment-busy="commentBusy.has(video.id)"
             :revive-busy="reviveBusy.has(video.id)"
             :can-manage="!!video.canManage"
+            :claim-ask="claimAsk"
             @fetch-comments="fetchComments"
             @revive="reviveVideo"
             @requeue="requeueVideo"
+            @claim="claimVideo"
             @remove="removeVideo"
           />
         </div>

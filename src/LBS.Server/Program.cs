@@ -960,6 +960,22 @@ app.MapPost("/api/videos/{id:long}/requeue", async (long id, HttpContext http, S
         return Results.NotFound(new { message = "没有这条馆藏" });
     }
 
+    // 重投判据正身在 RequeueGate（真值表钉在 RequeueClaimTests）： Failed 是新开的门，
+    // 以前只有被取消的才准重排，一句「只有被取消的馆藏才需要重新排队」把失败行堵成死档。
+    switch (RequeueGate.JudgeRequeue(brief.Value.Status, db.GetVideoSubmitterMember(id),
+                MemberGate.IsOwner(MemberGate.Current(http))))
+    {
+        case RequeueGate.Verdict.NotRequeueable:
+            return Results.BadRequest(new { message = "这状态不用重投（到站的、排队中的、下载中的都不在此列）" });
+        case RequeueGate.Verdict.NoAccess:
+            return Results.Json(new { error = "no-submitter", message = "这条稿子没有投稿人席位，借不到 B 站号，请让站长先把它认领了" },
+                statusCode: StatusCodes.Status403Forbidden);
+        case RequeueGate.Verdict.NeedClaim:
+            // 带 requireClaim 回旗：前端拿它摆「挂你名下重投」那一枚，不拿它当普通错误报一句完事。
+            return Results.Json(new { error = "need-claim", requireClaim = true, message = "这条稿子没有投稿人席位，先挂到你名下再重投" },
+                statusCode: StatusCodes.Status409Conflict);
+    }
+
     if (brief.Value.Status == VideoStatus.Skipped)
     {
         // Skipped 的成因在引擎那一侧：download_history 里有同名行就判无需下载。光重投还是原样被打回，
@@ -976,19 +992,65 @@ app.MapPost("/api/videos/{id:long}/requeue", async (long id, HttpContext http, S
         return Results.Ok(new { message = "这馆先前被引擎判为已下过，已绕开判重重新排队（正片会重下一遍）" });
     }
 
-    if (brief.Value.Status != VideoStatus.Canceled)
-    {
-        return Results.BadRequest(new { message = "只有被取消的馆藏才需要重新排队" });
-    }
-
-    // 只从 Canceled 拉回：与上面 Skipped 同一守卫道理，免得把刚被别处推走的行抢进排队。
-    if (!db.ResetToPending(id, [VideoStatus.Canceled]))
+    // Canceled 与 Failed 都从这儿拉回，各自带自己的乐观守卫（与上面 Skipped 同一道理，
+    // 免得把刚被别处推走的行抢进排队）。Failed 走 ResetToPending 会连 last_error 与引擎任务 id 一并清掉，
+    // 重投时判重看不见旧账，也不会把上一轮的错词再贴回去。
+    var expectFrom = brief.Value.Status == VideoStatus.Failed
+        ? new[] { VideoStatus.Failed }
+        : new[] { VideoStatus.Canceled };
+    if (!db.ResetToPending(id, expectFrom))
     {
         return Results.BadRequest(new { message = "状态刚被另一笔操作改走，刷新看看再决定" });
     }
 
     await queue.EnqueueAsync(id, cancellationToken);
     return Results.Ok(new { message = "已重新排队，下一班进站" });
+});
+
+// 认领（站长专属）：给一条无归属的稿子补上投稿人席位——DownloadWorker 那句「或由站长给这稿补上归属」
+// 以才有门可走。补完顺手把 Failed 行重排（这是认领唯一的用场；别的状态只补归属不动状态）。
+// 默认挂站长自己（借站长的号下货）；要挂给别的席位走查询串 ?memberId=。
+// 为何 memberId 走查询串而不走 body：body 参数（哪怕声明成可空）会让框架给这条路由挂上「只收 application/json」的门槛，
+// 不带 Content-Type 的请求（卡面那枚钮就是裸 POST，与 /revive /requeue 同一姿势）根本匹配不上这条路由，
+// 会被下面的 /api/** 兜底吃成 404「没有这个接口」——不报 415 也不报 400，很难查（真机验过：带 CT 一切正常，
+// 不带 CT 此口完全不可达）。这一口本来就没多少要传的，改成查询串后与同族两口一字同形，curl 一发即中。
+app.MapPost("/api/videos/{id:long}/claim", async (long id, long? memberId, HttpContext http,
+    StationDb db, DownloadQueue queue, EventRecorder events, CancellationToken cancellationToken) =>
+{
+    var me = MemberGate.Current(http);
+    var isOwner = MemberGate.IsOwner(me);
+    var targetId = memberId ?? me?.Id;
+    var target = targetId is long seatId ? db.GetMemberById(seatId) : null;
+
+    // 拒词由判据给（RequeueGate.JudgeClaim）；非站长一律 403，其余不合格 400。
+    if (RequeueGate.JudgeClaim(isOwner, db.GetVideoSubmitterMember(id), target is not null) is { } denial)
+    {
+        return Results.Json(new { message = denial },
+            statusCode: isOwner ? StatusCodes.Status400BadRequest : StatusCodes.Status403Forbidden);
+    }
+
+    var brief = db.GetVideoBrief(id);
+    if (brief is null)
+    {
+        return Results.NotFound(new { message = "没有这条馆藏" });
+    }
+
+    db.SetVideoSubmitterMember(id, target!.Id);
+    var requeued = brief.Value.Status == VideoStatus.Failed && db.ResetToPending(id, [VideoStatus.Failed]);
+    if (requeued)
+    {
+        await queue.EnqueueAsync(id, cancellationToken);
+    }
+
+    var whose = target.Username ?? target.Nickname ?? $"席位 {target.Id}";
+    events.RecordWithPayload(EventActors.Admin, me!.Mid, EventNames.AdminAction, "video", id.ToString(),
+        new { op = "claim", submitterMemberId = target.Id, requeued },
+        ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: me.Id);
+    return Results.Ok(new
+    {
+        submitterMemberId = target.Id,
+        message = requeued ? $"已挂到 {whose} 名下，重新排队等下一班" : $"已挂到 {whose} 名下",
+    });
 });
 
 // ─── 稿件设置（放映厅那枚「稿件设置」窗的后端）───────────────────────────────

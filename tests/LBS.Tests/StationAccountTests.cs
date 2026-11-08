@@ -232,11 +232,26 @@ public sealed class StationAccountTests : IDisposable
         Assert.False(_db.VerifyMemberPassword(scanSeat, "anything"));
     }
 
+    /// <summary>
+    /// 假表：时间只认测试推它走。黑板这类靠时钟的东西拿 Thread.Sleep 赌调度，机器一忙就自己抖
+    /// （同窗内连错两笔，中间被调度抢走 40ms 就把累加判成重开）。ApiThrottleTests 的 ManualTimeProvider 先例同形。
+    /// </summary>
+    private sealed class BoardClock : TimeProvider
+    {
+        public DateTimeOffset Now = new(2026, 11, 8, 12, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
+        public void Advance(TimeSpan by) => Now += by;
+    }
+
+    private static MemberAccountEndpoints.IpFailBoard Board(BoardClock clock, TimeSpan window, params TimeSpan[] tiers) =>
+        new(window, tiers, clock);
+
     [Fact]
     public void IpFailBoard_阶梯冷却_错一次就上锁且只封作案IP()
     {
-        var board = new MemberAccountEndpoints.IpFailBoard(TimeSpan.FromMinutes(30),
-            new[] { TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(30) });
+        var clock = new BoardClock();
+        var board = Board(clock, TimeSpan.FromMinutes(30),
+            TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(30));
 
         Assert.False(board.Snapshot("1.2.3.4").Blocked);
         board.RegisterFailure("1.2.3.4");
@@ -244,11 +259,13 @@ public sealed class StationAccountTests : IDisposable
         var first = board.Snapshot("1.2.3.4");
         Assert.True(first.Blocked); // 错一次就上锁（扫码不经此闸，站长扫得进来）
         Assert.Equal(1, first.Count);
-        Assert.InRange(first.RetryAfter, TimeSpan.Zero, TimeSpan.FromMinutes(1));
+        Assert.Equal(TimeSpan.FromMinutes(1), first.RetryAfter);
 
-        // 冷却中再撞门不延长刑期，也不把计数吹大（否则脚本能把封禁无限往后推）
+        // 冷却中再撞门：既不延长刑期，也不把计数吹大（否则脚本能把封禁无限往后推）
         board.RegisterFailure("1.2.3.4");
-        Assert.Equal(1, board.Snapshot("1.2.3.4").Count);
+        var again = board.Snapshot("1.2.3.4");
+        Assert.Equal(1, again.Count);
+        Assert.Equal(TimeSpan.FromMinutes(1), again.RetryAfter);
 
         // 只封作案的 IP，别家照进
         Assert.False(board.Snapshot("5.6.7.8").Blocked);
@@ -257,49 +274,63 @@ public sealed class StationAccountTests : IDisposable
     [Fact]
     public void IpFailBoard_阶梯随失败次数加长到封顶档()
     {
-        var board = new MemberAccountEndpoints.IpFailBoard(TimeSpan.FromMinutes(30),
-            new[] { TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(2000) });
+        var clock = new BoardClock();
+        var board = Board(clock, TimeSpan.FromHours(1),
+            TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(30));
 
         board.RegisterFailure("slow");
-        Assert.InRange(board.Snapshot("slow").RetryAfter, TimeSpan.Zero, TimeSpan.FromMilliseconds(20));
+        Assert.Equal(TimeSpan.FromMinutes(1), board.Snapshot("slow").RetryAfter);
 
-        Thread.Sleep(40); // 第一档过了，才能吃第二枪
+        clock.Advance(TimeSpan.FromMinutes(1)); // 第一档过完，才能吃第二枪
         Assert.False(board.Snapshot("slow").Blocked);
         board.RegisterFailure("slow");
-        var second = board.Snapshot("slow");
-        Assert.Equal(2, second.Count);
-        Assert.InRange(second.RetryAfter, TimeSpan.FromMilliseconds(20), TimeSpan.FromMilliseconds(200));
+        Assert.Equal(2, board.Snapshot("slow").Count);
+        Assert.Equal(TimeSpan.FromMinutes(5), board.Snapshot("slow").RetryAfter);
 
-        Thread.Sleep(240); // 第二档过了
+        clock.Advance(TimeSpan.FromMinutes(5)); // 第二档过完
         board.RegisterFailure("slow");
         Assert.Equal(3, board.Snapshot("slow").Count);
-        Thread.Sleep(2100); // 第三档过了
+        Assert.Equal(TimeSpan.FromMinutes(30), board.Snapshot("slow").RetryAfter);
+
+        clock.Advance(TimeSpan.FromMinutes(30)); // 第三档过完：第四枪起封顶，不再往上加
         board.RegisterFailure("slow");
         var fourth = board.Snapshot("slow");
         Assert.Equal(4, fourth.Count); // 计数照加
-        Assert.InRange(fourth.RetryAfter, TimeSpan.FromMilliseconds(1900), TimeSpan.FromMilliseconds(2000)); // 刑期封顶
+        Assert.Equal(TimeSpan.FromMinutes(30), fourth.RetryAfter); // 刑期封顶
     }
 
     [Fact]
     public void IpFailBoard_窗口一过账目作废_成功登录销账()
     {
-        var board = new MemberAccountEndpoints.IpFailBoard(TimeSpan.FromMilliseconds(40),
-            new[] { TimeSpan.FromMilliseconds(1) });
+        var clock = new BoardClock();
+        var board = Board(clock, TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(1));
+
         board.RegisterFailure("9.9.9.9");
+        Assert.Equal(1, board.Snapshot("9.9.9.9").Count);
+
+        // 锁中撞门：不计次也不加刑（否则脚本能把封禁无限往后推，也能靠堆计数跳档）。
+        // 想上阶梯就得等锁过完再吃下一枪——阶梯的长法钉在「阶梯随失败次数加长到封顶档」那格。
+        board.RegisterFailure("9.9.9.9");
+        Assert.Equal(1, board.Snapshot("9.9.9.9").Count);
+
+        clock.Advance(TimeSpan.FromMinutes(1)); // 锁过完，第二枪才吃得上，同窗内才累加
         board.RegisterFailure("9.9.9.9");
         Assert.Equal(2, board.Snapshot("9.9.9.9").Count);
 
-        Thread.Sleep(120); // 窗口一过，旧账整段作废
+        board.Clear("9.9.9.9"); // 登进去了就销账
+        Assert.False(board.Snapshot("9.9.9.9").Blocked);
+        Assert.Equal(0, board.Snapshot("9.9.9.9").Count);
+
+        board.RegisterFailure("9.9.9.9");
+        Assert.Equal(1, board.Snapshot("9.9.9.9").Count); // 销账后从 1 重开
+
+        clock.Advance(TimeSpan.FromMinutes(11)); // 窗口一过（要 strictly 超出窗口，不是恰平），旧账整段作废
         var fresh = board.Snapshot("9.9.9.9");
         Assert.False(fresh.Blocked);
         Assert.Equal(0, fresh.Count);
 
         board.RegisterFailure("9.9.9.9");
-        Assert.Equal(1, board.Snapshot("9.9.9.9").Count); // 从 1 重开，不背着旧账
-
-        board.Clear("9.9.9.9"); // 登进去了就销账
-        Assert.False(board.Snapshot("9.9.9.9").Blocked);
-        Assert.Equal(0, board.Snapshot("9.9.9.9").Count);
+        Assert.Equal(1, board.Snapshot("9.9.9.9").Count); // 不背着上一轮的旧账
     }
 
     // ── 改密 / 代重置 ───────────────────────────────────────────

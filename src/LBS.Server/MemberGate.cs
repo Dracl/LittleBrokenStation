@@ -76,10 +76,10 @@ public sealed class MemberGate(StationDb db)
             return true;
         }
 
-        // 重拉弹幕 / 重拉封面与媒体（POST …/danmaku-refresh 与 …/media-refresh）与续下/重新排队（…/revive、…/requeue）
-        // 也在这份点名清单里：少了这一条，匿名就能拿别人的 id 驱分站出去跑 B 站、把健康馆藏踢回队列重下，
+        // 重拉弹幕 / 重拉封面与媒体（POST …/danmaku-refresh 与 …/media-refresh）、续下/重新排队（…/revive、…/requeue）
+        // 与站长认领（…/claim）也在这份点名清单里：少了这一条，匿名就能拿别人的 id 驱分站出去跑 B 站、把健康馆藏踢回队列重下，
         // 或把被取消的稿悄悄捐回排队（归属归端点里的 CanManageVideo）。revive/requeue 刚从 AdminGate 摘给投稿人，
-        // 不在这里补闩就会退化成匿名 403/404 两套脸。
+        // 不在这里补闩就会退化成匿名 403/404 两套脸（claim 刚写完就踩中：门没点它，匿名直接落到端点里吃了 403）。
         if (HttpMethods.IsPost(request.Method)
             && path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase)
             && (path.EndsWith("/comments", StringComparison.OrdinalIgnoreCase)
@@ -87,7 +87,8 @@ public sealed class MemberGate(StationDb db)
                 || path.EndsWith("/danmaku-refresh", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/media-refresh", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/revive", StringComparison.OrdinalIgnoreCase)
-                || path.EndsWith("/requeue", StringComparison.OrdinalIgnoreCase)))
+                || path.EndsWith("/requeue", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/claim", StringComparison.OrdinalIgnoreCase)))
         {
             return true;
         }
