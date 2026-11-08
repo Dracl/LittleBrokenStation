@@ -135,7 +135,7 @@ public sealed partial class StationDb
                    sender_member_id, sender_dmid, sender_name, dm_created_at_utc,
                    reporter_member_id, reporter_name, reason, status, created_at_utc, handled_at_utc,
                    -- 按 bvid 判死活，与用户点的那条 /watch/ 链逐字同口径（/api/watch 就是按 bvid 查的）：
-                   -- 片进回收站时链死，捐回或重新投同一部时链活。不改动任何快照列，不算破「直读本表」那条铁规。
+                   -- 片进回收站时链死，恢复或重新投同一部时链活。不改动任何快照列，不算破「直读本表」那条铁规。
                    EXISTS (SELECT 1 FROM videos v WHERE v.bvid = danmaku_reports.bvid AND v.status = 'Arrived')
             FROM danmaku_reports{statusFilter}
             ORDER BY created_at_utc DESC, id DESC
@@ -196,7 +196,7 @@ public sealed partial class StationDb
     /// 重开一张已处置的举报单（11-08 站长拍板「处置后能重开」）：status 拍回 pending、handled_at_utc 清空。
     /// 只认「已处置」的行（WHERE status &lt;&gt; 'pending'）：重开一张本来就待处理的单不算错也不算事，
     /// 回 Reopened=false 让端点报 409——别让「重开」变成一种可以反复点的盖章。
-    /// PreviousStatus 带回处置结果（deleted / dismissed）：端点据此决定要不要去回收站把弹幕捐回来。
+    /// PreviousStatus 带回处置结果（deleted / dismissed）：端点据此决定要不要去回收站把弹幕恢复回来。
     /// </summary>
     public (bool Exists, bool Reopened, string? PreviousStatus, long DmId, long VideoId) ReopenDanmakuReport(long id)
     {

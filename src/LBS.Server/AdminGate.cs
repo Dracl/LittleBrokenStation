@@ -98,7 +98,7 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
         // （ManageGate.CanManage 对没席位的人一律回假，匿名顶多拿 403，不是敞着）。
         // /codecs 里只「点单」仍留在站长门里（一次点单能插几十行任务、烧全站共用的采集号）；
         // 而「取消自己那单」与「删自己那版的件」都是止损型动作，11-08 摘给投稿人自管，
-        // 归属落在端点里的 CanManageVideo；捐回与销毁住在 /api/admin/ 下面，只站长握得住。
+        // 归属落在端点里的 CanManageVideo；恢复与销毁住在 /api/admin/ 下面，只站长握得住。
         // …/media-refresh 早就是「会员门 + 端点归属门」那一张形。
         if (path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase))
         {

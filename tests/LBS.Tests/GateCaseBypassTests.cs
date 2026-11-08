@@ -66,7 +66,7 @@ public sealed class GateCaseBypassTests : IDisposable
     [InlineData("GET", "/API/admin/members", true, false)]
     [InlineData("GET", "/Api/Admin/Members", true, false)]
     [InlineData("POST", "/API/admin/export", true, false)]
-    [InlineData("POST", "/API/admin/codec-recycle/abc/restore", true, false)] // 加档回收站的捐回：换体也得在站长门里（旧账是 /API/admin/zones/set，那口已于 11-08 退休）
+    [InlineData("POST", "/API/admin/codec-recycle/abc/restore", true, false)] // 加档回收站的恢复：换体也得在站长门里（旧账是 /API/admin/zones/set，那口已于 11-08 退休）
     [InlineData("GET", "/API/ADMIN/stats/", true, false)] // 换体 + 尾斜杠：两把穿门的钥匙叠在一起
     [InlineData("GET", "/API/settings", true, false)]
     [InlineData("GET", "/API/Stats/Collect", true, false)] // 精确点名型的站长情报：漏一个字母就漏一整口

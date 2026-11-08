@@ -96,7 +96,7 @@ public sealed class RecycleRepostTests : IDisposable
         Assert.Empty(_db.GetWatchHistory(memberId));
         Assert.Empty(_db.ListLocalDanmaku(newId));
 
-        // 旧账没死，只是看不见：把回收站那份捞回来，抽屉条目与进度会跟着回来（前提是没人占着这个 BV）。
+        // 旧账没死，只是看不见：把回收站那份恢复回来，抽屉条目与进度会跟着回来（前提是没人占着这个 BV）。
         Assert.Equal(oldId, Assert.Single(_db.ListRecycle()).VideoId);
     }
 

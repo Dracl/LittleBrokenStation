@@ -93,7 +93,7 @@ public static class DanmakuReportEndpoints
 
         if (action == ActionDelete)
         {
-            // 走回收站而不是一挥就没（11-08）：举报删错的能捐回，且这张单重开时能自动把弹幕带回来。
+            // 走回收站而不是一挥就没（11-08）：举报删错的能恢复，且这张单重开时能自动把弹幕带回来。
             // 返回 0 = 原行早就不在（发送者自删过），跳出不算错，这张单照样结。
             db.MoveDanmakuToRecycle(dmId, "站长（举报处置）", null, "report");
             return (StatusCodes.Status200OK, "弹幕已删（进了回收站），这张单也结了");
@@ -103,7 +103,7 @@ public static class DanmakuReportEndpoints
     }
 
     /// <summary>
-    /// 重开一张举报单（11-08 站长拍板）：拍回 pending 让它能被重新处置一次，处置当初删掉的弹幕从回收站捐回来。
+    /// 重开一张举报单（11-08 站长拍板）：拍回 pending 让它能被重新处置一次，处置当初删掉的弹幕从回收站恢复回来。
     /// 捐不动（片子已下架、条目已被销毁）不算重开失败：单照重开，话里说清弹幕为什么没能回来，
     /// 不拿一个假成功骗站长，也不拿一个假失败阻止他重新处置。
     /// </summary>
@@ -127,8 +127,8 @@ public static class DanmakuReportEndpoints
 
         var (ok, message) = db.RestoreDanmakuByDmId(dmId);
         return (StatusCodes.Status200OK, ok
-            ? "已重开，当初删掉的弹幕也捐回去了（它照旧飘在原处）"
-            : $"已重开，但当初删掉的弹幕没能捐回：{message}");
+            ? "已重开，当初删掉的弹幕也恢复回来了（它照旧飘在原处）"
+            : $"已重开，但当初删掉的弹幕没能恢复：{message}");
     }
 
     /// <summary>席位的展示名（昵称优先，素净席位落 @username）；席位走了或本就没席位 → null（台账吃快照，不回头查）。</summary>

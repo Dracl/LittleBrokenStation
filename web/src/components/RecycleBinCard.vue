@@ -1,5 +1,5 @@
 <script setup>
-// 站长室「回收站」卡：删档后的馆藏先落这里，捞回复架或连本地文件一起销账。
+// 站长室「回收站」卡：删档后的馆藏先落这里，恢复回架或连本地文件一起销账。
 // 数据源 GET /api/admin/recycle（按 deletedAtUtc 倒序）；三键 = 单件恢复 / 单件彻底删 / 一键清空，
 // 两颗破坏键走全站那张自制确认窗（confirmStore），不再顶浏览器原生外壳；通知沿用站长室各卡自持 { kind, text } 那套（AdminPage 同款），不另起样式。
 // 措辞口径向 askDeleteVideo 看齐：只有这一卡上的才是真没了，得说透；往回收站里抖的那类（抖进回收站可捞）不拉玫红。
@@ -90,7 +90,7 @@ async function restore(item) {
     const res = await fetch(`/api/admin/recycle/${item.id}/restore`, { method: 'POST' })
     const data = await res.json().catch(() => null)
     ok = res.ok
-    notice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '已捞回，这件重回馆藏' : '恢复没成，这件还躺在回收站里') }
+    notice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '已恢复，这件重回馆藏' : '恢复没成，这件还躺在回收站里') }
   } catch {
     notice.value = { kind: 'err', text: '分站后端没有应答' }
   } finally {
@@ -197,7 +197,7 @@ defineExpose({ load })
     </div>
 
     <p class="mb-3 text-xs leading-5 text-white/30">
-      馆藏被删后先进这里暂存：视频、封面、弹幕、评论都还在盘上，捞回来就复架。彻底删除与清空都连本地文件一起清掉，出去的东西回不来。
+      馆藏被删后先进这里暂存：视频、封面、弹幕、评论都还在盘上，恢复回来就复架。彻底删除与清空都连本地文件一起清掉，出去的东西回不来。
     </p>
     <p v-if="notice" class="mb-3 font-mono text-xs" :class="notice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">
       {{ notice.text }}
@@ -208,7 +208,7 @@ defineExpose({ load })
       <p class="text-xs text-white/30">{{ loading ? '正在翻回收站……' : '回收站没打开：分站后端没有应答' }}</p>
       <button v-if="!loading" class="lbs-btn-ghost !px-3 !py-1 !text-[11px]" @click="load">再试一次</button>
     </div>
-    <p v-else-if="!items.length" class="py-4 text-xs text-white/30">回收站空着——删掉的馆藏会先搁在这儿，反悔了随时捞回去。</p>
+    <p v-else-if="!items.length" class="py-4 text-xs text-white/30">回收站空着——删掉的馆藏会先搁在这儿，反悔了随时恢复去。</p>
 
     <ul v-else class="max-h-[420px] space-y-2 overflow-y-auto pr-1">
       <li
@@ -257,15 +257,15 @@ defineExpose({ load })
           <button
             class="rounded-lg border border-stationBlue/40 bg-stationBlue/[0.07] px-3 py-1 text-xs text-stationBlue transition-all hover:bg-stationBlue/[0.14] disabled:cursor-not-allowed disabled:opacity-40"
             :disabled="busy"
-            :title="`捞回馆藏（${item.bvid}）：重新架上，本地文件不动`"
+            :title="`恢复馆藏（${item.bvid}）：重新架上，本地文件不动`"
             @click="restore(item)"
           >
-            {{ busyId === item.id ? '捞回中…' : '恢复' }}
+            {{ busyId === item.id ? '恢复中…' : '恢复' }}
           </button>
           <button
             class="lbs-btn-danger !px-3 !py-1 !text-xs"
             :disabled="busy"
-            title="连本地文件一起清掉，不可恢复"
+            title="连本地文件一起清掉，之后恢复不回来"
             @click="destroy(item)"
           >
             {{ busyId === item.id ? '销账中…' : '彻底删' }}

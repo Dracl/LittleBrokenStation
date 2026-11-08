@@ -5,7 +5,7 @@ namespace LBS.Infrastructure;
 
 /// <summary>
 /// 加档回收站里躺着的一版：一行 = 一个分 P 的一个编码，<b>同一次删除动作共用一个 GroupId</b>
-/// （点单是整片点的，删一版 hevc 会落 N 行；捐回按组一次搬齐，不让站长点 N 次）。
+/// （点单是整片点的，删一版 hevc 会落 N 行；恢复按组一次搬齐，不让站长点 N 次）。
 /// </summary>
 public sealed record CodecRecycleEntry(
     long Id,
@@ -21,18 +21,18 @@ public sealed record CodecRecycleEntry(
     string? DeletedBy,
     long? DeletedByMemberId,
     string Source,
-    /// <summary>片子还在不在架：不在架时捐不动，前端据此把捐回钮摆灰并说明原因。</summary>
+    /// <summary>片子还在不在架：不在架时捐不动，前端据此把恢复钮摆灰并说明原因。</summary>
     bool VideoInStation);
 
 /// <summary>收进回收站的结果：Ok 为假时 Message 说明为什么没搬成（占用、还在下载中、指的是主件）。</summary>
 public sealed record CodecRecycleMoveOutcome(bool Ok, string Message, string? GroupId, int Rows, int Files);
 
-/// <summary>捐回一组的结果。</summary>
+/// <summary>恢复一组的结果。</summary>
 public sealed record CodecRecycleRestoreOutcome(bool Ok, string Message, int Rows, int Files);
 
 /// <summary>
 /// 加档版本（额外编码/码率）的回收站：删一版不再「销账 + File.Delete」一步到死，
-/// 而是<b>连行带件一起封进 codec_recycle 与 data/codec_recycle</b>，站长随时整组捐回。
+/// 而是<b>连行带件一起封进 codec_recycle 与 data/codec_recycle</b>，站长随时整组恢复。
 /// </summary>
 /// <remarks>
 /// <b>为什么另开一张表、而不是给 video_codecs 加状态列</b>：
@@ -93,7 +93,7 @@ public sealed partial class StationDb
 
     /// <summary>
     /// 把某一版加档（一个编码，<paramref name="pageIdx"/> 为空 = 整片该编码的所有分 P）连行带件收进回收站。
-    /// <b>一次调用 = 一组</b>，捐回与销毁都按组走。三道安全闸：正在下载中的行拒删（先取消，别让引擎往回收目录里写）；
+    /// <b>一次调用 = 一组</b>，恢复与销毁都按组走。三道安全闸：正在下载中的行拒删（先取消，别让引擎往回收目录里写）；
     /// rel_path 指的是该 P 主件的行拒删（TakeCodecVersionForDelete 原本连这个都不问，主件文件能被一巴掌拍掉）；
     /// 文件被占用时整笔作废，已搬的原路退回，绝不留「账进了回收站、件还在原地」的半吊子。
     /// </summary>
@@ -145,7 +145,7 @@ public sealed partial class StationDb
                 var groupDir = CodecRecycleGroupDir(recycleRoot, groupId);
                 foreach (var file in FamilyOf(videosRoot, rel))
                 {
-                    // 附属件与本体各按自己的相对路径落进回收目录，捐回时照着同一张表反向搬回原位。
+                    // 附属件与本体各按自己的相对路径落进回收目录，恢复时照着同一张表反向搬回原位。
                     var relative = RelativeOf(videosRoot, file.FullName);
                     var to = Path.Combine(groupDir, relative.Replace('/', Path.DirectorySeparatorChar));
                     Directory.CreateDirectory(Path.GetDirectoryName(to)!);
@@ -169,7 +169,7 @@ public sealed partial class StationDb
             }
 
             transaction.Commit();
-            return new CodecRecycleMoveOutcome(true, $"已清出站 {targets.Count} 行、{stagedFiles} 个文件（进了回收站，站长能整组捐回）", groupId, targets.Count, stagedFiles);
+            return new CodecRecycleMoveOutcome(true, $"已删除 {targets.Count} 条档位记录、{stagedFiles} 个文件，一并移入回收站", groupId, targets.Count, stagedFiles);
         }
         catch (IOException)
         {
@@ -242,7 +242,7 @@ public sealed partial class StationDb
     }
 
     /// <summary>
-    /// 整组捐回：一件都缺就整组不捐。四道判据——清单在 → 片子还在 Arrived → 三元组没被新行占 →
+    /// 整组恢复：一件都缺就整组不捐。四道判据——清单在 → 片子还在 Arrived → 三元组没被新行占 →
     /// 件真在回收目录里。最后那道与整片回收站<b>刻意不同</b>：整片宁可恢复出缺件的片子也不让它永远捞不回，
     /// 而一版加档缺件等于在播放器菜单上摆一档 404，那不如不捐。
     /// </summary>
@@ -258,7 +258,7 @@ public sealed partial class StationDb
         var videoId = Convert.ToInt64(rows[0]["video_id"] ?? 0L);
         if (!VideoArrived(connection, videoId))
         {
-            return new CodecRecycleRestoreOutcome(false, "片子已经不在架（下架或进了整片回收站），先把稿件捞回来再捐这一版", 0, 0);
+            return new CodecRecycleRestoreOutcome(false, "片子已经不在架（下架或进了整片回收站），先把稿件恢复回来再动这一版", 0, 0);
         }
 
         foreach (var row in rows)
@@ -267,7 +267,7 @@ public sealed partial class StationDb
             var codec = Convert.ToString(row["codec"]) ?? "";
             if (CodecRowExists(connection, videoId, page, codec))
             {
-                return new CodecRecycleRestoreOutcome(false, $"P{page + 1} 的这一版后来又被人点回来了，先把那一行清掉再捐，别让两条账抢同一个位置", 0, 0);
+                return new CodecRecycleRestoreOutcome(false, $"P{page + 1} 的这一版后来又被人点回来了，先把那一行清掉再恢复，别让两条账抢同一个位置", 0, 0);
             }
 
             var rel = row["rel_path"] as string;
@@ -276,7 +276,7 @@ public sealed partial class StationDb
                 // 本体必须在；附属件缺一两样（本来就可能没有）不算拦。
                 if (!File.Exists(StagedPathFor(recycleRoot, groupId, rel)))
                 {
-                    return new CodecRecycleRestoreOutcome(false, "回收目录里找不到这一版的文件，捐回去也只是菜单上一档 404，先去看盘还在不在", 0, 0);
+                    return new CodecRecycleRestoreOutcome(false, "回收目录里找不到这一版的文件，恢复去也只是菜单上一档 404，先去看盘还在不在", 0, 0);
                 }
             }
         }
@@ -332,12 +332,12 @@ public sealed partial class StationDb
 
             transaction.Commit();
             DeleteDirectoryQuiet(Path.Combine(recycleRoot, groupId));
-            return new CodecRecycleRestoreOutcome(true, $"已捞回 {restored} 行、{moved.Count} 个文件，这一版重新回到货架", restored, moved.Count);
+            return new CodecRecycleRestoreOutcome(true, $"已恢复 {restored} 行、{moved.Count} 个文件，这一版重新回到货架", restored, moved.Count);
         }
         catch (IOException)
         {
             RollbackStaged(moved);
-            return new CodecRecycleRestoreOutcome(false, "文件正被占用，没捐回去；这一组还完整躺在回收站里", 0, 0);
+            return new CodecRecycleRestoreOutcome(false, "文件正被占用，没恢复去；这一组还完整躺在回收站里", 0, 0);
         }
         catch
         {
@@ -586,7 +586,7 @@ public sealed partial class StationDb
         return list;
     }
 
-    /// <summary>捐回时照着搬的那一族相对路径：本体在前，附属件按主干拼出来（盘上没有的会被跳过）。</summary>
+    /// <summary>恢复时照着搬的那一族相对路径：本体在前，附属件按主干拼出来（盘上没有的会被跳过）。</summary>
     private static List<string> FamilyNames(string rel)
     {
         var list = new List<string> { rel };

@@ -200,12 +200,12 @@ async function removeCollection(c) {
   }
 }
 
-// ─── 我收回的弹幕（11-09 站长拍板）：自己在放映厅收回的那几条，自己捐回去，不必求站长。
+// ─── 我收回的弹幕（11-09 站长拍板）：自己在放映厅收回的那几条，自己恢复去，不必求站长。
 // 只此一口 GET /api/member/danmaku-recycle：站长替人删的（source=admin/report）后端根本不递，这里不必再判 source。
-// 判据与措辞口径向站长室那张卡（AdminPage 的弹幕回收站）看齐，成员这头只留「捐回」一个动作——销毁与清空是站长的手。
+// 判据与措辞口径向站长室那张卡（AdminPage 的弹幕回收站）看齐，成员这头只留「恢复」一个动作——销毁与清空是站长的手。
 const dmRecycle = ref(null) // null = 没拉到（与真空仓分两脸，照抽屉清单那套口径）
 const dmRecycleLoading = ref(false)
-const dmRecycleBusy = ref(null) // 正在捐回的行 id
+const dmRecycleBusy = ref(null) // 正在恢复的行 id
 const dmRecycleNotice = ref(null) // { kind, text }：后端那句人话原样上屏，前端不改写
 
 async function loadDmRecycle() {
@@ -249,7 +249,7 @@ async function restoreDmRecycle(item) {
     // 只有它没回话时才落兵底句——后端的人话不许前端改写、更不许吞
     dmRecycleNotice.value = {
       kind: res.ok ? 'ok' : 'err',
-      text: d?.message ?? (res.ok ? '已捐回，这条重新飘得起来' : '捐回没成，这条还躺在回收站里'),
+      text: d?.message ?? (res.ok ? '已恢复，这条重新飘得起来' : '恢复没成，这条还躺在回收站里'),
     }
     // 捐成的这条从列表里摘掉：后端已认它出仓，整节重拉只是多闪一下
     if (res.ok) dmRecycle.value = (dmRecycle.value ?? []).filter((x) => x.id !== item.id)
@@ -682,7 +682,7 @@ async function doLogout() {
           <p v-if="collNotice" class="mt-2 text-[12px]" :class="collNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">{{ collNotice.text }}</p>
         </section>
 
-        <!-- 我收回的弹幕：自己在放映厅收回的那几条自己捐回去（站长替人删的那批在后端就不递，这里看不见也捐不动）。
+        <!-- 我收回的弹幕：自己在放映厅收回的那几条自己恢复去（站长替人删的那批在后端就不递，这里看不见也捐不动）。
              卡形与行形直接吃本页「我的合集」与「外部账号绑定」那两族的料，不另起炉灶 -->
         <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
           <div class="mb-3 flex items-center justify-between gap-4">
@@ -711,17 +711,17 @@ async function doLogout() {
                     v-if="item.inStation === false"
                     class="shrink-0 rounded-full border border-rose-300 px-1.5 py-0.5 text-[10px] leading-none text-rose-500"
                   >
-                    片子已不在架，捐不回
+                    片子已不在架，恢复不了
                   </span>
                 </p>
               </div>
               <button
                 class="shrink-0 rounded-lg border border-lineSoft bg-cardBg px-3 py-1 text-xs text-inkSub transition hover:border-stationPink/50 hover:text-stationPink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-lineSoft disabled:hover:text-inkSub"
                 :disabled="dmRecycleBusy !== null || item.inStation === false"
-                :title="item.inStation === false ? '片子已不在架，捐不回' : '把这条捐回片里重新飘'"
+                :title="item.inStation === false ? '片子已不在架，恢复不了' : '把这条恢复回片里重新飘'"
                 @click="restoreDmRecycle(item)"
               >
-                {{ dmRecycleBusy === item.id ? '捐回中…' : '捐回' }}
+                {{ dmRecycleBusy === item.id ? '恢复中…' : '恢复' }}
               </button>
             </li>
           </ul>

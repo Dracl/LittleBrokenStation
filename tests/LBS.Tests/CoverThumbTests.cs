@@ -412,7 +412,7 @@ public sealed class CoverThumbTests : IDisposable
     }
 
     [Fact]
-    public async Task 单档切砸过其余档都在_点名会捞回来重试到封顶() // 旧口径只看「零档/旧戳」，这种局会无声缺到永远
+    public async Task 单档切砸过其余档都在_点名会补回来重试到封顶() // 旧口径只看「零档/旧戳」，这种局会无声缺到永远
     {
         if (!MediaSample.HasTools())
         {
@@ -434,7 +434,7 @@ public sealed class CoverThumbTests : IDisposable
             cmd.ExecuteNonQuery();
         }
 
-        // 四档齐 + 一枚 failed：旧口径不点名，新口径必须捞回来
+        // 四档齐 + 一枚 failed：旧口径不点名，新口径必须补回来
         Assert.Contains(_db.ListVideosNeedingCoverThumbs(), c => c.VideoId == videoId);
 
         var again = await Build(videoId); // 真重切那一档

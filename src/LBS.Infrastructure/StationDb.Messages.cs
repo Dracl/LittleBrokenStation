@@ -226,7 +226,7 @@ public sealed partial class StationDb
     /// <summary>
     /// 撤回一次播送：只打 revoked_at_utc 戳，不删行。四条读信路径（清单/未读铃铛/标读/一键标读）
     /// 都带 revoked_at_utc IS NULL，所以撤回后成员端从铃铛到列表一起干净；
-    /// 想捐回来拿 RestoreAnnounceBatch 把戳拍掉即可（这就是选软撤而不硬删的理由：播错了还有反悔的余地）。
+    /// 想恢复就拿 RestoreAnnounceBatch 把戳拍掉即可（这就是选软撤而不硬删的理由：播错了还有反悔的余地）。
     /// </summary>
     public int RevokeAnnounceBatch(string batchId)
     {
@@ -241,7 +241,7 @@ public sealed partial class StationDb
         return command.ExecuteNonQuery();
     }
 
-    /// <summary>捐回一次已撤回的播送（拍掉时间戳）：已读状态跟着回来，当初谁读过就是谁读过。</summary>
+    /// <summary>恢复一次已撤回的播送（拍掉时间戳）：已读状态跟着回来，当初谁读过就是谁读过。</summary>
     public int RestoreAnnounceBatch(string batchId)
     {
         using var connection = Open(_dbPath);

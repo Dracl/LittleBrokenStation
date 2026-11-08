@@ -686,10 +686,10 @@ app.MapAdminDmEndpoints();
 // 站内弹幕举报（最小闭环）：会员对站内弹幕一键举报，站长在站长室删或忽略；不预隐藏，只此一口（B 站弹幕不管）。
 app.MapDanmakuReportEndpoints();
 app.MapAdminDanmakuReportEndpoints();
-// 弹幕回收站（11-08）：单删的弹幕在这里点名、捐回、销毁（与馆藏回收站同属站长话语权）。
+// 弹幕回收站（11-08）：单删的弹幕在这里点名、恢复、销毁（与馆藏回收站同属站长话语权）。
 app.MapAdminDanmakuRecycleEndpoints();
-app.MapAdminCodecRecycleEndpoints(); // 加档版本回收站（11-08 站长拍板）：删掉的加档连行带件封在这里，整组捐回 / 整组销毁都只站长按得动
-app.MapMemberDanmakuRecycleEndpoints(); // 个人空间「我收回的弹幕」：自己收回的那几条自己捐回，不必求站长
+app.MapAdminCodecRecycleEndpoints(); // 加档版本回收站（11-08 站长拍板）：删掉的加档连行带件封在这里，整组恢复 / 整组销毁都只站长按得动
+app.MapMemberDanmakuRecycleEndpoints(); // 个人空间「我收回的弹幕」：自己收回的那几条自己恢复，不必求站长
 app.MapWeeklyReportEndpoints(); // 分站周报：成员登录后 /api/weekly 看本周战报（/weekly 页）
 app.MapWatchHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
 app.MapMemberWallApi(); // 会员墙（馆藏壁）：投稿+历史聚合，喂个人空间顶上的画布窗口
@@ -959,7 +959,7 @@ app.MapPost("/api/videos/{id:long}/revive", async (long id, HttpContext http, St
     return ok ? Results.Ok(new { message }) : Results.BadRequest(new { message });
 });
 
-// 重新排队：站长取消过的馆藏（Canceled）从卡阵里捞回排队区；被引擎判为「已下过」的（Skipped）
+// 重新排队：站长取消过的馆藏（Canceled）从卡阵里放回排队区；被引擎判为「已下过」的（Skipped）
 // 走另一条道：挂上重下旗再回炉，否则同一把判重键会在门口再挡一次。其它状态不响应免得误复活。
 app.MapPost("/api/videos/{id:long}/requeue", async (long id, HttpContext http, StationDb db, DownloadQueue queue, CancellationToken cancellationToken) =>
 {
@@ -1430,7 +1430,7 @@ app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, S
     events.RecordWithPayload(isOwner ? EventActors.Admin : EventActors.Member, me?.Mid, EventNames.DanmakuRecycle,
         "danmaku", dmId.ToString(), new { recycleId, source = isOwner ? "admin" : "self" },
         ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: me?.Id);
-    return Results.Ok(new { message = "弹幕已收进回收站，站长想捐回还来得及" });
+    return Results.Ok(new { message = "弹幕已收进回收站，站长在回收站里还能恢复" });
 });
 
 // 访客下载：把正在看的版本存本地（codec 缺省给主版本）。开 Range 支持断点续传，
@@ -1653,7 +1653,7 @@ app.MapPost("/api/videos/{id:long}/codecs/cancel", async (long id, CancelCodecRe
 
 // 删一版加档（一个分 P 的一个编码）：从此不再「销账 + 删文件」一步到死，
 // 连行带件封进加档回收站（11-08 站长拍板「删掉的加档版本也进回收站，方便站长回滚」）。
-// 与上面取消那口同形：从站长门摘到「会员门 + 端点归属门」，投稿人删得动自己那版的件，捐回与销毁仍只在站长手里。
+// 与上面取消那口同形：从站长门摘到「会员门 + 端点归属门」，投稿人删得动自己那版的件，恢复与销毁仍只在站长手里。
 // 两条安全闸住在库层：rel_path 指的是那一 P 的主件就拒删（以前连这个都不问）、文件被占用就整笔作废。
 app.MapDelete("/api/videos/{id:long}/codecs/{pageIdx:int}/{codec}",
     (long id, int pageIdx, string codec, HttpContext http, StationDb db, DataPaths paths, EventRecorder events) =>
@@ -1672,9 +1672,9 @@ app.MapDelete("/api/videos/{id:long}/codecs/{pageIdx:int}/{codec}",
         return FinishCodecDelete(events, http, actor, byOwner, id, pageIdx, codec, outcome);
     });
 
-// 删整版加档（一个编码跨所有分 P）：一次调用 = 一个回收站组，捐回与销毁都按组走。
+// 删整版加档（一个编码跨所有分 P）：一次调用 = 一个回收站组，恢复与销毁都按组走。
 // 放映厅里那枚「删」钮走的是这一口：一版 hevc 往往是 N 个分 P 一起下的，逐 P 删要按 N 下，
-// 还会给同一版留下 N 个互不相干的回收组，捐回时拼不回当初那一次点单。
+// 还会给同一版留下 N 个互不相干的回收组，恢复时拼不回当初那一次点单。
 app.MapDelete("/api/videos/{id:long}/codecs/{codec}",
     (long id, string codec, HttpContext http, StationDb db, DataPaths paths, EventRecorder events) =>
     {

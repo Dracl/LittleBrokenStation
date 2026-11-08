@@ -255,7 +255,7 @@ public sealed class MemberGovernanceTests : IDisposable
         Assert.Equal(0, _db.MarkAllRead(readerB));
         Assert.True(_db.ListAnnounceBatches(MemberMail.KindAnnounce)[0].Revoked);
 
-        // 反悔的反悔：捐回来，当初没读的还是没读。
+        // 反悔的反悔：恢复之后，当初没读的还是没读。
         Assert.Equal(3, _db.RestoreAnnounceBatch("batch-1"));
         Assert.Single(_db.ListMessages(readerA, 50));
         Assert.Equal(1, _db.CountUnread(readerA));

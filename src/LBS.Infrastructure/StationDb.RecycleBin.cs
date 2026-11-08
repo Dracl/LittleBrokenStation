@@ -25,7 +25,7 @@ public sealed record RecycleEntry(
 /// <summary>收进回收站的结果：Ok 为假时 Message 说明为什么没搬成（比如文件正被占用）。</summary>
 public sealed record RecycleMoveOutcome(bool Ok, string Message, long BinId, int Files);
 
-/// <summary>从回收站捞回来的结果。</summary>
+/// <summary>从回收站恢复的结果。</summary>
 public sealed record RecycleRestoreOutcome(bool Ok, string Message, int Files, int Rows);
 
 /// <summary>

@@ -253,19 +253,19 @@ watch(play, (v) => localStorage.setItem('lbs.player.playPrefs.v3', JSON.stringif
 const activeCodec = ref(null)
 let restorePlan = null
 
-// 站长「删掉这一版」落定后这一行不消失，就地灰显成「已清出站 · 站长可捐回」——文件只是进了回收站，
+// 站长「删掉这一版」落定后这一行不消失，就地灰显成「已删除 · 站长可恢复」——文件只是进了回收站，
 // 站长在站长室还整组捐得回来，所以这里不再像旧版那样本地摘行（摘了就等于前端替后端圆「真没了」那句谎）。
 // 旗子按编码记，不按分 P 记：这枚钮走的是整版那口（DELETE /api/videos/{id}/codecs/{codec}，
 // 一次调用 = 回收站里的一个组，跨所有分 P），同一 codec 在别的 P 的行也得跟着一起灰。
 // 这一坨必须摆在 versions 之前：versions 的首评是 immediate 的（见下面 codecProg 那条「盐系少女事故」注释），
 // 摆后面等于第一趟渲染就碰还没落地的 const——TDZ 自爆。
-const recycledCodecs = ref(new Set()) // 已清出站（文件躺在回收站里）的编码，key = codec
-const deletingCodecs = ref(new Set()) // 正在清出站的编码：钮按下去就锁上，防连点（删一发要等后端回话）；锁着期间行同样按已清出站摆
+const recycledCodecs = ref(new Set()) // 已删除（文件躺在回收站里）的编码，key = codec
+const deletingCodecs = ref(new Set()) // 正在删除的编码：钮按下去就锁上，防连点（删一发要等后端回话）；锁着期间行同样按已删除摆
 const codecDelNote = ref(null) // { text, bad }：删完那句后端原话，成功失败都照抄不改写
 const rawVersions = computed(() => props.page?.codecVersions ?? [])
-// 台账行原样交给上层摆：已清出站的行也留在列表里（灰显那一档），不再靠过滤藏行。
+// 台账行原样交给上层摆：已删除的行也留在列表里（灰显那一档），不再靠过滤藏行。
 const versions = rawVersions
-// 在库、且真拿来播得了的那一行：已清出站（含正删着）的编码文件已经不在原位，一律不当播放源。
+// 在库、且真拿来播得了的那一行：已删除（含正删着）的编码文件已经不在原位，一律不当播放源。
 function arrivedRow(codec) {
   if (!codec || recycledCodecs.value.has(codec) || deletingCodecs.value.has(codec)) return null
   return versions.value.find((c) => c.codec === codec && c.status === 'Arrived') ?? null
@@ -355,7 +355,7 @@ const showMore = ref(false)
 function versionInfo(codec) {
   const row = versions.value.find((c) => c.codec === codec) ?? null
   const isMain = props.page?.codec === codec
-  // 「已清出站」抢在「在库」前面判：删成那一刻父页那一发重拉还没落地，服务端数据里这一行仍是 Arrived，
+  // 「已删除」抢在「在库」前面判：删成那一刻父页那一发重拉还没落地，服务端数据里这一行仍是 Arrived，
   // 不抢先就会在灰下去之前又显一回大小与码率。主版本那一档例外——主件整版删也删不动（后端那道闸），照旧能播。
   if (!isMain && (recycledCodecs.value.has(codec) || deletingCodecs.value.has(codec))) {
     return { state: 'recycled', pending: deletingCodecs.value.has(codec) }
@@ -403,7 +403,7 @@ watch(
   },
 )
 
-// 服务端又报回这一行的活档（站长从回收站整组捐回来了、或别处重新点单把这版请回来了）：本地那面「已清出站」
+// 服务端又报回这一行的活档（站长从回收站整组恢复回来了、或别处重新点单把这版请回来了）：本地那面「已删除」
 // 旗子交回去，行恢复成本来面目。账以服务端为准，前端这面旗子只负责撑到重拉落地那一下，不自建一套版本台账。
 // 删成那次重拉带回来的是「这一行没了」，不清旗——旗不清，行才灰得住（父页 loadWatch 重拉是整包换掉 pages 的）。
 watch(rawVersions, (rows) => {
@@ -412,9 +412,9 @@ watch(rawVersions, (rows) => {
   }
 })
 
-// ─── 站长把某一路加档版本清出站（只清加档行，主版本碰不得）───
+// ─── 站长把某一路加档版本删除（只清加档行，主版本碰不得）───
 // 走整版那口：DELETE /api/videos/{id}/codecs/{codec}（不带分 P、不带请求体），一次调用 = 回收站里的一个组，
-// 跨所有分 P。逐分 P 那口（/codecs/{pageIdx}/{codec}）仍在，但会把同一版劈成 N 个互不相干的组，捐回拼不回当初那一次点单。
+// 跨所有分 P。逐分 P 那口（/codecs/{pageIdx}/{codec}）仍在，但会把同一版劈成 N 个互不相干的组，恢复拼不回当初那一次点单。
 // 真门在端点里（站长与这稿的投稿人删得动，其余 403 not-your-submission），
 // 这里藏钮只是不把「按了也是白按」的钮摆给成员看（与站内弹幕 canDelete 同一范式）。
 // 身份读全站那一份 memberStore（TopBar / 个人空间 / 分区都读它）：page 里根本没有 isStationOwner 那格——
@@ -429,17 +429,17 @@ function canDeleteRow(codec) {
   // member 那张脸只当兜底（服务端没算出 canManage 时，站长仍该按得动）。
   if (!props.canManage && !isStationOwner.value) return false
   const info = versionInfo(codec)
-  // 已清出站那一档（含正删着的）不再摆这枚钮：行还留在列表里灰着，钮再摆出来就是请人按第二遍。
+  // 已删除那一档（含正删着的）不再摆这枚钮：行还留在列表里灰着，钮再摆出来就是请人按第二遍。
   return info.state === 'stock' && !info.fromMain
 }
 
 async function deleteCodecRow(codec) {
   if (!props.videoId || deletingCodecs.value.has(codec)) return
   const sure = await requestConfirm({
-    title: '清出这一版',
-    sub: `${props.bvid} · ${codec}（整版，全部分 P 一起）`,
-    message: '这一版会清出站：文件与台账一起进回收站，主版本的文件一个字不动。站长在站长室的加档回收站里能整组捐回来，不必重新点单加档。',
-    confirmText: '清出站',
+    title: '删除这一档',
+    sub: `${props.bvid} · ${codec}（整版 · 所有分 P）`,
+    message: '删除后，这一档的媒体文件与台账记录一并移入回收站，主版本文件不受影响。',
+    confirmText: '删除',
     cancelText: '再想想',
     // 不进 danger 那一档：danger 是留给「彻底销毁」那种断后路的活的（见 confirmStore）。这一下有后路，别用血色吓人。
     danger: false,
@@ -466,7 +466,7 @@ async function deleteCodecRow(codec) {
       return
     }
     recycledCodecs.value.add(target) // 父页那一发重拉可能正赶在路上（带回来的还是删前的行），落定这一刻把旗子按回去
-    codecDelNote.value = { text: body?.message ?? '这一版已清出站，文件进了回收站', bad: false }
+    codecDelNote.value = { text: body?.message ?? '已删除，文件与台账记录已移入回收站', bad: false }
     emit('codec-arrived') // 请父页重拉 watch，交权给服务端那本账（照引擎到货那条 emit 同一姿势，不另发明一套）
   } catch {
     recycledCodecs.value.delete(target)
@@ -618,8 +618,8 @@ watch([activeCodec, () => props.page?.codec], () => emit('codec-change', playing
 
 function clickVersion(codec) {
   const info = versionInfo(codec)
-  // 已清出站的行既不能选来播（文件已进回收站），也不能当「没到货」再点一次单（这一版的账在回收站那个组里，
-  // 想让回来是站长那一发捐回，不是在这里再点一发）。
+  // 已删除的行既不能选来播（文件已进回收站），也不能当「没到货」再点一次单（这一版的账在回收站那个组里，
+  // 想让回来是站长那一发恢复，不是在这里再点一发）。
   if (info.state === 'recycled') return
   if (info.state === 'stock') {
     // 点行 = 要用这个编码的文件播：主版本编码回主文件，纯加档切版本文件（setCodec 自带 no-op 防护）
@@ -638,7 +638,7 @@ watch(() => props.page?.index, () => {
   activeCodec.value = null
   restorePlan = null
   resumePending = 0
-  codecDelNote.value = null // 上一 P 那句「已清出站」/失败话不跟到换了的新 P 脸上
+  codecDelNote.value = null // 上一 P 那句「已删除」/失败话不跟到换了的新 P 脸上
 })
 
 watch(currentSrc, () => {
@@ -670,7 +670,7 @@ watch(currentSrc, () => {
 
 function setCodec(codec) {
   if (codec !== null) {
-    const hit = arrivedRow(codec) // 已清出站的行不当播放源（arrivedRow 里那道闸），这儿再兜一次防止旁路进来
+    const hit = arrivedRow(codec) // 已删除的行不当播放源（arrivedRow 里那道闸），这儿再兜一次防止旁路进来
     if (!hit || codec === activeCodec.value) return
   } else if (!activeCodec.value) {
     return
@@ -2113,7 +2113,7 @@ const STROKE_ITEMS = [
           <button
             class="relative flex min-w-0 flex-1 items-center justify-between rounded px-2 py-1.5 transition"
             :class="playingCodec() === c[0] ? 'bg-stationBlue text-white' : versionInfo(c[0]).state === 'stock' ? 'bg-white/10 hover:bg-white/20' : versionInfo(c[0]).state === 'recycled' ? 'cursor-not-allowed bg-white/5 text-white/30' : 'bg-white/5 text-white/50 hover:bg-white/10'"
-            :title="versionInfo(c[0]).state === 'recycled' ? '这一版已清出站，文件在回收站里躺着；想让它回货架，得请站长到站长室的加档回收站整组捐回' : c[0] === 'hevc' ? 'HEVC 在部分浏览器可能放不动' : ''"
+            :title="versionInfo(c[0]).state === 'recycled' ? '这一档已删除，媒体文件与台账记录在回收站里' : c[0] === 'hevc' ? 'HEVC 在部分浏览器可能放不动' : ''"
             @click="clickVersion(c[0])"
           >
             <span class="shrink-0 whitespace-nowrap">
@@ -2121,8 +2121,8 @@ const STROKE_ITEMS = [
             </span>
             <span class="ml-2 min-w-0 truncate text-right text-[10px] tabular-nums whitespace-nowrap">
               <template v-if="versionInfo(c[0]).state === 'stock'">{{ stockBadge(c[0]) }}</template>
-              <!-- 已清出站那一档只留这句话：文件都在回收站里了，再报大小与进度就是拿陈账冒充实况（进度条那条 v-if 认 downloading，也跟着闭嘴）。 -->
-              <template v-else-if="versionInfo(c[0]).state === 'recycled'">{{ versionInfo(c[0]).pending ? '清出站中……' : '已清出站 · 站长可捐回' }}</template>
+              <!-- 已删除那一档只留这句话：文件都在回收站里了，再报大小与进度就是拿陈账冒充实况（进度条那条 v-if 认 downloading，也跟着闭嘴）。 -->
+              <template v-else-if="versionInfo(c[0]).state === 'recycled'">{{ versionInfo(c[0]).pending ? '删除中……' : '已删除（文件在回收站）' }}</template>
               <template v-else-if="versionInfo(c[0]).state === 'downloading'">进站中{{ progTail(c[0]) }}</template>
               <template v-else-if="versionInfo(c[0]).state === 'failed'">失败 · 重点重试</template>
             </span>
@@ -2134,20 +2134,20 @@ const STROKE_ITEMS = [
             ></span>
           </button>
           <!-- 站长专用那一枚（走整版那口，一次 = 回收站里的一个组）。真门在端点里（站长与这稿投稿人删得动），这里只是不把钮摆给不该按的人；
-               按下去那一行就转成「已清出站」那一档，canDeleteRow 随之回假、这枚钮自己退场（不给人按第二遍），
+               按下去那一行就转成「已删除」那一档，canDeleteRow 随之回假、这枚钮自己退场（不给人按第二遍），
                deletingCodecs 只作同一拍里防连点的兵（deleteCodecRow 开头还有一道）。 -->
           <button
             v-if="canDeleteRow(c[0])"
             class="flex h-7 shrink-0 items-center justify-center rounded bg-white/5 px-1.5 text-[10px] whitespace-nowrap text-white/50 transition hover:bg-stationPink hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
             :disabled="deletingCodecs.has(c[0])"
-            :title="`删这一版（${c[1]}）：全部分 P 的文件一起进回收站，主版本不动，站长能整组捐回`"
+            :title="`删除这一档（${c[1]}）：所有分 P 的媒体文件与台账记录一并移入回收站，主版本不受影响`"
             @click="deleteCodecRow(c[0])"
           >
             删
           </button>
         </div>
       </div>
-      <!-- 后端那句人话原样贴在这里（「已清出站 N 行、N 个文件（进了回收站，站长能整组捐回）」/「没有这个版本」/「文件正被占用…」都是它说的，前端不改写）；
+      <!-- 后端那句人话原样贴在这里（「已删除 N 行、N 个文件（进了回收站，站长能整组恢复）」/「没有这个版本」/「文件正被占用…」都是它说的，前端不改写）；
            它没说才轮到兜底那句，失败走玫红提醒，成功只算一行情报。 -->
       <p v-if="codecDelNote" class="mb-2 px-1 text-[10px]" :class="codecDelNote.bad ? 'text-stationPink' : 'text-white/50'">{{ codecDelNote.text }}</p>
       <button v-if="missingRows.length" class="mb-2 px-1 text-left text-[10px] text-white/40 transition hover:text-white/70" @click="showMore = !showMore">

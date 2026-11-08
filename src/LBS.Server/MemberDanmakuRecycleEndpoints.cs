@@ -4,7 +4,7 @@ using LBS.Infrastructure;
 namespace LBS.Server;
 
 /// <summary>
-/// 个人空间的「我收回的弹幕」（11-08 站长拍板）：发送者自己收回的那几条，自己就能捐回来，不必求站长。
+/// 个人空间的「我收回的弹幕」（11-08 站长拍板）：发送者自己收回的那几条，自己就能恢复，不必求站长。
 /// </summary>
 /// <remarks>
 /// 只开 <c>source='self' AND member_id=我</c> 那一小片：站长替人删的（source='admin'/'report'）与别人删的
@@ -60,7 +60,7 @@ public static class MemberDanmakuRecycleEndpoints
 
                 if (owner.Value.Source != "self" || owner.Value.MemberId != me.Id)
                 {
-                    return Results.Json(new { message = "这条不是你自己在放映厅里收回的，捐回得站长动手" },
+                    return Results.Json(new { message = "这条不是你自己在放映厅里收回的，恢复得站长动手" },
                         statusCode: StatusCodes.Status403Forbidden);
                 }
 

@@ -76,8 +76,8 @@ public static class EventNames
     // 稿件设置（标题 / 简介 / 可见性 / 分区）从此有账：这一口早就是投稿人自管，而改名、改简介、
     // 把稿子转私有都是能损别人的事，后台得说得出「谁在什么时候动了哪几栏」。
     public const string VideoSettings = "video.settings";
-    // 回收站里的三种动作各一枚名字（与 danmaku.recycle 同族）：进回收站 / 捐回 / 销毁是三件不同的事，
-    // 合成一枚的话台账里「谁删的」与「谁捞回来的」就分不开。销毁只站长握得住，更要单独留痕。
+    // 回收站里的三种动作各一枚名字（与 danmaku.recycle 同族）：进回收站 / 恢复 / 销毁是三件不同的事，
+    // 合成一枚的话台账里「谁删的」与「谁恢复的」就分不开。销毁只站长握得住，更要单独留痕。
     public const string DanmakuRecycleRestore = "danmaku.recycle.restore";
     public const string CodecRecycle = "codec.recycle";
     public const string CodecRecycleRestore = "codec.recycle.restore";

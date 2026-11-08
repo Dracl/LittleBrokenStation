@@ -42,13 +42,13 @@ export const HINT_DELETE_VIDEO = '删掉这个馆藏：视频、弹幕、字幕�
 export const HINT_FETCH_COMMENTS = '重新拉一次 B 站评论和弹幕，不动站内弹幕'
 
 /// 「删掉这一部」的问话全站一处：放映厅、网格卡阵、大封面首页共用同一句。
-/// 措辞得说真话：删档是把六张表的行连文件抖进回收站，站长在回收站里还能反悔捞回来；
+/// 措辞得说真话：删档是把六张表的行连文件抖进回收站，站长在回收站里还能反悔恢复；
 /// 老那句「从分站彻底删除…不可恢复」写的是「彻底销毁」那一档的事，害人在能反悔的地方不敢下手。
 export function askDeleteVideo(label) {
   return requestConfirm({
     title: '删掉这一部',
     sub: label,
-    message: '视频、弹幕、字幕、封面会一起抖进回收站。站长在回收站里还能反悔捞回来，只有再点「彻底销毁」才是真没了。',
+    message: '视频、弹幕、字幕、封面会一起抖进回收站。站长在回收站里还能反悔恢复，只有再点「彻底销毁」才是真没了。',
     confirmText: '删掉',
     cancelText: '先不删',
     danger: true,

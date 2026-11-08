@@ -53,7 +53,7 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("POST", "/api/videos/123/comments/subs", false, true)]
     [InlineData("POST", "/api/videos/123/danmaku-refresh", false, true)]
     // 站长专属：只「点单」一个字都不能松（一次点单能插几十行任务、烧全站共用的采集号）。
-    // 11-08 把两件止损型动作摘给投稿人自管：取消自己那单加档、删自己那版加档的件（捐回与销毁在 /api/admin/ 下，只站长）。
+    // 11-08 把两件止损型动作摘给投稿人自管：取消自己那单加档、删自己那版加档的件（恢复与销毁在 /api/admin/ 下，只站长）。
     // revive/requeue 早已同族：匿名由 MemberGate POST 清单挡 401，归属归端点 CanManageVideo。
     [InlineData("POST", "/api/videos/123/revive", false, true)]
     [InlineData("POST", "/api/videos/123/requeue", false, true)]
@@ -61,7 +61,7 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("POST", "/api/videos/123/codecs/cancel", false, true)]
     [InlineData("DELETE", "/api/videos/123/codecs/hevc", false, true)]
     [InlineData("DELETE", "/api/videos/123/codecs/0/hevc", false, true)] // 逐分 P 删那一口同权（两条路由不能一张归站长一张归会员）
-    // 加档回收站的捐回与销毁：整段挂 /api/admin/ 前缀，反悔的话语权只握在站长手里。
+    // 加档回收站的恢复与销毁：整段挂 /api/admin/ 前缀，反悔的话语权只握在站长手里。
     [InlineData("GET", "/api/admin/codec-recycle", true, false)]
     [InlineData("POST", "/api/admin/codec-recycle/abc123/restore", true, false)]
     [InlineData("DELETE", "/api/admin/codec-recycle/abc123", true, false)]

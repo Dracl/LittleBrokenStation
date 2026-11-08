@@ -650,7 +650,7 @@ public sealed partial class StationDb
         // 日后补绑 B 站号与每次重登都不再拿 B 站昵称盖它（不锁就会发生「改了名、下次登录又变回去」）。
         EnsureColumn(connection, "members", "nickname_locked", "INTEGER");
         // 公告撤回（11-08）：同一次播送共用一个批次号，撤回只打时间戳不进删除——
-        // 成员已读没读、铃铛数多少都能复原（把 revoked_at_utc 拍回 NULL 即捐回）。
+        // 成员已读没读、铃铛数多少都能复原（把 revoked_at_utc 拍回 NULL 即恢复）。
         EnsureColumn(connection, "messages", "batch_id", "TEXT");
         EnsureColumn(connection, "messages", "revoked_at_utc", "TEXT");
         using (var batchIdx = connection.CreateCommand())
@@ -661,7 +661,7 @@ public sealed partial class StationDb
         }
         // 单删弹幕进回收站（11-08 站长拍板）：不挤 videos 那张回收站——它的形状是「一部片」
         // （video_id/bvid NOT NULL + 一堆文件账目），硬塑一条弹幕要伪造空 Video 字典、还要绕开文件搬运。
-        // 存原 dm_id 并在捐回时连号一起带回去（与整片回收站「连站内弹幕的 id 都不变」同一口径）：
+        // 存原 dm_id 并在恢复时连号一起带回去（与整片回收站「连站内弹幕的 id 都不变」同一口径）：
         // 举报单存的就是 dm_id，换成新号会让那张单的「去看这条弹幕」链死，(dm_id, reporter_member_id)
         // 上的唯一索引也会把「同一人再举报同一条」的幂等判据打歪（旧注释说的「重新入队拿新 id」已作废）。
         // 加档版本回收站另在 StationDb.CodecRecycle 里建（同一事务里一并建表，见 EnsureCodecRecycleTable）。

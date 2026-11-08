@@ -33,7 +33,7 @@ public sealed partial class StationDb
         string DeletedAtUtc,
         string? DeletedBy,
         string Source,
-        // 片子还在不在架：捐回要有去处，片已进视频回收站时这一条捐不动（前端据此把捐回钮摆灰）。
+        // 片子还在不在架：恢复要有去处，片已进视频回收站时这一条捐不动（前端据此把恢复钮摆灰）。
         bool VideoInStation);
 
     /// <summary>
@@ -173,7 +173,7 @@ public sealed partial class StationDb
     /// <summary>回收站计数（站长室那枚徽章）。</summary>
     /// <summary>
     /// 取一条回收行的<b>归属</b>（谁动的手、以哪个席位的名义）：自捐那口得先验「这是不是你自己收回的」再动手，
-    /// 不能让任何人拿一排行 id 就把站长替人删的那条捐回来。查无此行回 null。
+    /// 不能让任何人拿一排行 id 就把站长替人删的那条恢复回来。查无此行回 null。
     /// </summary>
     public (string Source, long? MemberId, long DmId)? GetDanmakuRecycleOwner(long recycleId)
     {
@@ -199,7 +199,7 @@ public sealed partial class StationDb
     }
 
     /// <summary>
-    /// 捐回一条弹幕：**连原 id 一起捐回**（与整片回收站「连站内弹幕的 id 都不变」同一口径）。
+    /// 恢复一条弹幕：**连原 id 一起恢复**（与整片回收站「连站内弹幕的 id 都不变」同一口径）。
     /// 保住原号不是怀旧：举报单存的是 dm_id，换成新号那张单的「去看这条弹幕」就链死了，
     /// 而 (dm_id, reporter_member_id) 上有唯一索引，换了号会把「同一个人再举报同一条」的幂等判据打歪。
     /// created_at_utc / sender_dmid / sender_owner / member_id 也原样带回：
@@ -241,7 +241,7 @@ public sealed partial class StationDb
             alive.Parameters.AddWithValue("$v", row.Value.VideoId);
             if (alive.ExecuteScalar() is null)
             {
-                return (false, "这部片子已经不在架上了，捐回去也没地方摆");
+                return (false, "这部片子已经不在架上了，恢复去也没地方摆");
             }
         }
 
@@ -252,7 +252,7 @@ public sealed partial class StationDb
             taken.Parameters.AddWithValue("$dm", row.Value.Id);
             if (taken.ExecuteScalar() is not null)
             {
-                return (false, "这个位置已经有另一条弹幕了，捐回去会撞号，先把它处理掉再试");
+                return (false, "这个位置已经有另一条弹幕了，恢复去会撞号，先把它处理掉再试");
             }
         }
 
@@ -283,11 +283,11 @@ public sealed partial class StationDb
             erase.ExecuteNonQuery();
         }
 
-        return (true, "这条弹幕已捐回，飘在原处");
+        return (true, "这条弹幕已恢复，飘在原处");
     }
 
     /// <summary>
-    /// 按原弹幕 id 捐回（举报重开用：那张单只认得 dm_id，不知道回收站里那行的 id）。
+    /// 按原弹幕 id 恢复（举报重开用：那张单只认得 dm_id，不知道回收站里那行的 id）。
     /// 同名多条（同一条弹幕被删过两遗）时捐最新那一遗。
     /// </summary>
     public (bool Ok, string Message) RestoreDanmakuByDmId(long dmId)

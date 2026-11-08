@@ -12,9 +12,9 @@ namespace LBS.Tests;
 ///    （TakeCodecVersionForDelete 原本连这个都不问，前端藏钮是唯一防线，删下去就是正片打空）；
 /// ③ 附属件（弹幕 / 字幕 / 封面 / nfo）从没进过 artifacts 表，删一版必须按族一并带走，不留孤儿；
 ///    而<b>主件的附属件一个手指都不碰</b>（它们属于正片，不属于这一版）；
-/// ④ 捐回四道判据一件都不能少：组在 → 片子还在 Arrived → 三元组没被新行占 → 件真在回收目录里。
+/// ④ 恢复四道判据一件都不能少：组在 → 片子还在 Arrived → 三元组没被新行占 → 件真在回收目录里。
 ///    最后那道与整片回收站刻意不同：整片宁可恢复出缺件的片子，一版加档缺件只会在播放器菜单上摆一档 404；
-/// ⑤ 一次删除 = 一个组，捐回与销毁都按组走（点单是整片点的，捐回不该让站长按 N 次钮）；
+/// ⑤ 一次删除 = 一个组，恢复与销毁都按组走（点单是整片点的，恢复不该让站长按 N 次钮）；
 /// ⑥ 删的时候正被占用就整笔作废，不留「账进了回收站、件还在原地」的半吊子。
 /// 姿势与本仓其余库层测试一致：直驱库方法，本仓无 HTTP harness（两张门的归属矩阵在 SubmitterManageTests 钉）。
 /// </summary>
@@ -119,7 +119,7 @@ public sealed class CodecRecycleTests : IDisposable
         set.ExecuteNonQuery();
     }
 
-    /// <summary>把片子的状态改写（本仓没有「改状态」的公开库方法，捐回的四道判据靠它摆出「片子已不在架」那种现场）。</summary>
+    /// <summary>把片子的状态改写（本仓没有「改状态」的公开库方法，恢复的四道判据靠它摆出「片子已不在架」那种现场）。</summary>
     private void SetVideoStatus(long videoId, string status)
     {
         using var connection = new SqliteConnection($"Data Source={_dbPath}");
@@ -278,16 +278,16 @@ public sealed class CodecRecycleTests : IDisposable
         var entry = Assert.Single(_db.ListCodecRecycle(videoId));
         Assert.False(entry.FileStored); // 照实记：当初盘上就没这件
 
-        // 捐回照样放行（四道判据只管 file_stored=1 的行），否则这种行永远躺在回收站里出不去
+        // 恢复照样放行（四道判据只管 file_stored=1 的行），否则这种行永远躺在回收站里出不去
         var restored = _db.RestoreCodecGroup(outcome.GroupId!, _videosDir, _recycleDir);
         Assert.True(restored.Ok);
         Assert.Contains(_db.GetCodecVersions(videoId), r => r.Codec == "hevc");
     }
 
-    // ─── ③ 捐回的四道判据 ────────────────────────────────────
+    // ─── ③ 恢复的四道判据 ────────────────────────────────────
 
     [Fact]
-    public void 捐回_文件回原位_行连主键一起回来_回收站清空()
+    public void 恢复_文件回原位_行连主键一起回来_回收站清空()
     {
         var videoId = AddArrivedVideo("BV1recycle08");
         var rel = Rel("BV1recycle08", 1, "hevc");
@@ -311,7 +311,7 @@ public sealed class CodecRecycleTests : IDisposable
     }
 
     [Fact]
-    public void 捐回被拦_片子已经不在架()
+    public void 恢复被拦_片子已经不在架()
     {
         var videoId = AddArrivedVideo("BV1recycle09");
         var rel = Rel("BV1recycle09", 1, "hevc");
@@ -325,11 +325,11 @@ public sealed class CodecRecycleTests : IDisposable
         Assert.False(restored.Ok);
         Assert.Contains("不在架", restored.Message);
         Assert.False(MainExists(rel)); // 被拦下就是真没搬，不留「文件回来了账没回来」
-        Assert.NotEmpty(_db.ListCodecRecycle(videoId)); // 组还完整躺着，等稿件先被捞回来
+        Assert.NotEmpty(_db.ListCodecRecycle(videoId)); // 组还完整躺着，等稿件先被恢复
     }
 
     [Fact]
-    public void 捐回被拦_那一版后来又被人点回来了()
+    public void 恢复被拦_那一版后来又被人点回来了()
     {
         var videoId = AddArrivedVideo("BV1recycle10");
         var rel = Rel("BV1recycle10", 1, "hevc");
@@ -346,14 +346,14 @@ public sealed class CodecRecycleTests : IDisposable
     }
 
     [Fact]
-    public void 捐回被拦_回收目录里找不到文件()
+    public void 恢复被拦_回收目录里找不到文件()
     {
         var videoId = AddArrivedVideo("BV1recycle11");
         var rel = Rel("BV1recycle11", 1, "hevc");
         AddArrivedCodec(videoId, 1, "hevc", rel);
         var moved = _db.MoveCodecVersionsToRecycle(videoId, "hevc", 1, _videosDir, _recycleDir, "小牛", 7, "member");
 
-        // 有人直接清了盘（危险区一键清空、手工删目录都算）：此时捐回去只是给播放器菜单摆一档 404
+        // 有人直接清了盘（危险区一键清空、手工删目录都算）：此时恢复去只是给播放器菜单摆一档 404
         Directory.Delete(Path.Combine(_recycleDir, moved.GroupId!), true);
 
         var restored = _db.RestoreCodecGroup(moved.GroupId!, _videosDir, _recycleDir);
@@ -364,7 +364,7 @@ public sealed class CodecRecycleTests : IDisposable
     }
 
     [Fact]
-    public void 捐回不存在的组_回没有这一组()
+    public void 恢复不存在的组_回没有这一组()
     {
         var restored = _db.RestoreCodecGroup("从不存在的组", _videosDir, _recycleDir);
 

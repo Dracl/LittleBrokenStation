@@ -8,9 +8,9 @@ namespace LBS.Tests;
 /// <summary>
 /// 单条站内弹幕的回收站（11-08 站长拍板「单删弹幕进回收站」）。钉的是这几件事：
 /// ① 删不再是硬删——行搬进 danmaku_recycle，原表只剩活弹幕（读路径一个字没改，因为 danmaku_local 没加状态列）；
-/// ② 捐回时「谁在什么时候说的」必须原样回来：created_at_utc / sender_dmid / member_id 一字不改，
+/// ② 恢复时「谁在什么时候说的」必须原样回来：created_at_utc / sender_dmid / member_id 一字不改，
 ///    否则站长反悔一次就篡改了一次发言时间，自删判据（认 lbs_dmid）也会认不出他；
-/// ③ 捐回要有去处：片子已不在架时拒捐，不塞一条没人看得见的孤儿弹幕；
+/// ③ 恢复要有去处：片子已不在架时拒捐，不塞一条没人看得见的孤儿弹幕；
 /// ④ 两条删弹幕的路（本人自删、举报处置删）共用这张表，用 source 分账，重开举报单能把弹幕一起带回来；
 /// ⑤ 危险区一键清空（PurgeAllLedger）必须连回收站一起拍掉，否则清空分站后还能从回收站捞出弹幕。
 /// 姿势与 DanmakuReportTests 一致：直驱库方法与判据函数，本仓无 HTTP harness。
@@ -62,10 +62,10 @@ public sealed class DanmakuRecycleTests : IDisposable
         return id;
     }
 
-    // ── 自删与捐回 ────────────────────────────────────────────
+    // ── 自删与恢复 ────────────────────────────────────────────
 
     [Fact]
-    public void 自删的弹幕进回收站并原样捐回()
+    public void 自删的弹幕进回收站并原样恢复()
     {
         var videoId = AddArrivedVideo("BVrecycle01");
         var seat = AddSeat("阿梨", "阿梨酱");
@@ -92,14 +92,14 @@ public sealed class DanmakuRecycleTests : IDisposable
         Assert.True(ok);
         var after = _db.GetLocalDanmakuSnapshot(dmId);
         Assert.NotNull(after);
-        // 说话时刻、浏览器凭证、席位归属一字不改：捐回不能顺手篡改发言时间，也不能让自删判据认不出他。
+        // 说话时刻、浏览器凭证、席位归属一字不改：恢复不能顺手篡改发言时间，也不能让自删判据认不出他。
         Assert.Equal(before!.CreatedAtUtc, after!.CreatedAtUtc);
         Assert.Equal("dm-self-1", after.SenderDmid);
         Assert.Equal(seat, after.SenderMemberId);
         Assert.Equal(12.5, after.TSec);
         Assert.Equal(2, after.PageIdx);
         Assert.Equal("这句说错了", after.Text);
-        // 捐回即离开回收站，不留双份。
+        // 恢复即离开回收站，不留双份。
         Assert.Equal(0, _db.CountDanmakuRecycle());
     }
 
@@ -118,7 +118,7 @@ public sealed class DanmakuRecycleTests : IDisposable
         var dmId = _db.AddLocalDanmaku(videoId, 0, 3, "趁还在架上说一句", "dm-self-2", false);
         var recycleId = _db.MoveDanmakuToRecycle(dmId, "站长", null, "admin");
 
-        // 片子回落到非到站态（等价于进了视频回收站 / 被清出架）：捐回去也没地方摆。
+        // 片子回落到非到站态（等价于进了视频回收站 / 被清出架）：恢复去也没地方摆。
         Assert.True(_db.MarkFailed(videoId, "测试：把片清出架"));
         var entry = Assert.Single(_db.ListDanmakuRecycle());
         Assert.False(entry.VideoInStation);
@@ -132,7 +132,7 @@ public sealed class DanmakuRecycleTests : IDisposable
     }
 
     [Fact]
-    public void 按原弹幕id捐回认最新那条()
+    public void 按原弹幕id恢复认最新那条()
     {
         var videoId = AddArrivedVideo("BVrecycle03");
         var oldId = _db.AddLocalDanmaku(videoId, 0, 1, "早年那句", "dm-old", false);
@@ -151,7 +151,7 @@ public sealed class DanmakuRecycleTests : IDisposable
     // ── 与举报单联动 ──────────────────────────────────────────
 
     [Fact]
-    public void 举报删的弹幕进回收站重开单时自动捐回()
+    public void 举报删的弹幕进回收站重开单时自动恢复()
     {
         var videoId = AddArrivedVideo("BVrecycle04");
         var sender = AddSeat("被告");
@@ -174,7 +174,7 @@ public sealed class DanmakuRecycleTests : IDisposable
 
         var (reopenStatus, reopenMessage) = DanmakuReportEndpoints.ReopenReport(_db, reportId);
         Assert.Equal(200, reopenStatus);
-        Assert.Contains("捐回去", reopenMessage);
+        Assert.Contains("恢复回来", reopenMessage);
         Assert.NotNull(_db.GetLocalDanmakuSnapshot(dmId));
         Assert.Equal(0, _db.CountDanmakuRecycle());
         // 单也真的回到待处理，能被重新处置一次。
@@ -197,10 +197,10 @@ public sealed class DanmakuRecycleTests : IDisposable
         Assert.Contains("不用重开", busyMessage);
 
         Assert.Equal(200, DanmakuReportEndpoints.HandleReport(_db, reportId, "dismiss").Status);
-        // 忽略处置没删弹幕，重开时话里不该提捐回。
+        // 忽略处置没删弹幕，重开时话里不该提恢复。
         var (okStatus, okMessage) = DanmakuReportEndpoints.ReopenReport(_db, reportId);
         Assert.Equal(200, okStatus);
-        Assert.DoesNotContain("捐回", okMessage);
+        Assert.DoesNotContain("恢复", okMessage);
         Assert.NotNull(_db.GetLocalDanmakuSnapshot(dmId));
 
         // 第二次重开（已经是 pending 了）再吃 409。
