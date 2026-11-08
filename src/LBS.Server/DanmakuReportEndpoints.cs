@@ -93,11 +93,42 @@ public static class DanmakuReportEndpoints
 
         if (action == ActionDelete)
         {
-            db.DeleteLocalDanmaku(dmId);
-            return (StatusCodes.Status200OK, "弹幕已删，这张单也结了");
+            // 走回收站而不是一挥就没（11-08）：举报删错的能捐回，且这张单重开时能自动把弹幕带回来。
+            // 返回 0 = 原行早就不在（发送者自删过），跳出不算错，这张单照样结。
+            db.MoveDanmakuToRecycle(dmId, "站长（举报处置）", null, "report");
+            return (StatusCodes.Status200OK, "弹幕已删（进了回收站），这张单也结了");
         }
 
         return (StatusCodes.Status200OK, "已忽略，这条弹幕照旧留着");
+    }
+
+    /// <summary>
+    /// 重开一张举报单（11-08 站长拍板）：拍回 pending 让它能被重新处置一次，处置当初删掉的弹幕从回收站捐回来。
+    /// 捐不动（片子已下架、条目已被销毁）不算重开失败：单照重开，话里说清弹幕为什么没能回来，
+    /// 不拿一个假成功骗站长，也不拿一个假失败阻止他重新处置。
+    /// </summary>
+    internal static (int Status, string Message) ReopenReport(StationDb db, long reportId)
+    {
+        var (exists, reopened, previous, dmId, _) = db.ReopenDanmakuReport(reportId);
+        if (!exists)
+        {
+            return (StatusCodes.Status404NotFound, "没有这张举报单，可能被谁收走了");
+        }
+
+        if (!reopened)
+        {
+            return (StatusCodes.Status409Conflict, "这张单还挂在待处理里，不用重开");
+        }
+
+        if (previous != "deleted")
+        {
+            return (StatusCodes.Status200OK, "已重开，这张单回到案头等你重新处置");
+        }
+
+        var (ok, message) = db.RestoreDanmakuByDmId(dmId);
+        return (StatusCodes.Status200OK, ok
+            ? "已重开，当初删掉的弹幕也捐回去了（它照旧飘在原处）"
+            : $"已重开，但当初删掉的弹幕没能捐回：{message}");
     }
 
     /// <summary>席位的展示名（昵称优先，素净席位落 @username）；席位走了或本就没席位 → null（台账吃快照，不回头查）。</summary>
@@ -170,6 +201,16 @@ public static class DanmakuReportEndpoints
         app.MapPost("/api/admin/danmaku-reports/{id:long}/handle", (long id, HandleRequest? request, StationDb db) =>
         {
             var (status, message) = HandleReport(db, id, request?.Action);
+            return status == StatusCodes.Status200OK
+                ? Results.Ok(new { message })
+                : Results.Json(new { message }, statusCode: status);
+        });
+
+        // 重开这张单（11-08）：处置只此一次是铁规，但铁规不等于不能反悔——反悔得走明路。
+        // 判据与落库全在 ReopenReport（与 handle 同一张嘴，测试可直驱）。
+        app.MapPost("/api/admin/danmaku-reports/{id:long}/reopen", (long id, StationDb db) =>
+        {
+            var (status, message) = ReopenReport(db, id);
             return status == StatusCodes.Status200OK
                 ? Results.Ok(new { message })
                 : Results.Json(new { message }, statusCode: status);

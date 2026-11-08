@@ -181,7 +181,9 @@ public static class MemberEndpoints
                     if (session.Mode == "bind")
                     {
                         var binder = db.GetMemberById(session.OwnerMemberId!.Value);
-                        if (binder is null)
+                        // 不只查「席位还在不在」：席位被除名/封禁后手上那张码还热着，
+                        // 不挡就会把别人的 B 站号挂到一个已经不进得来的席位上去。
+                        if (binder is null || !MemberStatus.AllowsAdmission(binder.Status))
                         {
                             // 码还挂在手上时席位被逐了：不拿 null 去碰账，说清楚让他重发一次。
                             jar.Remove(key);
@@ -342,9 +344,13 @@ public static class MemberEndpoints
         var existing = db.GetMemberByMid(identity.Mid);
         if (existing is not null)
         {
-            if (existing.Status == MemberStatus.Banned)
+            // 白名单判据（只认 active）：写成 != Banned 的话，每加一种新状态就漏一次——
+            // 除名（exiled）的人扫一次码就会走下面那条重登分支，拿新票回站，除名形同虚设。
+            if (!MemberStatus.AllowsAdmission(existing.Status))
             {
-                return (null, "这个 B 站号已被站长请出分站", StatusCodes.Status403Forbidden);
+                return (null, existing.Status == MemberStatus.Exiled
+                    ? "这位已被分站除名，要回来得请站长召回席位"
+                    : "这个 B 站号已被站长请出分站", StatusCodes.Status403Forbidden);
             }
 
             db.UpsertMemberAccount(existing.Id, identity.Mid, identity.Name, identity.Face, cookie);

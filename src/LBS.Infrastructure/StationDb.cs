@@ -646,6 +646,46 @@ public sealed partial class StationDb
         // 通知静音（11-03 站长：「有些人嫌烦」）：席位自关到站播报/周报/投稿回执三路定时货，
         // 存逗号分隔频道名（NULL/空＝全开）；只管往后，静音前已寄的信留在手边不追溯。
         EnsureColumn(connection, "members", "notify_mutes", "TEXT");
+        // 素净席位自改名（11-08 站长拍板）：昵称自己说了算那一刻起打锁，
+        // 日后补绑 B 站号与每次重登都不再拿 B 站昵称盖它（不锁就会发生「改了名、下次登录又变回去」）。
+        EnsureColumn(connection, "members", "nickname_locked", "INTEGER");
+        // 公告撤回（11-08）：同一次播送共用一个批次号，撤回只打时间戳不进删除——
+        // 成员已读没读、铃铛数多少都能复原（把 revoked_at_utc 拍回 NULL 即捐回）。
+        EnsureColumn(connection, "messages", "batch_id", "TEXT");
+        EnsureColumn(connection, "messages", "revoked_at_utc", "TEXT");
+        using (var batchIdx = connection.CreateCommand())
+        {
+            // 撤回与「站长室列历史播送」都按批次号捣行，没索引就是全表扫。
+            batchIdx.CommandText = "CREATE INDEX IF NOT EXISTS idx_messages_batch ON messages(batch_id) WHERE batch_id IS NOT NULL;";
+            batchIdx.ExecuteNonQuery();
+        }
+        // 单删弹幕进回收站（11-08 站长拍板）：不挤 videos 那张回收站——它的形状是「一部片」
+        // （video_id/bvid NOT NULL + 一堆文件账目），硬塑一条弹幕要伪造空 Video 字典、还要绕开文件搬运。
+        // 不存 id：捐回时重新入队拿新 id，旧 id 只当审计用（弹幕没有对外引用，不必像整片回收那样保号）。
+        using (var dmRecycle = connection.CreateCommand())
+        {
+            dmRecycle.CommandText = """
+                CREATE TABLE IF NOT EXISTS danmaku_recycle (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dm_id INTEGER NOT NULL,
+                    video_id INTEGER NOT NULL,
+                    bvid TEXT,
+                    page_idx INTEGER NOT NULL,
+                    t_sec REAL NOT NULL,
+                    text TEXT NOT NULL,
+                    sender_dmid TEXT,
+                    sender_owner TEXT,
+                    member_id INTEGER,
+                    dm_created_at_utc TEXT,
+                    deleted_at_utc TEXT NOT NULL,
+                    deleted_by TEXT,
+                    deleted_by_member_id INTEGER,
+                    source TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_danmaku_recycle_video ON danmaku_recycle(video_id);
+                """;
+            dmRecycle.ExecuteNonQuery();
+        }
         using (var uname = connection.CreateCommand())
         {
             // 大小写不敏感判重（NOCASE 对 ASCII 生效，汉字本无大小写）；登录也按这把尺子认人。
@@ -1363,6 +1403,7 @@ public sealed partial class StationDb
             DELETE FROM pages;
             DELETE FROM video_meta;
             DELETE FROM danmaku_local;
+            DELETE FROM danmaku_recycle;
             DELETE FROM videos;
             """;
         return command.ExecuteNonQuery();

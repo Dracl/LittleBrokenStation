@@ -59,26 +59,37 @@ public sealed class RequeueClaimTests
     public void 认领_非站长一律挡回()
     {
         // 归属是账本：占谁的配额、算谁的功劳，不能让成员自己给自己挂。
-        Assert.Equal("只有站长能给稿子补归属", RequeueGate.JudgeClaim(isOwner: false, null, targetSeatExists: true));
+        Assert.Equal("只有站长能给稿子补归属", RequeueGate.JudgeClaim(isOwner: false, null, targetSeatStatus: MemberStatus.Active));
     }
 
     [Fact]
     public void 认领_已有归属不许抢改()
     {
-        Assert.Equal("这条已经有归属了，不重复认领", RequeueGate.JudgeClaim(isOwner: true, 7L, targetSeatExists: true));
+        Assert.Equal("这条已经有归属了，不重复认领", RequeueGate.JudgeClaim(isOwner: true, 7L, targetSeatStatus: MemberStatus.Active));
     }
 
     [Fact]
     public void 认领_目标席位不存在挡回()
     {
         // 挂到不存在的席位上 = 造出一条永远借不到号的稿子，比不挂更坏。
-        Assert.Equal("要挂过去的那个席位不存在", RequeueGate.JudgeClaim(isOwner: true, null, targetSeatExists: false));
+        Assert.Equal("要挂过去的那个席位不存在", RequeueGate.JudgeClaim(isOwner: true, null, targetSeatStatus: null));
     }
 
     [Fact]
     public void 认领_站长补空归属放行()
     {
-        Assert.Null(RequeueGate.JudgeClaim(isOwner: true, null, targetSeatExists: true));
+        Assert.Null(RequeueGate.JudgeClaim(isOwner: true, null, targetSeatStatus: MemberStatus.Active));
+    }
+
+    [Fact]
+    public void 认领_不进得来的席位不接稿()
+    {
+        // 归属决定「谁烧自己的号下这条、谁能自管这条」：挂到一个已除名/封禁/还没兑现的席位上，
+        // DownloadWorker 借不到他的号，只会把这条稿再顶回 Failed。
+        foreach (var status in new[] { MemberStatus.Exiled, MemberStatus.Banned, MemberStatus.Invited })
+        {
+            Assert.StartsWith("要挂过去的席位不在站里", RequeueGate.JudgeClaim(isOwner: true, null, targetSeatStatus: status));
+        }
     }
 
     [Fact]
@@ -87,6 +98,6 @@ public sealed class RequeueClaimTests
         // 同一枚事实（无归属 + 站长）在两张表里必须同进同退：重投说「先认领」，认领就得放行。
         var verdict = RequeueGate.JudgeRequeue(VideoStatus.Failed, null, isOwner: true);
         Assert.Equal(RequeueGate.Verdict.NeedClaim, verdict);
-        Assert.Null(RequeueGate.JudgeClaim(isOwner: true, null, targetSeatExists: true));
+        Assert.Null(RequeueGate.JudgeClaim(isOwner: true, null, targetSeatStatus: MemberStatus.Active));
     }
 }

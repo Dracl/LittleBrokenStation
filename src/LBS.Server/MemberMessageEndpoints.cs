@@ -11,6 +11,8 @@ namespace LBS.Server;
 public static class MemberMessageEndpoints
 {
     private sealed record AnnounceRequest(string? Title, string? Body);
+
+    private sealed record RevokeBatchRequest(string? BatchId);
     private sealed record NotifyPrefsRequest(IReadOnlyList<string>? Mutes);
 
     public static void MapMemberMessageEndpoints(this WebApplication app)
@@ -137,11 +139,65 @@ public static class MemberMessageEndpoints
                     statusCode: StatusCodes.Status400BadRequest);
             }
 
-            var sent = db.BroadcastToActive(MemberMail.KindAnnounce, title, body);
+            var sent = db.BroadcastToActive(MemberMail.KindAnnounce, title, body,
+                // 批次号（11-08 公告撤回）：同一次播送共用一个号，事后能整批收回来。
+                batchId: Guid.NewGuid().ToString("N"));
             events.RecordWithPayload(EventActors.Admin, MemberGate.Current(http)?.Mid, EventNames.AdminAnnounce,
                 "message", "broadcast", new { title, sent },
                 ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: MemberGate.Current(http)?.Id);
             return Results.Ok(new { sent, message = $"已送达 {sent} 席" });
+        });
+
+        // 发过的公告按批次点名 + 撤回 + 捐回（11-08 站长拍板「公告发出去收不回」）。
+        // 只拿得到 11-08 之后发的：那时没记批次号，拿 title+body 去凑会误伤同标题同正文的旧批
+        // （BroadcastToActive 一次 INSERT…SELECT 里所有行共用同一个 created_at_utc 串）。
+        app.MapGet("/api/admin/messages/announces", (StationDb db) => Results.Ok(new
+        {
+            items = db.ListAnnounceBatches(MemberMail.KindAnnounce).Select(b => new
+            {
+                batchId = b.BatchId,
+                title = b.Title,
+                body = b.Body,
+                createdAtUtc = b.CreatedAtUtc,
+                sent = b.Sent,
+                revoked = b.Revoked,
+            }),
+        }));
+
+        app.MapPost("/api/admin/messages/announce/revoke", (RevokeBatchRequest? request, StationDb db,
+            EventRecorder events, HttpContext http) =>
+        {
+            var batchId = request?.BatchId?.Trim();
+            if (string.IsNullOrEmpty(batchId))
+            {
+                return Results.Json(new { message = "要说撤回哪一批（缺 batchId）" }, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var taken = db.RevokeAnnounceBatch(batchId);
+            if (taken == 0)
+            {
+                return Results.Conflict(new { message = "这一批要么早就收回来了，要么根本没这个批次" });
+            }
+
+            events.RecordWithPayload(EventActors.Admin, MemberGate.Current(http)?.Mid, EventNames.AnnounceRevoke,
+                "message", batchId, new { taken },
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: MemberGate.Current(http)?.Id);
+            return Results.Ok(new { taken, message = $"已收回 {taken} 封（成员那边的铃铛与列表一并干净，捐回就在下面那枚钮）" });
+        });
+
+        // 捐回一次已撤回的播送：反悔的反悔。已读状态跟着回来，当初谁读过就是谁读过。
+        app.MapPost("/api/admin/messages/announce/restore", (RevokeBatchRequest? request, StationDb db) =>
+        {
+            var batchId = request?.BatchId?.Trim();
+            if (string.IsNullOrEmpty(batchId))
+            {
+                return Results.Json(new { message = "要说捐回哪一批（缺 batchId）" }, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var back = db.RestoreAnnounceBatch(batchId);
+            return back == 0
+                ? Results.Conflict(new { message = "这一批没被撤回过，没什么可捐回的" })
+                : Results.Ok(new { back, message = $"已捐回 {back} 封" });
         });
     }
 }

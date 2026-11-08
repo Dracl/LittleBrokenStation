@@ -60,6 +60,20 @@ public static class MemberStatus
     public const string Invited = "invited";
     public const string Active = "active";
     public const string Banned = "banned";
+
+    /// <summary>
+    /// 除名（软删席位）：人与账都留着，但不再进得来。与封禁的分别是意图——封禁是「暂时不认你」，
+    /// 随时可解禁；除名是「这位不往回来了」，历史名片照旧点得开（他发的弹幕、投的稿不会集体掉脸），
+    /// 但想回来得由站长动「召回」，不是他自己扫个码就当没事人。真删另有一条路（DeleteMember）。
+    /// </summary>
+    public const string Exiled = "exiled";
+
+    /// <summary>
+    /// 进不进得来只认这一张嘴（扫码入场、账密登录、发起绑定、认领目标全走它）。
+    /// 判据必须是「白名单 == Active」而不是「黑名单 != banned」：后者每加一种状态就漏一次——
+    /// exiled 落地那一刻，全站五处只挡 banned 的地方会把除名的人当没事人放行。
+    /// </summary>
+    public static bool AllowsAdmission(string? status) => status == Active;
 }
 
 /// <summary>成员角色：头名即站长（建表后第一个扫码认主的），其余皆用户。</summary>

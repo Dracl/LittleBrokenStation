@@ -215,7 +215,7 @@ export function isLocalCoverUrl(url) {
   return isLocalMedia(url)
 }
 
-/** 站长重拉封面后清缓存用（现在没人调，留个正门，免得将来又长一份临时脚本）。 */
+/** 站长重拉封面后清缓存用（调用方：utils/videoActions.js 里重拉媒体且 mediaReplaced 为真那一发；不再需要临时脚本）。 */
 export async function clearWallThumbs() {
   objUrls.clear()
   failed.clear()

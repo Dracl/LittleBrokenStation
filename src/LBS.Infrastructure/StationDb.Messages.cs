@@ -63,16 +63,17 @@ public sealed partial class StationDb
 
     /// <summary>全站播送：只发给 active 席位（封禁/待邀不发），返回送达席数。
     /// msgType/payloadJson 是可选的结构化卡面（11-03 到站播报），不传就是传统纯文本公告；
-    /// muteChannel（11-03 通知静音）非空时跳过关了那一路的席位——站长公告不传此参，关不掉。</summary>
+    /// muteChannel（11-03 通知静音）非空时跳过关了那一路的席位——站长公告不传此参，关不掉；
+    /// batchId（11-08 公告撤回）非空时同一次播送共用一个批次号，站长事后能把这一批收回来。</summary>
     public int BroadcastToActive(string kind, string title, string body, string? msgType = null, string? payloadJson = null,
-        string? muteChannel = null)
+        string? muteChannel = null, string? batchId = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         // 静音过滤压在 SELECT 里一把完成：整段精确比对（',a,b,' 含 ',a,'），REPLACE 防历史脏值夹空格。
         command.CommandText = """
-            INSERT INTO messages (to_mid, to_member_id, from_mid, kind, title, body, link, created_at_utc, msg_type, payload_json)
-            SELECT 0, id, NULL, $kind, $title, $body, NULL, $now, $msgType, $payload
+            INSERT INTO messages (to_mid, to_member_id, from_mid, kind, title, body, link, created_at_utc, msg_type, payload_json, batch_id)
+            SELECT 0, id, NULL, $kind, $title, $body, NULL, $now, $msgType, $payload, $batch
             FROM members
             WHERE status = $active
               AND ($mute IS NULL OR notify_mutes IS NULL
@@ -86,6 +87,7 @@ public sealed partial class StationDb
         command.Parameters.AddWithValue("$msgType", (object?)msgType ?? DBNull.Value);
         command.Parameters.AddWithValue("$payload", (object?)payloadJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$mute", (object?)muteChannel ?? DBNull.Value);
+        command.Parameters.AddWithValue("$batch", (object?)batchId ?? DBNull.Value);
         command.Parameters.AddWithValue("$active", MemberStatus.Active);
         return Convert.ToInt32(command.ExecuteScalar());
     }
@@ -106,7 +108,7 @@ public sealed partial class StationDb
                    m.msg_type, m.payload_json
             FROM messages m
             LEFT JOIN members s ON s.mid = m.from_mid
-            WHERE m.to_member_id = $to AND ($unreadOnly = 0 OR m.read_at_utc IS NULL)
+            WHERE m.to_member_id = $to AND m.revoked_at_utc IS NULL AND ($unreadOnly = 0 OR m.read_at_utc IS NULL)
             ORDER BY m.id DESC
             LIMIT $limit;
             """;
@@ -142,7 +144,7 @@ public sealed partial class StationDb
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM messages WHERE to_member_id = $to AND read_at_utc IS NULL;";
+        command.CommandText = "SELECT COUNT(*) FROM messages WHERE to_member_id = $to AND revoked_at_utc IS NULL AND read_at_utc IS NULL;";
         command.Parameters.AddWithValue("$to", toMemberId);
         return Convert.ToInt64(command.ExecuteScalar());
     }
@@ -152,7 +154,7 @@ public sealed partial class StationDb
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE messages SET read_at_utc = $now WHERE id = $id AND to_member_id = $to AND read_at_utc IS NULL;";
+        command.CommandText = "UPDATE messages SET read_at_utc = $now WHERE id = $id AND to_member_id = $to AND revoked_at_utc IS NULL AND read_at_utc IS NULL;";
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$to", toMemberId);
@@ -163,7 +165,7 @@ public sealed partial class StationDb
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE messages SET read_at_utc = $now WHERE to_member_id = $to AND read_at_utc IS NULL;";
+        command.CommandText = "UPDATE messages SET read_at_utc = $now WHERE to_member_id = $to AND revoked_at_utc IS NULL AND read_at_utc IS NULL;";
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$to", toMemberId);
         return command.ExecuteNonQuery();
@@ -178,6 +180,74 @@ public sealed partial class StationDb
         using var command = connection.CreateCommand();
         command.CommandText = "DELETE FROM messages WHERE to_member_id = $to;";
         command.Parameters.AddWithValue("$to", toMemberId);
+        return command.ExecuteNonQuery();
+    }
+
+    /// <summary>一次全站播送的账目（站长室「发过的公告」那一里清单的一行）。</summary>
+    public sealed record AnnounceBatch(string BatchId, string Title, string Body, string CreatedAtUtc, int Sent, bool Revoked);
+
+    /// <summary>
+    /// 发过的公告按批次点名（新播的先摆）：只拿得到带 batch_id 的行——
+    /// 11-08 之前发的公告没有批次号，列不出来也撤不回（这是实话，不拿 title+body 去凑：
+    /// BroadcastToActive 一次 INSERT…SELECT 里所有行共用同一个 created_at_utc 串，
+    /// 同标题同正文同秒就能误伤别人那一批）。
+    /// </summary>
+    public IReadOnlyList<AnnounceBatch> ListAnnounceBatches(string kind, int limit = 30)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT batch_id, MAX(title), MAX(body), MIN(created_at_utc), COUNT(*),
+                   MAX(CASE WHEN revoked_at_utc IS NOT NULL THEN 1 ELSE 0 END)
+            FROM messages
+            WHERE kind = $kind AND batch_id IS NOT NULL
+            GROUP BY batch_id
+            ORDER BY MIN(id) DESC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$kind", kind);
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 200));
+        using var reader = command.ExecuteReader();
+        var list = new List<AnnounceBatch>();
+        while (reader.Read())
+        {
+            list.Add(new AnnounceBatch(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetInt32(4),
+                reader.GetInt32(5) == 1));
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 撤回一次播送：只打 revoked_at_utc 戳，不删行。四条读信路径（清单/未读铃铛/标读/一键标读）
+    /// 都带 revoked_at_utc IS NULL，所以撤回后成员端从铃铛到列表一起干净；
+    /// 想捐回来拿 RestoreAnnounceBatch 把戳拍掉即可（这就是选软撤而不硬删的理由：播错了还有反悔的余地）。
+    /// </summary>
+    public int RevokeAnnounceBatch(string batchId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE messages SET revoked_at_utc = $now
+            WHERE batch_id = $batch AND revoked_at_utc IS NULL;
+            """;
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$batch", batchId);
+        return command.ExecuteNonQuery();
+    }
+
+    /// <summary>捐回一次已撤回的播送（拍掉时间戳）：已读状态跟着回来，当初谁读过就是谁读过。</summary>
+    public int RestoreAnnounceBatch(string batchId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE messages SET revoked_at_utc = NULL WHERE batch_id = $batch AND revoked_at_utc IS NOT NULL;";
+        command.Parameters.AddWithValue("$batch", batchId);
         return command.ExecuteNonQuery();
     }
 

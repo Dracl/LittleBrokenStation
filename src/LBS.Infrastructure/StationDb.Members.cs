@@ -142,9 +142,14 @@ public sealed partial class StationDb
             using (var command = connection.CreateCommand())
             {
                 // 头名即站长：同一语句内自问“站上有主吗”，无主则认主者继位，不给竞速留缝。
+                // 自改过名号的席位（nickname_locked=1）补绑时不被 B 站昵称盖脸：素净席位平时碰不到
+                // TouchMemberLogin（那语句 WHERE mid = $mid），补绑才是唯一会被盖的场合，这里不挡那枚锁就白打。
                 command.CommandText = """
                     UPDATE members
-                    SET mid = $mid, nickname = $name, face_url = $face, status = 'active',
+                    SET mid = $mid,
+                        nickname = CASE WHEN COALESCE(nickname_locked, 0) = 1 THEN nickname ELSE $name END,
+                        face_url = CASE WHEN COALESCE(nickname_locked, 0) = 1 THEN face_url ELSE $face END,
+                        status = 'active',
                         invite_code = NULL, bound_at_utc = $now, last_login_at_utc = $now,
                         role = CASE WHEN NOT EXISTS (SELECT 1 FROM members WHERE role = 'owner')
                                     THEN 'owner' ELSE 'member' END
@@ -312,11 +317,13 @@ public sealed partial class StationDb
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
+        // 自改过名号的席位（nickname_locked=1）不再被 B 站刷新盖脸：不锁就会「改了名、下次登录又变回去」。
+        // 名与脸同进同退——只锁名不锁脸会留下一张「张三的名、李四的脸」的拼接名片。
         command.CommandText = """
             UPDATE members
             SET last_login_at_utc = $now,
-                nickname = COALESCE($name, nickname),
-                face_url = COALESCE($face, face_url)
+                nickname = CASE WHEN COALESCE(nickname_locked, 0) = 1 THEN nickname ELSE COALESCE($name, nickname) END,
+                face_url = CASE WHEN COALESCE(nickname_locked, 0) = 1 THEN face_url ELSE COALESCE($face, face_url) END
             WHERE mid = $mid;
             """;
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
@@ -326,7 +333,7 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
     }
 
-    /// <summary>启停席位；封禁顺手吊销其全部会话（即刻请出分站）。</summary>
+    /// <summary>启停席位；凡不进得来的状态（banned / exiled）都顺手吊销其全部会话（即刻请出分站）。</summary>
     public void SetMemberStatus(long memberId, string status)
     {
         using var connection = Open(_dbPath);
@@ -338,10 +345,76 @@ public sealed partial class StationDb
             command.ExecuteNonQuery();
         }
 
-        if (status == MemberStatus.Banned)
+        // 白名单判据：只认 active 留票。以前写的是 status == Banned 才吊票，那等于「新状态一律保留会话」——
+        // exiled 落地的瞬间，除名的人手上那张 30 天的票还能继续使，除名就只除了新登录。
+        if (status != MemberStatus.Active)
         {
             RevokeMemberSessions(memberId);
         }
+    }
+
+    /// <summary>
+    /// 席位自改名号：一并打锁，日后每次重登都不再拿 B 站名片盖它（锁不吃重力就等于白打）。
+    /// 为何连绑了 B 站号的席位也开放：展示名是一张礼貌名——没绑号的席位本就能自己叫任何名字，
+    /// 只禁绑号的那批只会造成「素净的能起名、绑号的反而不能」这种能说出不理由的不对称；
+    /// 开放之后锁才真正有路可走（绑号席位重登会被 TouchMemberLogin 盖，锁就挡那一下）。
+    /// 待邀席位不接：那还是张没认主的空席，「本人」还没到场。席位不在返回 false。
+    /// </summary>
+    public bool SetMemberNickname(long memberId, string nickname)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE members SET nickname = $name, nickname_locked = 1
+            WHERE id = $id AND status <> 'invited';
+            """;
+        command.Parameters.AddWithValue("$name", nickname);
+        command.Parameters.AddWithValue("$id", memberId);
+        return command.ExecuteNonQuery() > 0;
+    }
+
+    /// <summary>一枚待兑现的邀请码（发码那一刻建的空席位就是它本身：invited 行的 created_at_utc 即发码时刻）。</summary>
+    public sealed record MemberInvite(long MemberId, string Code, string? Note, string CreatedAtUtc);
+
+    /// <summary>
+    /// 已发未用的邀请码清单（站长室事后查）：另开一嘴而不复用 ListMembers——那边被前端广泛投影，
+    /// 把 invite_code 递出去等于给每张成员卡挂一把还能进人的钥匙。
+    /// </summary>
+    public IReadOnlyList<MemberInvite> ListPendingInvites()
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, invite_code, note, created_at_utc FROM members
+            WHERE status = 'invited' AND invite_code IS NOT NULL
+            ORDER BY id DESC;
+            """;
+        using var reader = command.ExecuteReader();
+        var list = new List<MemberInvite>();
+        while (reader.Read())
+        {
+            list.Add(new MemberInvite(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetString(3)));
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 作废一枚邀请码：只抽掉码，席位行留着（未兑现的空席除了 note 一无所有，不损任何下游账）。
+    /// 两条兑现路（扫码与账密注册）都经 FindInvitedByCode，它只认 invite_code 非空且 status='invited'，
+    /// 所以码一抖两条路同时断，不必两边各改一遍。席位已认主（转 active）时抽码不算错但不算撤，回 false。
+    /// </summary>
+    public bool RevokeMemberInvite(long memberId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE members SET invite_code = NULL WHERE id = $id AND status = 'invited' AND invite_code IS NOT NULL;";
+        command.Parameters.AddWithValue("$id", memberId);
+        return command.ExecuteNonQuery() > 0;
     }
 
     /// <summary>撤席位：连账号池与会话一起清；历史事件与投稿归属（actor/submitter mid）留着给 AI。</summary>

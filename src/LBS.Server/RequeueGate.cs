@@ -43,10 +43,12 @@ public static class RequeueGate
 
     /// <summary>
     /// 认领（给无归属的稿子补投稿人席位）的门槛。回 null = 放行，否则是要贴给前端的拒词。
-    /// 三条：只站长能做（归属是账本，占谁的配额算谁的功劳，不能让成员自己给自己挂）、
-    /// 只补空归属（已有归属的不许抢改）、目标席位得真存在。
+    /// 四条：只站长能做（归属是账本，占谁的配额算谁的功劳，不能让成员自己给自己挂）、
+    /// 只补空归属（已有归属的不许抢改）、目标席位得真存在、而且得是个还在站里的席（活席）。
+    /// targetSeatStatus 递的是席位当前 status（null = 查无此席）：判据拿事实自己判断，
+    /// 不拿调用方已经消化过的 bool——那样「除名席能不能接稿」这条新规就只能在端点里默默写死，钉不住真值表。
     /// </summary>
-    public static string? JudgeClaim(bool isOwner, long? currentSubmitterMemberId, bool targetSeatExists)
+    public static string? JudgeClaim(bool isOwner, long? currentSubmitterMemberId, string? targetSeatStatus)
     {
         if (!isOwner)
         {
@@ -58,6 +60,15 @@ public static class RequeueGate
             return "这条已经有归属了，不重复认领";
         }
 
-        return targetSeatExists ? null : "要挂过去的那个席位不存在";
+        if (targetSeatStatus is null)
+        {
+            return "要挂过去的那个席位不存在";
+        }
+
+        // 归属决定「谁烧自己的号下这条、谁能自管这条」，挂到一个不进得来的席位上
+        // 等于把活派给一个已经不在站里的人（DownloadWorker 拿不到他的号，只会再失败一次）。
+        return MemberStatus.AllowsAdmission(targetSeatStatus)
+            ? null
+            : "要挂过去的席位不在站里（除名、封禁或还没兑现），换个活着的";
     }
 }

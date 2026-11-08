@@ -6,6 +6,8 @@ import DanmakuCountIcon from './DanmakuCountIcon.vue'
 import { biPlay, biVolume, biSetting, biPip, biFull, biDmOn, biDmOff, biDmSet, biHiRes } from '../assets/bicons'
 import { probeMp4 } from '../utils/mp4Meta'
 import { loadAssText, buildHeat, HEAT } from '../utils/dmHeat'
+import { member } from '../memberStore'
+import { requestConfirm } from '../confirmStore'
 
 const props = defineProps({
   page: { type: Object, default: null }, // { videoUrl, danmakuUrl, subtitleUrls, index }
@@ -250,7 +252,18 @@ watch(play, (v) => localStorage.setItem('lbs.player.playPrefs.v3', JSON.stringif
 const activeCodec = ref(null)
 let restorePlan = null
 
-const versions = computed(() => props.page?.codecVersions ?? [])
+// 站长「删掉这一版」落定后先在本地把行摘掉，等父页重拉 watch 交权（下面 rawVersions 那条 watch）。
+// 旗子按分 P 记：加档账本本来就按 P 存（video_codecs.page_idx 认的就是 pages.idx），切 P 不许误伤别的分 P。
+// 这一坨必须摆在 versions 之前：versions 的首评是 immediate 的（见下面 codecProg 那条「盐系少女事故」注释），
+// 摆后面等于第一趟渲染就碰还没落地的 const——TDZ 自爆。
+const deletedCodecs = ref(new Set()) // 已「清出站」的加档行，key = `${pageIdx}:${codec}`
+const deletingCodecs = ref(new Set()) // 正在删的编码：钮按下去就锁上，防连点（删一发要等后端回话）
+const codecDelNote = ref(null) // { text, bad }：删完那句后端原话，成功失败都照抄不改写
+function deletedKey(pageIdx, codec) {
+  return `${pageIdx}:${codec}`
+}
+const rawVersions = computed(() => props.page?.codecVersions ?? [])
+const versions = computed(() => rawVersions.value.filter((c) => !deletedCodecs.value.has(deletedKey(props.page?.index ?? 0, c.codec))))
 const currentSrc = computed(() => {
   const hit = activeCodec.value && versions.value.find((c) => c.codec === activeCodec.value && c.status === 'Arrived')
   return hit ? hit.relPath : props.page?.videoUrl
@@ -379,6 +392,68 @@ watch(
     if (v?.codec) pendingCodecs.value.delete(v.codec)
   },
 )
+
+// 服务端又报回这一行（重新点单加档到货、或父页那一发重拉赶在删除落定之前）：本地那面「已删」旗子交回去，
+// 行重新现身。账以服务端为准，前端这面旗子只负责撑到重拉落地那一下，不自建一套版本台账。
+watch(rawVersions, (rows) => {
+  const pageIdx = props.page?.index ?? 0
+  for (const r of rows) deletedCodecs.value.delete(deletedKey(pageIdx, r.codec))
+})
+
+// ─── 站长删掉某一路加档版本（只删加档行，主版本碰不得）───
+// 真门在端点里：DELETE /api/videos/{id}/codecs/{pageIdx}/{codec} 整条在 AdminGate 的点名范围内（非站长会话 401/403），
+// 这里藏钮只是不把「按了也是白按」的钮摆给成员看（与站内弹幕 canDelete 同一范式）。
+// 身份读全站那一份 memberStore（TopBar / 个人空间 / 分区都读它）：page 里根本没有 isStationOwner 那格——
+// 它在 /api/watch 的顶层载荷上（分 P 行只带 codecVersions / mainBytes 那些），播放器不该自己造一个。
+const isStationOwner = computed(() => member.value?.role === 'owner')
+
+// 只给「已到货的加档行」摆这枚钮：主版本的文件记在 pages 表那一格，这口删的是 video_codecs 行，
+// 把钮摆到主版本行上就是骗人以为主版本也能删。
+function canDeleteRow(codec) {
+  if (!isStationOwner.value) return false
+  const info = versionInfo(codec)
+  return info.state === 'stock' && !info.fromMain
+}
+
+async function deleteCodecRow(codec) {
+  const pageIdx = props.page?.index
+  if (!props.videoId || pageIdx == null || deletingCodecs.value.has(codec)) return
+  const sure = await requestConfirm({
+    title: '删掉这一版',
+    sub: `${props.bvid} · ${codec} P${pageIdx}`,
+    message: '只清这一路编码的文件与台账，主版本不动；想要回来在这部片子的播放器里重新点单加档。',
+    confirmText: '删掉',
+    cancelText: '再想想',
+    danger: true,
+    icon: 'trash',
+  })
+  if (!sure) return
+  // 正播着这一路就先切回主版本再动手：文件被播放器攥着，Windows 上根本删不掉
+  // （后端那个 catch (IOException) 只是兜底，账销了文件却留在盘上，看着就脏）。
+  // setCodec(null) 自带播放点接力，不会把人扔回片头重看一遍。
+  if (activeCodec.value === codec) setCodec(null)
+  const key = deletedKey(pageIdx, codec)
+  deletingCodecs.value.add(codec)
+  deletedCodecs.value.add(key) // 乐观摘行：确认了就当下消失，没删成再原样放回去
+  codecDelNote.value = null
+  try {
+    const res = await fetch(`/api/videos/${props.videoId}/codecs/${pageIdx}/${encodeURIComponent(codec)}`, { method: 'DELETE' })
+    const body = await res.json().catch(() => null)
+    // 后端给的人话原样贴出来（站内铁律：前端不改写），它没说才轮到兜底那句。
+    if (!res.ok) {
+      deletedCodecs.value.delete(key) // 行还在服务端账上，不能让它凭空少一行
+      codecDelNote.value = { text: body?.message ?? '这一版没删成，稍后再试', bad: true }
+      return
+    }
+    codecDelNote.value = { text: body?.message ?? '这一版已清出站', bad: false }
+    emit('codec-arrived') // 请父页重拉 watch，本地那面旗子随后交权（照引擎到货那条 emit 同一姿势，不另发明一套）
+  } catch {
+    deletedCodecs.value.delete(key)
+    codecDelNote.value = { text: '分站后端没有应答，这一版没删成', bad: true }
+  } finally {
+    deletingCodecs.value.delete(codec)
+  }
+}
 
 // 进站中的引擎实况：有 Downloading 行时每 5 秒拉一发轻量进度端点（与站长室队列同一本账），
 // 「进站中」后缀上百分比/已下/速度；某编码从进度表消失而版本行还报 Downloading = 十有八九定档了，
@@ -539,6 +614,7 @@ watch(() => props.page?.index, () => {
   activeCodec.value = null
   restorePlan = null
   resumePending = 0
+  codecDelNote.value = null // 上一 P 那句「已清出站」/失败话不跟到换了的新 P 脸上
 })
 
 watch(currentSrc, () => {
@@ -585,6 +661,70 @@ function fmtVersionSize(n) {
   const mb = n / (1024 * 1024)
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`
 }
+
+// ─── 字幕（多轨：全部挂上，显示哪一路由这里说了算）───
+// 字幕只有路径这一本账：artifacts 表 kind='subtitle' 存的是 rel_path，语言、人工/AI 全没落库，
+// 所以轨名只能从文件名猜，库里没写的事前端一个字都不许编。
+const subPanel = ref(false)
+const subOn = ref(true) // 默认开：与这次改造之前一致（单轨时挂着 default 就是显示着的）
+const subIdx = ref(0)
+const subtitleUrls = computed(() => props.page?.subtitleUrls ?? [])
+
+// 轨名认得出来就用它，认不出来给「字幕 1 / 字幕 2」这种笨名字。
+// 引擎写盘的形状是 `{base}_{LanDoc}.srt`，同一种语言撞车时再追一枚 `_{trackId}` 尾
+// （见 vendor 里 DownloadOutputLayout.GetSubtitleTrackPath 与 DownloadArtifactWriter 的 fileLabel）。
+// 铁律：这一路无论拿到什么脏名字都不许抛错——一个标签而已，宁可笨到底，也不把整台播放器带走。
+function subLabel(url, i) {
+  const dumb = `字幕 ${i + 1}`
+  try {
+    if (typeof url !== 'string' || !url) return dumb
+    let name = url.split('?')[0].split('#')[0]
+    name = name.slice(name.lastIndexOf('/') + 1)
+    try {
+      name = decodeURIComponent(name) // 名字里有光秃秃的 % 就当它没编码，交给下面正则一起判
+    } catch {
+      /* 保持原样 */
+    }
+    name = name.replace(/\.(srt|vtt|json)$/i, '') // 台账里 .srt/.vtt/.json 都算 subtitle（StationDb 那张 switch）
+    const segs = name.split('_')
+    if (segs.length < 2) return dumb // 光秃秃一个基名：尾段就是片名本身，跟语言无关
+    const tail = segs[segs.length - 1].trim()
+    // 尾段得像个语言名：至少有一个字（字母或汉字都算），不是纯数字（那是重名轨的 trackId 尾），
+    // 也不是 P3 这种分 P 尾缀（成片基名自己带的），也别长成一整句片名。
+    if (!tail || !/\p{L}/u.test(tail) || /^\d+$/.test(tail) || /^p\d+$/i.test(tail) || tail.length > 24) return dumb
+    return tail
+  } catch {
+    return dumb
+  }
+}
+
+// 把「开没开 + 选哪一路」施加到元素上。浏览器只在 track 到货那阵自己认 default 一次（而且多条同时 default
+// 只认第一条，等于白给），之后一切以这里为准。textTracks[i] 可能还没长出来（track 是异步挂的），
+// 拿不到就这一趟跳过，等下一发现成时机——绝不在这里 while 干等，那会把主线程焊死。
+function applySubtitleModes() {
+  const tracks = video.value?.textTracks
+  if (!tracks) return
+  for (let i = 0; i < tracks.length; i++) {
+    const tt = tracks[i]
+    if (!tt) continue
+    tt.mode = subOn.value && i === subIdx.value ? 'showing' : 'disabled'
+  }
+}
+
+function pickSubtitle(i) {
+  subIdx.value = i
+  subOn.value = true // 点轨就是想看它：顺手把总开关带上，不用先开总开关再点轨走两步
+  applySubtitleModes()
+}
+
+// <video> 带 :key="currentSrc"：切 P / 换编码都整枚重建，<track> 跟着重挂，mode 会被浏览器忘光。
+// 这里挂在已有的重挂点（换源、字幕数组变动）上重新施加，不另开定时器；flush post 是为了等 DOM 把 track 插进去。
+watch([currentSrc, subtitleUrls], () => applySubtitleModes(), { flush: 'post' })
+// 每个分 P 的轨数可以不一样：上一 P 选到第 3 轨，这一 P 只有一轨时得把指针拉回 0，
+// 否则 mode 谁都轮不上，看着像字幕坏了。
+watch(subtitleUrls, (urls) => {
+  if (subIdx.value > urls.length - 1) subIdx.value = 0
+})
 
 // ─── 站内弹幕（只在本页飘，不上传 B 站）───
 const danmakuLayer = ref(null)
@@ -952,6 +1092,7 @@ function onLoadedMetadata() {
   v.volume = volume.value
   v.muted = muted.value
   loadedPageIdx = props.page?.index ?? 0 // 这一页确实装进元素了，补报进度拿它当旧 P
+  applySubtitleModes() // 重建过的 <video> 连 <track> 一起换新，字幕开没开在这里重新落一次（不靠定时器补）
   if (tParam != null) {
     const t = tParam
     tParam = null // 一次性消费，后面重建元素不再提
@@ -1580,7 +1721,18 @@ const STROKE_ITEMS = [
       @ended="onEnded"
       @volumechange="muted = video.muted; volume = video.muted ? volume : video.volume"
     >
-      <track v-if="page.subtitleUrls?.length" :src="page.subtitleUrls[0]" kind="subtitles" label="字幕" default />
+      <!-- 字幕轨：有几条挂几条（以前只取 [0]，第二条以后的人根本没得选）。显示哪一路交给 applySubtitleModes，
+           default 只给当前选中那一条（多条同时 default 浏览器只认第一条，给多了等于白给）；
+           @load 到货那一刻再施加一次，防的就是「track 还没长出来、textTracks[i] 拿不到」那一瞬。 -->
+      <track
+        v-for="(u, i) in subtitleUrls"
+        :key="i"
+        :src="u"
+        kind="subtitles"
+        :label="subLabel(u, i)"
+        :default="subOn && i === subIdx"
+        @load="applySubtitleModes"
+      />
     </video>
     <div v-else class="flex h-full w-full flex-col items-center justify-center gap-2 text-sm text-white/50">
       <span v-if="status === 1">这集还在进站路上，稍后再来</span>
@@ -1773,7 +1925,7 @@ const STROKE_ITEMS = [
           <button
             class="flex h-8 items-center justify-center rounded px-1.5 text-xs hover:bg-white/10"
             title="清晰度（本地馆藏单档）"
-            @click.stop="qualityMenu = !qualityMenu; rateMenu = false; gearPanel = false; wakeControls()"
+            @click.stop="qualityMenu = !qualityMenu; rateMenu = false; gearPanel = false; subPanel = false; wakeControls()"
           >
             {{ qualityLabel }}
           </button>
@@ -1796,7 +1948,7 @@ const STROKE_ITEMS = [
           <button
             class="flex h-8 min-w-9 items-center justify-center rounded px-1 text-xs tabular-nums hover:bg-white/10"
             title="播放速度"
-            @click.stop="rateMenu = !rateMenu; qualityMenu = false; gearPanel = false; wakeControls()"
+            @click.stop="rateMenu = !rateMenu; qualityMenu = false; gearPanel = false; subPanel = false; wakeControls()"
           >
             {{ rate === 1 ? '倍速' : rate + '×' }}
           </button>
@@ -1821,12 +1973,25 @@ const STROKE_ITEMS = [
           </svg>
         </button>
 
+        <!-- 字幕（多轨）：片子里真躺着字幕文件才上桌（无轨时这枚钮根本没东西可摆）。
+             判的是 subtitleUrls 而不是 page.subtitleUrls?.length：控制条不在 v-if="page?.videoUrl" 的盒子里，
+             page 为空时直接读它会敲在 null 上，走 subtitleUrls 那枚已经兼容空 page 的计算属性。 -->
+        <button
+          v-if="subtitleUrls.length"
+          class="flex h-8 items-center justify-center rounded px-1.5 text-xs hover:bg-white/10"
+          :class="subPanel ? 'text-stationBlue' : ''"
+          title="字幕"
+          @click.stop="subPanel = !subPanel; gearPanel = false; playPanel = false; rateMenu = false; qualityMenu = false; wakeControls()"
+        >
+          字幕
+        </button>
+
         <!-- 播放设定齿轮 -->
         <button
           class="flex h-8 w-8 items-center justify-center rounded hover:bg-white/10"
           :class="playPanel ? 'text-stationBlue' : ''"
           title="播放设定"
-          @click.stop="playPanel = !playPanel; gearPanel = false; rateMenu = false; qualityMenu = false; wakeControls()"
+          @click.stop="playPanel = !playPanel; gearPanel = false; rateMenu = false; qualityMenu = false; subPanel = false; wakeControls()"
         >
           <BIcon :meta="biSetting" class="h-5 w-5" />
         </button>
@@ -1918,30 +2083,46 @@ const STROKE_ITEMS = [
 
       <span v-if="presentRows.length" class="mb-1 block text-white/60">播放版本</span>
       <div v-if="presentRows.length" class="mb-1.5 flex flex-col gap-1">
-        <button
-          v-for="c in presentRows"
-          :key="c[0]"
-          class="relative flex items-center justify-between rounded px-2 py-1.5 transition"
-          :class="playingCodec() === c[0] ? 'bg-stationBlue text-white' : versionInfo(c[0]).state === 'stock' ? 'bg-white/10 hover:bg-white/20' : 'bg-white/5 text-white/50 hover:bg-white/10'"
-          :title="c[0] === 'hevc' ? 'HEVC 在部分浏览器可能放不动' : ''"
-          @click="clickVersion(c[0])"
-        >
-          <span class="shrink-0 whitespace-nowrap">
-            <span v-if="playingCodec() === c[0]" class="mr-1 text-[9px]">▶</span>{{ c[1] }}
-          </span>
-          <span class="ml-2 min-w-0 truncate text-right text-[10px] tabular-nums whitespace-nowrap">
-            <template v-if="versionInfo(c[0]).state === 'stock'">{{ stockBadge(c[0]) }}</template>
-            <template v-else-if="versionInfo(c[0]).state === 'downloading'">进站中{{ progTail(c[0]) }}</template>
-            <template v-else-if="versionInfo(c[0]).state === 'failed'">失败 · 重点重试</template>
-          </span>
-          <!-- 进站中的行底细进度条：与站长室队列同款，不占字位也能看出在动 -->
-          <span
-            v-if="versionInfo(c[0]).state === 'downloading' && codecProg[c[0]] && codecProg[c[0]].percent > 0"
-            class="absolute bottom-0 left-0 h-0.5 rounded-full bg-white/50 transition-all"
-            :style="{ width: `${Math.min(100, Math.round(codecProg[c[0]].percent))}%` }"
-          ></span>
-        </button>
+        <!-- 行根从 button 改成 div：站长那枚「删这一版」要坐在行里，button 套 button 不合法
+             （浏览器会把内层钮踢出去，点谁都不对）。外层这枚 div 只当盒子不接点击，切版本仍是那枚整行钮。 -->
+        <div v-for="c in presentRows" :key="c[0]" class="flex items-center gap-1">
+          <button
+            class="relative flex min-w-0 flex-1 items-center justify-between rounded px-2 py-1.5 transition"
+            :class="playingCodec() === c[0] ? 'bg-stationBlue text-white' : versionInfo(c[0]).state === 'stock' ? 'bg-white/10 hover:bg-white/20' : 'bg-white/5 text-white/50 hover:bg-white/10'"
+            :title="c[0] === 'hevc' ? 'HEVC 在部分浏览器可能放不动' : ''"
+            @click="clickVersion(c[0])"
+          >
+            <span class="shrink-0 whitespace-nowrap">
+              <span v-if="playingCodec() === c[0]" class="mr-1 text-[9px]">▶</span>{{ c[1] }}
+            </span>
+            <span class="ml-2 min-w-0 truncate text-right text-[10px] tabular-nums whitespace-nowrap">
+              <template v-if="versionInfo(c[0]).state === 'stock'">{{ stockBadge(c[0]) }}</template>
+              <template v-else-if="versionInfo(c[0]).state === 'downloading'">进站中{{ progTail(c[0]) }}</template>
+              <template v-else-if="versionInfo(c[0]).state === 'failed'">失败 · 重点重试</template>
+            </span>
+            <!-- 进站中的行底细进度条：与站长室队列同款，不占字位也能看出在动 -->
+            <span
+              v-if="versionInfo(c[0]).state === 'downloading' && codecProg[c[0]] && codecProg[c[0]].percent > 0"
+              class="absolute bottom-0 left-0 h-0.5 rounded-full bg-white/50 transition-all"
+              :style="{ width: `${Math.min(100, Math.round(codecProg[c[0]].percent))}%` }"
+            ></span>
+          </button>
+          <!-- 站长专用那一枚。真门在端点里（AdminGate 只放 owner 会话），这里只是不把钮摆给不该按的人；
+               删中锁住防连点（后端那一发要等回话，连点会把同一行删两遍、第二下拿 404）。 -->
+          <button
+            v-if="canDeleteRow(c[0])"
+            class="flex h-7 shrink-0 items-center justify-center rounded bg-white/5 px-1.5 text-[10px] whitespace-nowrap text-white/50 transition hover:bg-stationPink hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="deletingCodecs.has(c[0])"
+            :title="deletingCodecs.has(c[0]) ? '正在清出站……' : `删掉这一版（${c[1]}），主版本不动`"
+            @click="deleteCodecRow(c[0])"
+          >
+            {{ deletingCodecs.has(c[0]) ? '删中' : '删' }}
+          </button>
+        </div>
       </div>
+      <!-- 后端那句人话原样贴在这里（「XX 版本已清出站」/「没有这个版本」都是它说的，前端不改写）；
+           它没说才轮到兜底那句，失败走玫红提醒，成功只算一行情报。 -->
+      <p v-if="codecDelNote" class="mb-2 px-1 text-[10px]" :class="codecDelNote.bad ? 'text-stationPink' : 'text-white/50'">{{ codecDelNote.text }}</p>
       <button v-if="missingRows.length" class="mb-2 px-1 text-left text-[10px] text-white/40 transition hover:text-white/70" @click="showMore = !showMore">
         {{ showMore ? '▾ 收起其他版本' : '▸ 加档其他版本' }}
       </button>
@@ -1968,6 +2149,49 @@ const STROKE_ITEMS = [
           <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" :class="play.lightsOff ? 'left-[18px]' : 'left-0.5'"></span>
         </button>
       </div>
+    </div>
+
+    <!-- 字幕面板：照弹幕设定面板的形状。顶部那枚总开关独立于选轨（只有一轨时也得能关掉），
+         底下每轨一行单选，选中那行吃现成的蓝底选中态。 -->
+    <div
+      v-if="subPanel && subtitleUrls.length"
+      class="absolute bottom-14 right-3 z-20 w-[300px] rounded-xl bg-[#222]/95 p-3.5 text-xs text-white/90 shadow-xl backdrop-blur"
+      @click.stop
+      @mousemove="wakeControls"
+    >
+      <p class="relative mb-3 text-center text-[13px] font-medium text-white">
+        字幕
+        <button class="absolute right-0 top-0 text-white/50 transition hover:text-white" @click="subPanel = false">✕</button>
+      </p>
+
+      <div class="mb-2.5 flex items-center justify-between">
+        <span class="text-white/85">{{ subOn ? '字幕开' : '关掉字幕' }}</span>
+        <button
+          class="relative h-5 w-9 rounded-full transition"
+          :class="subOn ? 'bg-stationBlue' : 'bg-white/25'"
+          title="关掉后画面里不飘字；字幕文件仍在原地不动，随时开得回来"
+          @click="subOn = !subOn; applySubtitleModes()"
+        >
+          <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" :class="subOn ? 'left-[18px]' : 'left-0.5'"></span>
+        </button>
+      </div>
+
+      <span class="mb-1 block text-white/60">字幕轨</span>
+      <div class="mb-2 flex flex-col gap-1">
+        <button
+          v-for="(u, i) in subtitleUrls"
+          :key="i"
+          class="flex items-center justify-between rounded px-2 py-1.5 transition"
+          :class="subOn && i === subIdx ? 'bg-stationBlue text-white' : 'bg-white/10 hover:bg-white/20'"
+          :title="u"
+          @click="pickSubtitle(i)"
+        >
+          <span class="min-w-0 truncate">{{ subLabel(u, i) }}</span>
+          <span v-if="subOn && i === subIdx" class="ml-2 shrink-0 text-[10px] whitespace-nowrap text-white/50">显示中</span>
+        </button>
+      </div>
+
+      <p class="px-1 text-[10px] text-white/40">轨名取自字幕文件名尾段；台账里没存语言与人工/AI，认不出来就只编号。</p>
     </div>
 
     <!-- 弹幕设定面板：B 站原型，只留刚需 -->
@@ -2135,7 +2359,7 @@ const STROKE_ITEMS = [
           class="flex h-8 w-8 items-center justify-center rounded hover:bg-black/5"
           :class="gearPanel ? 'bg-stationBlue/10' : ''"
           title="弹幕设定"
-          @click.stop="gearPanel = !gearPanel; playPanel = false; rateMenu = false; qualityMenu = false; wakeControls()"
+          @click.stop="gearPanel = !gearPanel; playPanel = false; rateMenu = false; qualityMenu = false; subPanel = false; wakeControls()"
         >
           <BIcon :meta="biDmSet" class="h-6 w-6 text-inkSub" />
         </button>

@@ -926,6 +926,7 @@ async function sendInvite() {
       inviteCode.value = data?.code ?? ''
       memberNote.value = ''
       await loadMembers()
+      await loadPendingInvites() // 台账跟着刷新：刚发的那枚立刻出现在下面，不然像没发出去
     } else {
       memberText.value = data?.message ?? '发码没成'
     }
@@ -947,10 +948,77 @@ async function copyInvite() {
   }
 }
 
+// ─── 发出去的邀请码：事后查 + 当场作废（11-08 站长拍板）───
+// 以前发完码就成失忆的黑箱：谁也没记着发给过谁、发过几枚，朋友拿着三个月前的码照样能进门。
+// 现在站长室列得出来（只列还活着的：一次性码兑现完 status 就变了，从这份清单自然消失），发错人当场作废。
+// 作废只抽码不改席位形态：两条兑现路（扫码 MemberEndpoints / 账密注册 MemberAccountEndpoints）都经
+// FindInvitedByCode 那一条判据，抽掉 invite_code 就同时断，不必在两条路上各补一个 if。
+const pendingInvites = ref(null) // null=没拉到（与「真的一张没发出去」分两脸，照举报柜那套口径）
+const invitesLoading = ref(false)
+const inviteBusy = ref(null) // 正在作废的那一席 id
+
+async function loadPendingInvites() {
+  if (invitesLoading.value) return
+  invitesLoading.value = true
+  try {
+    const res = await fetch('/api/admin/members/invites')
+    if (!res.ok) {
+      pendingInvites.value = null
+      return
+    }
+    const data = await res.json().catch(() => null)
+    pendingInvites.value = Array.isArray(data?.items) ? data.items : []
+  } catch {
+    pendingInvites.value = null
+  } finally {
+    invitesLoading.value = false
+  }
+}
+
+async function revokeInvite(item) {
+  if (inviteBusy.value !== null) return
+  const verdict = await requestConfirm({
+    title: '作废这枚邀请码',
+    sub: `${item.code}${item.note ? ` · ${item.note}` : ''}`,
+    message: '只抽码不改席位：这席还停在待邀，重新发一枚照旧能进。已经拿这枚码进过门的人不受影响（那一下早兑现完了）。',
+    confirmText: '作废',
+    cancelText: '再想想',
+    danger: true,
+    icon: 'trash',
+  })
+  if (!verdict) return
+  inviteBusy.value = item.id
+  memberText.value = ''
+  try {
+    const res = await fetch('/api/admin/members/invite/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: item.id }),
+    })
+    const data = await res.json().catch(() => null)
+    memberText.value = data?.message ?? (res.ok ? '已作废' : '作废没成')
+    if (res.ok) await loadPendingInvites()
+  } catch {
+    memberText.value = '分站后端没有应答'
+  } finally {
+    inviteBusy.value = null
+  }
+}
+
+// 席位状态四档一句话（11-08 多了 exiled）：徽章的词与色都从这儿取，免得模板里再堆一层嵌套三元。
+// 除名单独给一档而不与封禁同色：两者意图不同（封的是资格、除的是人），撞成一个灰球站长就看不出该按哪枚。
+function seatStatusTag(status) {
+  if (status === 'active') return { text: '启用', cls: 'border-emerald-400/40 text-emerald-300' }
+  if (status === 'invited') return { text: '待邀', cls: 'border-amber-400/40 text-amber-300' }
+  if (status === 'exiled') return { text: '已除名', cls: 'border-slate-500/40 text-slate-400' }
+  return { text: '封禁', cls: 'border-rose-400/40 text-rose-300' }
+}
+
 async function memberAction(action, item) {
   if (membersBusy.value) return
   const seat = seatLabel(item)
-  // 三颗钮三种后果，分开说：封禁只动进站资格（馆藏、弹幕、历史原地留着），撤席位才是把人请出站。
+  // 五颗钮五种后果，分开说：封禁只动进站资格（馆藏、弹幕、历史原地留着），除名是把人请出站但留席位行，
+  // 撤席位连席位行一起收；召回与解禁各自是前两者的反向操作。
   const ask =
     action === 'delete'
       ? {
@@ -972,7 +1040,26 @@ async function memberAction(action, item) {
             danger: true,
             icon: 'warn',
           }
-        : {
+        : action === 'exile'
+          ? {
+              title: '除名这位旅人',
+              sub: seat,
+              message: '除名与封禁分家：封的是「今天不许进」，除的是「这个人请出站」——即刻出站，扫码与账密都不再收，得走「召回」才回来。席位行留着，历史名片、投稿归属、发过的弹幕都还点得开（撤席位才是连行一起收）。',
+              confirmText: '除名',
+              cancelText: '再想想',
+              danger: true,
+              icon: 'trash',
+            }
+          : action === 'restore'
+            ? {
+                title: '召回这位旅人',
+                sub: seat,
+                message: '拍回启用：他可以重新进站，也重新能投稿。',
+                confirmText: '召回',
+                cancelText: '再想想',
+                icon: 'out',
+              }
+            : {
             title: '解禁这位旅人',
             sub: seat,
             message: '解除封禁，他可以重新进站逛了。',
@@ -1265,6 +1352,7 @@ async function sendAnnounce() {
     const data = await res.json().catch(() => null)
     if (res.ok) {
       announceText.value = `已送达 ${data?.sent ?? 0} 席`
+      loadAnnounceBatches() // 台账跟着刷新：刚发的那一批得立刻出现在下面，不然像没发出去
       announceTitle.value = ''
       announceBody.value = ''
       setTimeout(() => { announceText.value = '' }, 4000)
@@ -1275,6 +1363,240 @@ async function sendAnnounce() {
     announceText.value = '分站后端没有应答'
   } finally {
     announceBusy.value = false
+  }
+}
+
+// ─── 发过的公告：按批撤回与捐回（11-08 站长拍板「公告发出去收不回」）───
+// 只有 11-08 之后带批次号的播送列得出来：之前发的没记 batch_id，拿 title+body 去凑会误伤
+// 同标题同正文的旧批（BroadcastToActive 一次 INSERT…SELECT 里所有行共用同一个 created_at_utc 串）。
+// 撤回是打戳不是删行（库层 revoked_at_utc），所以捐回钮能把当初的送达原样复原，含谁已读过。
+const announceBatches = ref(null) // null=没拉到（与「真的一条没发过」分两脸）
+const announceBatchesLoading = ref(false)
+const announceBatchBusy = ref(null) // 正在动的那一批 batchId
+const announceBatchText = ref('')
+
+async function loadAnnounceBatches() {
+  if (announceBatchesLoading.value) return
+  announceBatchesLoading.value = true
+  try {
+    const res = await fetch('/api/admin/messages/announces')
+    if (!res.ok) {
+      announceBatches.value = null
+      return
+    }
+    const data = await res.json().catch(() => null)
+    announceBatches.value = Array.isArray(data?.items) ? data.items : []
+  } catch {
+    announceBatches.value = null
+  } finally {
+    announceBatchesLoading.value = false
+  }
+}
+
+// watch 摆在下面 quietOpen 声明之后：setup 里提前碰它就是 TDZ 当场报（先声明、后观察）。
+
+async function revokeAnnounce(batch) {
+  if (announceBatchBusy.value !== null) return
+  const verdict = await requestConfirm({
+    title: '收回这次播送',
+    sub: `${batch.title} · 当初送达 ${batch.sent} 席`,
+    message: '成员那边的铃铛与信箱一并干净（打时间戳不删行，反悔有捐回钮）。发错了就收，不必硬扛。',
+    confirmText: '收回',
+    danger: true,
+    icon: 'trash',
+  })
+  if (!verdict) return
+  await runAnnounceBatch('revoke', batch, '收回')
+}
+
+// 捐回不必确认：它本身就一键可逆，而且只把本来就该在那儿的信放回去。
+async function restoreAnnounce(batch) {
+  if (announceBatchBusy.value !== null) return
+  await runAnnounceBatch('restore', batch, '捐回')
+}
+
+async function runAnnounceBatch(verb, batch, label) {
+  announceBatchBusy.value = batch.batchId
+  announceBatchText.value = ''
+  try {
+    const res = await fetch(`/api/admin/messages/announce/${verb}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchId: batch.batchId }),
+    })
+    const data = await res.json().catch(() => null)
+    // 后端那句人话原样上屏（站内铁律），失败也拿它说话，前端不自编一套。
+    announceBatchText.value = data?.message ?? (res.ok ? `已${label}` : `${label}没成`)
+    await loadAnnounceBatches() // 重拉：revoked 状态与钮得跟着换脸
+  } catch {
+    announceBatchText.value = '分站后端没有应答'
+  } finally {
+    announceBatchBusy.value = null
+  }
+}
+
+// ─── 事件台账（11-08 补上查阅界面）───
+// 后端 GET /api/admin/events 早就写好了（身份 / 事件名前缀 / 条数三筛加总数，注释还说是「未来 AI 分析的取数口」），
+// 前端一直没人调，库里已攒一千九百多条只增不删。这块给站长查「谁撞过门、谁改过稿、谁在试密码」，
+// 不必再拿 sqlite 手搓；筛子与后端同名（actor / prefix / limit），不自造一套。
+const eventsRows = ref(null) // null=没拉到（与「真的一条没有」分两脸，照举报柜那套口径）
+const eventsTotal = ref(0)
+const eventsLoading = ref(false)
+const eventsNotice = ref('')
+const eventsActor = ref('') // '' = 全部；guest 访客 / member 席位 / admin 站长 / system 站内
+const eventsPrefix = ref('') // 事件名前缀：watch. 是全部观映账，admin. 是被门挡下的那些，login. 是进门那一串
+const eventsLimit = ref(200)
+const eventsOpen = ref(null) // 展开看详情的那一行 id：只开一行，读起来不散
+
+async function loadEventsLedger() {
+  if (eventsLoading.value) return
+  eventsLoading.value = true
+  eventsNotice.value = ''
+  try {
+    const q = new URLSearchParams({ limit: String(eventsLimit.value) })
+    if (eventsActor.value) q.set('actor', eventsActor.value)
+    if (eventsPrefix.value.trim()) q.set('prefix', eventsPrefix.value.trim())
+    const res = await fetch(`/api/admin/events?${q}`)
+    if (!res.ok) {
+      eventsRows.value = null // 拒客与空仓是两回事
+      eventsNotice.value = '台账没拉到（多半是身份过期，重新扫个码再来）'
+      return
+    }
+    const data = await res.json().catch(() => null)
+    eventsRows.value = Array.isArray(data?.events) ? data.events : []
+    eventsTotal.value = data?.total ?? eventsRows.value.length
+  } catch {
+    eventsRows.value = null
+    eventsNotice.value = '分站后端没有应答'
+  } finally {
+    eventsLoading.value = false
+  }
+}
+
+const EVENTS_ACTOR_LABEL = { guest: '访客', member: '席位', admin: '站长', system: '站内' }
+function eventsActorLabel(actor) {
+  return EVENTS_ACTOR_LABEL[actor] ?? actor ?? '—'
+}
+
+// 事件名后头那点人话：前缀相同的一眼扫过去容易糊，给几个常见族补一句说明（摆不出来的原样显示，不硬编）。
+function eventsSubjectText(row) {
+  if (!row.subjectType && !row.subjectId) return ''
+  return `${row.subjectType || '对象'} ${row.subjectId || '—'}`
+}
+
+// payload 是后端塞的 JSON 串，展开时才格式化：读不懂的原文照贴，不替它编个好看的形状。
+function eventsPayloadText(row) {
+  if (!row.payload) return '（这条没带详情）'
+  try {
+    return JSON.stringify(JSON.parse(row.payload), null, 2)
+  } catch {
+    return row.payload
+  }
+}
+
+// ─── 弹幕回收站（11-08）：单删弹幕不再不可逆 ───
+// 后端 StationDb.DanmakuRecycle + AdminDanmakuRecycleEndpoints 已经齐了，这卡负责把它接上：
+// 删掉的弹幕（本人自删 self / 站长按举报单删 report / 站长直接删 admin）都在这里躺着，能捐回也能销毁。
+// 与整片回收站（RecycleBinCard）分家两张卡：那卡管稿件连文件一起的销账，这卡只管一行弹幕，
+// 措辞口径向它看齐——只有「销毁 / 清空」才是真没了，得说透；捐回得说明白片子不在架时捐不动。
+const dmRecycle = ref(null) // null=没拉到（与真空仓分两脸，照举报柜那套口径）
+const dmRecycleTotal = ref(0)
+const dmRecycleLoading = ref(false)
+const dmRecycleBusy = ref(null) // 正在动的行 id（'all' 表示清空）
+const dmRecycleNotice = ref(null) // { kind: 'ok' | 'err', text }：后端那句人话原样上屏
+
+async function loadDmRecycle() {
+  if (dmRecycleLoading.value) return
+  dmRecycleLoading.value = true
+  try {
+    const res = await fetch('/api/admin/danmaku-recycle?limit=500')
+    if (!res.ok) {
+      dmRecycle.value = null
+      return
+    }
+    const data = await res.json().catch(() => null)
+    dmRecycle.value = Array.isArray(data?.items) ? data.items : []
+    dmRecycleTotal.value = data?.total ?? dmRecycle.value.length
+  } catch {
+    dmRecycle.value = null
+  } finally {
+    dmRecycleLoading.value = false
+  }
+}
+
+// 谁动的手三种来源，一眼得分清：self 是发送者自己反悔，report 是站长替举报单动的刀，admin 是站长直接删。
+const DM_RECYCLE_SOURCE = { self: '本人收回', report: '按举报删的', admin: '站长删的' }
+function dmRecycleSourceLabel(source) {
+  return DM_RECYCLE_SOURCE[source] ?? source ?? '来历不明'
+}
+
+async function restoreDmRecycle(item) {
+  if (dmRecycleBusy.value !== null) return
+  dmRecycleBusy.value = item.id
+  dmRecycleNotice.value = null
+  try {
+    const res = await fetch(`/api/admin/danmaku-recycle/${item.id}/restore`, { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    dmRecycleNotice.value = {
+      kind: res.ok ? 'ok' : 'err',
+      text: data?.message ?? (res.ok ? '已捐回，这条重新飘得起来' : '捐回没成，这条还躺在回收站里'),
+    }
+  } catch {
+    dmRecycleNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    dmRecycleBusy.value = null
+    await loadDmRecycle()
+  }
+}
+
+async function purgeDmRecycle(item) {
+  if (dmRecycleBusy.value !== null) return
+  const verdict = await requestConfirm({
+    title: '销毁这一条弹幕',
+    sub: `${item.bvid || '已下架'} · P${(item.pageIdx ?? 0) + 1} · ${dmReportClock(item.tSec)}`,
+    message: `「${(item.text || '').slice(0, 40)}」这一行快照就地抹掉，之后捐不回来。只是不想让它再飘的话用「捐回」再删一次就行，别在这儿断后路。`,
+    confirmText: '销毁',
+    cancelText: '再想想',
+    danger: true,
+    icon: 'trash',
+  })
+  if (!verdict) return
+  dmRecycleBusy.value = item.id
+  dmRecycleNotice.value = null
+  try {
+    const res = await fetch(`/api/admin/danmaku-recycle/${item.id}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => null)
+    dmRecycleNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '已销毁' : '销毁没成') }
+  } catch {
+    dmRecycleNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    dmRecycleBusy.value = null
+    await loadDmRecycle()
+  }
+}
+
+async function clearDmRecycle() {
+  if (dmRecycleBusy.value !== null) return
+  const verdict = await requestConfirm({
+    title: '清空弹幕回收站',
+    message: '回收站里这些弹幕快照一并抹掉，之后一条都捐不回来。馆藏与举报单不受影响——这一步只断弹幕的后路。',
+    confirmText: '清空',
+    cancelText: '再想想',
+    danger: true,
+    icon: 'trash',
+  })
+  if (!verdict) return
+  dmRecycleBusy.value = 'all'
+  dmRecycleNotice.value = null
+  try {
+    const res = await fetch('/api/admin/danmaku-recycle/clear', { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    dmRecycleNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '已清空' : '清空没成') }
+  } catch {
+    dmRecycleNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    dmRecycleBusy.value = null
+    await loadDmRecycle()
   }
 }
 
@@ -1676,6 +1998,37 @@ async function handleDanmakuReport(item, action) {
   }
 }
 
+// 重开这张举报单（11-08 站长拍板「处置后能重开」）：处置只此一次是铁规，但铁规不等于不能反悔。
+// 反悔走明路：单拍回 pending 可重新处置，当初删掉的弹幕从回收站捐回来（后端一并把话说清）。
+// 确认弹窗不删：重开会把一条已经消失的弹幕放回 public 视野，这一下该让站长看见自己要按什么。
+async function reopenDanmakuReport(item) {
+  if (dmReportBusy.value !== null) return
+  const verdict = await requestConfirm({
+    title: '重开这张举报单',
+    sub: `${item.bvid || '已下架'} · P${(item.pageIdx ?? 0) + 1} · ${dmReportClock(item.tSec)}`,
+    message: '单拍回待处理，能重新处置一次；当初删掉的弹幕会从回收站带回来（片子下架或被销毁就带不动，后端会跟你说清）。',
+    confirmText: '重开',
+    icon: 'out',
+  })
+  if (!verdict) return
+
+  dmReportBusy.value = item.id
+  dmReportNotice.value = null
+  try {
+    const res = await fetch(`/api/admin/danmaku-reports/${item.id}/reopen`, { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    dmReportNotice.value = {
+      kind: res.ok ? 'ok' : 'err',
+      text: data?.message ?? (res.ok ? '已重开' : '重开没成，这张单还在原处'),
+    }
+  } catch {
+    dmReportNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    dmReportBusy.value = null
+    await loadDanmakuReports()
+  }
+}
+
 // 片内时间点：举报单上是浮点秒，摆成 mm:ss（超一小时的片子就报 72:15 这种累加分钟，不装成时:分:秒）。
 function dmReportClock(sec) {
   const n = Number(sec)
@@ -1712,6 +2065,10 @@ function savedAdminGroup() {
 const activeGroup = ref(savedAdminGroup())
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
 const quietOpen = ref(false) // 「货架」抽屉：悬停预览、下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面；下载设置压底
+watch(quietOpen, (open) => { if (open && announceBatches.value === null) loadAnnounceBatches() }) // 抽屉掀开才拉：这节就在抽屉里，盖子没开就拉纯属白跑一趟
+watch(quietOpen, (open) => { if (open && eventsRows.value === null) loadEventsLedger() }) // 抽屉掀开才拉：台账一千多条，盖子没开就拉它纯属白跑
+watch(quietOpen, (open) => { if (open && pendingInvites.value === null) loadPendingInvites() }) // 抽屉掀开才拉：这节就在抽屉里
+watch(quietOpen, (open) => { if (open && dmRecycle.value === null) loadDmRecycle() }) // 抽屉掀开才拉：这卡也在抽屉里
 // 加档牌面上的人话编码名：后端回的是 'avc'/'hevc'/'av1'，没见过的原样贴出，不替它编个名
 const CODEC_LABEL = { avc: 'AVC', hevc: 'HEVC', av1: 'AV1' }
 function codecLabel(codec) {
@@ -2131,9 +2488,9 @@ onUnmounted(() => {
                   </span>
                   <span
                     class="shrink-0 rounded-full border px-1.5 py-px text-[10px]"
-                    :class="m.status === 'active' ? 'border-emerald-400/40 text-emerald-300' : m.status === 'invited' ? 'border-amber-400/40 text-amber-300' : 'border-rose-400/40 text-rose-300'"
+                    :class="seatStatusTag(m.status).cls"
                   >
-                    {{ m.status === 'active' ? '启用' : m.status === 'invited' ? '待邀' : '封禁' }}
+                    {{ seatStatusTag(m.status).text }}
                   </span>
                 </p>
                 <p class="mt-0.5 font-mono text-[10px] text-white/30">
@@ -2150,10 +2507,23 @@ onUnmounted(() => {
               </button>
               <button
                 class="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/45 transition hover:border-amber-400/50 hover:text-amber-300 disabled:opacity-40"
+                v-if="m.status !== 'exiled' && m.status !== 'invited'"
                 :disabled="membersBusy"
                 @click="memberAction(m.status === 'banned' ? 'unban' : 'ban', m)"
               >
                 {{ m.status === 'banned' ? '解封' : '封禁' }}
+              </button>
+
+              <!-- 除名 / 召回（11-08）：与封禁分家——封的是「今天不许进」，除的是「这个人请出站」，
+                   席位行留着，历史名片与投稿归属都还点得开（撤席位做不到这个）。站长自己不摆这枚钮。 -->
+              <button
+                v-if="m.role !== 'owner' && m.status !== 'invited'"
+                class="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/45 transition hover:border-slate-300/50 hover:text-slate-200 disabled:opacity-40"
+                :disabled="membersBusy"
+                :title="m.status === 'exiled' ? '拍回启用：他可以重新进站，也重新能投稿' : '请出站：扫码与账密都不再收，得走召回才回来（席位行留着）'"
+                @click="memberAction(m.status === 'exiled' ? 'restore' : 'exile', m)"
+              >
+                {{ m.status === 'exiled' ? '召回' : '除名' }}
               </button>
               <button
                 class="shrink-0 rounded-md border border-rose-500/30 px-2 py-0.5 text-[11px] text-rose-300/80 transition hover:bg-rose-500/10 disabled:opacity-40"
@@ -2241,6 +2611,34 @@ onUnmounted(() => {
             </div>
           </li>
         </ul>
+            <!-- 发出去的邀请码（11-08）：发过几枚、备注写的谁，这里列得出来；发错人当场作废。
+                 只列还活着的（一次性码兑现完就消失），所以这份清单天然等于「还没被用的那些」。 -->
+            <div class="mt-2 border-t border-white/5 px-3 py-2">
+              <div class="mb-1.5 flex flex-wrap items-center gap-2">
+                <span class="font-mono text-[11px] text-white/30">
+                  {{ pendingInvites === null ? '邀请码台账没拉到' : pendingInvites.length ? `还没被用的邀请码 ${pendingInvites.length} 枚` : '没有还没被用的邀请码' }}
+                </span>
+                <button class="rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/45 transition hover:border-adminAccent/50 hover:text-adminAccent disabled:opacity-40" :disabled="invitesLoading" @click="loadPendingInvites">
+                  {{ invitesLoading ? '重拉中…' : '重拉' }}
+                </button>
+              </div>
+              <ul v-if="pendingInvites && pendingInvites.length" class="flex flex-col gap-1">
+                <li v-for="inv in pendingInvites" :key="inv.id" class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+                  <span class="font-mono text-white/60">{{ inv.code }}</span>
+                  <span v-if="inv.note" class="text-white/35">{{ inv.note }}</span>
+                  <span class="font-mono text-[10px] text-white/25">发于 {{ friendlyTime(inv.createdAtUtc) }}</span>
+                  <button
+                    class="ml-auto rounded-md border border-rose-500/30 px-2 py-0.5 text-[11px] text-rose-300/80 transition hover:bg-rose-500/10 disabled:opacity-40"
+                    :disabled="inviteBusy !== null"
+                    title="抽掉这枚码：扫码与账密两条兑现路一起断，席位本身不动"
+                    @click="revokeInvite(inv)"
+                  >
+                    {{ inviteBusy === inv.id ? '作废中…' : '作废' }}
+                  </button>
+                </li>
+              </ul>
+            </div>
+
       </section>
 
       <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[58]">
@@ -2272,6 +2670,187 @@ onUnmounted(() => {
             <span v-if="announceText" class="text-[11px] text-white/40">{{ announceText }}</span>
           </div>
         </div>
+        <!-- 发过的播送（11-08 站长拍板「公告发出去收不回」）：发错了能收回，收回了还能反悔。
+             只列带批次号的那批：11-08 之前发的没记 batch_id，拿标题正文去凑会误伤同文旧批。 -->
+        <div class="mt-3 border-t border-white/5 pt-3">
+          <div class="mb-2 flex flex-wrap items-center gap-2">
+            <span class="font-mono text-[11px] text-white/30">
+              {{ announceBatches === null ? '播送台账没拉到' : announceBatches.length ? `发过的播送 ${announceBatches.length} 批` : '还没播送过（11-08 之前的旧公告没记批次号，列不出来）' }}
+            </span>
+            <button class="lbs-btn-ghost !px-2 !py-0.5 !text-[11px]" :disabled="announceBatchesLoading" @click="loadAnnounceBatches">
+              {{ announceBatchesLoading ? '重拉中…' : '重拉' }}
+            </button>
+            <span v-if="announceBatchText" class="text-[11px] text-white/40">{{ announceBatchText }}</span>
+          </div>
+          <ul v-if="announceBatches && announceBatches.length" class="flex flex-col gap-1.5">
+            <li v-for="batch in announceBatches" :key="batch.batchId" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span class="font-medium" :class="batch.revoked ? 'text-white/30 line-through' : ''">{{ batch.title }}</span>
+              <span class="font-mono text-[11px] text-white/30">{{ friendlyTime(batch.createdAtUtc) }} · 送达 {{ batch.sent }} 席</span>
+              <span v-if="batch.revoked" class="rounded-full border border-white/10 px-1.5 text-[10px] text-white/30">已收回</span>
+              <button
+                v-if="!batch.revoked"
+                class="lbs-btn-ghost !px-2 !py-0.5 !text-[11px]"
+                :disabled="announceBatchBusy !== null"
+                title="成员那边的铃铛与信箱一并干净（打时间戳不删行，反悔有捐回钮）"
+                @click="revokeAnnounce(batch)"
+              >
+                {{ announceBatchBusy === batch.batchId ? '收回中…' : '收回' }}
+              </button>
+              <button
+                v-else
+                class="lbs-btn-ghost !px-2 !py-0.5 !text-[11px]"
+                :disabled="announceBatchBusy !== null"
+                title="把这次播送原样放回成员信箱，连谁已读过都带回来"
+                @click="restoreAnnounce(batch)"
+              >
+                {{ announceBatchBusy === batch.batchId ? '捐回中…' : '捐回' }}
+              </button>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 事件台账（11-08）：后端早有取数口，前端一直没接线；站长查「谁撞过门」如今不必手搓 sqlite。
+           只读不写：这里没有任何改库的钮，看客与执法分开，误按的可能留零。 -->
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[63]">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            事件台账
+            <span class="ml-1 rounded-full border border-white/10 px-2 py-0.5 text-[10px] normal-case tracking-normal text-white/40">
+              {{ eventsRows === null ? '没拉到' : `共 ${eventsTotal} 条，摆 ${eventsRows.length} 条` }}
+            </span>
+          </h3>
+          <div class="flex flex-wrap items-center gap-2">
+            <select v-model="eventsActor" class="eng-input !w-auto !py-1 text-[11px]" title="谁干的事">
+              <option value="">全部身份</option>
+              <option value="guest">访客</option>
+              <option value="member">席位</option>
+              <option value="admin">站长</option>
+              <option value="system">站内</option>
+            </select>
+            <input
+              v-model="eventsPrefix"
+              class="eng-input !w-36 !py-1 font-mono text-[11px]"
+              list="events-prefixes"
+              placeholder="事件名前缀"
+              @keyup.enter="loadEventsLedger"
+            />
+            <datalist id="events-prefixes">
+              <option value="watch." />
+              <option value="admin." />
+              <option value="login." />
+              <option value="video." />
+              <option value="member." />
+              <option value="search." />
+              <option value="home." />
+            </datalist>
+            <select v-model.number="eventsLimit" class="eng-input !w-auto !py-1 text-[11px]" title="摆最近多少条">
+              <option :value="100">最近 100 条</option>
+              <option :value="200">最近 200 条</option>
+              <option :value="500">最近 500 条</option>
+              <option :value="2000">最近 2000 条</option>
+            </select>
+            <button class="lbs-btn-ghost !px-3 !py-1 !text-xs" :disabled="eventsLoading" @click="loadEventsLedger">
+              {{ eventsLoading ? '翻账中…' : '重拉' }}
+            </button>
+          </div>
+        </div>
+        <p v-if="eventsNotice" class="mb-2 text-[11px] text-rose-300/70">{{ eventsNotice }}</p>
+        <ul v-if="eventsRows && eventsRows.length" class="flex flex-col gap-1">
+          <li
+            v-for="row in eventsRows"
+            :key="row.id"
+            class="cursor-pointer rounded-lg border border-transparent px-2 py-1 transition hover:border-white/10 hover:bg-white/[0.03]"
+            @click="eventsOpen = eventsOpen === row.id ? null : row.id"
+          >
+            <div class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs">
+              <span class="font-mono text-[11px] text-white/30">{{ friendlyTime(row.tsUtc) }}</span>
+              <span
+                class="rounded-full border px-1.5 text-[10px]"
+                :class="row.actorType === 'admin' ? 'border-adminAccent/30 text-adminAccent/80'
+                  : row.actorType === 'guest' ? 'border-white/10 text-white/35'
+                  : row.actorType === 'system' ? 'border-white/10 text-white/30'
+                  : 'border-stationBlue/30 text-stationBlue/80'"
+              >
+                {{ eventsActorLabel(row.actorType) }}<template v-if="row.actorMid"> · {{ row.actorMid }}</template>
+              </span>
+              <span class="font-mono">{{ row.event }}</span>
+              <span v-if="eventsSubjectText(row)" class="font-mono text-[11px] text-white/35">{{ eventsSubjectText(row) }}</span>
+              <span v-if="row.ip" class="font-mono text-[11px] text-white/25">{{ row.ip }}</span>
+              <span class="ml-auto font-mono text-[10px] text-white/20">{{ eventsOpen === row.id ? '收起' : '详情' }}</span>
+            </div>
+            <pre
+              v-if="eventsOpen === row.id"
+              class="mt-1 max-h-52 overflow-auto whitespace-pre-wrap break-all rounded-md bg-black/30 p-2 font-mono text-[11px] text-white/55"
+            >{{ eventsPayloadText(row) }}</pre>
+          </li>
+        </ul>
+        <p v-else-if="eventsRows && !eventsRows.length" class="text-[11px] text-white/30">
+          这一筛下头一条都没有。换个前缀试试（watch. 观映账 / admin. 被门挡下的 / login. 进门那一串）。
+        </p>
+      </section>
+
+      <!-- 弹幕回收站（11-08）：单删弹幕从此有后路。与整片回收站分家两张卡（那卡管稿件连文件一起销账）。 -->
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[64]">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            弹幕回收站
+            <span class="ml-1 rounded-full border border-white/10 px-2 py-0.5 text-[10px] normal-case tracking-normal text-white/40">
+              {{ dmRecycle === null ? '没拉到' : `躺着 ${dmRecycleTotal} 条` }}
+            </span>
+          </h3>
+          <div class="flex items-center gap-2">
+            <button class="lbs-btn-ghost !px-3 !py-1 !text-xs" :disabled="dmRecycleLoading" @click="loadDmRecycle">
+              {{ dmRecycleLoading ? '翻箱中…' : '重拉' }}
+            </button>
+            <button
+              class="lbs-btn-danger !px-3 !py-1 !text-xs"
+              :disabled="dmRecycleBusy !== null || !dmRecycle?.length"
+              title="把这些快照一并抹掉，之后一条都捐不回来"
+              @click="clearDmRecycle"
+            >
+              {{ dmRecycleBusy === 'all' ? '清空中…' : '清空回收站' }}
+            </button>
+          </div>
+        </div>
+        <p v-if="dmRecycleNotice" class="mb-2 text-[11px]" :class="dmRecycleNotice.kind === 'ok' ? 'text-emerald-300/80' : 'text-rose-300/70'">
+          {{ dmRecycleNotice.text }}
+        </p>
+        <ul v-if="dmRecycle && dmRecycle.length" class="flex flex-col gap-1.5">
+          <li v-for="item in dmRecycle" :key="item.id" class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-white/5 px-2 py-1.5">
+            <span class="min-w-0 flex-1 truncate text-xs text-white/75" :title="item.text">{{ item.text || '（空弹幕）' }}</span>
+            <span class="shrink-0 font-mono text-[11px] text-white/35">
+              {{ item.bvid || '已下架' }} · P{{ (item.pageIdx ?? 0) + 1 }} · {{ dmReportClock(item.tSec) }}
+            </span>
+            <span class="shrink-0 text-[11px] text-white/35">{{ item.senderName || '匿名朋友' }}</span>
+            <span
+              class="shrink-0 rounded-full border px-1.5 text-[10px]"
+              :class="item.source === 'self' ? 'border-white/10 text-white/35' : 'border-rose-400/30 text-rose-300/70'"
+            >
+              {{ dmRecycleSourceLabel(item.source) }}
+            </span>
+            <span class="shrink-0 font-mono text-[10px] text-white/25">删于 {{ friendlyTime(item.deletedAtUtc) }}</span>
+            <button
+              class="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/50 transition hover:border-stationBlue/50 hover:text-stationBlue disabled:cursor-not-allowed disabled:opacity-35"
+              :disabled="dmRecycleBusy !== null || !item.inStation"
+              :title="item.inStation ? '连原 id 一起捐回，举报单那条「去看这条弹幕」的链也接着' : '片子已经不在架，捐回去也没人看得见，先捞回稿件再来'"
+              @click="restoreDmRecycle(item)"
+            >
+              {{ dmRecycleBusy === item.id ? '捐回中…' : '捐回' }}
+            </button>
+            <button
+              class="shrink-0 rounded-md border border-rose-500/30 px-2 py-0.5 text-[11px] text-rose-300/80 transition hover:bg-rose-500/10 disabled:opacity-40"
+              :disabled="dmRecycleBusy !== null"
+              title="就地抹掉这行快照，之后捐不回来"
+              @click="purgeDmRecycle(item)"
+            >
+              销毁
+            </button>
+          </li>
+        </ul>
+        <p v-else-if="dmRecycle && !dmRecycle.length" class="text-[11px] text-white/30">
+          回收站是空的。删掉的弹幕（含举报单处置掉的那些）会先落在这儿，捐得回也销毁得了。
+        </p>
       </section>
 
       <section class="lbs-card order-[24]">
@@ -2639,7 +3218,7 @@ onUnmounted(() => {
                 <button
                   class="lbs-btn-danger !px-3 !py-1 !text-xs"
                   :disabled="dmReportBusy !== null"
-                  title="硬删这条弹幕（台账行一起清掉），这张单也结了"
+                  title="删掉这条弹幕（行搬进弹幕回收站，站长还捐得回），这张单也结了"
                   @click="handleDanmakuReport(item, 'delete')"
                 >
                   {{ dmReportBusy === item.id ? '删除中…' : '删除弹幕' }}
@@ -2653,14 +3232,24 @@ onUnmounted(() => {
                   {{ dmReportBusy === item.id ? '处理中…' : '忽略' }}
                 </button>
               </template>
-              <span
-                v-else
-                class="whitespace-nowrap font-mono text-[11px]"
-                :class="item.status === 'deleted' ? 'text-rose-300/70' : 'text-white/35'"
-              >
-                {{ item.status === 'deleted' ? '已删弹幕' : '已忽略' }}
-                <template v-if="item.handledAtUtc"> · {{ friendlyTime(item.handledAtUtc) }}</template>
-              </span>
+              <template v-else>
+                <span
+                  class="whitespace-nowrap text-center font-mono text-[11px]"
+                  :class="item.status === 'deleted' ? 'text-rose-300/70' : 'text-white/35'"
+                >
+                  {{ item.status === 'deleted' ? '已删弹幕' : '已忽略' }}
+                  <template v-if="item.handledAtUtc"> · {{ friendlyTime(item.handledAtUtc) }}</template>
+                </span>
+                <!-- 重开这张单（11-08）：处置只此一次是铁规，反悔得走这枚明路钮，不靠人去改库 -->
+                <button
+                  class="lbs-btn-ghost !px-3 !py-1 !text-xs"
+                  :disabled="dmReportBusy !== null"
+                  title="拍回待处理重新处置一次；当初删掉的弹幕从回收站捐回来"
+                  @click="reopenDanmakuReport(item)"
+                >
+                  {{ dmReportBusy === item.id ? '重开中…' : '重开这张单' }}
+                </button>
+              </template>
             </div>
           </li>
         </ul>

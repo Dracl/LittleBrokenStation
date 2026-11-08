@@ -193,6 +193,50 @@ public sealed partial class StationDb
     }
 
     /// <summary>
+    /// 重开一张已处置的举报单（11-08 站长拍板「处置后能重开」）：status 拍回 pending、handled_at_utc 清空。
+    /// 只认「已处置」的行（WHERE status &lt;&gt; 'pending'）：重开一张本来就待处理的单不算错也不算事，
+    /// 回 Reopened=false 让端点报 409——别让「重开」变成一种可以反复点的盖章。
+    /// PreviousStatus 带回处置结果（deleted / dismissed）：端点据此决定要不要去回收站把弹幕捐回来。
+    /// </summary>
+    public (bool Exists, bool Reopened, string? PreviousStatus, long DmId, long VideoId) ReopenDanmakuReport(long id)
+    {
+        using var connection = Open(_dbPath);
+        string previous;
+        long dmId;
+        long videoId;
+        using (var lookup = connection.CreateCommand())
+        {
+            lookup.CommandText = "SELECT status, dm_id, video_id FROM danmaku_reports WHERE id = $id;";
+            lookup.Parameters.AddWithValue("$id", id);
+            using var reader = lookup.ExecuteReader();
+            if (!reader.Read())
+            {
+                return (false, false, null, 0, 0);
+            }
+
+            previous = reader.GetString(0);
+            dmId = reader.GetInt64(1);
+            videoId = reader.GetInt64(2);
+        }
+
+        if (previous == DanmakuReportPending)
+        {
+            return (true, false, previous, dmId, videoId);
+        }
+
+        using (var back = connection.CreateCommand())
+        {
+            back.CommandText = """
+                UPDATE danmaku_reports SET status = $pending, handled_at_utc = NULL
+                WHERE id = $id AND status <> $pending;
+                """;
+            back.Parameters.AddWithValue("$pending", DanmakuReportPending);
+            back.Parameters.AddWithValue("$id", id);
+            return (true, back.ExecuteNonQuery() > 0, previous, dmId, videoId);
+        }
+    }
+
+    /// <summary>
     /// 处置一张举报单（盖章 + 翻状态）。UPDATE 只认 status='pending'：
     /// 抢到的那个返回 Claimed=true（调用方这时才去真删弹幕），抢不到的拿到 WasPending=false → 端点报 409。
     /// Exists=false 表示这张单压根不存在 → 404。

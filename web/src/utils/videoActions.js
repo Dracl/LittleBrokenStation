@@ -1,4 +1,5 @@
 import { askDeleteVideo } from '../confirmStore'
+import { clearWallThumbs } from './wallThumbs'
 
 // ─── 馆藏动线的共用把手：放映厅互动栏那两枚钮与「稿件设置」面板都调这里 —— 一处逻辑、两处入口。
 // 这里只管发请求、把后端回的人话整理成能直接念的一句话；页面状态（重挂评论区、给弹幕 URL 换个 v=、
@@ -61,6 +62,7 @@ export async function postVideoAction(id, action) {
 //   media 默认不跑：放映厅那颗钮不该顺手去碰封面与媒体，只有面板那颗钮点名才走。
 //   mediaReplaced 只在 media 那一发成了、且后端说 cover === 'replaced' 时为真 —— 封面件是原地覆盖同一个 rel，
 //   URL 一个字不变，得靠它告诉放映厅「这张图该重请一次」（kept / failed 一律不打那个戳，不该白刷）。
+//   同一个为真的那一刻这里还会清一次会员墙的小图缓存（清失败不影响这几个标志与 allOk，下面那段有账）。
 export async function refetchArchive(id, { comments = true, danmaku = true, media = false } = {}) {
   const wants = []
   if (comments) wants.push('comments')
@@ -83,13 +85,32 @@ export async function refetchArchive(id, { comments = true, danmaku = true, medi
   for (let i = 0; i < wants.length; i += 1) got[wants[i]] = results[i]
 
   const fails = results.filter((r) => !r.ok).length
+
+  // 封面真换掉了，才顺手把会员墙那面小图缓存抹了重生成 —— 判据与下面返回的 mediaReplaced 是同一条（kept / failed
+  // 时盘上还是老图，清了等于白白重解码一整墙，是自毁缓存不是清缓存），故把标志先算出来、两处共用。
+  // 为什么补在这一行而不是调用方：refetchArchive 是重拉封面的唯一漏斗，放映厅那颗钮与「稿件设置」面板那颗钮都从这儿过，
+  // 在这儿补一次两个入口一起受益，也不必在两边各抄一份 cover === 'replaced' 的判断（措辞与判据单一出处的同一条规矩）。
+  // 墙上为什么非得清：CanvasWall 的小图是按原图 URL 存在 IndexedDB 里的，封面件又是原地覆盖同一个 rel，URL 不变、
+  // 缓存就不作废；放映厅靠给 src 打 ?r= 戳逼重请，墙上没那枚戳，只能把陈旧缩略图清掉让它重新显影。
+  const mediaOk = got.media?.ok === true
+  const mediaReplaced = mediaOk && got.media?.body?.cover === 'replaced'
+  if (mediaReplaced) {
+    // 清不成不算这趟重拉的败事：隐私模式下 IndexedDB 可能直接拒绝开库（clearWallThumbs 自己尽量吞了，这里再兜一层）。
+    // 缓存留着下次进墙照样能用，砸的是这一发的话术与调用方的 allOk，不值当。
+    try {
+      await clearWallThumbs()
+    } catch {
+      console.warn('重拉封面后清墙上小图缓存没成，下次进墙会自己重新显影')
+    }
+  }
+
   return {
     kind: fails === results.length ? 'err' : fails ? 'warn' : 'ok',
     text: results.map((r) => r.message).join('；'),
     commentsOk: got.comments?.ok === true,
     danmakuOk: got.danmaku?.ok === true,
-    mediaOk: got.media?.ok === true,
-    mediaReplaced: got.media?.ok === true && got.media?.body?.cover === 'replaced',
+    mediaOk,
+    mediaReplaced,
     allOk: fails === 0,
     ran: results.length,
   }

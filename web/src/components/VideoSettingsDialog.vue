@@ -472,15 +472,15 @@ const OVERRIDE_CHIP = 'rounded-full border border-stationBlue/30 px-1.5 py-px te
               </div>
               <div class="flex items-start gap-3 py-2.5">
                 <RouterLink
-                  :to="{ path: '/admin', hash: '#grp-harvest' }"
+                  :to="{ path: `/watch/${props.data?.bvid}` }"
                   class="w-[124px] shrink-0 rounded-lg border border-lineSoft px-3 py-1.5 text-center text-[12px] text-inkSub transition hover:border-stationPink/50 hover:text-stationPink"
-                  title="清晰度选择在站长室的进货口里点单，这里不重做一份"
+                  title="加档点单在放映厅的播放器里（版本行折叠那排），这里不重做一份"
                 >
-                  去站长室加档
+                  去播放器加档
                 </RouterLink>
                 <div class="min-w-0 flex-1">
-                  <p class="text-[12px] leading-5 text-inkSub">挑哪几档清晰度，去站长室的进货口点单</p>
-                  <p class="mt-0.5 text-[11px] leading-4 text-inkFaint">这一窗不重做一份清晰度 UI</p>
+                  <p class="text-[12px] leading-5 text-inkSub">挑哪几档清晰度，到这部片子的播放器里点「加档其他版本」</p>
+                  <p class="mt-0.5 text-[11px] leading-4 text-inkFaint">这一窗不重做一份清晰度 UI（进货口只管队列与取消）</p>
                 </div>
               </div>
             </div>

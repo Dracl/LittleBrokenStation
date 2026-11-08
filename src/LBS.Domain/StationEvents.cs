@@ -65,6 +65,14 @@ public static class EventNames
     public const string MemberBan = "member.ban";
     public const string MemberUnban = "member.unban";
     public const string MemberDelete = "member.delete";
+    // 除名与召回（11-08）：与 ban/unban 分家写账——封禁是「暂时不认你」，除名是「这位不往回来了」，
+    // 两者对同一个人的后果与可逆路径不同，混成一枚事件名以后想查「谁被踢过站」就分不开了。
+    public const string MemberExile = "member.exile";
+    public const string MemberRestore = "member.restore";
+    public const string MemberNickname = "member.nickname";
+    public const string MemberInviteRevoke = "member.invite.revoke";
+    public const string AnnounceRevoke = "admin.announce.revoke";
+    public const string DanmakuRecycle = "danmaku.recycle";
     public const string MemberSetPrimary = "member.set_primary";
     public const string MemberDropAccount = "member.drop_account";
     public const string MemberRegister = "member.register";

@@ -6,7 +6,7 @@ using LBS.Infrastructure;
 namespace LBS.Server;
 
 /// <summary>
-/// 站内账户端点（M5.4）：注册、账密登录、改密、站长代重置——分站身份从 B 站 mid 手里独立出来，
+/// 站内账户端点（M5.4）：注册、账密登录、改密、素净席位自改名号、站长代重置——分站身份从 B 站 mid 手里独立出来，
 /// 账密是真身份的入口，扫码降级为可选绑定（扫码链路一字未动，两把钥匙开同一张门）。
 /// 账密登录按 IP 上阶梯冷却（错一次歇 1 分钟、两次歇 5 分钟、三次起歇 30 分钟），防字典慢磨；
 /// 扫码链路不经此闸——站长与朋友永远扫得进站，不会把自己锁在站外。
@@ -15,6 +15,13 @@ public static class MemberAccountEndpoints
 {
     private static readonly Regex UsernamePattern =
         new(@"^[\u4E00-\u9FFFA-Za-z0-9_]{2,24}$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// 自改名号封顶 24 字（与用户名同宽：卡面、周报、公告都拿它摆，再长就撑破行）。
+    /// 为何不像用户名那样上字符集白名单：名号是给人看的，B 站昵称本就带 emoji、空格、日文假名，
+    /// 白名单会把人挡在「自己叫什么名字都得听站的」；真正要挡的是控位符与换行（下面逐字查）。
+    /// </summary>
+    private const int MaxNicknameLength = 24;
 
     // 阶梯冷却：同一 IP 在 FailWindow 内第 1 次密码错歇 1 分钟、第 2 次歇 5 分钟、第 3 次及以后歇 30 分钟。
     // 判据是「错一次就上锁」而非「攒满 N 次才锁」：分站只给自己与朋友用，账密口挨不着公网字典，
@@ -31,6 +38,8 @@ public static class MemberAccountEndpoints
     private sealed record RegisterRequest(string? Code, string? Username, string? Password);
 
     private sealed record PasswordLoginRequest(string? Username, string? Password);
+
+    private sealed record NicknameRequest(string? Nickname);
 
     private sealed record ChangePasswordRequest(string? OldPassword, string? NewPassword);
 
@@ -120,9 +129,14 @@ public static class MemberAccountEndpoints
                 return Results.Json(new { message = "用户名或密码不对" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            if (member.Status == MemberStatus.Banned)
+            // 白名单判据：账密这条路也一样只认 active。写成 != Banned 时，除名的人拿旧密码
+            // 登录会回 200 与一张新票（后续 API 被 MemberGate 挡，但登录页会跟他说「欢迎回来」）。
+            if (!MemberStatus.AllowsAdmission(member.Status))
             {
-                return Results.Json(new { message = "这位已被站长请出分站" }, statusCode: StatusCodes.Status403Forbidden);
+                return Results.Json(new
+                {
+                    message = member.Status == MemberStatus.Exiled ? "这位已被分站除名，要回来得请站长召回席位" : "这位已被站长请出分站",
+                }, statusCode: StatusCodes.Status403Forbidden);
             }
 
             db.TouchMemberLoginById(member.Id);
@@ -165,6 +179,53 @@ public static class MemberAccountEndpoints
             events.Record(EventActors.Member, member.Mid, EventNames.MemberPasswordChange, "member",
                 member.Id.ToString(), ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: member.Id);
             return Results.Ok(new { message = "钥匙换过了，下次用新的" });
+        });
+
+        // ── 席位自改名号（11-08 站长拍板）──
+        // 绑没绑 B 站号都能改：展示名是礼貌名，素净席位本就能自己叫任何名字，只禁绑号那批只会造成不对称。
+        // 自改即打锁（nickname_locked）：不锁就会「改了名、下次重登又被 B 站昵称盖回去」（TouchMemberLogin 那一条）。
+        app.MapPost("/api/member/nickname", (NicknameRequest? request, StationDb db,
+            EventRecorder events, HttpContext http) =>
+        {
+            var member = MemberGate.Current(http);
+            if (member is null)
+            {
+                return Results.Json(new { message = "还没登录" }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            var wanted = request?.Nickname?.Trim() ?? string.Empty;
+            if (wanted.Length == 0)
+            {
+                return Results.Json(new { message = "名号不能空着，总得有个叫法" }, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (wanted.Length > MaxNicknameLength)
+            {
+                return Results.Json(new { message = $"名号封顶 {MaxNicknameLength} 个字，卡片摆不下" },
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            // 控制字符与换行不挡就是 XSS 的旁门（卡面、周报、公告里都要拿这个名字摆）。
+            if (wanted.Any(char.IsControl))
+            {
+                return Results.Json(new { message = "名号里不能夹控位符与换行" }, statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (string.Equals(wanted, member.Nickname, StringComparison.Ordinal))
+            {
+                return Results.Ok(new { message = "名字本来就叫这个，没动", nickname = wanted });
+            }
+
+            if (!db.SetMemberNickname(member.Id, wanted))
+            {
+                return Results.Json(new { message = "这席还是一张没认主的空位，本人还没到场，名字先不接" },
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
+            events.RecordWithPayload(EventActors.Member, member.Mid, EventNames.MemberNickname, "member",
+                member.Id.ToString(), new { from = member.Nickname, to = wanted },
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: member.Id);
+            return Results.Ok(new { message = $"往后就叫「{wanted}」了", nickname = wanted });
         });
 
         // ── 站长代重置（owner 也在内——站长忘密的自救通道，前提是还能进站长室）──

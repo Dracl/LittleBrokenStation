@@ -686,6 +686,8 @@ app.MapAdminDmEndpoints();
 // 站内弹幕举报（最小闭环）：会员对站内弹幕一键举报，站长在站长室删或忽略；不预隐藏，只此一口（B 站弹幕不管）。
 app.MapDanmakuReportEndpoints();
 app.MapAdminDanmakuReportEndpoints();
+// 弹幕回收站（11-08）：单删的弹幕在这里点名、捐回、销毁（与馆藏回收站同属站长话语权）。
+app.MapAdminDanmakuRecycleEndpoints();
 app.MapWeeklyReportEndpoints(); // 分站周报：成员登录后 /api/weekly 看本周战报（/weekly 页）
 app.MapWatchHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
 app.MapMemberWallApi(); // 会员墙（馆藏壁）：投稿+历史聚合，喂个人空间顶上的画布窗口
@@ -1023,7 +1025,7 @@ app.MapPost("/api/videos/{id:long}/claim", async (long id, long? memberId, HttpC
     var target = targetId is long seatId ? db.GetMemberById(seatId) : null;
 
     // 拒词由判据给（RequeueGate.JudgeClaim）；非站长一律 403，其余不合格 400。
-    if (RequeueGate.JudgeClaim(isOwner, db.GetVideoSubmitterMember(id), target is not null) is { } denial)
+    if (RequeueGate.JudgeClaim(isOwner, db.GetVideoSubmitterMember(id), target?.Status) is { } denial)
     {
         return Results.Json(new { message = denial },
             statusCode: isOwner ? StatusCodes.Status400BadRequest : StatusCodes.Status403Forbidden);
@@ -1374,7 +1376,7 @@ app.MapPost("/api/videos/{id:long}/danmaku", (long id, LocalDanmakuRequest reque
     });
 });
 
-app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, StationDb db) =>
+app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, StationDb db, EventRecorder events) =>
 {
     var sender = db.GetLocalDanmakuSender(dmId);
     if (sender is null)
@@ -1383,15 +1385,30 @@ app.MapDelete("/api/videos/danmaku/{dmId:long}", (long dmId, HttpContext http, S
     }
 
     var dmid = EnsureDmid(http);
+    var me = MemberGate.Current(http);
+    var isOwner = MemberGate.IsOwner(me);
     // 删除权两个口：发送者本人（凭自己的 lbs_dmid）与站长（会员席位 role=owner）。
     // 无主老弹幕（sender 为空）从此归站长删——以前得另外进一次主人模式才删得动，不合理。
-    if (!MemberGate.IsOwner(MemberGate.Current(http)) && !(sender.Length > 0 && sender == dmid))
+    if (!isOwner && !(sender.Length > 0 && sender == dmid))
     {
         // 分站没注册认证服务，Results.Forbid() 会 500；显式状态码才稳。
         return Results.Json(new { message = "这条弹幕不是你的，站长才能删" }, statusCode: 403);
     }
 
-    return db.DeleteLocalDanmaku(dmId) ? Results.Ok(new { message = "弹幕已删" }) : Results.NotFound();
+    // 删从此不是一挥就没（11-08 站长拍板）：行摄进回收站（快照 + 删原行），站长在回收站捐得回来。
+    // source 分账：本人收回去记 'self'，站长替人删记 'admin'——日后想只对「自己误删」开自捐，
+    // 或在回收站里区分「谁动的手」，都靠这一列，不靠猜。
+    var who = me?.Nickname ?? me?.Username ?? (isOwner ? "站长" : null);
+    var recycleId = db.MoveDanmakuToRecycle(dmId, who, me?.Id, isOwner ? "admin" : "self");
+    if (recycleId == 0)
+    {
+        return Results.NotFound();
+    }
+
+    events.RecordWithPayload(isOwner ? EventActors.Admin : EventActors.Member, me?.Mid, EventNames.DanmakuRecycle,
+        "danmaku", dmId.ToString(), new { recycleId, source = isOwner ? "admin" : "self" },
+        ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: me?.Id);
+    return Results.Ok(new { message = "弹幕已收进回收站，站长想捐回还来得及" });
 });
 
 // 访客下载：把正在看的版本存本地（codec 缺省给主版本）。开 Range 支持断点续传，

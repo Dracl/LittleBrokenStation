@@ -51,6 +51,67 @@ const displayName = computed(() => {
   return m.nickname || m.username || '旅人'
 })
 
+// ─── 席位自改名号（11-08 站长拍板）：绑没绑 B 站号都能改。
+// 11-08 起后端不再区分绑没绑号（MemberAccountEndpoints 那道 Mid 门已拆），mid 在 /me 上只当展示用。
+// 绑了号的也开放：展示名是一张礼貌名，自改那枚锁（nickname_locked）才真正吃重力——不锁就「改了名、下次重登又被 B 站昵称盖回去」。
+// 不用 requestConfirm：那套只在危险操作上摆，改名既不删东西也不丢东西，就地展开一行输入更实在
+// （跟下面改密那块同一个脾气：编辑 → 保存 → 行内提示）。
+const canRename = computed(() => !!member.value)
+const renaming = ref(false)
+const nickDraft = ref('')
+const nickBusy = ref(false)
+const nickInput = ref(null)
+const nickNotice = ref(null) // { kind, text }：后端那句人话原样上屏，前端不改写
+
+function startRename() {
+  if (nickBusy.value) return
+  // 起笔给屏上正在叫的那个名字（昵称没设过时 displayName 落的是站名），别让人对着空框回忆自己叫什么
+  nickDraft.value = displayName.value === '旅人' ? '' : displayName.value
+  nickNotice.value = null
+  renaming.value = true
+  nextTick(() => nickInput.value?.focus())
+}
+
+function cancelRename() {
+  if (nickBusy.value) return
+  renaming.value = false
+  nickNotice.value = null
+}
+
+async function submitNickname() {
+  if (nickBusy.value) return
+  const wanted = nickDraft.value.trim()
+  // 空值不敲后端（后端也会 400，但那句话本文件照它的词儿念一遍就行，少跑一趟）
+  if (!wanted) {
+    nickNotice.value = { kind: 'err', text: '名号不能空着，总得有个叫法' }
+    return
+  }
+  nickBusy.value = true
+  nickNotice.value = null
+  try {
+    const res = await fetch('/api/member/nickname', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nickname: wanted }),
+    })
+    const data = await res.json().catch(() => null)
+    // 成功、没改、400、409 一律是后端那句话原样念，只在它没回话时才落兵底句（后端的人话不许前端改写）
+    nickNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '名号改过了' : '改名没成') }
+    if (res.ok) {
+      // 本地那份身份跟着归位：displayName 与顶栏吃的是同一份 memberStore.member.nickname，
+      // 不接上就还是旧名字杵在那（这里只补改的那一个字段，余下继续以 /me 那份为准）
+      if (member.value && typeof data?.nickname === 'string') {
+        member.value = { ...member.value, nickname: data.nickname }
+      }
+      renaming.value = false
+    }
+  } catch {
+    nickNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    nickBusy.value = false
+  }
+}
+
 // ─── 我的合集：成员自管的抽屉。这里能建、能拆、能跳去正面看货；
 // 往抽屉里装片去放映厅（WatchPage）的「合集」钮，那才是装卸口。
 const myCollections = ref(null) // null = 没拉到；[] = 确实没建过
@@ -331,7 +392,50 @@ async function doLogout() {
                   <CrownBadge tier="member" class="h-3 w-3" />
                   成员
                 </span>
+                <!-- 素净席位才画这枚钮（绑了 B 站号的连钮都不摆，判据见上方 canRename） -->
+                <button
+                  v-if="canRename && !renaming"
+                  class="rounded-full border border-lineSoft px-2 py-0.5 text-[11px] text-inkFaint transition hover:border-stationPink/40 hover:text-stationPink disabled:opacity-50"
+                  :disabled="nickBusy"
+                  @click="startRename"
+                >
+                  改名号
+                </button>
               </div>
+              <!-- 就地改名的那一行：不弹窗、不另开屏，存成什么样后端那句话就念什么样 -->
+              <div v-if="renaming" class="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  ref="nickInput"
+                  v-model="nickDraft"
+                  class="w-40 min-w-0 rounded-lg border border-black/15 dark:border-white/10 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-stationPink"
+                  placeholder="往后叫什么（24 字内）"
+                  maxlength="24"
+                  :disabled="nickBusy"
+                  @keyup.enter="submitNickname"
+                  @keyup.esc="cancelRename"
+                />
+                <button
+                  class="shrink-0 rounded-lg bg-stationPink px-3 py-1.5 text-[12.5px] text-white transition hover:opacity-90 disabled:opacity-50"
+                  :disabled="nickBusy || !nickDraft.trim()"
+                  @click="submitNickname"
+                >
+                  {{ nickBusy ? '存名号中…' : '存名号' }}
+                </button>
+                <button
+                  class="shrink-0 rounded-lg border border-black/15 dark:border-white/10 px-3 py-1.5 text-[12.5px] text-inkSub transition hover:border-stationPink/40 hover:text-stationPink disabled:opacity-50"
+                  :disabled="nickBusy"
+                  @click="cancelRename"
+                >
+                  算了
+                </button>
+              </div>
+              <p
+                v-if="nickNotice"
+                class="mt-2 text-[12px] leading-5"
+                :class="nickNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'"
+              >
+                {{ nickNotice.text }}
+              </p>
               <p class="mt-1.5 font-mono text-xs text-inkFaint">
                 UID #{{ member.memberId }}
                 · 上次登录 {{ friendlyTime(member.lastLoginAtUtc) }}
