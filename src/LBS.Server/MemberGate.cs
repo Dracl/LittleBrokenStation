@@ -63,7 +63,11 @@ public sealed class MemberGate(StationDb db)
 
         // 投稿人自管（刷评论快照 / 重拉弹幕 / 删自己的稿 / 续下 / 重新排队）与楼中楼按需补采：
         // 从站长室摘出来后必须在这里补上门闩，否则就成了匿名可调用。归属不是这里的事，端点自己拿 MemberGate.Current 再核一遗。
-        if (HttpMethods.IsDelete(request.Method) && IsVideoIdOnlyPath(path))
+        // 投稿人自管（刷评论快照 / 重拉弹幕 / 删自己的稿 / 续下 / 重新排队 / 取消自己的加档 / 删自己那版加档的件）
+        // 与楼中楼按需补采：从站长室摘出来后必须在这里补上门闩，否则就成了匿名可调用（claim 就踩过：
+        // 门没点它，匿名直接落到端点里吃了 403，与同族两口的 401 摆成两套脸）。归属不是这里的事，
+        // 端点自己拿 MemberGate.Current 再核一遗。
+        if (HttpMethods.IsDelete(request.Method) && (IsVideoIdOnlyPath(path) || IsCodecVersionPath(path)))
         {
             return true;
         }
@@ -88,7 +92,8 @@ public sealed class MemberGate(StationDb db)
                 || path.EndsWith("/media-refresh", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/revive", StringComparison.OrdinalIgnoreCase)
                 || path.EndsWith("/requeue", StringComparison.OrdinalIgnoreCase)
-                || path.EndsWith("/claim", StringComparison.OrdinalIgnoreCase)))
+                || path.EndsWith("/claim", StringComparison.OrdinalIgnoreCase)
+                || path.EndsWith("/codecs/cancel", StringComparison.OrdinalIgnoreCase)))
         {
             return true;
         }
@@ -118,6 +123,13 @@ public sealed class MemberGate(StationDb db)
 
         return false;
     }
+
+    /// <summary>路径是不是加档版本的写口（/api/videos/{id}/codecs/… 那两口删版本）：与 <see cref="IsVideoIdOnlyPath"/>
+    /// 同一思路，只是形状不同——AdminGate 那边把 /codecs 整片算站长事务时，这里必须同步接住，
+    /// 否则摘了站长门又没补会员门，匿名就能删别人的件。</summary>
+    internal static bool IsCodecVersionPath(string path) =>
+        path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase)
+        && path.Contains("/codecs/", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>路径是不是 /api/videos/{纯数字 id}（投稿人自管删稿的形状；AdminGate 的豁免判据与它一字不差）。</summary>
     internal static bool IsVideoIdOnlyPath(string path)

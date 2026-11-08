@@ -66,7 +66,7 @@ public sealed class GateCaseBypassTests : IDisposable
     [InlineData("GET", "/API/admin/members", true, false)]
     [InlineData("GET", "/Api/Admin/Members", true, false)]
     [InlineData("POST", "/API/admin/export", true, false)]
-    [InlineData("POST", "/API/admin/zones/set", true, false)]
+    [InlineData("POST", "/API/admin/codec-recycle/abc/restore", true, false)] // 加档回收站的捐回：换体也得在站长门里（旧账是 /API/admin/zones/set，那口已于 11-08 退休）
     [InlineData("GET", "/API/ADMIN/stats/", true, false)] // 换体 + 尾斜杠：两把穿门的钥匙叠在一起
     [InlineData("GET", "/API/settings", true, false)]
     [InlineData("GET", "/API/Stats/Collect", true, false)] // 精确点名型的站长情报：漏一个字母就漏一整口
@@ -75,7 +75,8 @@ public sealed class GateCaseBypassTests : IDisposable
     [InlineData("GET", "/API/Downloads/9", true, false)]
     [InlineData("POST", "/API/videos/123/codecs", true, false)] // 站长专属的 POST 也要吃换体（revive/requeue 已移交投稿人自管，归会员门那一组）
     [InlineData("POST", "/API/videos/123/revive", false, true)] // 续下：会员门吃换体（匿名 401），归属在端点
-    [InlineData("DELETE", "/API/videos/123/codecs/hevc", true, false)]
+    [InlineData("DELETE", "/API/videos/123/codecs/hevc", false, true)] // 删自己那版加档的件：11-08 摘给投稿人自管，换体也要落会员门（匿名 401，归属在端点）
+    [InlineData("POST", "/API/videos/123/codecs/cancel", false, true)] // 取消自己那单加档：同上（点单仍留站长门）
     // 会员门：放映厅、投稿与配套设施，换体一律算会员事务（匿名据此 401）。
     [InlineData("GET", "/API/watch/BV1x411c7mD", false, true)]
     [InlineData("GET", "/API/VIDEOS/123/danmaku", false, true)]

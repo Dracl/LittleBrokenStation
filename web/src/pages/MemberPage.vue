@@ -200,6 +200,66 @@ async function removeCollection(c) {
   }
 }
 
+// ─── 我收回的弹幕（11-09 站长拍板）：自己在放映厅收回的那几条，自己捐回去，不必求站长。
+// 只此一口 GET /api/member/danmaku-recycle：站长替人删的（source=admin/report）后端根本不递，这里不必再判 source。
+// 判据与措辞口径向站长室那张卡（AdminPage 的弹幕回收站）看齐，成员这头只留「捐回」一个动作——销毁与清空是站长的手。
+const dmRecycle = ref(null) // null = 没拉到（与真空仓分两脸，照抽屉清单那套口径）
+const dmRecycleLoading = ref(false)
+const dmRecycleBusy = ref(null) // 正在捐回的行 id
+const dmRecycleNotice = ref(null) // { kind, text }：后端那句人话原样上屏，前端不改写
+
+async function loadDmRecycle() {
+  if (dmRecycleLoading.value) return
+  dmRecycleLoading.value = true
+  try {
+    const res = await fetch('/api/member/danmaku-recycle')
+    if (!res.ok) {
+      dmRecycle.value = null // 401/500 都当「没拿到」，不拿空数组冒充「没收回过」
+      return
+    }
+    const d = await res.json().catch(() => null)
+    dmRecycle.value = Array.isArray(d?.items) ? d.items : []
+  } catch {
+    dmRecycle.value = null
+  } finally {
+    dmRecycleLoading.value = false
+  }
+}
+
+// 片内点位：后端递的是秒，摆成分:秒（过一小时的片子仍旧累加分钟，不装成时:分:秒，与站长室那把尺子同一个算法）。
+// pageIdx 是 0 基，上桌才 +1。
+function dmClock(sec) {
+  const n = Number(sec)
+  if (!Number.isFinite(n) || n < 0) return '—'
+  const pad = (x) => String(x).padStart(2, '0')
+  const total = Math.floor(n)
+  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`
+}
+
+async function restoreDmRecycle(item) {
+  if (dmRecycleBusy.value !== null) return
+  dmRecycleBusy.value = item.id
+  dmRecycleNotice.value = null
+  try {
+    // 不带 body，也不手加 Content-Type：这口是纯路径参数的活，挂了 application/json 反会吃上「必须 application/json」
+    // 那道路由门槛顶成 404（claim 那口踩过的坑，别再踩第二回）
+    const res = await fetch(`/api/member/danmaku-recycle/${item.id}/restore`, { method: 'POST' })
+    const d = await res.json().catch(() => null)
+    // 成功 200 / 403 / 404 / 409 一律照后端那句话原样念（含「这条不是你自己在放映厅里收回的」与「片子已不在架」），
+    // 只有它没回话时才落兵底句——后端的人话不许前端改写、更不许吞
+    dmRecycleNotice.value = {
+      kind: res.ok ? 'ok' : 'err',
+      text: d?.message ?? (res.ok ? '已捐回，这条重新飘得起来' : '捐回没成，这条还躺在回收站里'),
+    }
+    // 捐成的这条从列表里摘掉：后端已认它出仓，整节重拉只是多闪一下
+    if (res.ok) dmRecycle.value = (dmRecycle.value ?? []).filter((x) => x.id !== item.id)
+  } catch {
+    dmRecycleNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    dmRecycleBusy.value = null
+  }
+}
+
 // 改密表单：首设（扫码客从未设过）免旧密码，验旧与否后端说了算，前端只递参数
 const pwdForm = ref({ oldPassword: '', newPassword: '', confirm: '' })
 const pwdBusy = ref(false)
@@ -244,10 +304,11 @@ async function submitPasswordChange() {
 
 async function loadMe() {
   await loadMember()
-  // 只有认得人才问抽屉：访客那一发必吃 401，白敲一下后端。
-  if (member.value) await loadMyCollections()
+  // 只有认得人才问抽屉与收回柜：访客那两发必吃 401，白敲两下后端。
+  if (member.value) await Promise.all([loadMyCollections(), loadDmRecycle()])
   else {
     myCollections.value = null
+    dmRecycle.value = null
   }
 }
 
@@ -619,6 +680,54 @@ async function doLogout() {
             <button class="shrink-0 rounded-lg bg-stationPink px-3 py-1.5 text-[12.5px] text-white transition hover:opacity-90 disabled:opacity-50" :disabled="collBusy || !newColl.name.trim()" @click="createCollection">建一个</button>
           </div>
           <p v-if="collNotice" class="mt-2 text-[12px]" :class="collNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">{{ collNotice.text }}</p>
+        </section>
+
+        <!-- 我收回的弹幕：自己在放映厅收回的那几条自己捐回去（站长替人删的那批在后端就不递，这里看不见也捐不动）。
+             卡形与行形直接吃本页「我的合集」与「外部账号绑定」那两族的料，不另起炉灶 -->
+        <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+          <div class="mb-3 flex items-center justify-between gap-4">
+            <h2 class="text-[15px] font-semibold text-inkMain">我收回的弹幕</h2>
+            <button
+              class="text-[12px] text-stationPink transition hover:opacity-80 disabled:opacity-50"
+              :disabled="dmRecycleLoading"
+              title="重拉一次收回柜"
+              @click="loadDmRecycle"
+            >
+              {{ dmRecycleLoading ? '翻箱中…' : '重拉' }}
+            </button>
+          </div>
+          <ul v-if="dmRecycle?.length" class="space-y-2">
+            <li
+              v-for="item in dmRecycle"
+              :key="item.id"
+              class="flex flex-wrap items-center gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
+            >
+              <div class="min-w-0 flex-1">
+                <p class="text-sm leading-6 text-inkMain" :title="item.text">{{ item.text }}</p>
+                <p class="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-inkFaint">
+                  <span class="truncate font-mono">{{ item.bvid || '—' }} · 第 {{ (item.pageIdx ?? 0) + 1 }} P · {{ dmClock(item.tSec) }}</span>
+                  <span>· {{ friendlyTime(item.deletedAtUtc) }}收回</span>
+                  <span
+                    v-if="item.inStation === false"
+                    class="shrink-0 rounded-full border border-rose-300 px-1.5 py-0.5 text-[10px] leading-none text-rose-500"
+                  >
+                    片子已不在架，捐不回
+                  </span>
+                </p>
+              </div>
+              <button
+                class="shrink-0 rounded-lg border border-lineSoft bg-cardBg px-3 py-1 text-xs text-inkSub transition hover:border-stationPink/50 hover:text-stationPink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-lineSoft disabled:hover:text-inkSub"
+                :disabled="dmRecycleBusy !== null || item.inStation === false"
+                :title="item.inStation === false ? '片子已不在架，捐不回' : '把这条捐回片里重新飘'"
+                @click="restoreDmRecycle(item)"
+              >
+                {{ dmRecycleBusy === item.id ? '捐回中…' : '捐回' }}
+              </button>
+            </li>
+          </ul>
+          <p v-else-if="dmRecycle === null" class="py-6 text-center text-sm text-inkFaint">{{ dmRecycleLoading ? '正在翻你的收回柜……' : '收回柜没拉回来' }}</p>
+          <p v-else class="py-6 text-center text-sm text-inkFaint">没有在放映厅里收回过弹幕</p>
+          <p v-if="dmRecycleNotice" class="mt-2 text-[12px]" :class="dmRecycleNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">{{ dmRecycleNotice.text }}</p>
         </section>
 
         <!-- 账号与登录设置弹层：登录方式与外部账号绑定两块收在这里，门口那枚「设置」钮开合；

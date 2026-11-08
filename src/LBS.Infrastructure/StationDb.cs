@@ -661,7 +661,10 @@ public sealed partial class StationDb
         }
         // 单删弹幕进回收站（11-08 站长拍板）：不挤 videos 那张回收站——它的形状是「一部片」
         // （video_id/bvid NOT NULL + 一堆文件账目），硬塑一条弹幕要伪造空 Video 字典、还要绕开文件搬运。
-        // 不存 id：捐回时重新入队拿新 id，旧 id 只当审计用（弹幕没有对外引用，不必像整片回收那样保号）。
+        // 存原 dm_id 并在捐回时连号一起带回去（与整片回收站「连站内弹幕的 id 都不变」同一口径）：
+        // 举报单存的就是 dm_id，换成新号会让那张单的「去看这条弹幕」链死，(dm_id, reporter_member_id)
+        // 上的唯一索引也会把「同一人再举报同一条」的幂等判据打歪（旧注释说的「重新入队拿新 id」已作废）。
+        // 加档版本回收站另在 StationDb.CodecRecycle 里建（同一事务里一并建表，见 EnsureCodecRecycleTable）。
         using (var dmRecycle = connection.CreateCommand())
         {
             dmRecycle.CommandText = """
@@ -686,6 +689,7 @@ public sealed partial class StationDb
                 """;
             dmRecycle.ExecuteNonQuery();
         }
+        EnsureCodecRecycleTable(connection);
         using (var uname = connection.CreateCommand())
         {
             // 大小写不敏感判重（NOCASE 对 ASCII 生效，汉字本无大小写）；登录也按这把尺子认人。

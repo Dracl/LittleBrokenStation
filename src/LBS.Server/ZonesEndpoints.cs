@@ -9,8 +9,7 @@ namespace LBS.Server;
 /// </summary>
 public static class ZonesEndpoints
 {
-    internal sealed record ZoneSetRequest(long? VideoId, string? Zone);
-
+    
     public static void MapZonesEndpoints(this WebApplication app)
     {
         // hot = 分区总览入口卡的底图一摄（按次数的冠军分区 + 区内最火那条的封面）。
@@ -46,25 +45,8 @@ public static class ZonesEndpoints
                 }),
             }));
 
-        app.MapPost("/api/admin/zones/set", (ZoneSetRequest? request, StationDb db) =>
-        {
-            if (request?.VideoId is not long videoId)
-            {
-                return Results.Json(new { message = "没带来稿件 id，这派没法改" }, statusCode: StatusCodes.Status400BadRequest);
-            }
-
-            // 校验与规范化全走 StationDb.TryNormalizeZone（同一张嘴，测试直捣）。
-            if (!StationDb.TryNormalizeZone(request.Zone, out var zone, out var message))
-            {
-                return Results.Json(new { message }, statusCode: StatusCodes.Status400BadRequest);
-            }
-
-            if (!db.SetSiteZone(videoId, zone))
-            {
-                return Results.Json(new { message = "馆藏里没有这个 id，改派给谁看" }, statusCode: StatusCodes.Status404NotFound);
-            }
-
-            return Results.Ok(new { message });
-        });
+        // POST /api/admin/zones/set 已于 11-08 退休：它写的是 videos.site_zone，与投稿人自管那口
+        // PATCH /api/videos/{id}（SetVideoZoneOverride → SetSiteZone）同一列同一校验，两条嘴长期必然漂。
+        // 改派从此只有一个入口：分区页那支小笔也改调 PATCH（站长在 CanManageVideo 里天然短路，能力未削）。
     }
 }

@@ -77,10 +77,13 @@ async function applyEdit() {
   editBusy.value = true
   notice.value = null
   try {
-    const res = await fetch('/api/admin/zones/set', {
-      method: 'POST',
+    // 只一张嘴：改派走投稿人自管那同一口 PATCH /api/videos/{id}（里面同样走 TryNormalizeZone → SetVideoZoneOverride）。
+    // 以前这页另走 POST /api/admin/zones/set，两条嘴写同一列 site_zone、各自校验，日子久了必然漂（盘点扫出来的）；
+    // 那一口已退休，站长身份在 CanManageVideo 里天然短路，能力一分没削。
+    const res = await fetch(`/api/videos/${editing.value.id}`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videoId: editing.value.id, zone: editing.value.value.trim() || null }),
+      body: JSON.stringify({ zone: editing.value.value.trim() || null }),
     })
     const data = await res.json().catch(() => null)
     notice.value = res.ok

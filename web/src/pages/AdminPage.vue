@@ -1600,6 +1600,124 @@ async function clearDmRecycle() {
   }
 }
 
+// ─── 加档版本回收站（11-08）：被清出站的加档连行带件封在这里，整组捐回 / 整组销毁 ───
+// 后端 AdminCodecRecycleEndpoints + StationDb.CodecRecycle 已齐，这卡负责把它接上。
+// <b>一次删除 = 一个组</b>：点单是整片点的，删一版 hevc 会落 N 行（每分 P 一行），所以这里按 groupId 归堆，
+// 一张卡 = 当初那一次删除，捐回与销毁都整组走，不让站长按 N 下钮。
+// 两枚钮只站长按得动（口挂在 /api/admin/ 下）：投稿人删得动自己那版的件，反悔的话语权不跟着放开。
+const codecRecycle = ref(null) // null=没拉到（与真空仓分两脸，照弹幕回收站那套口径）
+const codecRecycleTotal = ref(0)
+const codecRecycleLoading = ref(false)
+const codecRecycleBusy = ref(null) // 正在动的组 id
+const codecRecycleNotice = ref(null) // { kind: 'ok' | 'err', text }：后端那句人话原样上屏
+
+async function loadCodecRecycle() {
+  if (codecRecycleLoading.value) return
+  codecRecycleLoading.value = true
+  try {
+    const res = await fetch('/api/admin/codec-recycle?limit=500')
+    if (!res.ok) {
+      codecRecycle.value = null
+      return
+    }
+
+    const data = await res.json().catch(() => null)
+    codecRecycle.value = Array.isArray(data?.items) ? data.items : []
+    codecRecycleTotal.value = data?.total ?? codecRecycle.value.length
+  } catch {
+    codecRecycle.value = null
+  } finally {
+    codecRecycleLoading.value = false
+  }
+}
+
+// 把行归成组：页码排成一行、字节累加、件数分「搬成了」与「当初盘上就没这一版」两叠。
+// 组里只要有一行片子已不在架，整组就捐不动（后端也是整组拒），所以 inStation 取与。
+const codecRecycleGroups = computed(() => {
+  const groups = []
+  const index = new Map()
+  for (const item of codecRecycle.value ?? []) {
+    if (!index.has(item.groupId)) {
+      const group = {
+        groupId: item.groupId,
+        videoId: item.videoId,
+        bvid: item.bvid,
+        codec: item.codec,
+        pages: [],
+        bytes: 0,
+        files: 0,
+        fileless: 0,
+        deletedAtUtc: item.deletedAtUtc,
+        deletedBy: item.deletedBy,
+        source: item.source,
+        inStation: item.inStation !== false,
+      }
+      index.set(item.groupId, group)
+      groups.push(group)
+    }
+
+    const group = index.get(item.groupId)
+    group.pages.push((item.pageIdx ?? 0) + 1)
+    group.bytes += item.bytes || 0
+    if (item.fileStored) group.files += 1
+    else group.fileless += 1
+    if (item.inStation === false) group.inStation = false
+  }
+
+  return groups
+})
+
+// 谁动的手：member = 投稿人自管删的，admin = 站长删的（台账里分得清，这里才有脸说「这位删的」）。
+const CODEC_RECYCLE_SOURCE = { member: '投稿人删的', admin: '站长删的' }
+function codecRecycleSourceLabel(source) {
+  return CODEC_RECYCLE_SOURCE[source] ?? source ?? '来历不明'
+}
+
+async function restoreCodecGroup(group) {
+  if (codecRecycleBusy.value !== null) return
+  codecRecycleBusy.value = group.groupId
+  codecRecycleNotice.value = null
+  try {
+    const res = await fetch(`/api/admin/codec-recycle/${group.groupId}/restore`, { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    codecRecycleNotice.value = {
+      kind: res.ok ? 'ok' : 'err',
+      text: data?.message ?? (res.ok ? '已捐回，这一版重新回到货架' : '捐回没成，这一组还完整躺在回收站里'),
+    }
+  } catch {
+    codecRecycleNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    codecRecycleBusy.value = null
+    await loadCodecRecycle()
+  }
+}
+
+async function purgeCodecGroup(group) {
+  if (codecRecycleBusy.value !== null) return
+  const verdict = await requestConfirm({
+    title: `销毁这一组加档（${codecLabel(group.codec)}）`,
+    sub: `${group.bvid || '已下架'} · 共 ${group.pages.length} 个分 P`,
+    message: '回收目录里那些文件就地抹掉，台账也一并销掉，之后捐不回来。只是不想让它再待在菜单上就用「捐回」再删一次，别在这儿断后路。',
+    confirmText: '销毁',
+    cancelText: '再想想',
+    danger: true,
+    icon: 'trash',
+  })
+  if (!verdict) return
+  codecRecycleBusy.value = group.groupId
+  codecRecycleNotice.value = null
+  try {
+    const res = await fetch(`/api/admin/codec-recycle/${group.groupId}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => null)
+    codecRecycleNotice.value = { kind: res.ok ? 'ok' : 'err', text: data?.message ?? (res.ok ? '已销毁' : '销毁没成') }
+  } catch {
+    codecRecycleNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    codecRecycleBusy.value = null
+    await loadCodecRecycle()
+  }
+}
+
 // ─── 动态关注（M6）：盯梢名单管理 + 催巡一轮（两段式删，后端 message 原样展示）───
 const dynTargets = ref(null)
 const dynBusy = ref(false)
@@ -2069,6 +2187,7 @@ watch(quietOpen, (open) => { if (open && announceBatches.value === null) loadAnn
 watch(quietOpen, (open) => { if (open && eventsRows.value === null) loadEventsLedger() }) // 抽屉掀开才拉：台账一千多条，盖子没开就拉它纯属白跑
 watch(quietOpen, (open) => { if (open && pendingInvites.value === null) loadPendingInvites() }) // 抽屉掀开才拉：这节就在抽屉里
 watch(quietOpen, (open) => { if (open && dmRecycle.value === null) loadDmRecycle() }) // 抽屉掀开才拉：这卡也在抽屉里
+watch(quietOpen, (open) => { if (open && codecRecycle.value === null) loadCodecRecycle() }) // 加档回收站同一张抽屉，同样掀开才拉
 // 加档牌面上的人话编码名：后端回的是 'avc'/'hevc'/'av1'，没见过的原样贴出，不替它编个名
 const CODEC_LABEL = { avc: 'AVC', hevc: 'HEVC', av1: 'AV1' }
 function codecLabel(codec) {
@@ -2850,6 +2969,62 @@ onUnmounted(() => {
         </ul>
         <p v-else-if="dmRecycle && !dmRecycle.length" class="text-[11px] text-white/30">
           回收站是空的。删掉的弹幕（含举报单处置掉的那些）会先落在这儿，捐得回也销毁得了。
+        </p>
+      </section>
+
+      <!-- 加档版本回收站（11-08）：投稿人删得动自己那版的件，反悔章只站长握得住。
+           一行卡 = 一次删除（一组），捐回与销毁都是整组一次，与点单同粒度。 -->
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[65]">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            加档回收站
+            <span class="ml-1 rounded-full border border-white/10 px-2 py-0.5 text-[10px] normal-case tracking-normal text-white/40">
+              {{ codecRecycle === null ? '没拉到' : `躺着 ${codecRecycleTotal} 行 · ${codecRecycleGroups.length} 组` }}
+            </span>
+          </h3>
+          <button class="lbs-btn-ghost !px-3 !py-1 !text-xs" :disabled="codecRecycleLoading" @click="loadCodecRecycle">
+            {{ codecRecycleLoading ? '翻箱中…' : '重拉' }}
+          </button>
+        </div>
+        <p v-if="codecRecycleNotice" class="mb-2 text-[11px]" :class="codecRecycleNotice.kind === 'ok' ? 'text-emerald-300/80' : 'text-rose-300/70'">
+          {{ codecRecycleNotice.text }}
+        </p>
+        <ul v-if="codecRecycleGroups.length" class="flex flex-col gap-1.5">
+          <li v-for="group in codecRecycleGroups" :key="group.groupId" class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-white/5 px-2 py-1.5">
+            <span class="shrink-0 rounded-md border border-stationBlue/30 px-1.5 text-[11px] text-stationBlue/80">{{ codecLabel(group.codec) }}</span>
+            <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-white/45" :title="`P${group.pages.join(' P')}`">
+              {{ group.bvid || '已下架' }} · 共 {{ group.pages.length }} 个分 P
+            </span>
+            <span class="shrink-0 font-mono text-[11px] text-white/35">{{ fmtBytes(group.bytes) }} · 搬走 {{ group.files }} 个件</span>
+            <span
+              v-if="group.fileless"
+              class="shrink-0 text-[11px] text-white/25"
+              title="账上有行、盘上没文件（当初就没落盘），捐回来也只是菜单上多一档"
+            >
+              {{ group.fileless }} 行没带件
+            </span>
+            <span class="shrink-0 text-[11px] text-white/35">{{ codecRecycleSourceLabel(group.source) }} · {{ group.deletedBy || '无名' }}</span>
+            <span class="shrink-0 font-mono text-[10px] text-white/25">删于 {{ friendlyTime(group.deletedAtUtc) }}</span>
+            <button
+              class="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-white/50 transition hover:border-stationBlue/50 hover:text-stationBlue disabled:cursor-not-allowed disabled:opacity-35"
+              :disabled="codecRecycleBusy !== null || !group.inStation"
+              :title="group.inStation ? '文件与台账整组搬回原位，当初那一次点单原样回来' : '片子已经不在架，先把稿件捐回来再捞这一版'"
+              @click="restoreCodecGroup(group)"
+            >
+              {{ codecRecycleBusy === group.groupId ? '捐回中…' : '整组捐回' }}
+            </button>
+            <button
+              class="shrink-0 rounded-md border border-rose-500/30 px-2 py-0.5 text-[11px] text-rose-300/80 transition hover:bg-rose-500/10 disabled:opacity-40"
+              :disabled="codecRecycleBusy !== null"
+              title="回收目录里那些文件就地抹掉，之后捐不回来"
+              @click="purgeCodecGroup(group)"
+            >
+              销毁
+            </button>
+          </li>
+        </ul>
+        <p v-else-if="codecRecycle && !codecRecycle.length" class="text-[11px] text-white/30">
+          回收站是空的。被清出站的加档版本（含投稿人自己删的那些）会先落在这儿，整组捐得回也销毁得了。
         </p>
       </section>
 

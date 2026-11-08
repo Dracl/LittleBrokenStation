@@ -43,6 +43,14 @@ public sealed record DataPaths(string Root, string Videos, string Downkyi, strin
     public string Recycle => Path.Combine(Root, "recycle");
 
     /// <summary>
+    /// 加档版本回收站（11-08 站长拍板「删掉的加档版本也进回收站，方便站长回滚」）。
+    /// 另开一座而不挤 <see cref="Recycle"/>：那边的清空与销毁是把 recycle 下所有子目录扫一遍删的，
+    /// 加档件混进去会被「清空整片回收站」连带拍掉台账却对不上账；另开一座两边互不干扞。
+    /// 同卷 File.Move 搬件，958 MiB 也不翻倍；不挂静态区，删完就是真取不到。
+    /// </summary>
+    public string CodecRecycle => Path.Combine(Root, "codec_recycle");
+
+    /// <summary>
     /// 封面缩略件区（站长 11-03「缩略图要本站自己从本地原图裁，不许靠 B 站 CDN 缩放」）。
     /// 与 <see cref="Previews"/> 同理独立于 videos：不被 ClassifyArtifact 认成产物（否则会被插成第二行
     /// kind='cover'，而全站读侧取的是最早那一行）、不被 IsMediaMissing 当必备产物验盘（否则档位文件
@@ -80,7 +88,7 @@ public sealed record DataPaths(string Root, string Videos, string Downkyi, strin
             RootHint = hint,
         };
 
-        foreach (var dir in new[] { paths.Root, paths.Videos, paths.Downkyi, paths.Cookies, paths.Cache, paths.Avatars, paths.Emotes, paths.CmtImg, paths.Recycle, paths.Previews, paths.Thumbs, paths.ThumbsStaging, paths.UpFaces })
+        foreach (var dir in new[] { paths.Root, paths.Videos, paths.Downkyi, paths.Cookies, paths.Cache, paths.Avatars, paths.Emotes, paths.CmtImg, paths.Recycle, paths.CodecRecycle, paths.Previews, paths.Thumbs, paths.ThumbsStaging, paths.UpFaces })
         {
             Directory.CreateDirectory(dir);
         }

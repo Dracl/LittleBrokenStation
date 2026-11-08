@@ -96,18 +96,22 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
         // 续下与重新排队（POST …/revive 与 …/requeue）本轮跟着摘：站长室那圈 IsOwner 短路本来就把
         // 「投稿人想续自己的下载」一起挡死了，摘出来之后归属门落在端点里的 CanManageVideo
         // （ManageGate.CanManage 对没席位的人一律回假，匿名顶多拿 403，不是敞着）。
-        // /codecs（加档点单）仍留在站长门里；…/media-refresh 早就是「会员门 + 端点归属门」那一张形。
+        // /codecs 里只「点单」仍留在站长门里（一次点单能插几十行任务、烧全站共用的采集号）；
+        // 而「取消自己那单」与「删自己那版的件」都是止损型动作，11-08 摘给投稿人自管，
+        // 归属落在端点里的 CanManageVideo；捐回与销毁住在 /api/admin/ 下面，只站长握得住。
+        // …/media-refresh 早就是「会员门 + 端点归属门」那一张形。
         if (path.StartsWith("/api/videos/", StringComparison.OrdinalIgnoreCase))
         {
             if (HttpMethods.IsDelete(request.Method)
                 && !path.StartsWith("/api/videos/danmaku/", StringComparison.OrdinalIgnoreCase)
+                && !path.Contains("/codecs", StringComparison.OrdinalIgnoreCase)
                 && !MemberGate.IsVideoIdOnlyPath(path))
             {
                 return true;
             }
 
             if (HttpMethods.IsPost(request.Method)
-                && (path.Contains("/codecs", StringComparison.OrdinalIgnoreCase)
+                && ((path.Contains("/codecs", StringComparison.OrdinalIgnoreCase) && !IsCodecCancel(path))
                     || (path.Contains("/comments", StringComparison.OrdinalIgnoreCase) && !IsSelfOwnedCommentsRefresh(path))))
             {
                 return true;
@@ -124,6 +128,11 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
     private static bool IsSelfOwnedCommentsRefresh(string path) =>
         path.EndsWith("/comments", StringComparison.OrdinalIgnoreCase)
         || path.EndsWith("/comments/subs", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>取消在途加档那一口（POST …/codecs/cancel）：它只是止损，与「点单」不同权——
+    /// 点单才是烧全站采集号的那一下，所以从上面那条 Contains("/codecs") 里单独剔出来。</summary>
+    private static bool IsCodecCancel(string path) =>
+        path.EndsWith("/codecs/cancel", StringComparison.OrdinalIgnoreCase);
 
     public bool HasValidSession(HttpRequest request)
     {

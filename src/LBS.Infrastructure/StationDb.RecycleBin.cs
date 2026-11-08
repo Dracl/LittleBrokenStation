@@ -12,6 +12,10 @@ public sealed record RecycleEntry(
     string? UpName,
     DateTimeOffset DeletedAtUtc,
     string? DeletedBy,
+    /// <summary>动手那位的<b>席位 id</b>（11-08 补）：光有 <see cref="DeletedBy"/> 那个显示名字符串分不清撞名的两个人，
+    /// 也写不出「谁删的」这种查账口径。与弹幕回收站的 deleted_by_member_id 同一形状。
+    /// </summary>
+    long? DeletedByMemberId,
     int FileCount,
     long Bytes,
     int PageCount,
@@ -62,6 +66,7 @@ public sealed partial class StationDb
                 up_name TEXT,
                 deleted_at_utc TEXT NOT NULL,
                 deleted_by TEXT,
+                deleted_by_member_id INTEGER,
                 file_count INTEGER NOT NULL DEFAULT 0,
                 bytes INTEGER NOT NULL DEFAULT 0,
                 page_count INTEGER NOT NULL DEFAULT 0,
@@ -71,6 +76,8 @@ public sealed partial class StationDb
             );
             """;
         command.ExecuteNonQuery();
+        // 老库补列：CREATE TABLE IF NOT EXISTS 对已经存在的表一个字节都不动，旧回收站的这一栏得单独补上。
+        EnsureColumn(connection, RecycleTable, "deleted_by_member_id", "INTEGER");
     }
 
     /// <summary>把一条馆藏收进回收站：先点清文件、搬进回收站，再删原表行、落清单。</summary>
@@ -80,7 +87,8 @@ public sealed partial class StationDb
         string videosRoot,
         string recycleRoot,
         string? deletedBy,
-        int commentCount)
+        int commentCount,
+        long? deletedByMemberId = null)
     {
         using var connection = Open(_dbPath);
         EnsureRecycleTable(connection);
@@ -112,7 +120,7 @@ public sealed partial class StationDb
         var files = CollectRecycleFiles(videosRoot, relPaths, basePaths);
 
         // 先落一行拿到 id（回收站目录按 id 分间），搬完再回填清单与账目。
-        var insertedId = InsertRecycleShell(connection, videoId, bvid, title, deletedBy, pageCount, danmakuCount, commentCount);
+        var insertedId = InsertRecycleShell(connection, videoId, bvid, title, deletedBy, pageCount, danmakuCount, commentCount, deletedByMemberId);
         var staged = new List<(string From, string To)>();
         try
         {
@@ -178,7 +186,7 @@ public sealed partial class StationDb
 
         using var command = connection.CreateCommand();
         command.CommandText = $"""
-            SELECT id, video_id, bvid, title, up_name, deleted_at_utc, deleted_by,
+            SELECT id, video_id, bvid, title, up_name, deleted_at_utc, deleted_by, deleted_by_member_id,
                    file_count, bytes, page_count, danmaku_count, comment_count
             FROM {RecycleTable} ORDER BY id DESC;
             """;
@@ -194,11 +202,12 @@ public sealed partial class StationDb
                 reader.IsDBNull(4) ? null : reader.GetString(4),
                 DateTimeOffset.Parse(reader.GetString(5)),
                 reader.IsDBNull(6) ? null : reader.GetString(6),
-                reader.GetInt32(7),
-                reader.GetInt64(8),
-                reader.GetInt32(9),
+                reader.IsDBNull(7) ? null : reader.GetInt64(7),
+                reader.GetInt32(8),
+                reader.GetInt64(9),
                 reader.GetInt32(10),
-                reader.GetInt32(11)));
+                reader.GetInt32(11),
+                reader.GetInt32(12)));
         }
 
         return list;
@@ -532,19 +541,21 @@ public sealed partial class StationDb
         string? deletedBy,
         int pageCount,
         int danmakuCount,
-        int commentCount)
+        int commentCount,
+        long? deletedByMemberId = null)
     {
         using (var insert = connection.CreateCommand())
         {
             insert.CommandText = "INSERT INTO " + RecycleTable +
-                " (video_id, bvid, title, up_name, deleted_at_utc, deleted_by, page_count, danmaku_count, comment_count, manifest)" +
-                " VALUES ($video, $bvid, $title, $up, $at, $by, $pages, $danmaku, $comments, '{}');";
+                " (video_id, bvid, title, up_name, deleted_at_utc, deleted_by, deleted_by_member_id, page_count, danmaku_count, comment_count, manifest)" +
+                " VALUES ($video, $bvid, $title, $up, $at, $by, $byId, $pages, $danmaku, $comments, '{}');";
             insert.Parameters.AddWithValue("$video", videoId);
             insert.Parameters.AddWithValue("$bvid", bvid);
             insert.Parameters.AddWithValue("$title", (object?)title ?? DBNull.Value);
             insert.Parameters.AddWithValue("$up", DBNull.Value);
             insert.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
             insert.Parameters.AddWithValue("$by", (object?)deletedBy ?? DBNull.Value);
+            insert.Parameters.AddWithValue("$byId", (object?)deletedByMemberId ?? DBNull.Value);
             insert.Parameters.AddWithValue("$pages", pageCount);
             insert.Parameters.AddWithValue("$danmaku", danmakuCount);
             insert.Parameters.AddWithValue("$comments", commentCount);

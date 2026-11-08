@@ -688,6 +688,8 @@ app.MapDanmakuReportEndpoints();
 app.MapAdminDanmakuReportEndpoints();
 // 弹幕回收站（11-08）：单删的弹幕在这里点名、捐回、销毁（与馆藏回收站同属站长话语权）。
 app.MapAdminDanmakuRecycleEndpoints();
+app.MapAdminCodecRecycleEndpoints(); // 加档版本回收站（11-08 站长拍板）：删掉的加档连行带件封在这里，整组捐回 / 整组销毁都只站长按得动
+app.MapMemberDanmakuRecycleEndpoints(); // 个人空间「我收回的弹幕」：自己收回的那几条自己捐回，不必求站长
 app.MapWeeklyReportEndpoints(); // 分站周报：成员登录后 /api/weekly 看本周战报（/weekly 页）
 app.MapWatchHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
 app.MapMemberWallApi(); // 会员墙（馆藏壁）：投稿+历史聚合，喂个人空间顶上的画布窗口
@@ -847,7 +849,7 @@ void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy
     });
 }
 
-app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, IDownloadHistoryService history, CancellationToken cancellationToken) =>
+app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db, DataPaths paths, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, IDownloadHistoryService history, EventRecorder events, CancellationToken cancellationToken) =>
 {
     var row = db.GetVideoForDelete(id);
     if (row is null)
@@ -918,7 +920,18 @@ app.MapDelete("/api/videos/{id:long}", async (long id, HttpContext http, Station
     }
 
     var deleter = MemberGate.Current(http);
-    var recycled = db.MoveVideoToRecycle(id, paths.Videos, paths.Recycle, deleter?.Nickname ?? deleter?.Username ?? "站长", commentCount);
+    var recycled = db.MoveVideoToRecycle(id, paths.Videos, paths.Recycle, deleter?.Nickname ?? deleter?.Username ?? "站长", commentCount, deleter?.Id);
+    if (recycled.Ok)
+    {
+        // 删档从此有账（11-08）：EventNames.VideoRemoved 这枚名字立了好几个月却是全仓零引用——
+        // 「投稿人删自己的稿」这件事早就放开了，却一个字没记，只在 recycle_bin.deleted_by 里留了个显示名字符串。
+        // 再往投稿人手里放开写侧口之前，先把这条账补直：谁删的、席号几号、带走几个文件、进了哪一号回收站。
+        events.RecordWithPayload(MemberGate.IsOwner(deleter) ? EventActors.Admin : EventActors.Member,
+            deleter?.Mid, EventNames.VideoRemoved, "video", row.Value.Bvid,
+            new { videoId = id, binId = recycled.BinId, files = recycled.Files, status = row.Value.Status.ToString() },
+            ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: deleter?.Id);
+    }
+
     return recycled.Ok
         ? Results.Ok(new
         {
@@ -1066,7 +1079,7 @@ app.MapPost("/api/videos/{id:long}/claim", async (long id, long? memberId, HttpC
 //   那份清单漂一个词就是匿名可写；而 MemberGate 只认「有没有席位」，投稿人本人能进靠的正是端点这一道（站长拿席位会话进门）。
 // 成功只回 { ok = true }，不在这儿拼一份稿件 DTO：前端保存后重拉 /api/watch（那里下发的是有效值），
 //   两处真相的毛病就是这么留下来的。
-app.MapPatch("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db) =>
+app.MapPatch("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db, EventRecorder events) =>
 {
     // 先核钥匙再问有没有这一条：不是本人也不是站长的人问什么都是同一句 403（连「这稿存在」都问不出来），
     // 只有真拿钥匙的人才会走到下面碰到 400 / 404（与 NotYourSubmission 那套「藏钮只是体验」同一分工）。
@@ -1161,6 +1174,15 @@ app.MapPatch("/api/videos/{id:long}", async (long id, HttpContext http, StationD
             return Results.NotFound(new { message = "馆藏里没有这个编号" });
         }
     }
+
+    // 动过哪几栏要留账（11-08）：这口是投稿人自管口，改名、改简介、把稿子转私有都是能损到别人的事，
+    // 后台得说得出「谁在什么时候动了哪几栏」。只记动了哪些栏与可见性/分区的新值，
+    // 不把整篇简介拄进事件表（那东西能装几千字，台账不是第二个简介字段）。
+    var editor = MemberGate.Current(http);
+    events.RecordWithPayload(MemberGate.IsOwner(editor) ? EventActors.Admin : EventActors.Member,
+        editor?.Mid, EventNames.VideoSettings, "video", id.ToString(),
+        new { touched, visibility = settings.Visibility, zone = settings.Zone },
+        ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: editor?.Id);
 
     return Results.Ok(new { ok = true });
 });
@@ -1555,14 +1577,22 @@ app.MapGet("/api/videos/{id:long}/codecs/progress", async (long id, StationDb db
     return Results.Ok(rows);
 });
 
-// 取消一件在途加档：销引擎账 + 判 Failed；反悔了在首页重新点单即可。
+// 取消一件在途加档：销引擎账 + 判 Failed；反悔了回到那支片子的播放器里重新点单。
 // 早先面板注释说「加档没取消端点，造个按下去没反应的钮比没有更坑」——现在引擎账销得动，钮按得动了。
-app.MapPost("/api/videos/{id:long}/codecs/cancel", async (long id, CancelCodecRequest request, StationDb db, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, CancellationToken cancellationToken) =>
+// 11-08 从站长门摘给投稿人自管：自己那单的加档自己cancel得动（归属在端点里核，不靠身份直觉）。
+// 烧资源的「点单」仍留在站长门里——取消只是止损，点单才是花钱，两者不该同权。
+app.MapPost("/api/videos/{id:long}/codecs/cancel", async (long id, CancelCodecRequest request, HttpContext http, StationDb db, IDownloadTaskStateService state, IDownloadTaskLookup lookup, IDownloadTaskQueue taskQueue, EventRecorder events, CancellationToken cancellationToken) =>
 {
     var codec = (request.Codec ?? string.Empty).Trim().ToLowerInvariant();
     if (!StationDb.SupportedCodecs.Contains(codec, StringComparer.Ordinal))
     {
         return Results.BadRequest(new { message = "不认的编码，只收 avc / hevc / av1" });
+    }
+
+    // 归属门：只准站长与这稿的投稿人本人动手，否则任何会员都能拿别人的 id 把在途任务拍掉。
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
     }
 
     long? targetRow = null;
@@ -1610,34 +1640,86 @@ app.MapPost("/api/videos/{id:long}/codecs/cancel", async (long id, CancelCodecRe
         }
     }
 
-    db.MarkCodecFailed(targetRow.Value, "站长取消了这次加档，回到那支片子的播放器里可重新点单");
+    var canceller = MemberGate.Current(http);
+    var byOwner = MemberGate.IsOwner(canceller);
+    var who = canceller?.Nickname ?? canceller?.Username ?? (byOwner ? "站长" : "会员");
+    db.MarkCodecFailed(targetRow.Value, $"{who}取消了这次加档，回到那支片子的播放器里可重新点单");
+    // 谁取消的要能查得出来：投稿人自己止损与站长代他止损，在台账里是两件事。
+    events.RecordWithPayload(byOwner ? EventActors.Admin : EventActors.Member, canceller?.Mid, EventNames.AdminAction,
+        "codec", $"{id}:{codec}", new { action = "cancel", videoId = id, codec, pageIdx = request.PageIdx, byOwner },
+        ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: canceller?.Id);
     return Results.Ok(new { message = $"已取消 {codec.ToUpperInvariant()} 加档（反悔回到播放器里重新点单）" });
 });
 
-// 删单个编码版本：销账 + 删文件；主版本不受影响。
-app.MapDelete("/api/videos/{id:long}/codecs/{pageIdx:int}/{codec}", (long id, int pageIdx, string codec, StationDb db, DataPaths paths) =>
-{
-    var rel = db.TakeCodecVersionForDelete(id, pageIdx, codec);
-    if (rel is null)
+// 删一版加档（一个分 P 的一个编码）：从此不再「销账 + 删文件」一步到死，
+// 连行带件封进加档回收站（11-08 站长拍板「删掉的加档版本也进回收站，方便站长回滚」）。
+// 与上面取消那口同形：从站长门摘到「会员门 + 端点归属门」，投稿人删得动自己那版的件，捐回与销毁仍只在站长手里。
+// 两条安全闸住在库层：rel_path 指的是那一 P 的主件就拒删（以前连这个都不问）、文件被占用就整笔作废。
+app.MapDelete("/api/videos/{id:long}/codecs/{pageIdx:int}/{codec}",
+    (long id, int pageIdx, string codec, HttpContext http, StationDb db, DataPaths paths, EventRecorder events) =>
     {
-        return Results.NotFound(new { message = "没有这个版本" });
-    }
-
-    try
-    {
-        var full = Path.Combine(paths.Videos, rel.Replace('/', Path.DirectorySeparatorChar));
-        if (File.Exists(full))
+        var rejected = ValidateCodecDeleteRequest(http, db, id, codec);
+        if (rejected is not null)
         {
-            File.Delete(full);
+            return rejected;
         }
-    }
-    catch (IOException)
+
+        var actor = MemberGate.Current(http);
+        var byOwner = MemberGate.IsOwner(actor);
+        var outcome = db.MoveCodecVersionsToRecycle(id, codec.Trim().ToLowerInvariant(), pageIdx,
+            paths.Videos, paths.CodecRecycle,
+            actor?.Nickname ?? actor?.Username ?? (byOwner ? "站长" : "会员"), actor?.Id, byOwner ? "admin" : "member");
+        return FinishCodecDelete(events, http, actor, byOwner, id, pageIdx, codec, outcome);
+    });
+
+// 删整版加档（一个编码跨所有分 P）：一次调用 = 一个回收站组，捐回与销毁都按组走。
+// 放映厅里那枚「删」钮走的是这一口：一版 hevc 往往是 N 个分 P 一起下的，逐 P 删要按 N 下，
+// 还会给同一版留下 N 个互不相干的回收组，捐回时拼不回当初那一次点单。
+app.MapDelete("/api/videos/{id:long}/codecs/{codec}",
+    (long id, string codec, HttpContext http, StationDb db, DataPaths paths, EventRecorder events) =>
     {
-        // 文件被占用时账已销，文件留给下次删除/重启清理
+        var rejected = ValidateCodecDeleteRequest(http, db, id, codec);
+        if (rejected is not null)
+        {
+            return rejected;
+        }
+
+        var actor = MemberGate.Current(http);
+        var byOwner = MemberGate.IsOwner(actor);
+        var outcome = db.MoveCodecVersionsToRecycle(id, codec.Trim().ToLowerInvariant(), null,
+            paths.Videos, paths.CodecRecycle,
+            actor?.Nickname ?? actor?.Username ?? (byOwner ? "站长" : "会员"), actor?.Id, byOwner ? "admin" : "member");
+        return FinishCodecDelete(events, http, actor, byOwner, id, null, codec, outcome);
+    });
+
+// 两口删加档共用的前置：编码名得认识、钥匙得在手里（只认站长与这稿的投稿人）。
+static IResult? ValidateCodecDeleteRequest(HttpContext http, StationDb db, long id, string codec)
+{
+    if (!StationDb.SupportedCodecs.Contains((codec ?? string.Empty).Trim().ToLowerInvariant(), StringComparer.Ordinal))
+    {
+        return Results.BadRequest(new { message = "不认的编码，只收 avc / hevc / av1" });
     }
 
-    return Results.Ok(new { message = $"{codec.ToUpperInvariant()} 版本已清出站" });
-});
+    return CanManageVideo(http, db, id) ? null : NotYourSubmission();
+}
+
+// 删完的收摊：进回收站要留账（谁动的手、搬了几个件、哪一组），状态码分三张脸。
+static IResult FinishCodecDelete(EventRecorder events, HttpContext http, StationMember? actor, bool byOwner,
+    long id, int? pageIdx, string codec, LBS.Infrastructure.CodecRecycleMoveOutcome outcome)
+{
+    events.RecordWithPayload(byOwner ? EventActors.Admin : EventActors.Member, actor?.Mid, EventNames.CodecRecycle,
+        "codec", $"{id}:{codec}",
+        new { videoId = id, pageIdx, codec, ok = outcome.Ok, groupId = outcome.GroupId, rows = outcome.Rows, files = outcome.Files, message = outcome.Message },
+        ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: actor?.Id);
+    if (outcome.Ok)
+    {
+        return Results.Ok(new { message = outcome.Message, groupId = outcome.GroupId, rows = outcome.Rows, files = outcome.Files });
+    }
+
+    return outcome.Message == LBS.Infrastructure.StationDb.CodecRecycleMissingMessage
+        ? Results.NotFound(new { message = outcome.Message })
+        : Results.Conflict(new { message = outcome.Message });
+}
 
 // 补采评论：到站时自动采过一次，这条给投稿人/站长手动刷新快照（老馆藏回填也靠它）。
 // 出号走引擎归属号（站长号），所以只开放给这稿子的投稿人本人与站长，端点里再核一遗。
@@ -2199,7 +2281,9 @@ app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataP
     var ledgerRows = db.PurgeAllLedger();
 
     // 3.5 回收站连带拍空：站都清了，留着封存封也无人能对号入座（恢复回去只会碰上空库）。
+    // 加档回收站住在另一座（data/codec_recycle），不点名就会剩下一堆没台账可对的封存件。
     var recycledRows = db.PurgeAllRecycle(paths.Recycle);
+    var codecRecycledRows = db.PurgeAllCodecRecycle(paths.CodecRecycle);
 
     // 4. 资源文件清盘：视频库 + 缓存小图区 + 预览成片区 + e2e 临时件。cookies 与引擎设置不碰。
     var (files, bytes, busy) = PurgeDirectoryTree(paths.Videos);
@@ -2212,7 +2296,8 @@ app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataP
     }
 
     var message = $"站已清空：取消 {cancelledTasks} 个引擎任务，销 {ledgerRows} 行台账、{engineRows} 行引擎历史，清掉 {files} 个文件（{(double)bytes / 1048576:F1} MB）"
-        + (recycledRows > 0 ? $"，回收站 {recycledRows} 件一并销毁" : "");
+        + (recycledRows > 0 ? $"，回收站 {recycledRows} 件一并销毁" : "")
+        + (codecRecycledRows > 0 ? $"，加档回收站 {codecRecycledRows} 行一并销毁" : "");
     if (busy > 0)
     {
         message += $"；{busy} 个文件被占用没舍得删，回头再按一次";

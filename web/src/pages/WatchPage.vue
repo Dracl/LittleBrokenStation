@@ -748,6 +748,7 @@ const coverFresh = computed(() => {
              外层相对定位包住整段时 bottom 会从页底算，泡会飞出去看不见。 -->
         <div>
           <div class="relative">
+          <!-- can-manage 是加档删钮的钥匙：与那两枚自管钮、稿件设置抽屉同一只眼（服务端算的「投稿人本人 ∥ 站长」） -->
           <VideoPlayer
             :page="currentPage"
             :status="data.status"
@@ -756,6 +757,7 @@ const coverFresh = computed(() => {
             :cover="coverFresh"
             :aid="data.aid"
             :video-id="data.id"
+            :can-manage="!!data.canManage"
             :resume-sec="resumeSec"
             :restart-tick="restartTick"
             :danmaku-count="data.danmakuCount"

@@ -52,11 +52,19 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("POST", "/api/videos/123/comments", false, true)]
     [InlineData("POST", "/api/videos/123/comments/subs", false, true)]
     [InlineData("POST", "/api/videos/123/danmaku-refresh", false, true)]
-    // 站长专属：加档/按编码删档，一个字都不能松（revive/requeue 已移交投稿人自管：匿名由 MemberGate POST 清单挡 401，归属归端点 CanManageVideo）
+    // 站长专属：只「点单」一个字都不能松（一次点单能插几十行任务、烧全站共用的采集号）。
+    // 11-08 把两件止损型动作摘给投稿人自管：取消自己那单加档、删自己那版加档的件（捐回与销毁在 /api/admin/ 下，只站长）。
+    // revive/requeue 早已同族：匿名由 MemberGate POST 清单挡 401，归属归端点 CanManageVideo。
     [InlineData("POST", "/api/videos/123/revive", false, true)]
     [InlineData("POST", "/api/videos/123/requeue", false, true)]
     [InlineData("POST", "/api/videos/123/codecs", true, false)]
-    [InlineData("DELETE", "/api/videos/123/codecs/hevc", true, false)]
+    [InlineData("POST", "/api/videos/123/codecs/cancel", false, true)]
+    [InlineData("DELETE", "/api/videos/123/codecs/hevc", false, true)]
+    [InlineData("DELETE", "/api/videos/123/codecs/0/hevc", false, true)] // 逐分 P 删那一口同权（两条路由不能一张归站长一张归会员）
+    // 加档回收站的捐回与销毁：整段挂 /api/admin/ 前缀，反悔的话语权只握在站长手里。
+    [InlineData("GET", "/api/admin/codec-recycle", true, false)]
+    [InlineData("POST", "/api/admin/codec-recycle/abc123/restore", true, false)]
+    [InlineData("DELETE", "/api/admin/codec-recycle/abc123", true, false)]
     // 站内弹幕（自带本人/主人规则）与只读配套设施：照旧
     [InlineData("DELETE", "/api/videos/danmaku/9", false, true)]   // 站内弹幕删除：不属站长室，但要会员会话（与弹幕读写同闸）
     [InlineData("POST", "/api/videos/9/danmaku/9/report", false, true)] // 站内弹幕举报：吃会员门（路径含 /danmaku），不给站长室抢去
@@ -79,10 +87,11 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/member/history", false, false)]
     [InlineData("POST", "/api/member/history/delete", false, false)]
     [InlineData("POST", "/api/member/history/clear", false, false)]
-    // 分区：只读两口（顶级清单/卡阵）与首页同级公开；改派挂 /api/admin/ 前缀，身份即钥匙（站长门管，会员门不管）。
+    // 分区：只读两口（顶级清单/卡阵）与首页同级公开。改派只剩一张嘴 —— 投稿人自管那口 PATCH /api/videos/{id}
+    // （站长在 CanManageVideo 里天然短路），旧的 POST /api/admin/zones/set 已于 11-08 退休（同一列两条嘴必然漂）。
     [InlineData("GET", "/api/zones", false, false)]
     [InlineData("GET", "/api/zones/videos", false, false)]
-    [InlineData("POST", "/api/admin/zones/set", true, false)]
+    [InlineData("PATCH", "/api/videos/123", false, true)]
     // 合集：名录与首页同级公开（首页大屏幕模式那排入口卡靠它摆封面）；但「点进某一架」是进站待遇，
     // /api/collections/{id} 已被会员门拿下（详情里是稿件清单与简介，不是张封面）。
     // 开集/销集/加减片子挂在 /api/member/collections 下，这个前缀不在两张门视野里（两端都 false），端点自己查 MemberGate.Current 回 401（与 /api/member/history 同一防法）。

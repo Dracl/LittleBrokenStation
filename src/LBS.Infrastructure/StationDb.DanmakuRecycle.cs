@@ -115,20 +115,28 @@ public sealed partial class StationDb
     }
 
     /// <summary>回收站清单（新删的在前）。sender_name 现查席位：席位走了给 null，与弹幕列表那套「只是没脸」一致。</summary>
-    public IReadOnlyList<DanmakuRecycleEntry> ListDanmakuRecycle(int limit = 200)
+    /// <summary>回收站列表（新→旧）。<paramref name="selfMemberId"/> 非空时只留「这位自己收回的那几条」（个人空间的自捐用）。</summary>
+    public IReadOnlyList<DanmakuRecycleEntry> ListDanmakuRecycle(int limit = 200, long? selfMemberId = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        var where = selfMemberId is null ? "" : "WHERE r.source = 'self' AND r.member_id = $m";
+        command.CommandText = $"""
             SELECT r.id, r.dm_id, r.video_id, r.bvid, r.page_idx, r.t_sec, r.text,
                    r.sender_dmid, r.sender_owner, r.member_id, m.nickname, m.username,
                    r.dm_created_at_utc, r.deleted_at_utc, r.deleted_by, r.source,
                    EXISTS (SELECT 1 FROM videos v WHERE v.id = r.video_id AND v.status = 'Arrived')
             FROM danmaku_recycle r
             LEFT JOIN members m ON m.id = r.member_id
+            {where}
             ORDER BY r.id DESC
             LIMIT $limit;
             """;
+        if (selfMemberId is not null)
+        {
+            command.Parameters.AddWithValue("$m", selfMemberId.Value);
+        }
+
         command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 2000));
         using var reader = command.ExecuteReader();
         var list = new List<DanmakuRecycleEntry>();
@@ -163,6 +171,25 @@ public sealed partial class StationDb
     }
 
     /// <summary>回收站计数（站长室那枚徽章）。</summary>
+    /// <summary>
+    /// 取一条回收行的<b>归属</b>（谁动的手、以哪个席位的名义）：自捐那口得先验「这是不是你自己收回的」再动手，
+    /// 不能让任何人拿一排行 id 就把站长替人删的那条捐回来。查无此行回 null。
+    /// </summary>
+    public (string Source, long? MemberId, long DmId)? GetDanmakuRecycleOwner(long recycleId)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT source, member_id, dm_id FROM danmaku_recycle WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", recycleId);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetInt64(1), reader.GetInt64(2));
+    }
+
     public long CountDanmakuRecycle()
     {
         using var connection = Open(_dbPath);
