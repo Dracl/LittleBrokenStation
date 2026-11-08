@@ -16,5 +16,5 @@ public sealed class LbsRoutedCookieProvider(LbsAccountRouter router) : IBilibili
 {
     public string GetCookieHeader() => router.CurrentCookie ?? throw new LbsNoAccountException(
         "这条 B 站请求没有可用账号：投稿要投稿人自己的 B 站号，采集与加档要站里的采集号（站长席位的活号优先）。"
-        + "分站已不设站级兜底登录态，请到「何处？用户控制室」绑定或重新扫码。");
+        + "分站已不设站级兜底登录态，请到「个人空间」绑定或重新扫码。");
 }

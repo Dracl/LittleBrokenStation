@@ -71,7 +71,9 @@ public static class AdminMemberEndpoints
             events.RecordWithPayload(EventActors.Admin, OwnerMid(db), EventNames.MemberInvite, "member", id.ToString(),
                 new { note = request.Note }, ip: http.Connection.RemoteIpAddress?.ToString(),
                 actorMemberId: MemberGate.Current(http)?.Id);
-            return Results.Ok(new { id, code, message = $"邀请码 {code} 已生成，一次性、7 天内有效" });
+            // 「永久」是实话而非许愿：兑现判据 FindInvitedByCode 只看 invite_code 与 status='invited'，
+            // 库里也没有过期列——以前这句「 7 天内有效」是口头上锁、手上没门，发出去的码隔月照样灵。
+            return Results.Ok(new { id, code, message = $"邀请码 {code} 已生成，一次性、永久有效" });
         });
 
         app.MapPost("/api/admin/members/ban", (MemberIdRequest request, StationDb db, EventRecorder events,

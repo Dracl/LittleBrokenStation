@@ -366,7 +366,7 @@ public sealed class DownloadWorker(
             {
                 var why = submitterMemberId is null
                     ? "这条稿子没有投稿人席位，也就没有可借的 B 站号；请成员重新投稿，或由站长给这稿补上归属"
-                    : "投稿人的 B 站号全失效了：请他到「何处？用户控制室」重新扫码，再点重试";
+                    : "投稿人的 B 站号全失效了：请他到「个人空间」重新扫码，再回首页把这稿重投一次";
                 db.MarkFailed(videoId, why);
                 MemberMail.NotifyVideoFailed(db, logger, videoId, why);
                 logger.LogWarning("提交进站 videoId={VideoId} 判无号：{Why}", videoId, why);

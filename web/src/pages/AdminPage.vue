@@ -844,7 +844,7 @@ async function codecCancel(item) {
       await requestConfirm({
         title: '取消这份加档',
         sub: `${item.title || item.bvid} · ${codecLabel(item.codec)}${item.pageIdx != null ? ` P${item.pageIdx}` : ''}`,
-        message: '撤下这份编码加档：引擎账销掉，这一路不再下。想再要，回首页重新点单就行。',
+        message: '撤下这份编码加档：引擎账销掉，这一路不再下。想再要，回到那支片子的播放器里点「加档其他版本」就行。',
         confirmText: '取消加档',
         cancelText: '再想想',
         icon: 'warn',
@@ -2405,7 +2405,7 @@ onUnmounted(() => {
             </ul>
           </div>
           <!-- 编码加档（第二发）：跟整片进站同队不同工——同一时刻只跑一个编码，waiting:true 的就是在等前一个跑完。
-               每行可取消：后端销引擎账+判 Failed，反悔在首页重新点单；停滞超 30 分钟还有看门狗自动收摊。 -->
+               每行可取消：后端销引擎账+判 Failed，反悔回到那支片子的播放器里重新点单；停滞超 30 分钟还有看门狗自动收摊。 -->
           <div v-if="dlQueue?.codecs?.length">
             <p class="mb-2 text-[11px] uppercase tracking-widest text-white/35">编码加档</p>
             <ul class="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
@@ -2425,7 +2425,7 @@ onUnmounted(() => {
                 </span>
                 <button
                   class="shrink-0 rounded-md p-1 text-white/35 transition hover:bg-rose-500/20 hover:text-rose-300"
-                  title="取消这次加档（销引擎账，可在首页重新点单）"
+                  title="取消这次加档（销引擎账，想再要回那支片子的播放器里点「加档其他版本」）"
                   :disabled="dlBusy"
                   @click="codecCancel(item)"
                 >

@@ -29,7 +29,7 @@ public static class MemberMail
             var stationName = db.GetSetting("station-name");
             stationName = string.IsNullOrWhiteSpace(stationName) ? "小破分站" : stationName.Trim();
             db.SendToMember(toMemberId, KindWelcome, "欢迎来到小破分站",
-                $"「{stationName}」灯给你留着——进站就是一起守站的人了。去用户控制室看看自己的账号池和投稿账本吧。",
+                $"「{stationName}」灯给你留着——进站就是一起守站的人了。去个人空间看看自己的账号池和投稿账本吧。",
                 "/me");
         }, toMemberId);
     }

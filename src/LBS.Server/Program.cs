@@ -573,7 +573,7 @@ app.Use(async (context, next) =>
 });
 
 // 站长室门牌：身份即钥匙——只有站长（owner）的会员会话放行，口令锁依约退役（AdminGate 留档待公网复位）。
-// 普通成员误打也拦下并指路用户控制室；探头探脑的撞门声记 admin.blocked。
+// 普通成员误打也拦下并指路个人空间；探头探脑的撞门声记 admin.blocked。
 app.Use(async (context, next) =>
 {
     var adminGate = context.RequestServices.GetRequiredService<AdminGate>();
@@ -591,7 +591,7 @@ app.Use(async (context, next) =>
             await context.Response.WriteAsJsonAsync(new
             {
                 error = forbidden ? "owner-required" : "owner-login-required",
-                message = forbidden ? "这里是站长室，普通成员请进用户控制室" : "站长室仅限站长，请先扫码登录",
+                message = forbidden ? "这里是站长室，普通成员请进个人空间" : "站长室仅限站长，请先扫码登录",
             });
             return;
         }
@@ -1593,8 +1593,8 @@ app.MapPost("/api/videos/{id:long}/codecs/cancel", async (long id, CancelCodecRe
         }
     }
 
-    db.MarkCodecFailed(targetRow.Value, "站长取消了这次加档，可在首页重新点单");
-    return Results.Ok(new { message = $"已取消 {codec.ToUpperInvariant()} 加档（反悔可在首页重新点单）" });
+    db.MarkCodecFailed(targetRow.Value, "站长取消了这次加档，回到那支片子的播放器里可重新点单");
+    return Results.Ok(new { message = $"已取消 {codec.ToUpperInvariant()} 加档（反悔回到播放器里重新点单）" });
 });
 
 // 删单个编码版本：销账 + 删文件；主版本不受影响。
@@ -2250,7 +2250,7 @@ app.MapGet("/api/settings", (DataPaths paths, HttpContext http) => Results.Ok(ne
 {
     // 数据目录只向站长会话报家门：匿名访客没必要知道房子在哪（前端站长室的存储卡照常拿得到）。
     dataDir = MemberGate.IsOwner(MemberGate.Current(http)) ? paths.Root : null,
-    skin = new { bare = false, note = "裸分站皮肤 M4 到站" },
+    skin = new { bare = false, note = "皮肤系统未开工（README 远期项）" },
 }));
 
 // 认不出的 /api/* 给个正经 404 脸：以前拼错的地址会被下面的兗底兜到 index.html，

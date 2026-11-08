@@ -38,7 +38,7 @@ public static class SubmissionIntake
             return Results.Json(new
             {
                 error = "no-bilibili-account",
-                message = "还没绑 B 站号，先去何处？用户控制室——绑定后就能投稿，看片私信不耽误",
+                message = "还没绑 B 站号，先去「个人空间」——绑定后就能投稿，看片私信不耽误",
             }, statusCode: StatusCodes.Status403Forbidden);
         }
 

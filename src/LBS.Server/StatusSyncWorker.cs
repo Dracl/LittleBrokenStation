@@ -453,7 +453,7 @@ public sealed class StatusSyncWorker(
                 // 这种行从此没人捾，看门狗判它回炉，站长首页重点加档即可。
                 if (!TrackCodecStall(rowId, "no-task"))
                 {
-                    db.MarkCodecFailed(rowId, "加档迟迟没分到任务，看门狗超 30 分钟收摊，可重新在首页点单加档");
+                    db.MarkCodecFailed(rowId, "加档迟迟没分到任务，看门狗超 30 分钟收摊，可回到那支片子的播放器里重新点单加档");
                     logger.LogWarning("编码加档 {VideoId}/P{Page}/{Codec} 迟迟未提交，看门狗收摊", videoId, pageIdx, codec);
                 }
                 continue;
@@ -502,7 +502,7 @@ public sealed class StatusSyncWorker(
                 if (inFlight is not null && !TrackCodecStall(rowId, $"{inFlight.Phase}:{inFlight.Progress.DownloadedBytes ?? 0}"))
                 {
                     await RetireCodecTaskAsync(rowId, videoId, pageIdx, codec, taskIds,
-                        "引擎任务 30 分钟没有进展（疑崩溃遗留），看门狗收摊，可重新在首页点单加档", cancellationToken);
+                        "引擎任务 30 分钟没有进展（疑崩溃遗留），看门狗收摊，可回到那支片子的播放器里重新点单加档", cancellationToken);
                 }
 
                 continue;

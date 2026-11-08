@@ -16,7 +16,7 @@ public sealed class LbsQueryClient(LbsAccountRouter router, LbsApiThrottle throt
 
     /// <summary>没号就别把请求发出去：匿名打 B 站接口只会被 -101/-352 打回，还可能把 cookie 拖进风控。</summary>
     private string RequireCookie() => CurrentCookie() ?? throw new LbsNoAccountException(
-        "采集这条请求没有可用账号：站里的活吃采集号（站长席位的活号优先），请先在「何处？用户控制室」绑一个未过期的 B 站号。");
+        "采集这条请求没有可用账号：站里的活吃采集号（站长席位的活号优先），请先在「个人空间」绑一个未过期的 B 站号。");
 
     private static Uri GetUri(BilibiliHttpRequest request) => new(request.RequestAddress, UriKind.Absolute);
 

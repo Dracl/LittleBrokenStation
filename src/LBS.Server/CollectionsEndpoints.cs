@@ -187,7 +187,7 @@ public static class CollectionsEndpoints
                 createdAtUtc = b.CreatedAtUtc,
                 itemCount = b.ItemCount,
                 cover = b.Cover,
-                // 用户控制室那排抽屉要认得出自己的私有集（角标 + 抽屉设置回显）。
+                // 个人空间那排抽屉要认得出自己的私有集（角标 + 抽屉设置回显）。
                 visibility = VisibilityCodec.ToColumn(b.Visibility),
                 contains = wanted is long videoId && db.GetCollectionVideoIds(b.Id, scope).Contains(videoId),
             });

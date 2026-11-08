@@ -551,7 +551,7 @@ watch(mid, load)
             <path d="M3 9h18M8 14h8" stroke-linecap="round" />
           </svg>
           <p class="mt-3 text-[13px] text-inkSub">分站还没收过这位的稿件</p>
-          <p class="mt-1 text-[12px] text-inkFaint">想收进来：放映厅投稿，或站长室「UP 主整搬」连货架一起搬</p>
+          <p class="mt-1 text-[12px] text-inkFaint">想收进来：放映厅投稿，或顶栏的投稿口连货架一起搬</p>
           <a
             :href="spaceUrl"
             target="_blank"

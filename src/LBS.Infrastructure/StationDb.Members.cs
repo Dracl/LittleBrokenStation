@@ -240,7 +240,7 @@ public sealed partial class StationDb
         return command.ExecuteScalar() is not null;
     }
 
-    /// <summary>账密登录刷登录时刻（不碰昵称头像——素净席位的名号自己说了算）。</summary>
+    /// <summary>账密登录刷登录时刻（不碰昵称头像——昵称只跟 B 站身份走，站内暂无改昵称的口）。</summary>
     public void TouchMemberLoginById(long memberId)
     {
         using var connection = Open(_dbPath);

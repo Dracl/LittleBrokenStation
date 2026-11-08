@@ -68,7 +68,7 @@ public sealed class LbsCollectPolicy(StationDb db, LbsAccountRouter router, ILog
             LastNoAccountUtc = DateTimeOffset.UtcNow.ToString("O");
             logger.LogWarning("站里没有可用的采集号（成员号池空了或全被判失效），本轮采集与加档判无号");
             throw new LbsNoAccountException(
-                "站里没配采集号：任一成员（站长自己的号优先）到「何处？用户控制室」绑一个未过期的 B 站号，采集与加档就自动恢复。");
+                "站里没配采集号：任一成员（站长自己的号优先）到「个人空间」绑一个未过期的 B 站号，采集与加档就自动恢复。");
         }
 
         return account;
