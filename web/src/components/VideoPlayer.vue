@@ -5,6 +5,7 @@ import BIcon from './BIcon.vue'
 import DanmakuCountIcon from './DanmakuCountIcon.vue'
 import { biPlay, biVolume, biSetting, biPip, biFull, biDmOn, biDmOff, biDmSet, biHiRes } from '../assets/bicons'
 import { probeMp4 } from '../utils/mp4Meta'
+import { subtitleTextToVtt } from '../utils/subtitleVtt'
 import { loadAssText, buildHeat, HEAT } from '../utils/dmHeat'
 import { member } from '../memberStore'
 import { requestConfirm } from '../confirmStore'
@@ -743,12 +744,55 @@ function pickSubtitle(i) {
 
 // <video> 带 :key="currentSrc"：切 P / 换编码都整枚重建，<track> 跟着重挂，mode 会被浏览器忘光。
 // 这里挂在已有的重挂点（换源、字幕数组变动）上重新施加，不另开定时器；flush post 是为了等 DOM 把 track 插进去。
-watch([currentSrc, subtitleUrls], () => applySubtitleModes(), { flush: 'post' })
+watch([currentSrc, subtitleUrls, subtitleSrcs], () => applySubtitleModes(), { flush: 'post' })
 // 每个分 P 的轨数可以不一样：上一 P 选到第 3 轨，这一 P 只有一轨时得把指针拉回 0，
 // 否则 mode 谁都轮不上，看着像字幕坏了。
 watch(subtitleUrls, (urls) => {
   if (subIdx.value > urls.length - 1) subIdx.value = 0
 })
+
+// ─── 字幕到货加工：浏览器 <track> 只认 WebVTT ───
+// 台账里 129 条字幕全是 .srt（无 WEBVTT 头、时间戳用逗号），原样挂上会被 VTT 解析器整文件判死：
+// 轨上 0 条 cue，面板写着「显示中」画面上却没一个字——站长 11-11 实机抓到的「字幕不显示」就是这条。
+// 到货路上 fetch 下来就地转 VTT 挂 blob 地址；盘上原始文件一个字节不动（导出包里躺着的仍是原字幕）。
+// 认不出或断线就退回原地址：最坏也就是眼下的现状（空轨），不会更坏。
+// 代次护城（观看页 watchEpoch 同族）：切 P 时旧批迟到不许写新页的轨 src；自造的 blob 随批回收不留孤儿。
+const subtitleSrcs = ref([])
+let subSrcSeq = 0
+const subBlobUrls = new Set() // 只销本播放器自己造的 blob；退回原地址的那些不在账上，碰不得
+
+async function refreshSubtitleSources() {
+  const tok = ++subSrcSeq
+  const made = []
+  const srcs = []
+  for (const u of subtitleUrls.value) {
+    let out = u
+    try {
+      const res = await fetch(u)
+      if (res.ok) {
+        const vtt = subtitleTextToVtt(u, await res.text())
+        if (vtt) {
+          out = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }))
+          made.push(out)
+        }
+      }
+    } catch {
+      /* 断线就用原地址碰运气：同一份字节，坏不了也更不了 */
+    }
+    srcs.push(out)
+  }
+  if (tok !== subSrcSeq) {
+    for (const b of made) URL.revokeObjectURL(b) // 迟到整批：自造的当场回收，不碰屏上更新的那一份
+    return
+  }
+  for (const b of subtitleSrcs.value) {
+    if (subBlobUrls.delete(b)) URL.revokeObjectURL(b)
+  }
+  for (const b of made) subBlobUrls.add(b)
+  subtitleSrcs.value = srcs
+}
+
+watch(subtitleUrls, refreshSubtitleSources, { immediate: true })
 
 // ─── 站内弹幕（只在本页飘，不上传 B 站）───
 const danmakuLayer = ref(null)
@@ -1675,6 +1719,11 @@ onBeforeUnmount(() => {
   clearTimeout(hideTimer)
   clearTimeout(stuckTimer)
   clearTimeout(seekMergeTimer)
+  subSrcSeq += 1 // 在飞的字幕加工整发作废：迟到不写死实例，也不留挂空 blob
+  for (const b of subtitleSrcs.value) {
+    if (subBlobUrls.delete(b)) URL.revokeObjectURL(b)
+  }
+  subtitleSrcs.value = []
   volClearTimer() // 音量弹层 200ms 延迟收起那一发，卸载后不再回来拨已消失的实例
   endHoldGesture()
   window.removeEventListener('mouseup', onHoldMouseUp)
@@ -1751,7 +1800,7 @@ const STROKE_ITEMS = [
       <track
         v-for="(u, i) in subtitleUrls"
         :key="i"
-        :src="u"
+        :src="subtitleSrcs[i] || u"
         kind="subtitles"
         :label="subLabel(u, i)"
         :default="subOn && i === subIdx"
@@ -2217,8 +2266,6 @@ const STROKE_ITEMS = [
           <span v-if="subOn && i === subIdx" class="ml-2 shrink-0 text-[10px] whitespace-nowrap text-white/50">显示中</span>
         </button>
       </div>
-
-      <p class="px-1 text-[10px] text-white/40">轨名取自字幕文件名尾段；台账里没存语言与人工/AI，认不出来就只编号。</p>
     </div>
 
     <!-- 弹幕设定面板：B 站原型，只留刚需 -->
