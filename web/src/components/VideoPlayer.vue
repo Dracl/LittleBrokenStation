@@ -737,7 +737,7 @@ const SUB_DEFAULTS = {
   outline: 'mid', // none | light | mid | strong
   anchor: 'bottom-center', // bottom-center | top-center | bottom-left | bottom-right
   bg: 0, // 字幕背景不透明度 0–100
-  scale: true, // 等比缩放：字号随画面高长大
+  scale: false, // 等比缩放：站长 11-11 实机拍板默认关——定字号才是舒服的那副；开着它字号随画面高长大，全屏会自动变大
   fade: false, // 淡入淡出
   pos: null, // 浮窗自定义位置 {x,y}（相对画面区的中心点百分比）；null = 吃默认位置
 }
@@ -749,8 +749,14 @@ const subOn = computed({ get: () => subPrefs.on === true, set: (v) => { subPrefs
 
 // 选项表：标签全 human 话，值全小本本；脏值落在哪家头上都由下面那行认回标准，不炸画面。
 const SUB_SIZE_ITEMS = [['xs', '特小'], ['sm', '小'], ['standard', '标准'], ['lg', '大'], ['xl', '特大']]
-const SUB_SIZE_RATIO = { xs: 0.028, sm: 0.034, standard: 0.042, lg: 0.052, xl: 0.064 } // ×画面区高
-const SUB_SIZE_PX = { xs: 13, sm: 15, standard: 18, lg: 22, xl: 28 } // 关掉等比缩放时的定字号
+// 尺规 B（站长 11-11 在挑选台钦定）：相邻档 ×1.45，档档认得出。
+// 两表同源自同一把尺：以典型画面区高 880px 为锚，等比开着算出的字号就该贴定字号；
+// 真变大（全屏 1080）才大出一戞，真变小（小窗）才缩。首版比例尺拿 460px 样本定标，
+// 而画面区实高是视口驱动的 (innerHeight-170)×1.06≈950px——整整小了一半，开着等比字号翻倍，
+// 站长实机吐槽的就是这笔账（11-11 重新定标）。
+const SUB_REF_H = 880 // 定标锚：典型画面区高
+const SUB_SIZE_RATIO = { xs: 12 / SUB_REF_H, sm: 13 / SUB_REF_H, standard: 19 / SUB_REF_H, lg: 28 / SUB_REF_H, xl: 41 / SUB_REF_H } // ×画面区高
+const SUB_SIZE_PX = { xs: 12, sm: 13, standard: 19, lg: 28, xl: 41 } // 等比缩放关掉（默认）的定字号：站长实机验过舒服的就是这一路
 const SUB_COLOR_ITEMS = [['#FFFFFF', '白'], ['#FFE135', '柠黄'], ['#6EE7FF', '天青'], ['#FF9ECD', '樱粉'], ['#8CFF9E', '薄荷']]
 const SUB_OUTLINE_ITEMS = [['none', '无描边'], ['light', '轻'], ['mid', '中'], ['strong', '重']]
 // 描边是 text-shadow 叠的（B 站字幕同一手法）：中描边四个方向 1px，重描边再糊一层晕；
@@ -770,8 +776,13 @@ const SUB_ANCHORS = {
   'bottom-right': { x: 78, y: 86 },
 }
 
-// 自绘的家底：画面区高（等比缩放的字号基准，resize／fullscreenchange 都走 onViewportChange 同步）与拖拽态。
+// 自绘的家底：画面区高（等比缩放的字号基准）与拖拽态。
+// 高度靠 ResizeObserver 盯 root 自己报（onMounted 挂）：shell 限宽落地、全屏、窗口缩放都逃不掉。
+// 11-11 首版只在 mount 量一次 + 窗 resize 补测：mount 那瞬 shellStyle 还没被 Vue 刷上 DOM，
+// 量到的是限宽前的虚高，不 resize 就一直拿着旧高算字号——站长让「检查等比是不是填错了」，
+// 尺子重新定标之外，这笔测量账也一并结在此处。
 const videoBoxH = ref(360)
+let subBoxRO = null
 const subDragging = ref(false)
 let subDragRect = null // 按下那瞬钉住的画面区 client rect：拖拽途中按它换算百分比，不再现查
 
@@ -1796,13 +1807,22 @@ onMounted(() => {
   document.addEventListener('click', closeCtx)
   progressBeat = setInterval(onProgressBeat, PROGRESS_BEAT_MS) // 心跳只管正常播放那一段（函数里自己筛）
   window.addEventListener('pagehide', reportProgressByBeacon) // 关页面/刷新：最后一发走信标
-  if (root.value) videoBoxH.value = root.value.clientHeight || videoBoxH.value // 字幕等比缩放的高度先量一枚（之后 resize/全屏走 onViewportChange）
+  if (window.ResizeObserver && root.value) {
+    subBoxRO = new ResizeObserver(() => {
+      const h = root.value?.clientHeight
+      if (h) videoBoxH.value = h // 首报就含初始高度；之后限宽/全屏/缩放都同步（onViewportChange 那行是无 RO 浏览器的兜底）
+    })
+    subBoxRO.observe(root.value)
+  } else if (root.value) {
+    videoBoxH.value = root.value.clientHeight || videoBoxH.value
+  }
 })
 onBeforeUnmount(() => {
   clearTimeout(hideTimer)
   clearTimeout(stuckTimer)
   clearTimeout(seekMergeTimer)
   subFetchSeq += 1 // 在飞的字幕加工整发作废：迟到不写死实例
+  if (subBoxRO) { subBoxRO.disconnect(); subBoxRO = null } // 字幕尺子的量尺人遣散
   volClearTimer() // 音量弹层 200ms 延迟收起那一发，卸载后不再回来拨已消失的实例
   endHoldGesture()
   window.removeEventListener('mouseup', onHoldMouseUp)
