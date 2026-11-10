@@ -51,6 +51,14 @@ const ARCHIVE_ACTIONS = [
     note: '分站朋友发的弹幕',
   },
   {
+    key: 'subtitles',
+    idle: '重拉字幕存档',
+    busy: '字幕重拉中…',
+    done: '已重拉',
+    hint: '回 B 站把这份稿件的字幕轨全拉一遍',
+    note: '缺的轨补齐，盘上旧轨同步刷新',
+  },
+  {
     key: 'media',
     idle: '重拉封面与媒体',
     busy: '拉取中…',
@@ -87,7 +95,7 @@ const busy = ref(false) // PATCH 在飞
 const removing = ref(false) // 删档在飞
 const notice = ref(null) // 面板回执 { kind: 'ok' | 'warn' | 'err', text }
 const act = ref({}) // 各枚动作的三态：key → { state: 'idle' | 'busy' | 'done', text }
-// 五枚动作钮互斥：任何一枚在飞，其余都按不动（同一部片子连发两发补采没意义，还可能互相踩）
+// 各枚动作钮互斥：任何一枚在飞，其余都按不动（同一部片子连发两发补采没意义，还可能互相踩）
 const anyActBusy = computed(() => Object.values(act.value).some((a) => a?.state === 'busy'))
 
 function normalizeVisibility(v) {
@@ -254,6 +262,7 @@ async function runArchive(item) {
   const res = await refetchArchive(props.data.id, {
     comments: item.key === 'comments',
     danmaku: item.key === 'danmaku',
+    subtitles: item.key === 'subtitles',
     media: item.key === 'media',
   })
   setAct(item.key, res.allOk ? 'done' : 'idle', res.text)

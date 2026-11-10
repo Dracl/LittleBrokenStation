@@ -2137,7 +2137,9 @@ public sealed partial class StationDb
 
     // 从轨尾段取真名：_中文.srt → 中文；_English_1234567.srt → English（撞车追的纯数字 trackId 尾不是名字）。
     // 认不出形（空名、长得不像名）交 null，前端吃「字幕 N」笨名兜底；取原始大小写（English 不许被抹成小写）。
-    private static string? ParseSubtitleTrackLabel(string suffixAfterBase)
+    // internal 是给重拉字幕的测格留的：拼名（SubtitleArchiveService）→ 认名（这里）两头对着钉，
+    // 命名契约只有一张嘴。
+    internal static string? ParseSubtitleTrackLabel(string suffixAfterBase)
     {
         var lower = suffixAfterBase.ToLowerInvariant();
         if (!lower.StartsWith('_') || lower.EndsWith(".comments.json"))

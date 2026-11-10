@@ -42,6 +42,7 @@ builder.Services.AddSingleton<DownKyi.Application.Bilibili.IBilibiliCookieProvid
 builder.Services.AddSingleton<LbsQueryClient>();
 builder.Services.AddSingleton<CommentArchiveService>();
 builder.Services.AddSingleton<DanmakuArchiveService>();
+builder.Services.AddSingleton<SubtitleArchiveService>(); // 稿件设置窗那枚「重拉字幕存档」（全轨回拉 + 重扫登账）
 builder.Services.AddSingleton<MediaRefreshService>(); // 稿件设置窗那枚「重拉封面与媒体」（档案重取 + 封面重抓 + 缺件回炉）
 builder.Services.AddSingleton<LbsCollectPolicy>();
 // 加档前的「预估」探子（playurl 标称码率与体积）：无状态，单例就够；出号与节流都交给现成那一套。
@@ -1750,6 +1751,22 @@ app.MapPost("/api/videos/{id:long}/danmaku-refresh", async (long id, HttpContext
     var outcome = await service.TryRefreshAsync(id, cancellationToken);
     return outcome.Ok
         ? Results.Ok(new { message = outcome.Message, added = outcome.Added, total = outcome.Total, pages = outcome.Pages })
+        : Results.BadRequest(new { message = outcome.Message });
+});
+
+// 重拉字幕存档（稿件设置窗那枚钮）：回 B 站把这份稿件的字幕轨全拉一遍，整档刷新。
+// 背景：引擎当年被语言偏好筛剩过轨（盘上缺的轨销档重下以外没有第二条路），偏好闸 11-11 已拆，这枚钮给老稿补上回拉口。
+// 门与 danmaku-refresh 同形：MemberGate 的 POST 点名清单里有它（挡匿名 401），归属归这里的 CanManageVideo（403）。
+app.MapPost("/api/videos/{id:long}/subtitles-refresh", async (long id, HttpContext http, StationDb db, SubtitleArchiveService service, CancellationToken cancellationToken) =>
+{
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
+    }
+
+    var outcome = await service.TryRefreshAsync(id, cancellationToken);
+    return outcome.Ok
+        ? Results.Ok(new { message = outcome.Message, tracks = outcome.Tracks, pages = outcome.Pages })
         : Results.BadRequest(new { message = outcome.Message });
 });
 
