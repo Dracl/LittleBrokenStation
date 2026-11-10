@@ -60,7 +60,9 @@ public static class WeeklyReportEndpoints
                 back = ClampWeek(week);
             }
 
-            var report = db.GetWeeklyReport(back, nowUtc, me.Id, StationDb.WeeklyNewsPagedTake);
+            // 看客尺子随人：站长全见、席位看公开 + 自家私稿（与首页/分区/馆藏壁同一张嘴）；
+            // 周报是对外刊物，别人藏的私稿不得带着标题封面随刊外泄。
+            var report = db.GetWeeklyReport(back, nowUtc, me.Id, StationDb.WeeklyNewsPagedTake, ViewerGate.Scope(http));
             return Results.Ok(new
             {
                 weekLabel = report.WeekLabel,

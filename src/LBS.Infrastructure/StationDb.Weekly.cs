@@ -331,15 +331,21 @@ public sealed partial class StationDb
     }
 
     /// <summary>取一张周报（正对现在）。weeksBack：0=上一个已过完的整周，1..4=再往前数（越界夹回）；viewer 非空时附个人战报；newsTake 控新货清单封顶（分页版拉大批量）。</summary>
-    public WeeklyReport GetWeeklyReport(int weeksBack, long? viewerMemberId = null, int newsTake = WeeklyNewsTake)
-        => GetWeeklyReport(weeksBack, DateTimeOffset.UtcNow, viewerMemberId, newsTake);
+    public WeeklyReport GetWeeklyReport(int weeksBack, long? viewerMemberId = null, int newsTake = WeeklyNewsTake, VisibilityScope? viewerScope = null)
+        => GetWeeklyReport(weeksBack, DateTimeOffset.UtcNow, viewerMemberId, newsTake, viewerScope);
 
-    /// <summary>取一张周报（now 给死版，周桶测试与发送员用）：新货 / 最多人看 / 弹幕增量 / 全站家底 / UP 榜 / 分区榜 / 个人战报一趟拿齐。</summary>
-    public WeeklyReport GetWeeklyReport(int weeksBack, DateTimeOffset nowUtc, long? viewerMemberId = null, int newsTake = WeeklyNewsTake)
+    /// <summary>取一张周报（now 给死版，周桶测试与发送员用）：新货 / 最多人看 / 弹幕增量 / 全站家底 / UP 榜 / 分区榜 / 个人战报一趟拿齐。
+    /// viewerScope 是看客那把可见性尺子（与分区/馆藏/首页读出口同一张嘴）：不带标题封面的榜面只数事件、不受它管；
+    /// 带稿件身份（标题/封面/BV 号）的每一处都过这把尺——没传就按访客只给公开货架，发报员的出站播送永远走这条默认，
+    /// 私稿从不随公告外泄。</summary>
+    public WeeklyReport GetWeeklyReport(int weeksBack, DateTimeOffset nowUtc, long? viewerMemberId = null, int newsTake = WeeklyNewsTake, VisibilityScope? viewerScope = null)
     {
         var bucket = LocalWeekBucket(weeksBack, nowUtc);
         var since = bucket.SinceUtc.ToString("O");
         var until = bucket.UntilUtc.ToString("O");
+        // 看客尺子先立起来：新货/热榜/时长/UP 与分区榜这些点名的读出口共用这一份谓词（一次长成，处处同形）。
+        var (visSql, bindVis) = VisibilityFilter(viewerScope ?? VisibilityScope.PublicOnly, "v");
+        const string arrived = "Arrived"; // 与 VideoStatus.Arrived.ToString() 同形；新货只认到站的行（见 newsCount 处注释）
 
         long newsCount;
         var news = new List<WeeklyNewsItem>();
@@ -370,6 +376,7 @@ public sealed partial class StationDb
         var newsSparks = new long[WeeklyHeatWeeks];
         var danmakuSparks = new long[WeeklyHeatWeeks];
         var stockSparks = new long[WeeklyHeatWeeks];
+        var stockDeltaByWeek = new long[WeeklyHeatWeeks]; // 逐周投稿行全量（含未到站与私稿）：存底累加线专用，与新货折线分家
         var staleUps = new List<WeeklyStale>();
         WeeklyGuest guest = new(0, 0, 0, 0, 0, 0, 0, 0);
 
@@ -377,27 +384,35 @@ public sealed partial class StationDb
         {
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = "SELECT COUNT(*) FROM videos WHERE created_at_utc >= $since AND created_at_utc < $until;";
+                // 新货只数到站的：Failed / 在途行不算「本周到货」（站长 11-11 实机抓到一枚无题无封面的 Failed
+                // 孤稿挂着黑垫卡上墙）。与馆藏壁/UP 主页/分区同一把上架尺子；私稿只进主人与站长的周报。
+                command.CommandText = $"SELECT COUNT(*) FROM videos v WHERE v.created_at_utc >= $since AND v.created_at_utc < $until AND v.status = $arrived AND {visSql};";
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
+                command.Parameters.AddWithValue("$arrived", arrived);
+                bindVis(command);
                 newsCount = Convert.ToInt64(command.ExecuteScalar() ?? 0L);
             }
 
             using (var command = connection.CreateCommand())
             {
                 // 新货按到站投稿时间倒序；封面口径与首页卡阵同形（本地原图优先，没归档的吃 cover_url 热链）。
-                command.CommandText = """
+                // 只摆到站的行（与 newsCount 同一把尺子，徽章数与墙面件数必须对得上）。
+                command.CommandText = $"""
                     SELECT v.bvid, v.title,
                            COALESCE((SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                                     v.cover_url)
                     FROM videos v
                     WHERE v.created_at_utc >= $since AND v.created_at_utc < $until
+                      AND v.status = $arrived AND {visSql}
                     ORDER BY v.created_at_utc DESC, v.id DESC
                     LIMIT $take;
                     """;
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
+                command.Parameters.AddWithValue("$arrived", arrived);
                 command.Parameters.AddWithValue("$take", newsTake);
+                bindVis(command);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -413,7 +428,7 @@ public sealed partial class StationDb
                 // 最多人看：events 台账里 watch.play / watch.heartbeat 的实况行（subject_type='video'、subject_id=BV 号字符串，
                 // 上报处 WatchPage.vue reportEvent 钉的死这个形）。观众按 actor_mid 去重——访客没 mid，COUNT(DISTINCT) 天然不数，
                 // 全员皆访客的一条进不了榜（宁可空榜，不拿 IP 冒充人头）。
-                command.CommandText = """
+                command.CommandText = $"""
                     SELECT v.bvid, v.title,
                            COALESCE((SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                                     v.cover_url),
@@ -424,6 +439,7 @@ public sealed partial class StationDb
                     WHERE e.event IN ($play, $beat)
                       AND e.subject_type = 'video'
                       AND e.ts_utc >= $since AND e.ts_utc < $until
+                      AND {visSql}
                     GROUP BY v.id, v.bvid, v.title
                     HAVING COUNT(DISTINCT e.actor_mid) > 0
                     ORDER BY COUNT(DISTINCT e.actor_mid) DESC, COUNT(*) DESC, MAX(e.id) DESC
@@ -434,6 +450,7 @@ public sealed partial class StationDb
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 command.Parameters.AddWithValue("$take", WeeklyHotTake);
+                bindVis(command);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -515,7 +532,7 @@ public sealed partial class StationDb
             // 榜面取 Top5，排座次看人头，人头并列看播放次数。
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = """
+                command.CommandText = $"""
                     SELECT COALESCE(NULLIF(m.up_name, ''), '未署名 UP'),
                            COUNT(DISTINCT e.actor_mid), COUNT(*), COUNT(DISTINCT e.subject_id)
                     FROM events e
@@ -523,6 +540,7 @@ public sealed partial class StationDb
                     JOIN video_meta m ON m.video_id = v.id
                     WHERE e.event IN ($play, $beat) AND e.subject_type = 'video'
                       AND e.ts_utc >= $since AND e.ts_utc < $until
+                      AND {visSql}
                     GROUP BY COALESCE(NULLIF(m.up_name, ''), '未署名 UP')
                     HAVING COUNT(DISTINCT e.actor_mid) > 0
                     ORDER BY COUNT(DISTINCT e.actor_mid) DESC, COUNT(*) DESC
@@ -533,6 +551,7 @@ public sealed partial class StationDb
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 command.Parameters.AddWithValue("$take", WeeklyHotTake);
+                bindVis(command);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -542,7 +561,7 @@ public sealed partial class StationDb
 
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = """
+                command.CommandText = $"""
                     SELECT COALESCE(NULLIF(m.zone, ''), '未标分区'),
                            COUNT(DISTINCT e.actor_mid), COUNT(*), COUNT(DISTINCT e.subject_id)
                     FROM events e
@@ -550,6 +569,7 @@ public sealed partial class StationDb
                     JOIN video_meta m ON m.video_id = v.id
                     WHERE e.event IN ($play, $beat) AND e.subject_type = 'video'
                       AND e.ts_utc >= $since AND e.ts_utc < $until
+                      AND {visSql}
                     GROUP BY COALESCE(NULLIF(m.zone, ''), '未标分区')
                     HAVING COUNT(DISTINCT e.actor_mid) > 0
                     ORDER BY COUNT(DISTINCT e.actor_mid) DESC, COUNT(*) DESC
@@ -560,6 +580,7 @@ public sealed partial class StationDb
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 command.Parameters.AddWithValue("$take", WeeklyHotTake);
+                bindVis(command);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -576,7 +597,7 @@ public sealed partial class StationDb
             var durBvidsByZone = new Dictionary<string, HashSet<string>>();
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = """
+                command.CommandText = $"""
                     SELECT e.subject_id, e.payload, v.title,
                            COALESCE((SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                                     v.cover_url),
@@ -587,12 +608,14 @@ public sealed partial class StationDb
                     JOIN videos v ON v.bvid = e.subject_id
                     LEFT JOIN video_meta m ON m.video_id = v.id
                     WHERE e.event = $beat AND e.subject_type = 'video' AND e.actor_type = $member
-                      AND e.ts_utc >= $since AND e.ts_utc < $until;
+                      AND e.ts_utc >= $since AND e.ts_utc < $until
+                      AND {visSql};
                     """;
                 command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
                 command.Parameters.AddWithValue("$member", EventActors.Member);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
+                bindVis(command);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
@@ -960,21 +983,27 @@ public sealed partial class StationDb
 
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = """
-                    SELECT substr(datetime(created_at_utc, $shift), 1, 10), COUNT(*)
-                    FROM videos
-                    WHERE created_at_utc >= $hsince AND created_at_utc < $huntil
+                // 双计数一趟拿：total = 投稿行全量（含未到站与私稿，喂存底累加线——家底卡的本就是全量口径）；
+                // arrived = 到站且这位看客看得见的（喂新货折线，与徽章/墙面同一把尺子）。
+                command.CommandText = $"""
+                    SELECT substr(datetime(v.created_at_utc, $shift), 1, 10), COUNT(*),
+                           SUM(CASE WHEN v.status = $arrived AND {visSql} THEN 1 ELSE 0 END)
+                    FROM videos v
+                    WHERE v.created_at_utc >= $hsince AND v.created_at_utc < $huntil
                     GROUP BY 1;
                     """;
                 command.Parameters.AddWithValue("$shift", "+8 hours");
                 command.Parameters.AddWithValue("$hsince", heatSince);
                 command.Parameters.AddWithValue("$huntil", until);
+                command.Parameters.AddWithValue("$arrived", arrived);
+                bindVis(command);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
                     if (dateToWeek.TryGetValue(reader.GetString(0), out var w))
                     {
-                        newsSparks[w] += reader.GetInt64(1);
+                        newsSparks[w] += reader.GetInt64(2);
+                        stockDeltaByWeek[w] += reader.GetInt64(1);
                     }
                 }
             }
@@ -1007,7 +1036,7 @@ public sealed partial class StationDb
                 var stockRunning = Convert.ToInt64(command.ExecuteScalar() ?? 0L);
                 for (var w = 0; w < WeeklyHeatWeeks; w++)
                 {
-                    stockRunning += newsSparks[w];
+                    stockRunning += stockDeltaByWeek[w]; // 累加走全量（投稿行含未到站），与家底卡的 AdminStats 口径同谱
                     stockSparks[w] = stockRunning;
                 }
             }
@@ -1107,9 +1136,9 @@ public sealed partial class StationDb
             var prevUntil = bucket.SinceUtc.ToString("O");
             using (var command = connection.CreateCommand())
             {
-                command.CommandText = """
+                command.CommandText = $"""
                     SELECT
-                        (SELECT COUNT(*) FROM videos WHERE created_at_utc >= $psince AND created_at_utc < $psince2),
+                        (SELECT COUNT(*) FROM videos v WHERE v.created_at_utc >= $psince AND v.created_at_utc < $psince2 AND v.status = $arrived AND {visSql}),
                         (SELECT COUNT(*) FROM danmaku_local WHERE created_at_utc >= $psince AND created_at_utc < $psince2),
                         (SELECT COUNT(*) FROM events WHERE event = $open AND subject_type = 'video' AND ts_utc >= $psince AND ts_utc < $psince2),
                         (SELECT COUNT(*) FROM events WHERE event = $play AND subject_type = 'video' AND ts_utc >= $psince AND ts_utc < $psince2),
@@ -1119,11 +1148,13 @@ public sealed partial class StationDb
                     """;
                 command.Parameters.AddWithValue("$psince", prevSince);
                 command.Parameters.AddWithValue("$psince2", prevUntil);
+                command.Parameters.AddWithValue("$arrived", arrived);
                 command.Parameters.AddWithValue("$open", "watch.open");
                 command.Parameters.AddWithValue("$play", WatchPlayEvent);
                 command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
                 command.Parameters.AddWithValue("$search", "search.query");
                 command.Parameters.AddWithValue("$member", EventActors.Member);
+                bindVis(command);
                 using var reader = command.ExecuteReader();
                 reader.Read();
                 deltas.Add(new WeeklyDelta("news", newsCount, reader.GetInt64(0)));

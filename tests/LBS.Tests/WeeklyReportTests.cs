@@ -51,9 +51,11 @@ public sealed class WeeklyReportTests : IDisposable
     private long AddVideo(string bvid) =>
         _db.AddVideo($"https://www.bilibili.com/video/{bvid}", bvid).VideoId;
 
-    /// <summary>把到站时刻钉死到指定 UTC（AddVideo 只会盖当下，周桶测试要的是日历边界）。</summary>
+    /// <summary>把到站时刻钉死到指定 UTC（AddVideo 只会盖当下，周桶测试要的是日历边界）。
+    /// 顺手盖成 Arrived：新货的语义就是「到站的货」，周报测试里造的都是上架件；
+    /// 要验在途/失败行不摆上墙，测试自己再 UPDATE status（新货黑垫卡那一格就这么办）。</summary>
     private void StampVideoCreated(string bvid, DateTimeOffset createdUtc) =>
-        Execute("UPDATE videos SET created_at_utc = $t WHERE bvid = $b;", ("$t", createdUtc.ToString("O")), ("$b", bvid));
+        Execute("UPDATE videos SET created_at_utc = $t, status = 'Arrived' WHERE bvid = $b;", ("$t", createdUtc.ToString("O")), ("$b", bvid));
 
     private void StampDanmakuCreated(long dmId, DateTimeOffset createdUtc) =>
         Execute("UPDATE danmaku_local SET created_at_utc = $t WHERE id = $id;", ("$t", createdUtc.ToString("O")), ("$id", dmId));
@@ -267,6 +269,65 @@ public sealed class WeeklyReportTests : IDisposable
         Assert.Equal(thursday.WeekLabel, sundayLate.WeekLabel);
         Assert.Equal(thursday.SinceUtc, sundayLate.SinceUtc);
         Assert.Equal(thursday.UntilUtc, sundayLate.UntilUtc);
+    }
+
+    [Fact]
+    public void 新货架只摆到站的_Failed与在途不数不摆_存底线照旧含全量()
+    {
+        // 站长 11-11 实机拓的：一枚无题无封面的 Failed 孤稿挂着黑垫卡上了新货架。
+        // 新货 = 到站的货：徽章数、墙面、新货折线、环比全只认 Arrived；存底累加线仍含未到站行（家底卡本就是全量口径）。
+        AddVideo("BVok42");
+        StampVideoCreated("BVok42", W43StartUtc.AddHours(1));
+        AddVideo("BVfail42");
+        StampVideoCreated("BVfail42", W43StartUtc.AddHours(2));
+        Execute("UPDATE videos SET status = 'Failed', title = NULL, cover_url = NULL WHERE bvid = 'BVfail42';");
+        AddVideo("BVrun42");
+        StampVideoCreated("BVrun42", W43StartUtc.AddHours(3));
+        Execute("UPDATE videos SET status = 'Downloading' WHERE bvid = 'BVrun42';");
+
+        var report = _db.GetWeeklyReport(0, Now);
+        Assert.Equal(1, report.NewsCount); // 徽章不再虚报 3
+        Assert.Equal("BVok42", Assert.Single(report.News).Bvid); // 黑垫卡不上墙
+
+        // 折线两谱：新货线只数到站的（W43 是 8 周窗的末格），存底线把三枚投稿行全叠上
+        Assert.Equal(1, report.Sparks.News[7]);
+        Assert.Equal(3, report.Sparks.Stock[7] - report.Sparks.Stock[6]);
+
+        // 环比同谱：上桶（W42）塞一枚 Failed，前值也不许给它面子
+        AddVideo("BVfail41");
+        StampVideoCreated("BVfail41", W42StartUtc.AddHours(5));
+        Execute("UPDATE videos SET status = 'Failed' WHERE bvid = 'BVfail41';");
+        var newsDelta = _db.GetWeeklyReport(0, Now).Deltas.Single(d => d.Key == "news");
+        Assert.Equal(1, newsDelta.Current);
+        Assert.Equal(0, newsDelta.Last);
+    }
+
+    [Fact]
+    public void 私稿不随周报外泄_旁人眼里没它_本人与站长各见其份()
+    {
+        // 周报是对外刊物：私稿的标题与封面不得进别的席位的刊物（与首页/分区/馆藏壁同一把可见性尺子）。
+        var mine = Seat("私主", 950_001);
+        var other = Seat("旁人", 950_002);
+        AddVideo("BVpub01");
+        StampVideoCreated("BVpub01", W43StartUtc.AddHours(1));
+        AddVideo("BVpriv1");
+        StampVideoCreated("BVpriv1", W43StartUtc.AddHours(2));
+        Execute("UPDATE videos SET visibility = 'private', submitter_member_id = $m WHERE bvid = 'BVpriv1';", ("$m", mine));
+
+        // 旁人视角：清单、徽章与热榜都不认别人的私稿（就算本人自己给它投过票）
+        Watch("BVpriv1", mid: 950_001, ts: W43StartUtc.AddHours(3)); // 本人给自己私稿来一枪
+        var theirs = _db.GetWeeklyReport(0, Now, other, viewerScope: VisibilityScope.Of(other));
+        Assert.Equal(1, theirs.NewsCount);
+        Assert.Equal("BVpub01", Assert.Single(theirs.News).Bvid);
+        Assert.DoesNotContain("BVpriv1", theirs.Hottest.Select(h => h.Bvid));
+
+        // 本人视角：自家藏稿进自家周报与热榜；站长全见
+        var own = _db.GetWeeklyReport(0, Now, mine, viewerScope: VisibilityScope.Of(mine));
+        Assert.Equal(2, own.NewsCount);
+        Assert.Contains("BVpriv1", own.News.Select(n => n.Bvid));
+        Assert.Contains("BVpriv1", own.Hottest.Select(h => h.Bvid));
+        var boss = _db.GetWeeklyReport(0, Now, null, viewerScope: VisibilityScope.Everything);
+        Assert.Equal(2, boss.NewsCount);
     }
 
     [Fact]
