@@ -744,6 +744,12 @@ function pickSubtitle(i) {
 
 // <video> 带 :key="currentSrc"：切 P / 换编码都整枚重建，<track> 跟着重挂，mode 会被浏览器忘光。
 // 这里挂在已有的重挂点（换源、字幕数组变动）上重新施加，不另开定时器；flush post 是为了等 DOM 把 track 插进去。
+// ⚠ subtitleSrcs 的声明必须排在这支 watch 之前（交接单坑 4：script setup 里 watch 数组当场取值，
+//   const 排在后面就是 TDZ ReferenceError，setup 一炸整个播放器都没了——11-11 实况踩过一次）。
+const subtitleSrcs = ref([])
+let subSrcSeq = 0
+const subBlobUrls = new Set() // 只销本播放器自己造的 blob；退回原地址的那些不在账上，碰不得
+
 watch([currentSrc, subtitleUrls, subtitleSrcs], () => applySubtitleModes(), { flush: 'post' })
 // 每个分 P 的轨数可以不一样：上一 P 选到第 3 轨，这一 P 只有一轨时得把指针拉回 0，
 // 否则 mode 谁都轮不上，看着像字幕坏了。
@@ -757,10 +763,7 @@ watch(subtitleUrls, (urls) => {
 // 到货路上 fetch 下来就地转 VTT 挂 blob 地址；盘上原始文件一个字节不动（导出包里躺着的仍是原字幕）。
 // 认不出或断线就退回原地址：最坏也就是眼下的现状（空轨），不会更坏。
 // 代次护城（观看页 watchEpoch 同族）：切 P 时旧批迟到不许写新页的轨 src；自造的 blob 随批回收不留孤儿。
-const subtitleSrcs = ref([])
-let subSrcSeq = 0
-const subBlobUrls = new Set() // 只销本播放器自己造的 blob；退回原地址的那些不在账上，碰不得
-
+// （subtitleSrcs / subSrcSeq / subBlobUrls 三枚家底已前移到重挂 watch 之前，TDZ 缘由见那边注释）
 async function refreshSubtitleSources() {
   const tok = ++subSrcSeq
   const made = []
