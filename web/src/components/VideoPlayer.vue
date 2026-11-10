@@ -748,15 +748,17 @@ watch(subPrefs, () => saveStudioPrefs(SUB_PREFS_KEY, subPrefs), { deep: true })
 const subOn = computed({ get: () => subPrefs.on === true, set: (v) => { subPrefs.on = !!v } })
 
 // 选项表：标签全 human 话，值全小本本；脏值落在哪家头上都由下面那行认回标准，不炸画面。
-const SUB_SIZE_ITEMS = [['xs', '特小'], ['sm', '小'], ['standard', '标准'], ['lg', '大'], ['xl', '特大']]
+// 特小档 11-11 站长钦撤（13px 以下没人看得舒服，留着白占一格）；旧账里存过 xs 的由下面归位线兜回标准。
+const SUB_SIZE_ITEMS = [['sm', '小'], ['standard', '标准'], ['lg', '大'], ['xl', '特大']]
 // 尺规 B（站长 11-11 在挑选台钦定）：相邻档 ×1.45，档档认得出。
 // 两表同源自同一把尺：以典型画面区高 880px 为锚，等比开着算出的字号就该贴定字号；
 // 真变大（全屏 1080）才大出一戞，真变小（小窗）才缩。首版比例尺拿 460px 样本定标，
 // 而画面区实高是视口驱动的 (innerHeight-170)×1.06≈950px——整整小了一半，开着等比字号翻倍，
 // 站长实机吐槽的就是这笔账（11-11 重新定标）。
 const SUB_REF_H = 880 // 定标锚：典型画面区高
-const SUB_SIZE_RATIO = { xs: 12 / SUB_REF_H, sm: 13 / SUB_REF_H, standard: 19 / SUB_REF_H, lg: 28 / SUB_REF_H, xl: 41 / SUB_REF_H } // ×画面区高
-const SUB_SIZE_PX = { xs: 12, sm: 13, standard: 19, lg: 28, xl: 41 } // 等比缩放关掉（默认）的定字号：站长实机验过舒服的就是这一路
+const SUB_SIZE_RATIO = { sm: 13 / SUB_REF_H, standard: 19 / SUB_REF_H, lg: 28 / SUB_REF_H, xl: 41 / SUB_REF_H } // ×画面区高
+const SUB_SIZE_PX = { sm: 13, standard: 19, lg: 28, xl: 41 } // 等比缩放关掉（默认）的定字号：站长实机验过舒服的就是这一路
+if (!SUB_SIZE_PX[subPrefs.size]) subPrefs.size = 'standard' // 旧账归位：撤掉的档位（如特小）不得留在本机账里当家
 const SUB_COLOR_ITEMS = [['#FFFFFF', '白'], ['#FFE135', '柠黄'], ['#6EE7FF', '天青'], ['#FF9ECD', '樱粉'], ['#8CFF9E', '薄荷']]
 const SUB_OUTLINE_ITEMS = [['none', '无描边'], ['light', '轻'], ['mid', '中'], ['strong', '重']]
 // 描边是 text-shadow 叠的（B 站字幕同一手法）：中描边四个方向 1px，重描边再糊一层晕；
