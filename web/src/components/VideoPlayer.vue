@@ -834,9 +834,12 @@ const subActiveText = computed(() => {
   if (!cues || !cues.length) return ''
   return activeCueAt(cues, currentTime.value)
 })
-// 开着且有句才摆；设置面板开着时另给一块占位浮窗——不然没到 cue 的时刻想拖没处下抓手。
+// 开着且有句才摆。占位浮窗（没到 cue 也摆一块供拖）另限一道闸：必须字幕面板开着且设置展开——
+// 首版只认 subSettingsOpen，而它是当场状态：面板关了它仍留 true，于是台词一断档，
+// 「字幕会在这里」就顶着空档反复闪现（站长 11-11 实机报的这单）。拖拽中永远可摆，不受此限。
 const subFloatShown = computed(() =>
-  subtitleUrls.value.length > 0 && subOn.value && (!!subActiveText.value || subSettingsOpen.value || subDragging.value),
+  subtitleUrls.value.length > 0 && subOn.value &&
+  (!!subActiveText.value || (subPanel.value && subSettingsOpen.value) || subDragging.value),
 )
 
 const subFontPx = computed(() => {
