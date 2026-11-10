@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import TopBar from '../components/TopBar.vue'
 import DynamicFeedCard from '../components/DynamicFeedCard.vue'
@@ -24,6 +24,17 @@ const PAGE_SIZE = 20
 
 // 翻页游标拿原始返回的尾巴（含被滤的开播条），不用过滤后的 items 尾巴：防整页开播时原地打转。
 let feedCursor = null
+
+// ─── 动态流代次护城（SearchPage 的 searchSeq 同族）：首屏、筛选、翻页共抽一个票池。───
+// 每个请求出发时捕获序号 + 路由 epoch，await fetch 与 await json 之后都要过闸；
+// 旧请求不得更新任何数据，也不得碰 loading / loadingMore：旧筛选的迟到包曾盖掉刚切完的列表，
+// 游标也会拿着旧筛选的那份让「看更多」翻出混批。
+let feedReq = 0
+let feedEpoch = 0
+
+function feedFresh(tok) {
+  return tok.epoch === feedEpoch && tok.seq === feedReq
+}
 
 // 卡面全部搬进 DynamicFeedCard（11-06 抽共享，UP 空间「动态」tab 同一张卡）：
 // 评论抽屉、安利、灯箱、本机赞都住在卡里，页面只管喂列表与翻页。
@@ -60,48 +71,81 @@ async function loadTargets() {
 }
 
 async function loadFeed() {
+  const tok = { kind: 'front', epoch: feedEpoch, seq: ++feedReq }
   loading.value = true
   try {
     const q = new URLSearchParams({ limit: String(PAGE_SIZE) })
     if (filterMid.value) q.set('mid', String(filterMid.value))
     const res = await fetch(`/api/dynamics?${q}`)
+    if (!feedFresh(tok)) return
     if (res.ok) {
       const data = await res.json()
+      if (!feedFresh(tok)) return // fetch 先到、json 迟到也算迟到包：不许盖新筛选的内容
       items.value = keepFeed(data.items)
       hasMore.value = !!data.hasMore
       feedCursor = tailCursor(data.items)
+    } else {
+      // 非 2xx：列表、hasMore、游标一并清空——留着上一个筛选的旧货与旧游标是两处隐患：
+      // 屏上看着是这位 UP 的内容（其实是上一位的），「看更多」还会拿旧游标 + 新 mid 翻出混批。
+      items.value = []
+      hasMore.value = false
+      feedCursor = null
+      showToast('动态没拉开，刷新再试')
     }
   } catch {
+    if (!feedFresh(tok)) return
+    items.value = []
+    hasMore.value = false
+    feedCursor = null
     showToast('动态没拉开，刷新再试')
   } finally {
-    loading.value = false
+    if (feedFresh(tok)) loading.value = false // 关 loading 只认最新一发：切筛选后不许摸掉新一轮的
   }
 }
 
 async function loadMore() {
-  if (!hasMore.value || !feedCursor || loadingMore.value) return
+  // 首屏（含刚切完筛选发出的新一轮）在飞时不许提交翻页：游标要么没回、要么还是上一个筛选的
+  if (loading.value || !hasMore.value || !feedCursor || loadingMore.value) return
+  const tok = { kind: 'more', epoch: feedEpoch, seq: ++feedReq }
+  // 出发瞬间捕获过滤与游标：途中换了筛选，这一发已被 pickFilter 作废，迟到回包一个字段都不许写
+  const midAtRequest = filterMid.value
+  const cursorAtRequest = feedCursor
   loadingMore.value = true
   try {
-    const q = new URLSearchParams({ limit: String(PAGE_SIZE), beforeId: String(feedCursor.id), beforeTime: String(feedCursor.time) })
-    if (filterMid.value) q.set('mid', String(filterMid.value))
+    const q = new URLSearchParams({ limit: String(PAGE_SIZE), beforeId: String(cursorAtRequest.id), beforeTime: String(cursorAtRequest.time) })
+    if (midAtRequest) q.set('mid', String(midAtRequest))
     const res = await fetch(`/api/dynamics?${q}`)
+    if (!feedFresh(tok)) return
     if (res.ok) {
       const data = await res.json()
+      if (!feedFresh(tok)) return
       items.value = items.value.concat(keepFeed(data.items))
       hasMore.value = !!data.hasMore
-      feedCursor = tailCursor(data.items) ?? feedCursor
+      feedCursor = tailCursor(data.items) ?? cursorAtRequest
     }
   } catch {
-    /* 翻页断一下不吭声，按钮还亮着 */
+    /* 翻页断一下不吭声，按钮还亮着（loadingMore 的归还在 finally 里过闸） */
   } finally {
-    loadingMore.value = false
+    if (tok.kind === 'more' && feedFresh(tok)) loadingMore.value = false
   }
 }
 
 function pickFilter(mid) {
+  feedReq += 1 // 先在飞的首屏/翻页整发作废：迟到回包不写数据、不动 loading/loadingMore
   filterMid.value = mid
+  // 旧筛选那套当场清干净：加载中宁可空列表，不让上一位 UP 冒充新筛选；游标更不能留
+  items.value = []
+  hasMore.value = false
+  feedCursor = null
+  loadingMore.value = false
   loadFeed()
 }
+
+// 卸载：在飞 feed 请求整发作废（迟到包不写数据也不碰 loading/loadingMore），toast 定时器也不留在死后还亮
+onBeforeUnmount(() => {
+  feedEpoch += 1
+  clearTimeout(toastTimer)
+})
 
 // 一键巡站只认站长：访客看到的是橱窗，不是控制台
 async function refreshRound() {

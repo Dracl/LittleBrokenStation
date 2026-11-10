@@ -7,7 +7,7 @@ namespace LBS.Server;
 
 /// <summary>
 /// 下载暂停板（站长室总闸）：
-/// 暂停 = 提交闸停投新任务 + 在途引擎任务逐个 PauseAsync 挂起（下载面板一键止血）；
+/// 暂停 = 提交闸停投新任务 + 在途引擎任务逐个 PauseAsync 挂起（下载面板一键止血，主任务与加档任务都算）；
 /// 继续 = 放闸 + 挂起中的任务 Resume 重排回队列；
 /// 暂停状态持久在 settings KV（"download-paused"），重启后记得住——自愈员与同步员都认这块牌子，
 /// 免得把「暂停本该不动」的任务当僵尸救活或销案。
@@ -55,22 +55,19 @@ public sealed class DownloadPauseBoard(
         db.SetSetting("download-paused", "1");
 
         var hung = 0;
-        foreach (var (_, _, _, _, taskIdsJson) in db.GetDownloadingRows())
+        foreach (var raw in CollectInFlightTaskIds())
         {
-            foreach (var raw in StatusSyncWorker.ParseTaskIds(taskIdsJson))
+            try
             {
-                try
+                var result = await state.PauseAsync(new DownloadTaskId(raw), cancellationToken);
+                if (result.IsSuccess)
                 {
-                    var result = await state.PauseAsync(new DownloadTaskId(raw), cancellationToken);
-                    if (result.IsSuccess)
-                    {
-                        hung++;
-                    }
+                    hung++;
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    logger.LogDebug(ex, "引擎任务 {TaskId} 暂停没应（闸已停新提交，无伤大雅）", raw);
-                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogDebug(ex, "引擎任务 {TaskId} 暂停没应（闸已停新提交，无伤大雅）", raw);
             }
         }
 
@@ -86,40 +83,61 @@ public sealed class DownloadPauseBoard(
         db.SetSetting("download-paused", "0");
 
         var woken = 0;
-        foreach (var (_, _, _, _, taskIdsJson) in db.GetDownloadingRows())
+        foreach (var raw in CollectInFlightTaskIds())
         {
-            foreach (var raw in StatusSyncWorker.ParseTaskIds(taskIdsJson))
+            var taskId = new DownloadTaskId(raw);
+            try
             {
-                var taskId = new DownloadTaskId(raw);
-                try
+                var task = await lookup.FindAsync(taskId, cancellationToken);
+                if (task is null)
                 {
-                    var task = await lookup.FindAsync(taskId, cancellationToken);
-                    if (task is null)
-                    {
-                        continue; // 已搬历史库 = 活本来就好了
-                    }
-
-                    if (task.Phase is not (DownloadPhase.Paused or DownloadPhase.Pausing))
-                    {
-                        continue; // 没挂起的别去打扰
-                    }
-
-                    var result = await state.ResumeAsync(taskId, cancellationToken);
-                    if (result.IsSuccess)
-                    {
-                        await taskQueue.EnqueueAsync(taskId, cancellationToken);
-                        woken++;
-                    }
+                    continue; // 已搬历史库 = 活本来就好了
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+
+                if (task.Phase is not (DownloadPhase.Paused or DownloadPhase.Pausing))
                 {
-                    logger.LogDebug(ex, "引擎任务 {TaskId} 唤醒没应（下一轮状态同步会兜底）", raw);
+                    continue; // 没挂起的别去打扰
                 }
+
+                var result = await state.ResumeAsync(taskId, cancellationToken);
+                if (result.IsSuccess)
+                {
+                    await taskQueue.EnqueueAsync(taskId, cancellationToken);
+                    woken++;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogDebug(ex, "引擎任务 {TaskId} 唤醒没应（下一轮状态同步会兜底）", raw);
             }
         }
 
         logger.LogInformation("下载暂停板抬起：{Woken} 个挂起任务重新排队", woken);
         return woken > 0 ? $"已继续：{woken} 个挂起任务重新排队" : "已继续：新任务恢复投放";
+    }
+
+    /// <summary>
+    /// 全站该管住的引擎任务：Downloading 的主任务行（videos.engine_task_ids）连上 Downloading 的
+    /// 加档行（video_codecs.engine_task_ids）——加档账不在 videos 表，只遍历前者会把整块加档漏掉
+    /// （暂停后加档照样跑）。两边解析后去重（同一枚任务号只该动一次，大小写不同的脏行也算同一枚），
+    /// 到站/失败的行不进来：它们的任务要么已搬历史库，要么归各自的重试点单管。
+    /// 加档取 <see cref="StationDb.GetCodecQueueRows"/>：它跟面板一样只认在途行，且 JOIN videos
+    /// 剔掉没主的脏行（这种行删馆时连同 video_codecs 一起销，不该在这重现）。
+    /// </summary>
+    private IEnumerable<string> CollectInFlightTaskIds()
+    {
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var taskIdsJson in db.GetDownloadingRows().Select(static row => row.TaskIdsJson)
+                     .Concat(db.GetCodecQueueRows().Select(static row => row.Extra.TaskIdsJson)))
+        {
+            foreach (var raw in StatusSyncWorker.ParseTaskIds(taskIdsJson))
+            {
+                ids.Add(raw);
+            }
+        }
+
+        return ids;
     }
 
     /// <summary>逐件提交间隔（持久 KV，懒加载）；非法值一律当极速。</summary>

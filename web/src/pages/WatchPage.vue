@@ -53,15 +53,31 @@ function playNextPage() {
 // 编码轮询（silent）要的只是 pages.codecVersions 那一份：连推荐流一起拽回来，层内随机就变成
 // 每 5 秒重抽一批面孔（肉眼上是整个模块在抽风），弹幕列表也跟着白刷一趟。
 // 轮询本身不能停：加档行从 Downloading 变定档得靠这一发把面板催回来。
+// 每次请求记录 BV、页面代次和请求序号，只有当前页面的最新请求能写回状态。
+// 前台加载期间跳过静默刷新：避免轮询取代初始化请求，丢掉推荐/续播初始化或卡住 loading。
+let watchEpoch = 0
+let watchReqSeq = 0
+
+function watchFresh(tok) {
+  return tok.epoch === watchEpoch
+    && tok.seq === watchReqSeq
+    && String(route.params.bvid ?? '') === tok.bvid
+}
+
 async function loadWatch(silent = false, withRelated = !silent) {
+  if (silent && loading.value) return
   if (!silent) {
     loading.value = true
     gateState.value = null
   }
+  const tok = { bvid: String(route.params.bvid ?? ''), epoch: watchEpoch, seq: ++watchReqSeq }
   try {
-    const res = await fetch(`/api/watch/${route.params.bvid}`)
+    const res = await fetch(`/api/watch/${tok.bvid}`)
+    if (!watchFresh(tok)) return
     if (res.ok) {
-      data.value = await res.json()
+      const body = await res.json() // 第二道核对排在 await json 之后：fetch 先到、json 迟到，也算迟到包
+      if (!watchFresh(tok)) return
+      data.value = body
       if (withRelated) {
         loadRelated(data.value.id)
         loadLocalDanmaku()
@@ -79,17 +95,19 @@ async function loadWatch(silent = false, withRelated = !silent) {
         loadResumePoint(data.value.id, activeIndex.value)
       }
     } else if (!silent) {
+      if (!watchFresh(tok)) return
       data.value = null
       // 门禁与查无此片是两回事：401=还没站籍，别拿「不存在」糊弄门外的客人
       gateState.value = res.status === 401 ? 'login' : 'missing'
     }
   } catch {
-    if (!silent) {
+    if (!silent && watchFresh(tok)) {
       data.value = null
       gateState.value = 'missing'
     }
   } finally {
-    if (!silent) loading.value = false
+    // 关 loading 的权力只属于仍是当前前台的那一发：作废的旧前台不许摸掉新发前台的 loading
+    if (!silent && watchFresh(tok)) loading.value = false
   }
 }
 
@@ -128,12 +146,14 @@ function restartFromStart() {
 
 async function loadResumePoint(videoId, pageIndex) {
   const seq = ++resumeSeq
+  // 换 BV 后在飞的那发同样作废（seq 只在新的 loadResumePoint 启动时才推，单靠它兑不住卸载后的迟到包）
+  const tok = { seq, epoch: watchEpoch, bvid: String(route.params.bvid ?? '') }
   resumeSec.value = 0
   clearResumeTip()
   try {
     const res = await fetch(`/api/videos/${videoId}/progress?pageIdx=${pageIndex}`)
     const p = res.ok ? await res.json() : null
-    if (seq !== resumeSeq) return // 期间又切了 P：这一发是旧页的迟到应答，丢
+    if (seq !== resumeSeq || tok.epoch !== watchEpoch || String(route.params.bvid ?? '') !== tok.bvid) return // 期间又切了 P / 换了 BV / 卸了页：这一发是迟到应答，丢
     if (!p) return // 没看过（或后端没应答）：从头播就是正确答案
     if (Number(p.pageIdx) !== pageIndex) return
     const sec = Number(p.positionSec)
@@ -304,16 +324,20 @@ function playNextVideo() {
 
 // 代次护城：现在每 BV 只取一次，但换片时旧请求迟到落地会把上一支的推荐流盖到新页上
 // （自动连播取的就是 related[0]，盖一下就会接错片），所以谁最新谁写。
+// seq 单轨不够：换 BV 后、新 watch 回包前没有新的 loadRelated 去推 seq，窗口里旧回的迟到应答仍是「最新」；
+// 所以要另对出发时的 epoch + 路由 BV，换 BV watcher 把 seq 推上去并清旧列表兼两道。
 let relatedSeq = 0
 
 async function loadRelated(id) {
   const seq = ++relatedSeq
+  const tok = { seq, epoch: watchEpoch, bvid: String(route.params.bvid ?? '') }
+  const fresh = () => tok.seq === relatedSeq && tok.epoch === watchEpoch && String(route.params.bvid ?? '') === tok.bvid
   try {
     const res = await fetch(`/api/videos/${id}/related`)
     const body = res.ok ? await res.json() : []
-    if (seq === relatedSeq) related.value = body
+    if (fresh()) related.value = body
   } catch {
-    if (seq === relatedSeq) related.value = []
+    if (fresh()) related.value = []
   }
 }
 
@@ -322,17 +346,25 @@ const localDanmaku = ref([])
 const reportedDmIds = ref(new Set()) // 本页已经举报过的弹幕：重拉列表也不让钮变回「举报这条」
 const reportingDmIds = ref(new Set()) // 在飞的那几发：网络没回来前连点也不重发
 
+let danmakuSeq = 0
+
 async function loadLocalDanmaku() {
   if (!data.value) return
+  // 同族护城（此前完全裸奔）：出发时捕获这份页的 videoId + 路由 epoch + BV + 自身序号，
+  // 回包后四项对不上就不写；换 BV watcher 会把 seq 推上去并清掉旧列表。
+  const tok = { id: data.value.id, epoch: watchEpoch, bvid: String(route.params.bvid ?? ''), seq: ++danmakuSeq }
+  const fresh = () => tok.seq === danmakuSeq && tok.epoch === watchEpoch && String(route.params.bvid ?? '') === tok.bvid
   try {
-    const res = await fetch(`/api/videos/${data.value.id}/danmaku`)
-    localDanmaku.value = res.ok ? await res.json() : []
+    const res = await fetch(`/api/videos/${tok.id}/danmaku`)
+    const body = res.ok ? await res.json() : []
+    if (!fresh()) return
+    localDanmaku.value = body
     // 服务端不存举报态（举报进的是 danmaku_reports），这一页的举报印记得自己贴回去。
     for (const d of localDanmaku.value) {
       if (reportedDmIds.value.has(d.id)) d.reported = true
     }
   } catch {
-    localDanmaku.value = []
+    if (fresh()) localDanmaku.value = []
   }
 }
 
@@ -594,17 +626,23 @@ async function requestCodec(codec) {
 function startCodecPoll(codec = null) {
   if (codecPoll) clearInterval(codecPoll)
   let ticks = 0
+  let handle = null
   const tick = async () => {
+    // 每一发捕获「本轮定时器身份 + 出发时的 BV」：换 BV（watcher 已停本轮）或重开轮询后，
+    // 迟到的旧 tick 整发作废——尤其不许它拿自己的 settled 判断去 clearInterval 掉新任 interval。
+    const bvid = String(route.params.bvid ?? '')
     ticks += 1
     await loadWatch(true)
+    if (codecPoll !== handle || String(route.params.bvid ?? '') !== bvid) return
     const rows = (data.value?.pages ?? []).flatMap((p) => p.codecVersions ?? []).filter((c) => !codec || c.codec === codec)
     const settled = rows.length > 0 && rows.every((c) => c.status !== 'Downloading')
     if (settled || ticks > 240) {
-      clearInterval(codecPoll)
-      codecPoll = null
+      clearInterval(handle)
+      if (codecPoll === handle) codecPoll = null
     }
   }
-  codecPoll = setInterval(tick, 5000)
+  handle = setInterval(tick, 5000)
+  codecPoll = handle
   tick() // 点完立刻跑第一发：排上队就该在一秒内看到动静，不是干等 5 秒
 }
 
@@ -640,7 +678,13 @@ function onMediaPause() {
 }
 
 onBeforeUnmount(() => {
-  if (codecPoll) clearInterval(codecPoll)
+  watchEpoch += 1 // 卸载：在飞的 loadWatch（含静默轮询那几发）整发作废，迟到包不再写任何状态
+  if (codecPoll) {
+    // 停轮询必顺手摘 handle：在飞的旧 tick 靠 codecPoll !== handle 那道闸作废，
+    // 卸载后旧 tick 既清不到定时器也摸不到任何状态（epoch 已推）。
+    clearInterval(codecPoll)
+    codecPoll = null
+  }
   clearResumeTip()
   document.removeEventListener('play', onMediaPlay, true)
   document.removeEventListener('pause', onMediaPause, true)
@@ -662,11 +706,28 @@ onMounted(() => {
   }, 30000)
 })
 watch(() => route.params.bvid, () => {
+  watchEpoch += 1 // 换 BV：上一支在飞的所有请求整发作废（含 finally 关 loading 的权力与派生的 related/弹幕/续播）
+  if (codecPoll) {
+    // 旧片的轮询不许接着敲新片的接口：新页数据未回，且旧轮的 codec 过滤对新片是错配；
+    // 先停掉，新片若还挂着 Downloading 的加档行，由新前台成功后的 ensureCodecPoll 自动续上。
+    clearInterval(codecPoll)
+    codecPoll = null
+  }
   openReported = false
   coverStamp.value = 0 // 换一部片子：上一部的戳不该跟着新的走（普通浏览就该是条干净的 URL）
   // 抽屉勾选是上一支片的账：不清 null，面板只在 null 才拉，换片后拿旧勾选冒充新片
   myCollections.value = null
   collectionsOpen.value = false
+  // 上一支的 related/续播/本地弹幕：在飞请求把 seq 推上去作废（迟到包写不进），旧显示当场清掉，
+  // 免得新 watch 回包前的窗口里，旧片的推荐流/续播泡/弹幕列表顶着新片的壳子。
+  // 新片那三份由新前台 loadWatch 落地时重新派生（loadRelated / loadLocalDanmaku / loadResumePoint）。
+  relatedSeq += 1
+  related.value = []
+  resumeSeq += 1
+  resumeSec.value = 0
+  clearResumeTip()
+  danmakuSeq += 1
+  localDanmaku.value = []
   loadWatch()
 })
 

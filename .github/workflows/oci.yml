@@ -40,9 +40,9 @@ jobs:
       - name: 后端测试
         run: dotnet test tests/LBS.Tests -c Release --nologo
 
-      - name: 前端构建
+      - name: 前端回归与构建
         working-directory: web
-        run: pnpm install --frozen-lockfile && pnpm build
+        run: pnpm install --frozen-lockfile && pnpm test && pnpm build
 
   image:
     needs: test

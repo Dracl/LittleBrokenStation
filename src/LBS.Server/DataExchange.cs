@@ -61,7 +61,14 @@ public sealed record PendingMarker(string Dir);
 /// <summary>包名与目录布局的守门人：档案柜只认白名单名，路径花活一律拒。</summary>
 public static class DataExchangeLayout
 {
-    private static readonly Regex ExportName = new(@"^lbs-export-[A-Za-z0-9._-]+-\d{8}-\d{6}\.zip$", RegexOptions.Compiled);
+    /// <summary>
+    /// 包名的尺子：正形 <c>lbs-export-{站名}-{yyyyMMdd}-{HHmmss}.zip</c>，同秒连拍/并发抢位靠秒后的
+    /// <c>-1/-2</c> 数字后缀错开，数字位也被人占了（同刻并发抢满）就上 8 位十六进制随机
+    /// （与 LedgerBackup 快照名同款三级阶梯）。老包（无后缀）与新后缀名一并放行，
+    /// 档案柜里的存量包照常 list/download/delete；新增后缀形状必须同步进这里，
+    /// 否则抢出来那张包会成「柜里看不见、也销不掉」的幽灵件。
+    /// </summary>
+    private static readonly Regex ExportName = new(@"^lbs-export-[A-Za-z0-9._-]+-\d{8}-\d{6}(?:-\d+|-[0-9a-f]{8})?\.zip$", RegexOptions.Compiled);
     private static readonly Regex Receipt = new(@"^\d{8}-\d{6}(?:-\d+)?$", RegexOptions.Compiled);
 
     public static bool IsSafeExportName(string name) => ExportName.IsMatch(name);
@@ -119,27 +126,39 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
     }
 
     public ExportRunResult Run(ExportOptions options)
+        => Run(options, DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss"), faultAfterClaim: null);
+
+    /// <summary>
+    /// 导出正身。stamp 可固定传入（LBS.Tests 靠它钉同秒撞名回归，不拿真实时钟碰运气）；
+    /// faultAfterClaim 是同侧测试埋的引线（经 InternalsVisibleTo 可达）：抢到位、zip 挂上笔后、
+    /// 还没落任何条目时炸给它看，验「打包半途失败只销自己抢的那一枚，档案柜里已有成包分毫不动」。
+    /// 生产路径（<see cref="Run(ExportOptions)"/>）永不接线。
+    /// </summary>
+    internal ExportRunResult Run(ExportOptions options, string stamp, Action? faultAfterClaim = null)
     {
         Directory.CreateDirectory(DataExchangeLayout.ExportsDir(paths));
 
         // 必含件：站库走在线快照（写盘中也能拍），拍完就地洗白，不动现站分毫。
         var snapshotName = backup.Run();
         var snapshot = Path.Combine(paths.Root, "backups", snapshotName);
-        var zipPath = "";
+
+        // 所有权跟着抢位走：CreateNew 成功那一刻才记下路径，此后才有资格删它。旧实现是
+        // 「先算好目标名、catch 里无条件删」，同秒第二单失败时会把并发那侧的成包当自己的残骸销了。
+        var ownedZip = "";
         try
         {
             var counts = ScrubAndCount(snapshot);
             // 洗白用的是读写连接，连接池会替快照扣着句柄——不清掉，后面打包读不动它
             SqliteConnection.ClearAllPools();
             var stationName = DataExchangeLayout.SafeStationName(db.GetSetting("station-name"));
-            var stamp = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss");
-            var zipName = $"lbs-export-{stationName}-{stamp}.zip";
-            zipPath = Path.Combine(DataExchangeLayout.ExportsDir(paths), zipName);
+            var (zipName, zipPath, zip) = ClaimArchiveSlot(DataExchangeLayout.ExportsDir(paths), stationName, stamp);
+            ownedZip = zipPath;
 
             var files = new List<ExportManifestFile>();
             var tally = new Tally();
-            using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
+            using (zip)
             {
+                faultAfterClaim?.Invoke();
                 AddFile(zip, snapshot, "station.db", files);
                 // 登录态不再入包：分站已无站级 B 站 cookie，成员号池（member_accounts）跟着台账件走，
                 // 出包前已被洗成 revoked-on-export，不存在「一份 cookie 跟着包满天飞」的老风险。
@@ -180,6 +199,7 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
                 JsonSerializer.Serialize(stream, manifest, ManifestJson);
             }
 
+            // 合上笔才读尺寸：zip 流没关闭前盘上还只是半具成形，Length 会骗人
             var bytes = new FileInfo(zipPath).Length;
             logger.LogInformation("数据交换出包 {Name}（{Kb} KB：台账件 {Files}、媒体件 {Media}）", zipName, bytes / 1024, files.Count, tally.Count);
 
@@ -189,10 +209,67 @@ public sealed class StationExporter(DataPaths paths, LedgerBackup backup, Statio
         }
         catch
         {
-            TryDelete(zipPath);
+            // 只销本次真抢到的那一枚：档案柜里的旧包（含同秒被别人占走的正形）是常住户，碰不得。
+            if (ownedZip.Length > 0)
+            {
+                TryDelete(ownedZip);
+            }
+
             throw;
         }
     }
+
+    /// <summary>
+    /// 抢一个包位：<see cref="FileMode.CreateNew"/> 把裁判权交给操作系统——同一枚名字只有一个赢家，
+    /// 输了换下一个名字重试（正形 → -1..-98 数字后缀 → 8 位随机 hex，与 LedgerBackup.ClaimSlot 同款阶梯，
+    /// 新后缀形状已同步进 <see cref="DataExchangeLayout.ExportName"/> 那把尺）。
+    /// 交回名字、路径与已经挂上的写流：位从抢到就焐着不凉，打包就在这条流上进行，
+    /// 不会有第二个写者中途挤进来。只有「撞名」这一种 IO 错才换名再抢：
+    /// 盘满、权限那类错换 200 次名也是白搭，原样上报不吞。
+    /// </summary>
+    private static (string Name, string Path, ZipArchive Archive) ClaimArchiveSlot(string dir, string stationName, string stamp)
+    {
+        for (var attempt = 1; attempt <= 200; attempt++)
+        {
+            var name = attempt switch
+            {
+                1 => $"lbs-export-{stationName}-{stamp}.zip",
+                <= 99 => $"lbs-export-{stationName}-{stamp}-{attempt - 1}.zip",
+                _ => $"lbs-export-{stationName}-{stamp}-{Guid.NewGuid().ToString("N")[..8]}.zip",
+            };
+            var candidate = Path.Combine(dir, name);
+            try
+            {
+                var lane = new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                try
+                {
+                    return (name, candidate, new ZipArchive(lane, ZipArchiveMode.Create));
+                }
+                catch
+                {
+                    // 挂笔都没挂上：刚建的这枚是自家人，就地销掉；异常照报
+                    lane.Dispose();
+                    TryDelete(candidate);
+                    throw;
+                }
+            }
+            catch (IOException ex) when (IsNameTaken(ex))
+            {
+                // 这一枚已被人抢走（同秒并发）或是上次炸下的残件：换下一个名字再来
+            }
+        }
+
+        throw new IOException($"档案柜里 {stamp} 这一秒的包位都占满了，稍后再试导出");
+    }
+
+    // Windows 上 CreateNew 撞名回 ERROR_FILE_EXISTS(80)/ERROR_ALREADY_EXISTS(183)，HResult 带 0x8007 前缀；
+    // Unix 上 HResult 就是裸 errno，撞名即 EEXIST(17)。Windows 错码从不裸奔（必带 0x8007 前缀），
+    // 所以裸 17 只可能是 Unix 的 EEXIST，不会把 Win32 错码 17 误当成撞名。
+    private const int HResultFileExists = unchecked((int)0x80070050);
+    private const int HResultAlreadyExists = unchecked((int)0x800700B7);
+    private const int ErrnoExist = 17;
+
+    private static bool IsNameTaken(IOException ex) => ex.HResult is HResultFileExists or HResultAlreadyExists or ErrnoExist;
 
     public IReadOnlyList<ExportArchiveInfo> List()
     {

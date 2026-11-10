@@ -245,6 +245,118 @@ public sealed class DataExchangeTests : IDisposable
         Assert.Equal(["SESSDATA=live-cookie"], QueryStrings(_paths.DatabaseFile, "SELECT DISTINCT cookie FROM member_accounts;"));
     }
 
+    // ─── 导出撞名与失败清理：同秒第二单不许动第一单的包 ───
+
+    private const string SameSecondStamp = "20261027-010203";
+    private static readonly ExportOptions LedgerOnly = new(false, false, false, false);
+
+    private string[] ExportCabinetNames() => Directory
+        .GetFiles(Path.Combine(_root, "exports"))
+        .Select(Path.GetFileName)
+        .Where(n => n is not null)
+        .Cast<string>()
+        .OrderBy(n => n, StringComparer.Ordinal)
+        .ToArray();
+
+    [Fact]
+    public void Export_SameStamp_SecondRunGetsOwnSlot_FirstArchiveBytesUnchanged()
+    {
+        SeedStation();
+        SeedMediaFiles();
+
+        // 固定秒戳连拍两回（旧实现第二回拿同名 ZipFile.Open Create 硬开，失败时还把第一单成包销了）
+        var first = _exporter.Run(LedgerOnly, SameSecondStamp);
+        Assert.Equal($"lbs-export-station-{SameSecondStamp}.zip", first.Name); // 头一手照旧占正形
+        var firstPath = ZipPath(first.Name);
+        var firstBytes = File.ReadAllBytes(firstPath);
+
+        var second = _exporter.Run(LedgerOnly, SameSecondStamp);
+
+        // 第二单自立门户：同秒戳让位加序号、过了白名单、报的字节数与盘上实物对得上
+        Assert.NotEqual(first.Name, second.Name);
+        Assert.StartsWith($"lbs-export-station-{SameSecondStamp}-", second.Name, StringComparison.Ordinal);
+        Assert.True(DataExchangeLayout.IsSafeExportName(second.Name), second.Name);
+        Assert.Equal(new FileInfo(ZipPath(second.Name)).Length, second.Bytes);
+        // 第一单成包逐字节分毫未动：同秒第二单无论成败都不许碰别人的包
+        Assert.Equal(firstBytes, File.ReadAllBytes(firstPath));
+        // 两包各自是完整 zip，manifest 齐整
+        Assert.Equal("lbs-export", ReadManifest(firstPath).Format);
+        Assert.Equal("lbs-export", ReadManifest(ZipPath(second.Name)).Format);
+        // 档案柜不认幽灵件：List 认得两包，后缀包也销得掉（download/delete 与 List 同一把尺）
+        Assert.Equal(2, ExportCabinetNames().Length);
+        var listed = _exporter.List().Select(a => a.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        Assert.Equal(new[] { first.Name, second.Name }.OrderBy(n => n, StringComparer.Ordinal).ToArray(), listed);
+        Assert.True(_exporter.Delete(second.Name));
+        Assert.False(File.Exists(ZipPath(second.Name)));
+        Assert.True(File.Exists(firstPath));
+    }
+
+    [Fact]
+    public async Task Export_SameStamp_ConcurrentRuns_EachGetCompleteIndependentArchives()
+    {
+        SeedStation();
+        SeedMediaFiles();
+
+        const int racers = 6;
+        var results = await Task.WhenAll(
+            Enumerable.Range(0, racers).Select(_ => Task.Run(() => _exporter.Run(LedgerOnly, SameSecondStamp))));
+
+        // 六单并发抢同一秒：名字互不重叠，正形只有一个赢家，其余全走后缀错开且都过白名单
+        var names = results.Select(r => r.Name).ToArray();
+        Assert.Equal(racers, names.Distinct(StringComparer.Ordinal).Count());
+        Assert.Single(names, n => n == $"lbs-export-station-{SameSecondStamp}.zip");
+        Assert.All(names, n => Assert.True(DataExchangeLayout.IsSafeExportName(n), n));
+
+        // 每包都完整落笔：报的字节数与盘上实物一致，zip 打得开、manifest 读得出，谁也没被截胡
+        foreach (var r in results)
+        {
+            var path = ZipPath(r.Name);
+            Assert.Equal(new FileInfo(path).Length, r.Bytes);
+            Assert.True(r.Bytes > 0);
+            Assert.Equal("lbs-export", ReadManifest(path).Format);
+        }
+
+        Assert.Equal(racers, ExportCabinetNames().Length);
+    }
+
+    [Fact]
+    public void Export_PackagingFault_KeepsExistingArchiveAndSweepsOnlyOwnSlot()
+    {
+        SeedStation();
+        SeedMediaFiles();
+
+        // 档案柜里先有一张同秒成包（事故里的「前一手」受害者）
+        var kept = _exporter.Run(LedgerOnly, SameSecondStamp);
+        var keptPath = ZipPath(kept.Name);
+        var keptBytes = File.ReadAllBytes(keptPath);
+
+        // 同秒第二单：CreateNew 撞名换到后缀位后，在挂上笔、未落条目处埋雷炸掉
+        var boom = new IOException("模拟打包半途塌方");
+        Assert.Same(boom, Assert.Throws<IOException>(() => _exporter.Run(LedgerOnly, SameSecondStamp, () => throw boom)));
+
+        // 旧包幸存且字节分毫未动（旧 bug 的靶心：catch 无条件 TryDelete(zipPath) 销的就是它）
+        Assert.Equal(keptBytes, File.ReadAllBytes(keptPath));
+        // 自己抢的那枚随失败清走：柜里不留半截 zip 残件
+        Assert.Equal(new[] { kept.Name }, ExportCabinetNames());
+        // 旧包仍在档案柜视野内、销得掉（白名单对新旧名同一把尺）
+        var listed = Assert.Single(_exporter.List());
+        Assert.Equal(kept.Name, listed.Name);
+        Assert.True(_exporter.Delete(kept.Name));
+        Assert.False(File.Exists(keptPath));
+    }
+
+    [Fact]
+    public void Export_FirstRunFault_LeavesNoHalfBuiltPackage()
+    {
+        SeedStation();
+
+        var boom = new IOException("模拟首单半途塌方");
+        Assert.Same(boom, Assert.Throws<IOException>(() => _exporter.Run(LedgerOnly, "20261027-010299", () => throw boom)));
+
+        // 首单失败也不留壳：空手而来空手归，档案柜干干净净等下一单
+        Assert.Empty(ExportCabinetNames());
+    }
+
     // ─── 导入安检 ───
 
     [Fact]
@@ -299,6 +411,13 @@ public sealed class DataExchangeTests : IDisposable
     // 白名单放行：规范包名
     [InlineData("lbs-export-station-20261027-010203.zip", true)]
     [InlineData("lbs-export-LBS_01-x-20261027-010203.zip", true)]
+    // 同秒抢位让名后的新形状：秒后数字序号与 8 位随机 hex（老包新包同一把尺都认）
+    [InlineData("lbs-export-station-20261027-010203-1.zip", true)]
+    [InlineData("lbs-export-station-20261027-010203-98.zip", true)]
+    [InlineData("lbs-export-station-20261027-010203-a1b2c3d4.zip", true)]
+    [InlineData("lbs-export-station-20261027-010203-1a.zip", false)]
+    [InlineData("lbs-export-station-20261027-010203-zz123456.zip", false)]
+    [InlineData("lbs-export-station-20261027-010203-.zip", false)]
     // 路径花活与非法字符一律拒
     [InlineData("../lbs-export-station-20261027-010203.zip", false)]
     [InlineData("..\\lbs-export-station-20261027-010203.zip", false)]

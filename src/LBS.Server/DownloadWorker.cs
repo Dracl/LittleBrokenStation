@@ -124,37 +124,8 @@ public sealed class DownloadWorker(
         var swept = 0;
         try
         {
-            var referenced = new HashSet<string>(
-                StatusSyncWorker.ParseTaskIds(string.Join("", db.GetReferencedEngineTaskIds().SelectMany(json => StatusSyncWorker.ParseTaskIds(json).Select(id => $"\"{id}\"")))),
-                StringComparer.OrdinalIgnoreCase);
-            foreach (var orphan in await lookup.GetUnfinishedAsync(stoppingToken))
-            {
-                if (referenced.Contains(orphan.Id.Value))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    await taskQueue.CancelAsync(orphan.Id);
-                }
-                catch (Exception)
-                {
-                    // 本就没在跑，取消不掉无妨
-                }
-
-                try
-                {
-                    await state.CancelAsync(orphan.Id, stoppingToken);
-                    await state.DeleteAsync(orphan.Id, stoppingToken);
-                    swept++;
-                    logger.LogWarning("开机销掉无主引擎任务 {TaskId}：台账无署名，留着会拦同视频重单", orphan.Id.Value);
-                }
-                catch (Exception)
-                {
-                    // 销不动留给下轮开机/看门狗，不拦开站
-                }
-            }
+            swept = await SweepOrphanEngineTasksAsync(
+                db.GetReferencedEngineTaskIds(), lookup, state, taskQueue, logger, stoppingToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -166,6 +137,58 @@ public sealed class DownloadWorker(
         var mainLoop = Task.Run(() => ConsumeMainAsync(stoppingToken), stoppingToken);
         var codecLoop = Task.Run(() => ConsumeCodecAsync(stoppingToken), stoppingToken);
         await Task.WhenAll(mainLoop, codecLoop);
+    }
+
+    /// <summary>
+    /// 开机孤儿清扫的可直接测边界（台账原始列 + 引擎三件套进，销掉枚数出）：
+    /// 台账署过名的任务一枚不许碰，其余在途任务逐枚打断队列→挂起→销账。
+    /// 台账交来的是 <c>engine_task_ids</c> 原文（每格一枚 JSON 数组，videos 与 video_codecs 的并集），
+    /// 解析只认 <see cref="StatusSyncWorker.ParseTaskIds"/>：它认转义，坏 JSON 只当没引用。
+    /// 把清单手拼成一串不是合法 JSON 的字符再 Parse，只会恒得到空集 = 开机把在途任务当孤儿销光。
+    /// </summary>
+    internal static async Task<int> SweepOrphanEngineTasksAsync(
+        IEnumerable<string?> ledgerTaskIdsJson,
+        IDownloadTaskLookup lookup,
+        IDownloadTaskStateService state,
+        IDownloadTaskQueue taskQueue,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var referenced = ledgerTaskIdsJson
+            .SelectMany(json => StatusSyncWorker.ParseTaskIds(json))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var swept = 0;
+        foreach (var orphan in await lookup.GetUnfinishedAsync(cancellationToken))
+        {
+            if (referenced.Contains(orphan.Id.Value))
+            {
+                continue;
+            }
+
+            try
+            {
+                await taskQueue.CancelAsync(orphan.Id);
+            }
+            catch (Exception)
+            {
+                // 本就没在跑，取消不掉无妨
+            }
+
+            try
+            {
+                await state.CancelAsync(orphan.Id, cancellationToken);
+                await state.DeleteAsync(orphan.Id, cancellationToken);
+                swept++;
+                logger.LogWarning("开机销掉无主引擎任务 {TaskId}：台账无署名，留着会拦同视频重单", orphan.Id.Value);
+            }
+            catch (Exception)
+            {
+                // 销不动留给下轮开机/看门狗，不拦开站
+            }
+        }
+
+        return swept;
     }
 
     private async Task ConsumeMainAsync(CancellationToken stoppingToken)
