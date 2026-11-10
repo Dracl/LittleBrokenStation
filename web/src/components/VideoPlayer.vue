@@ -5,7 +5,8 @@ import BIcon from './BIcon.vue'
 import DanmakuCountIcon from './DanmakuCountIcon.vue'
 import { biPlay, biVolume, biSetting, biPip, biFull, biDmOn, biDmOff, biDmSet, biHiRes } from '../assets/bicons'
 import { probeMp4 } from '../utils/mp4Meta'
-import { subtitleTextToVtt } from '../utils/subtitleVtt'
+import { subtitleTextToVtt, parseVttCues, activeCueAt } from '../utils/subtitleVtt'
+import { loadStudioPrefs, saveStudioPrefs } from '../utils/studioPrefs'
 import { loadAssText, buildHeat, HEAT } from '../utils/dmHeat'
 import { member } from '../memberStore'
 import { requestConfirm } from '../confirmStore'
@@ -687,11 +688,13 @@ function fmtVersionSize(n) {
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(1)} MB`
 }
 
-// ─── 字幕（多轨：全部挂上，显示哪一路由这里说了算）───
+// ─── 字幕（多轨：全部解析，摆哪一路由这里说了算）───
+// 11-11 深夜起自绘：原生 <track> 的 ::cue 染不了色、定不了位、更拖不动，站长要的 B 站式设置面板与
+// 可拖浮窗只能分站自己摆字。到货加工（fetch → 转 VTT → 解析 cue）与浮窗逻辑都在下面这一段。
 // 字幕只有路径这一本账：artifacts 表 kind='subtitle' 存的是 rel_path，语言、人工/AI 全没落库，
 // 所以轨名只能从文件名猜，库里没写的事前端一个字都不许编。
 const subPanel = ref(false)
-const subOn = ref(true) // 默认开：与这次改造之前一致（单轨时挂着 default 就是显示着的）
+const subSettingsOpen = ref(false) // 字幕设置这一格开没开：当场状态，不值得进本机账
 const subIdx = ref(0)
 const subtitleUrls = computed(() => props.page?.subtitleUrls ?? [])
 
@@ -723,79 +726,155 @@ function subLabel(url, i) {
   }
 }
 
-// 把「开没开 + 选哪一路」施加到元素上。浏览器只在 track 到货那阵自己认 default 一次（而且多条同时 default
-// 只认第一条，等于白给），之后一切以这里为准。textTracks[i] 可能还没长出来（track 是异步挂的），
-// 拿不到就这一趟跳过，等下一发现成时机——绝不在这里 while 干等，那会把主线程焊死。
-function applySubtitleModes() {
-  const tracks = video.value?.textTracks
-  if (!tracks) return
-  for (let i = 0; i < tracks.length; i++) {
-    const tt = tracks[i]
-    if (!tt) continue
-    tt.mode = subOn.value && i === subIdx.value ? 'showing' : 'disabled'
-  }
+// ─── 字幕设置（本机账，utils/studioPrefs 同族：周报调参台／分享海报棚那个脾气）───
+// 旋钮拧过一次本机认账，服务器不记一笔。总开关「字幕开」也一并入账（B 站也认，站长 11-11 随设置面板顺手拍的）；
+// 位置同理：拖过一次，下次开台原位接着摆。
+const SUB_PREFS_KEY = 'lbs-player-subtitle-prefs'
+const SUB_DEFAULTS = {
+  on: true,
+  size: 'standard', // xs | sm | standard | lg | xl
+  color: '#FFFFFF',
+  outline: 'mid', // none | light | mid | strong
+  anchor: 'bottom-center', // bottom-center | top-center | bottom-left | bottom-right
+  bg: 0, // 字幕背景不透明度 0–100
+  scale: true, // 等比缩放：字号随画面高长大
+  fade: false, // 淡入淡出
+  pos: null, // 浮窗自定义位置 {x,y}（相对画面区的中心点百分比）；null = 吃默认位置
 }
+const subPrefs = reactive(loadStudioPrefs(SUB_PREFS_KEY, SUB_DEFAULTS))
+watch(subPrefs, () => saveStudioPrefs(SUB_PREFS_KEY, subPrefs), { deep: true })
+
+// 总开关是挂在 prefs 上的读写 computed：写一处本机账跟着落，面板上两处按钮不用手工接力。
+const subOn = computed({ get: () => subPrefs.on === true, set: (v) => { subPrefs.on = !!v } })
+
+// 选项表：标签全 human 话，值全小本本；脏值落在哪家头上都由下面那行认回标准，不炸画面。
+const SUB_SIZE_ITEMS = [['xs', '特小'], ['sm', '小'], ['standard', '标准'], ['lg', '大'], ['xl', '特大']]
+const SUB_SIZE_RATIO = { xs: 0.028, sm: 0.034, standard: 0.042, lg: 0.052, xl: 0.064 } // ×画面区高
+const SUB_SIZE_PX = { xs: 13, sm: 15, standard: 18, lg: 22, xl: 28 } // 关掉等比缩放时的定字号
+const SUB_COLOR_ITEMS = [['#FFFFFF', '白'], ['#FFE135', '柠黄'], ['#6EE7FF', '天青'], ['#FF9ECD', '樱粉'], ['#8CFF9E', '薄荷']]
+const SUB_OUTLINE_ITEMS = [['none', '无描边'], ['light', '轻'], ['mid', '中'], ['strong', '重']]
+// 描边是 text-shadow 叠的（B 站字幕同一手法）：中描边四个方向 1px，重描边再糊一层晕；
+// 「无描边」留一层淡影兜底，免得白字坐在白墙画面上整句消失。
+const SUB_OUTLINES = {
+  none: '0 1px 2px rgba(0,0,0,.4)',
+  light: '0 1px 2px rgba(0,0,0,.9)',
+  mid: '0 0 2px rgba(0,0,0,.95), 1px 0 2px rgba(0,0,0,.85), -1px 0 2px rgba(0,0,0,.85), 0 1px 2px rgba(0,0,0,.85), 0 -1px 2px rgba(0,0,0,.85)',
+  strong: '0 0 3px #000, 0 0 7px rgba(0,0,0,.9), 1px 1px 2px #000, -1px -1px 2px #000, 1px -1px 2px #000, -1px 1px 2px #000',
+}
+const SUB_ANCHOR_ITEMS = [['bottom-center', '底部居中'], ['top-center', '顶部居中'], ['bottom-left', '底部居左'], ['bottom-right', '底部居右']]
+// 四枚锚点是浮窗中心点的百分比（外壳拿 translate(-50%,-50%) 对中）；左右两枚多内收些，长句不出屏。
+const SUB_ANCHORS = {
+  'bottom-center': { x: 50, y: 86 },
+  'top-center': { x: 50, y: 14 },
+  'bottom-left': { x: 22, y: 86 },
+  'bottom-right': { x: 78, y: 86 },
+}
+
+// 自绘的家底：画面区高（等比缩放的字号基准，resize／fullscreenchange 都走 onViewportChange 同步）与拖拽态。
+const videoBoxH = ref(360)
+const subDragging = ref(false)
+let subDragRect = null // 按下那瞬钉住的画面区 client rect：拖拽途中按它换算百分比，不再现查
 
 function pickSubtitle(i) {
   subIdx.value = i
   subOn.value = true // 点轨就是想看它：顺手把总开关带上，不用先开总开关再点轨走两步
-  applySubtitleModes()
 }
 
-// <video> 带 :key="currentSrc"：切 P / 换编码都整枚重建，<track> 跟着重挂，mode 会被浏览器忘光。
-// 这里挂在已有的重挂点（换源、字幕数组变动）上重新施加，不另开定时器；flush post 是为了等 DOM 把 track 插进去。
-// ⚠ subtitleSrcs 的声明必须排在这支 watch 之前（交接单坑 4：script setup 里 watch 数组当场取值，
-//   const 排在后面就是 TDZ ReferenceError，setup 一炸整个播放器都没了——11-11 实况踩过一次）。
-const subtitleSrcs = ref([])
-let subSrcSeq = 0
-const subBlobUrls = new Set() // 只销本播放器自己造的 blob；退回原地址的那些不在账上，碰不得
+// ─── 字幕到货加工：fetch → 转 VTT → 解析成 cue 交自绘 ───
+// 台账里 129 条字幕全是 .srt（引擎写盘原样）：就算转好 VTT，::cue 仍做不了染色定位拖拽——
+// 11-11 深夜起不再劳驾浏览器排版（解析器在 utils/subtitleVtt.js，纯函数 node 直测）。
+// 盘上原始文件一个字节不动（导出包里躺着的仍是原字幕）。
+// 代次护城（观看页 watchEpoch 同族）：切 P 时旧批迟到不许写新页的 cue。
+// watch 的账键用 joined 串：观看页 5 秒轮询每轮回新 body，盯数组引用会每 5 秒白重拉一遍字幕。
+const subCues = ref([]) // 每条轨的 cue 清单：[[{start,end,text}], ...]
+let subFetchSeq = 0
+const subLedgerKey = computed(() => subtitleUrls.value.join('|'))
 
-watch([currentSrc, subtitleUrls, subtitleSrcs], () => applySubtitleModes(), { flush: 'post' })
-// 每个分 P 的轨数可以不一样：上一 P 选到第 3 轨，这一 P 只有一轨时得把指针拉回 0，
-// 否则 mode 谁都轮不上，看着像字幕坏了。
-watch(subtitleUrls, (urls) => {
-  if (subIdx.value > urls.length - 1) subIdx.value = 0
-})
-
-// ─── 字幕到货加工：浏览器 <track> 只认 WebVTT ───
-// 台账里 129 条字幕全是 .srt（无 WEBVTT 头、时间戳用逗号），原样挂上会被 VTT 解析器整文件判死：
-// 轨上 0 条 cue，面板写着「显示中」画面上却没一个字——站长 11-11 实机抓到的「字幕不显示」就是这条。
-// 到货路上 fetch 下来就地转 VTT 挂 blob 地址；盘上原始文件一个字节不动（导出包里躺着的仍是原字幕）。
-// 认不出或断线就退回原地址：最坏也就是眼下的现状（空轨），不会更坏。
-// 代次护城（观看页 watchEpoch 同族）：切 P 时旧批迟到不许写新页的轨 src；自造的 blob 随批回收不留孤儿。
-// （subtitleSrcs / subSrcSeq / subBlobUrls 三枚家底已前移到重挂 watch 之前，TDZ 缘由见那边注释）
 async function refreshSubtitleSources() {
-  const tok = ++subSrcSeq
-  const made = []
-  const srcs = []
+  const tok = ++subFetchSeq
+  const tracks = []
   for (const u of subtitleUrls.value) {
-    let out = u
+    let cues = []
     try {
       const res = await fetch(u)
-      if (res.ok) {
-        const vtt = subtitleTextToVtt(u, await res.text())
-        if (vtt) {
-          out = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }))
-          made.push(out)
-        }
-      }
+      if (res.ok) cues = parseVttCues(subtitleTextToVtt(u, await res.text()))
     } catch {
-      /* 断线就用原地址碰运气：同一份字节，坏不了也更不了 */
+      /* 断线或死链就当这条轨空着：连接回来、账目变动时会再来 */
     }
-    srcs.push(out)
+    tracks.push(cues)
   }
-  if (tok !== subSrcSeq) {
-    for (const b of made) URL.revokeObjectURL(b) // 迟到整批：自造的当场回收，不碰屏上更新的那一份
-    return
-  }
-  for (const b of subtitleSrcs.value) {
-    if (subBlobUrls.delete(b)) URL.revokeObjectURL(b)
-  }
-  for (const b of made) subBlobUrls.add(b)
-  subtitleSrcs.value = srcs
+  if (tok !== subFetchSeq) return // 迟到整批作废：新批已经上桌，旧批退场
+  subCues.value = tracks
 }
 
-watch(subtitleUrls, refreshSubtitleSources, { immediate: true })
+// 每个分 P 的轨数可以不一样：上一 P 选到第 3 轨，这一 P 只有一轨时得把指针拉回 0，
+// 否则谁都轮不上，看着像字幕坏了。
+watch(subLedgerKey, () => {
+  if (subIdx.value > subtitleUrls.value.length - 1) subIdx.value = 0
+  refreshSubtitleSources()
+}, { immediate: true })
+
+// ─── 自绘浮窗：摆哪句、怎么摆、摆在哪 ───
+const subActiveText = computed(() => {
+  if (!subOn.value) return ''
+  const cues = subCues.value[subIdx.value]
+  if (!cues || !cues.length) return ''
+  return activeCueAt(cues, currentTime.value)
+})
+// 开着且有句才摆；设置面板开着时另给一块占位浮窗——不然没到 cue 的时刻想拖没处下抓手。
+const subFloatShown = computed(() =>
+  subtitleUrls.value.length > 0 && subOn.value && (!!subActiveText.value || subSettingsOpen.value || subDragging.value),
+)
+
+const subFontPx = computed(() => {
+  const size = SUB_SIZE_PX[subPrefs.size] ? subPrefs.size : 'standard' // 脏账回标准
+  if (subPrefs.scale) return Math.round(Math.min(64, Math.max(12, (videoBoxH.value || 360) * SUB_SIZE_RATIO[size])))
+  return SUB_SIZE_PX[size]
+})
+const subBoxStyle = computed(() => {
+  const p = subPrefs.pos || SUB_ANCHORS[subPrefs.anchor] || SUB_ANCHORS['bottom-center']
+  return { left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%, -50%)' }
+})
+const subCueStyle = computed(() => ({
+  color: SUB_COLOR_ITEMS.some(([c]) => c === subPrefs.color) ? subPrefs.color : SUB_DEFAULTS.color,
+  fontSize: `${subFontPx.value}px`,
+  lineHeight: 1.4,
+  textShadow: SUB_OUTLINES[subPrefs.outline] || SUB_OUTLINES.mid,
+  background: subPrefs.bg > 0 ? `rgba(0,0,0,${Math.min(100, subPrefs.bg) / 100})` : 'transparent',
+}))
+
+function pickSubAnchor(a) {
+  subPrefs.anchor = a
+  subPrefs.pos = null // 挑位置就是回座位：手工拖出来的偏移作废
+}
+function applySubDefaults() {
+  Object.assign(subPrefs, { ...SUB_DEFAULTS }) // 恢复默认连总开关和位置一并归还：钮的语义是整店出厂态
+}
+
+// 拖拽：pointer 事件（触屏同能拖）。pointer capture 把指针钉在浮窗上：手指拖出窗外也不丢。
+function subDragDown(e) {
+  if (!root.value || subDragging.value) return
+  const rect = root.value.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
+  subDragRect = rect
+  subDragging.value = true
+  e.currentTarget?.setPointerCapture?.(e.pointerId)
+  e.preventDefault() // 别把拖拽变成选字
+}
+function subDragMove(e) {
+  if (!subDragging.value || !subDragRect) return
+  const x = ((e.clientX - subDragRect.left) / subDragRect.width) * 100
+  const y = ((e.clientY - subDragRect.top) / subDragRect.height) * 100
+  // 留三分贴边：不许把盒子整枚拖出屏，否则拖出去的手柄再也摸不着
+  subPrefs.pos = {
+    x: Math.round(Math.min(97, Math.max(3, x)) * 10) / 10,
+    y: Math.round(Math.min(96, Math.max(4, y)) * 10) / 10,
+  }
+}
+function subDragUp() {
+  subDragging.value = false
+  subDragRect = null
+}
 
 // ─── 站内弹幕（只在本页飘，不上传 B 站）───
 const danmakuLayer = ref(null)
@@ -894,6 +973,7 @@ const onViewportChange = () => {
   // 全屏时黑幕（body 级）不在全屏元素子树内，会凭空消失，自动开灯兜底
   if (document.fullscreenElement && play.lightsOff) play.lightsOff = false
   if (play.lightsOff) refreshLights()
+  if (root.value) videoBoxH.value = root.value.clientHeight || videoBoxH.value // 字幕等比缩放的字号基准：画面区高
   measureShell()
 }
 window.addEventListener('resize', onViewportChange)
@@ -1163,7 +1243,6 @@ function onLoadedMetadata() {
   v.volume = volume.value
   v.muted = muted.value
   loadedPageIdx = props.page?.index ?? 0 // 这一页确实装进元素了，补报进度拿它当旧 P
-  applySubtitleModes() // 重建过的 <video> 连 <track> 一起换新，字幕开没开在这里重新落一次（不靠定时器补）
   if (tParam != null) {
     const t = tParam
     tParam = null // 一次性消费，后面重建元素不再提
@@ -1717,16 +1796,13 @@ onMounted(() => {
   document.addEventListener('click', closeCtx)
   progressBeat = setInterval(onProgressBeat, PROGRESS_BEAT_MS) // 心跳只管正常播放那一段（函数里自己筛）
   window.addEventListener('pagehide', reportProgressByBeacon) // 关页面/刷新：最后一发走信标
+  if (root.value) videoBoxH.value = root.value.clientHeight || videoBoxH.value // 字幕等比缩放的高度先量一枚（之后 resize/全屏走 onViewportChange）
 })
 onBeforeUnmount(() => {
   clearTimeout(hideTimer)
   clearTimeout(stuckTimer)
   clearTimeout(seekMergeTimer)
-  subSrcSeq += 1 // 在飞的字幕加工整发作废：迟到不写死实例，也不留挂空 blob
-  for (const b of subtitleSrcs.value) {
-    if (subBlobUrls.delete(b)) URL.revokeObjectURL(b)
-  }
-  subtitleSrcs.value = []
+  subFetchSeq += 1 // 在飞的字幕加工整发作废：迟到不写死实例
   volClearTimer() // 音量弹层 200ms 延迟收起那一发，卸载后不再回来拨已消失的实例
   endHoldGesture()
   window.removeEventListener('mouseup', onHoldMouseUp)
@@ -1797,18 +1873,8 @@ const STROKE_ITEMS = [
       @ended="onEnded"
       @volumechange="muted = video.muted; volume = video.muted ? volume : video.volume"
     >
-      <!-- 字幕轨：有几条挂几条（以前只取 [0]，第二条以后的人根本没得选）。显示哪一路交给 applySubtitleModes，
-           default 只给当前选中那一条（多条同时 default 浏览器只认第一条，给多了等于白给）；
-           @load 到货那一刻再施加一次，防的就是「track 还没长出来、textTracks[i] 拿不到」那一瞬。 -->
-      <track
-        v-for="(u, i) in subtitleUrls"
-        :key="i"
-        :src="subtitleSrcs[i] || u"
-        kind="subtitles"
-        :label="subLabel(u, i)"
-        :default="subOn && i === subIdx"
-        @load="applySubtitleModes"
-      />
+      <!-- 字幕自绘后不再挂 <track>：原生 ::cue 染不了色、定不了位、拖不动，
+           cue 到货路上已解析成清单，由下面那枚字幕浮窗自己摆（utils/subtitleVtt.js）。 -->
     </video>
     <div v-else class="flex h-full w-full flex-col items-center justify-center gap-2 text-sm text-white/50">
       <span v-if="status === 1">这集还在进站路上，稍后再来</span>
@@ -1851,6 +1917,32 @@ const STROKE_ITEMS = [
       @delete-local="$emit('delete-danmaku', $event)"
       @report-local="$emit('report-danmaku', $event)"
     />
+
+    <!-- 字幕浮窗（11-11 深夜起自绘）：怎么摆由设置说了算（subPrefs），摆在哪由锚点/拖拽说了算。
+         按住可任意拖（百分比位置本机认账）；click/dblclick 都 stop：拖拽不许被当成点画面暂停、双击全屏。
+         z 比控制条（z-10）低、比弹幕画布（无 z 靠 DOM 序）高：不挡操作，也不让字埋弹幕底下。 -->
+    <div
+      v-if="subFloatShown"
+      class="absolute z-[5] max-w-[86%] select-none text-center"
+      :class="subDragging ? 'cursor-grabbing sub-dragging' : 'cursor-grab'"
+      :style="subBoxStyle"
+      title="按住可拖动字幕位置"
+      @pointerdown="subDragDown"
+      @pointermove="subDragMove"
+      @pointerup="subDragUp"
+      @pointercancel="subDragUp"
+      @lostpointercapture="subDragUp"
+      @mousedown.stop
+      @click.stop
+      @dblclick.stop
+    >
+      <span
+        :key="subActiveText"
+        class="inline-block break-words rounded px-[0.5em] py-[0.12em] font-medium whitespace-pre-wrap"
+        :class="subPrefs.fade ? 'sub-fade-in' : ''"
+        :style="subCueStyle"
+        >{{ subActiveText || '字幕会在这里（按住可拖）' }}</span>
+    </div>
 
     <!-- 关灯模式：只黑掉画面以外的页面，视频和弹幕照常亮；点黑幕亮回（B 站同款）。必须传送到 body：root 带 isolate，黑幕留在子树里 z 再高也盖不住页面 -->
     <Teleport to="body">
@@ -2249,7 +2341,7 @@ const STROKE_ITEMS = [
           class="relative h-5 w-9 rounded-full transition"
           :class="subOn ? 'bg-stationBlue' : 'bg-white/25'"
           title="关掉后画面里不飘字；字幕文件仍在原地不动，随时开得回来"
-          @click="subOn = !subOn; applySubtitleModes()"
+          @click="subOn = !subOn"
         >
           <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all" :class="subOn ? 'left-[18px]' : 'left-0.5'"></span>
         </button>
@@ -2268,6 +2360,84 @@ const STROKE_ITEMS = [
           <span class="min-w-0 truncate">{{ subLabel(u, i) }}</span>
           <span v-if="subOn && i === subIdx" class="ml-2 shrink-0 text-[10px] whitespace-nowrap text-white/50">显示中</span>
         </button>
+      </div>
+
+      <!-- 字幕设置（B 站原型那套旋钮）：全部本机认账，服务器不记一笔，站内每位成员各拿各的 -->
+      <div class="my-2 h-px bg-white/10"></div>
+      <button
+        class="flex w-full items-center justify-between rounded px-2 py-1.5 text-white/85 transition hover:bg-white/10"
+        @click="subSettingsOpen = !subSettingsOpen"
+      >
+        <span>字幕设置</span>
+        <span class="text-white/40">{{ subSettingsOpen ? '▾' : '›' }}</span>
+      </button>
+
+      <div v-if="subSettingsOpen" class="mt-1 flex flex-col gap-2.5 pb-0.5">
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <span class="mb-1 block text-white/60">字幕大小</span>
+            <div class="flex flex-wrap gap-1">
+              <button
+                v-for="[k, n] in SUB_SIZE_ITEMS" :key="k"
+                class="rounded px-1.5 py-0.5 text-[11px] transition"
+                :class="subPrefs.size === k ? 'bg-stationBlue text-white' : 'bg-white/10 text-white/70 hover:bg-white/20'"
+                @click="subPrefs.size = k"
+              >{{ n }}</button>
+            </div>
+          </div>
+          <div>
+            <span class="mb-1 block text-white/60">字幕颜色</span>
+            <div class="flex flex-wrap gap-1.5 pt-0.5">
+              <button
+                v-for="[c, n] in SUB_COLOR_ITEMS" :key="c"
+                class="h-5 w-5 rounded-full border-2 transition hover:scale-110"
+                :style="{ background: c, borderColor: subPrefs.color === c ? '#00AEEC' : 'rgba(255,255,255,.25)' }"
+                :title="n"
+                @click="subPrefs.color = c"
+              ></button>
+            </div>
+          </div>
+          <div>
+            <span class="mb-1 block text-white/60">描边方式</span>
+            <div class="flex flex-wrap gap-1">
+              <button
+                v-for="[k, n] in SUB_OUTLINE_ITEMS" :key="k"
+                class="rounded px-1.5 py-0.5 text-[11px] transition"
+                :class="subPrefs.outline === k ? 'bg-stationBlue text-white' : 'bg-white/10 text-white/70 hover:bg-white/20'"
+                @click="subPrefs.outline = k"
+              >{{ n }}</button>
+            </div>
+          </div>
+          <div>
+            <span class="mb-1 block text-white/60">默认位置</span>
+            <div class="flex flex-wrap gap-1">
+              <button
+                v-for="[k, n] in SUB_ANCHOR_ITEMS" :key="k"
+                class="rounded px-1.5 py-0.5 text-[11px] transition"
+                :class="!subPrefs.pos && subPrefs.anchor === k ? 'bg-stationBlue text-white' : 'bg-white/10 text-white/70 hover:bg-white/20'"
+                @click="pickSubAnchor(k)"
+              >{{ n }}</button>
+            </div>
+          </div>
+        </div>
+        <div>
+          <span class="mb-1 flex items-center justify-between text-white/60">
+            <span>背景不透明度</span><span class="tabular-nums text-white/40">{{ subPrefs.bg }}%</span>
+          </span>
+          <input v-model.number="subPrefs.bg" type="range" min="0" max="100" step="5" class="w-full accent-[#00AEEC]" />
+        </div>
+        <div class="flex items-center gap-4 text-white/85">
+          <label class="flex cursor-pointer items-center gap-1.5">
+            <input v-model="subPrefs.scale" type="checkbox" class="h-3.5 w-3.5 accent-[#00AEEC]" />等比缩放
+          </label>
+          <label class="flex cursor-pointer items-center gap-1.5">
+            <input v-model="subPrefs.fade" type="checkbox" class="h-3.5 w-3.5 accent-[#00AEEC]" />淡入淡出
+          </label>
+        </div>
+        <button
+          class="self-start rounded border border-white/15 px-2.5 py-1 text-white/70 transition hover:border-white/30 hover:text-white"
+          @click="applySubDefaults"
+        >恢复默认设置</button>
       </div>
     </div>
 
@@ -2471,5 +2641,21 @@ const STROKE_ITEMS = [
    BIcon 用 v-html 注入图标内容，scoped 样式够不到，得 :deep。 */
 .dm-on :deep(path:nth-of-type(2)) {
   fill: #00a1d6;
+}
+
+/* 字幕淡入淡出（设置里的开关）：cue 每变一次，浮窗里的 span 拿 :key 重建一次，
+   重建那瞬吃一发淡入动画——开关关掉时不加这个类，字硬切。 */
+.sub-fade-in {
+  animation: sub-fade-in 0.28s ease both;
+}
+@keyframes sub-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 拖拽中给一枚蓝虚线描边：手底下知道自己在拖什么，松手即消。 */
+.sub-dragging {
+  outline: 1px dashed rgba(0, 174, 236, 0.8);
+  outline-offset: 2px;
 }
 </style>
