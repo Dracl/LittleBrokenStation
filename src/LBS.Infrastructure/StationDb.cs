@@ -91,7 +91,8 @@ public sealed partial class StationDb
                     video_id  INTEGER NOT NULL,
                     page_idx  INTEGER,
                     kind      TEXT NOT NULL,
-                    rel_path  TEXT NOT NULL
+                    rel_path  TEXT NOT NULL,
+                    label     TEXT
                 );
                 CREATE TABLE IF NOT EXISTS video_codecs (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -321,6 +322,9 @@ public sealed partial class StationDb
         // Skipped 出口旗：引擎历史台账里有同名行时，重投会在门口被打回（判重键 = (cid, 需要下载的内容)）。
         // 站长点「销档重下」时置 1，提交链读到它就带 RedownloadCompleted 走正门，提交完（无论成败）自动清零。
         EnsureColumn(connection, "videos", "force_redownload", "INTEGER NOT NULL DEFAULT 0");
+        // 字幕轨真名（lan_doc）：扫盘那一刻从文件名解析落库（_中文.srt → 中文），面板不再猜。
+        // 引擎写盘后元数据就只剩文件名（vendor 只交路径），这是唯一的认名时机；其余 kind 用不上这列。
+        EnsureColumn(connection, "artifacts", "label", "TEXT");
         // 主版本编码实测缓存（'avc'/'hevc'/'av1'）：首次看片时 ffprobe 实测回填，之后不再探。
         EnsureColumn(connection, "pages", "codec", "TEXT");
         // 分轨码率实测缓存（kbps，给播放页版本行显示用；前端不现探，数据得后端备齐）+ 防抖戳：
@@ -2046,6 +2050,10 @@ public sealed partial class StationDb
                 var pageIdx = GetColumn(connection, "SELECT idx FROM pages WHERE id = $id;", pageRowId);
                 var rel = ToRelative(file, videosRoot);
 
+                // 字幕轨真名（lan_doc）在这一刻落库：引擎多轨写盘形状是 {base}_{lan_doc}.srt
+                // （同语言撞车再追 _{trackId}）；过了这村，vendor 交出的只剩路径字符串。
+                var trackLabel = kind == "subtitle" ? ParseSubtitleTrackLabel(suffix) : null;
+
                 if (kind == "video")
                 {
                     videoRel ??= rel;
@@ -2063,21 +2071,33 @@ public sealed partial class StationDb
                 else
                 {
                     using var exists = connection.CreateCommand();
-                    exists.CommandText = "SELECT COUNT(1) FROM artifacts WHERE video_id = $id AND rel_path = $rel;";
+                    exists.CommandText = "SELECT label FROM artifacts WHERE video_id = $id AND rel_path = $rel;";
                     exists.Parameters.AddWithValue("$id", videoId);
                     exists.Parameters.AddWithValue("$rel", rel);
-                    if (Convert.ToInt64(exists.ExecuteScalar()) > 0)
+                    var known = exists.ExecuteScalar();
+                    if (known is not null)
                     {
+                        // 已登记：不重复插行；早年扫盘不认多轨、老行欠的真名在这里补上（重扫一次就自愈）。
+                        if (trackLabel is not null && (known is DBNull || string.IsNullOrWhiteSpace(known as string)))
+                        {
+                            using var backfill = connection.CreateCommand();
+                            backfill.CommandText = "UPDATE artifacts SET label = $label WHERE video_id = $id AND rel_path = $rel;";
+                            backfill.Parameters.AddWithValue("$label", trackLabel);
+                            backfill.Parameters.AddWithValue("$id", videoId);
+                            backfill.Parameters.AddWithValue("$rel", rel);
+                            backfill.ExecuteNonQuery();
+                        }
                         continue;
                     }
                 }
 
                 using var insert = connection.CreateCommand();
-                insert.CommandText = "INSERT INTO artifacts (video_id, page_idx, kind, rel_path) VALUES ($id, $pageIdx, $kind, $rel);";
+                insert.CommandText = "INSERT INTO artifacts (video_id, page_idx, kind, rel_path, label) VALUES ($id, $pageIdx, $kind, $rel, $label);";
                 insert.Parameters.AddWithValue("$id", videoId);
                 insert.Parameters.AddWithValue("$pageIdx", (object?)pageIdx ?? DBNull.Value);
                 insert.Parameters.AddWithValue("$kind", kind);
                 insert.Parameters.AddWithValue("$rel", rel);
+                insert.Parameters.AddWithValue("$label", (object?)trackLabel ?? DBNull.Value);
                 insert.ExecuteNonQuery();
                 archived++;
             }
@@ -2105,8 +2125,43 @@ public sealed partial class StationDb
             ".mp4" or ".mkv" or ".flv" or ".webm" => "video",
             ".ass" or ".xml" => "danmaku",
             ".srt" or ".vtt" or ".json" => "subtitle",
+            // 多轨字幕 11-11 才认：引擎的轨文件带 _{lan_doc} 尾（_中文.srt / _English_1234567.srt），
+            // 早年只认全等 .srt，多轨文件全被扫盘漏登（BV1Q44v6RE2V 三轨只进账一枚的病灶之一）。
+            // 下划线开头是轨尾的铁证；盘上另有 .comments.json 那枚中缀 json，显式排掉别误吞。
+            _ when lower.StartsWith('_')
+                && !lower.EndsWith(".comments.json")
+                && (lower.EndsWith(".srt") || lower.EndsWith(".vtt") || lower.EndsWith(".json")) => "subtitle",
             _ => null,
         };
+    }
+
+    // 从轨尾段取真名：_中文.srt → 中文；_English_1234567.srt → English（撞车追的纯数字 trackId 尾不是名字）。
+    // 认不出形（空名、长得不像名）交 null，前端吃「字幕 N」笨名兜底；取原始大小写（English 不许被抹成小写）。
+    private static string? ParseSubtitleTrackLabel(string suffixAfterBase)
+    {
+        var lower = suffixAfterBase.ToLowerInvariant();
+        if (!lower.StartsWith('_') || lower.EndsWith(".comments.json"))
+        {
+            return null;
+        }
+
+        var ext = Path.GetExtension(suffixAfterBase);
+        if (ext.Length == 0 || suffixAfterBase.Length <= ext.Length + 1)
+        {
+            return null;
+        }
+
+        var inner = suffixAfterBase[1..(suffixAfterBase.Length - ext.Length)];
+        var cut = inner.LastIndexOf('_');
+        if (cut >= 0 && cut < inner.Length - 1 && inner[(cut + 1)..].All(char.IsDigit))
+        {
+            inner = inner[..cut]; // 同语言撞车追的 _{trackId} 尾，不是名字的一部分
+        }
+
+        inner = inner.Trim();
+        // 纯数字不当名（那是整个 trackId 尾而非语言名）；40 字够装任何 lan_doc，超长不像名。
+        // 认不出形一律交 null 吃前端笨名兜底，宁笨不猜。
+        return inner is { Length: > 0 and <= 40 } && !inner.All(char.IsAsciiDigit) ? inner : null;
     }
 
     private static string ToRelative(string file, string videosRoot)
@@ -3431,10 +3486,11 @@ public sealed partial class StationDb
             }
         }
 
-        var extras = new List<(int? PageIdx, string Kind, string Rel)>();
+        var extras = new List<(int? PageIdx, string Kind, string Rel, string? Label)>();
         using (var artifactCmd = connection.CreateCommand())
         {
-            artifactCmd.CommandText = "SELECT page_idx, kind, rel_path FROM artifacts WHERE video_id = $id;";
+            // 按 id 序：字幕「字幕 1/2/3」笨名编号与多轨陈列顺序得稳定，不能仰仗 SQLite 心气。
+            artifactCmd.CommandText = "SELECT page_idx, kind, rel_path, label FROM artifacts WHERE video_id = $id ORDER BY id;";
             artifactCmd.Parameters.AddWithValue("$id", id);
             using var reader = artifactCmd.ExecuteReader();
             while (reader.Read())
@@ -3442,7 +3498,8 @@ public sealed partial class StationDb
                 extras.Add((
                     reader.IsDBNull(0) ? null : reader.GetInt32(0),
                     reader.GetString(1),
-                    reader.GetString(2)));
+                    reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3)));
             }
         }
 
@@ -3483,7 +3540,7 @@ public sealed partial class StationDb
             p.Duration,
             p.VideoRel is null ? null : "/media/" + p.VideoRel,
             DanmakuRel(extras, p.Index) is { } dm ? "/media/" + dm : null,
-            extras.Where(e => e.Kind == "subtitle" && e.PageIdx == p.Index).Select(e => "/media/" + e.Rel).ToList(),
+            SubtitleTracksOf(extras, p.Index),
             codecRows.Where(c => c.PageIdx == p.Index).Select(c => new CodecVersion(
                 c.Codec,
                 c.Status,
@@ -3536,12 +3593,28 @@ public sealed partial class StationDb
     /// 一个分 P 的弹幕指针：引擎常常 .ass/.xml 两行台账各写一份，而前端只会解 ass。
     /// FirstOrDefault 撞上 xml 那行，重拉完看着就像「没生效」，所以按扩展名优取 ass。
     /// </summary>
-    private static string? DanmakuRel(IReadOnlyList<(int? PageIdx, string Kind, string Rel)> extras, int pageIdx) =>
+    private static string? DanmakuRel(IReadOnlyList<(int? PageIdx, string Kind, string Rel, string? Label)> extras, int pageIdx) =>
         extras
             .Where(e => e.Kind == "danmaku" && e.PageIdx == pageIdx)
             .OrderByDescending(e => e.Rel.EndsWith(".ass", StringComparison.OrdinalIgnoreCase))
             .Select(e => (string?)e.Rel)
             .FirstOrDefault();
+
+    /// <summary>
+    /// 面板字幕账（带库里真名）：有带名轨就只列带名轨——引擎每次下载都会另备一枚无名默认副本
+    /// （{base}.srt，给外部播放器自动挂载用），列进面板就是重复轨；老单轨时代只有无名副本
+    /// （当年扫盘不认轨文件），那也照列，一枚顶用。无名轨的 label 交 null，前端吃「字幕 N」笨名。
+    /// </summary>
+    private static IReadOnlyList<SubtitleTrackRef> SubtitleTracksOf(
+        IReadOnlyList<(int? PageIdx, string Kind, string Rel, string? Label)> extras, int pageIdx)
+    {
+        var rows = extras.Where(e => e.Kind == "subtitle" && e.PageIdx == pageIdx).ToList();
+        var labeled = rows.Where(e => !string.IsNullOrWhiteSpace(e.Label)).ToList();
+        var chosen = labeled.Count > 0 ? labeled : rows;
+        return chosen
+            .Select(e => new SubtitleTrackRef("/media/" + e.Rel, string.IsNullOrWhiteSpace(e.Label) ? null : e.Label!.Trim()))
+            .ToList();
+    }
 }
 
 /// <summary>站长室页头总览快照：库存分布 + 磁盘体积 + 全站互动真数。</summary>

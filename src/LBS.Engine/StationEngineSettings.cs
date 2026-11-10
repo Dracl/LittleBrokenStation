@@ -282,8 +282,11 @@ public static class StationEngineSettingsMapper
             content.DownloadSubtitle,
             content.DownloadCover)
         {
-            PreferredSubtitleLanguage = content.PreferredSubtitleLanguage,
-            PreferredSubtitleType = content.PreferredSubtitleType,
+            // 分站恒抓全轨（11-11 站长拍板）：语言/类型偏好不再下传——它是提交即定生的筛子，
+            // 多语 AI 轨会被筛剩一条（BV1Q44v6RE2V 三轨只进站一条的病灶）。
+            // 设置里的偏好值原样留着（面板已标注停用），要恢复筛选只改回这两行。
+            PreferredSubtitleLanguage = SubtitleLanguagePreference.Unspecified,
+            PreferredSubtitleType = SubtitleTypePreference.Standard,
         };
 
         return new HeadlessSubmissionOptions

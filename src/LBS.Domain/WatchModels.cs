@@ -91,6 +91,10 @@ public sealed record CodecVersion(
     string? QualityName = null,
     int? AudioQualityId = null);
 
+/// <summary>字幕轨指针：url 给播放器拉文件，label 是扫盘时从引擎写盘文件名解析的轨真名（lan_doc，
+/// 如「中文 / English / 日本語」）；老单轨时代只有无名默认副本，label 交 null，前端吃「字幕 N」笨名。</summary>
+public sealed record SubtitleTrackRef(string Url, string? Label);
+
 /// <summary>观看页的一个分 P：元数据 + 本地文件（相对 videos 根，正斜杠）。</summary>
 public sealed record PageWithFiles(
     int Index,
@@ -99,7 +103,7 @@ public sealed record PageWithFiles(
     string? DurationText,
     string? VideoUrl,
     string? DanmakuUrl,
-    IReadOnlyList<string> SubtitleUrls,
+    IReadOnlyList<SubtitleTrackRef> SubtitleUrls,
     IReadOnlyList<CodecVersion> CodecVersions = null!,
     string? Codec = null,
     long? MainBytes = null,

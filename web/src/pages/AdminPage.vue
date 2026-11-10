@@ -3646,15 +3646,17 @@ onUnmounted(() => {
               <label class="flex items-center gap-1.5"><input v-model="engDraft.video.isTranscodingAacToMp3" type="checkbox" class="accent-adminAccent" />AAC 转 MP3</label>
             </div>
             <div class="mt-3 grid grid-cols-2 gap-3">
+              <!-- 字幕恒抓全轨（11-11 站长拍板）：这两枚偏好不再下传引擎（它是把多语 AI 轨筛剩一条的闸），
+                   停用不拆：值留在草稿里不丢，要恢复筛选改回 StationEngineSettings 那两行即可。 -->
               <div>
-                <label class="mb-1 block text-xs text-white/40">字幕语言偏好</label>
-                <select v-model.number="engDraft.video.content.preferredSubtitleLanguage" class="eng-input">
+                <label class="mb-1 block text-xs text-white/40">字幕语言偏好（已停用：字幕恒抓全轨）</label>
+                <select v-model.number="engDraft.video.content.preferredSubtitleLanguage" class="eng-input opacity-50" disabled>
                   <option v-for="[id, name] in LANG_OPTIONS" :key="id" :value="id">{{ name }}</option>
                 </select>
               </div>
               <div>
-                <label class="mb-1 block text-xs text-white/40">字幕类型偏好</label>
-                <select v-model.number="engDraft.video.content.preferredSubtitleType" class="eng-input">
+                <label class="mb-1 block text-xs text-white/40">字幕类型偏好（已停用：同上）</label>
+                <select v-model.number="engDraft.video.content.preferredSubtitleType" class="eng-input opacity-50" disabled>
                   <option v-for="[id, name] in TYPE_OPTIONS" :key="id" :value="id">{{ name }}</option>
                 </select>
               </div>

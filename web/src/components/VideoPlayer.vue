@@ -12,7 +12,7 @@ import { member } from '../memberStore'
 import { requestConfirm } from '../confirmStore'
 
 const props = defineProps({
-  page: { type: Object, default: null }, // { videoUrl, danmakuUrl, subtitleUrls, index }
+  page: { type: Object, default: null }, // { videoUrl, danmakuUrl, subtitleUrls:[{url,label}], index }
   status: { type: Number, default: 0 },
   title: { type: String, default: '' },
   bvid: { type: String, default: '' },
@@ -691,39 +691,26 @@ function fmtVersionSize(n) {
 // ─── 字幕（多轨：全部解析，摆哪一路由这里说了算）───
 // 11-11 深夜起自绘：原生 <track> 的 ::cue 染不了色、定不了位、更拖不动，站长要的 B 站式设置面板与
 // 可拖浮窗只能分站自己摆字。到货加工（fetch → 转 VTT → 解析 cue）与浮窗逻辑都在下面这一段。
-// 字幕只有路径这一本账：artifacts 表 kind='subtitle' 存的是 rel_path，语言、人工/AI 全没落库，
-// 所以轨名只能从文件名猜，库里没写的事前端一个字都不许编。
+// 字幕账两行：url 拉文件，label 是扫盘时落库的轨真名（lan_doc；11-11 前全没落库，轨名只能猜，
+// 现在库里写什么屏上摆什么，库里没写的一律「字幕 N」笨名，前端一个字都不许编）。
+// 后端给的是 [{url,label}]（WatchModels.SubtitleTrackRef）；裸串是开发期老包的兼容形，兜一手。
 const subPanel = ref(false)
 const subSettingsOpen = ref(false) // 字幕设置这一格开没开：当场状态，不值得进本机账
 const subIdx = ref(0)
-const subtitleUrls = computed(() => props.page?.subtitleUrls ?? [])
+const subtitleTracks = computed(() =>
+  (props.page?.subtitleUrls ?? []).map((s) =>
+    typeof s === 'string'
+      ? { url: s, label: '' }
+      : { url: String(s?.url ?? ''), label: String(s?.label ?? '').trim() },
+  ),
+)
 
-// 轨名认得出来就用它，认不出来给「字幕 1 / 字幕 2」这种笨名字。
-// 引擎写盘的形状是 `{base}_{LanDoc}.srt`，同一种语言撞车时再追一枚 `_{trackId}` 尾
-// （见 vendor 里 DownloadOutputLayout.GetSubtitleTrackPath 与 DownloadArtifactWriter 的 fileLabel）。
-// 铁律：这一路无论拿到什么脏名字都不许抛错——一个标签而已，宁可笨到底，也不把整台播放器带走。
-function subLabel(url, i) {
-  const dumb = `字幕 ${i + 1}`
-  try {
-    if (typeof url !== 'string' || !url) return dumb
-    let name = url.split('?')[0].split('#')[0]
-    name = name.slice(name.lastIndexOf('/') + 1)
-    try {
-      name = decodeURIComponent(name) // 名字里有光秃秃的 % 就当它没编码，交给下面正则一起判
-    } catch {
-      /* 保持原样 */
-    }
-    name = name.replace(/\.(srt|vtt|json)$/i, '') // 台账里 .srt/.vtt/.json 都算 subtitle（StationDb 那张 switch）
-    const segs = name.split('_')
-    if (segs.length < 2) return dumb // 光秃秃一个基名：尾段就是片名本身，跟语言无关
-    const tail = segs[segs.length - 1].trim()
-    // 尾段得像个语言名：至少有一个字（字母或汉字都算），不是纯数字（那是重名轨的 trackId 尾），
-    // 也不是 P3 这种分 P 尾缀（成片基名自己带的），也别长成一整句片名。
-    if (!tail || !/\p{L}/u.test(tail) || /^\d+$/.test(tail) || /^p\d+$/i.test(tail) || tail.length > 24) return dumb
-    return tail
-  } catch {
-    return dumb
-  }
+// 轨名吃库里真名（扫盘时从引擎写盘文件名解析落库），没名按顺序给「字幕 1 / 字幕 2」笨名。
+// 从 URL 尾段现猜的那套随轨名落库退役——同一个名字两处解读，迟早各说各话。
+// 铁律不变：这一路无论拿到什么脏形状都不许抛错——一个标签而已，宁可笨到底，也不把整台播放器带走。
+function subLabel(track, i) {
+  const named = String(track?.label ?? '').trim()
+  return named || `字幕 ${i + 1}`
 }
 
 // ─── 字幕设置（本机账，utils/studioPrefs 同族：周报调参台／分享海报棚那个脾气）───
@@ -801,16 +788,16 @@ function pickSubtitle(i) {
 // watch 的账键用 joined 串：观看页 5 秒轮询每轮回新 body，盯数组引用会每 5 秒白重拉一遍字幕。
 const subCues = ref([]) // 每条轨的 cue 清单：[[{start,end,text}], ...]
 let subFetchSeq = 0
-const subLedgerKey = computed(() => subtitleUrls.value.join('|'))
+const subLedgerKey = computed(() => subtitleTracks.value.map((t) => t.url).join('|'))
 
 async function refreshSubtitleSources() {
   const tok = ++subFetchSeq
   const tracks = []
-  for (const u of subtitleUrls.value) {
+  for (const t of subtitleTracks.value) {
     let cues = []
     try {
-      const res = await fetch(u)
-      if (res.ok) cues = parseVttCues(subtitleTextToVtt(u, await res.text()))
+      const res = await fetch(t.url)
+      if (res.ok) cues = parseVttCues(subtitleTextToVtt(t.url, await res.text()))
     } catch {
       /* 断线或死链就当这条轨空着：连接回来、账目变动时会再来 */
     }
@@ -823,7 +810,7 @@ async function refreshSubtitleSources() {
 // 每个分 P 的轨数可以不一样：上一 P 选到第 3 轨，这一 P 只有一轨时得把指针拉回 0，
 // 否则谁都轮不上，看着像字幕坏了。
 watch(subLedgerKey, () => {
-  if (subIdx.value > subtitleUrls.value.length - 1) subIdx.value = 0
+  if (subIdx.value > subtitleTracks.value.length - 1) subIdx.value = 0
   refreshSubtitleSources()
 }, { immediate: true })
 
@@ -838,7 +825,7 @@ const subActiveText = computed(() => {
 // 首版只认 subSettingsOpen，而它是当场状态：面板关了它仍留 true，于是台词一断档，
 // 「字幕会在这里」就顶着空档反复闪现（站长 11-11 实机报的这单）。拖拽中永远可摆，不受此限。
 const subFloatShown = computed(() =>
-  subtitleUrls.value.length > 0 && subOn.value &&
+  subtitleTracks.value.length > 0 && subOn.value &&
   (!!subActiveText.value || (subPanel.value && subSettingsOpen.value) || subDragging.value),
 )
 
@@ -2167,10 +2154,10 @@ const STROKE_ITEMS = [
         </button>
 
         <!-- 字幕（多轨）：片子里真躺着字幕文件才上桌（无轨时这枚钮根本没东西可摆）。
-             判的是 subtitleUrls 而不是 page.subtitleUrls?.length：控制条不在 v-if="page?.videoUrl" 的盒子里，
-             page 为空时直接读它会敲在 null 上，走 subtitleUrls 那枚已经兼容空 page 的计算属性。 -->
+             判的是 subtitleTracks 而不是 page.subtitleUrls?.length：控制条不在 v-if="page?.videoUrl" 的盒子里，
+             page 为空时直接读它会敲在 null 上，走 subtitleTracks 那枚已经兼容空 page 的计算属性。 -->
         <button
-          v-if="subtitleUrls.length"
+          v-if="subtitleTracks.length"
           class="flex h-8 items-center justify-center rounded px-1.5 text-xs hover:bg-white/10"
           :class="subPanel ? 'text-stationBlue' : ''"
           title="字幕"
@@ -2350,7 +2337,7 @@ const STROKE_ITEMS = [
     <!-- 字幕面板：照弹幕设定面板的形状。顶部那枚总开关独立于选轨（只有一轨时也得能关掉），
          底下每轨一行单选，选中那行吃现成的蓝底选中态。 -->
     <div
-      v-if="subPanel && subtitleUrls.length"
+      v-if="subPanel && subtitleTracks.length"
       class="absolute bottom-14 right-3 z-20 w-[300px] rounded-xl bg-[#222]/95 p-3.5 text-xs text-white/90 shadow-xl backdrop-blur"
       @click.stop
       @mousemove="wakeControls"
@@ -2375,14 +2362,14 @@ const STROKE_ITEMS = [
       <span class="mb-1 block text-white/60">字幕轨</span>
       <div class="mb-2 flex flex-col gap-1">
         <button
-          v-for="(u, i) in subtitleUrls"
+          v-for="(t, i) in subtitleTracks"
           :key="i"
           class="flex items-center justify-between rounded px-2 py-1.5 transition"
           :class="subOn && i === subIdx ? 'bg-stationBlue text-white' : 'bg-white/10 hover:bg-white/20'"
-          :title="u"
+          :title="t.url"
           @click="pickSubtitle(i)"
         >
-          <span class="min-w-0 truncate">{{ subLabel(u, i) }}</span>
+          <span class="min-w-0 truncate">{{ subLabel(t, i) }}</span>
           <span v-if="subOn && i === subIdx" class="ml-2 shrink-0 text-[10px] whitespace-nowrap text-white/50">显示中</span>
         </button>
       </div>

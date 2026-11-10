@@ -86,12 +86,101 @@ public sealed class ArchiveTests : IDisposable
         var page = Assert.Single(data.Pages);
         Assert.Equal("/media/测试标题/1-正片-1080P-AVC.mp4", page.VideoUrl);
         Assert.Equal("/media/测试标题/1-正片-1080P-AVC.ass", page.DanmakuUrl);
-        Assert.Equal(new[] { "/media/测试标题/1-正片-1080P-AVC.srt" }, page.SubtitleUrls);
+        var sub = Assert.Single(page.SubtitleUrls); // 老单轨时代只有无名默认副本：照列，label 交 null 吃前端笨名
+        Assert.Equal("/media/测试标题/1-正片-1080P-AVC.srt", sub.Url);
+        Assert.Null(sub.Label);
         Assert.Equal("/media/测试标题/1-正片-1080P-AVC.Cover.jpg", data.CoverUrl); // 本地封面优先
 
         // 重扫安全：不重复归档
         var (again, _) = _db.FinalizeArtifacts(videoId, _videosDir);
         Assert.Equal(0, again);
+    }
+
+    [Fact]
+    public void 多轨字幕扫盘_真名落库_无名默认副本不撞面板()
+    {
+        // BV1Q44v6RE2V 实机形态：接口回三轨，引擎写盘带 _{lan_doc} 尾，另备一枚无名默认副本。
+        // 早年扫盘只认全等 .srt，两枚闸叠着只剩一轨无名（站长 11-11 实机报的这单）。
+        var videoId = AddVideo("BV1Q44v6RE2V");
+        var dir = Path.Combine(_videosDir, "多轨测试");
+        Directory.CreateDirectory(dir);
+        var @base = Path.Combine(dir, "1-正片-1080P-AVC");
+        File.WriteAllText(@base + ".mp4", "video");
+        File.WriteAllText(@base + ".srt", "default-copy"); // 给外部播放器自动挂载的无名默认副本
+        File.WriteAllText(@base + "_中文.srt", "sub-zh");
+        File.WriteAllText(@base + "_English_1234567.srt", "sub-en"); // 同语言撞车追 trackId 尾的形状
+        File.WriteAllText(@base + "_日本語.srt", "sub-ja");
+        File.WriteAllText(@base + ".comments.json", "[]"); // 中缀 json 不是字幕轨，误吞就是脏账
+
+        _db.SaveSubmissionMetadata(
+            videoId,
+            new VideoMetaDraft("UP", 1, "区", "时间", "简介", "播放"),
+            new[] { new PageDraft("task-1", 1, "正片", 456, "03:30", @base) });
+
+        var (archived, missing) = _db.FinalizeArtifacts(videoId, _videosDir);
+        Assert.Equal(0, missing);
+        Assert.Equal(5, archived); // mp4 + 无名副本 + 三枚真名轨；.comments.json 不登
+
+        var page = Assert.Single(_db.GetWatchData("BV1Q44v6RE2V")!.Pages);
+        Assert.Equal(3, page.SubtitleUrls.Count); // 有带名轨就只列带名轨，无名副本退场不撞车
+        Assert.Equal(
+            new[] { "English", "中文", "日本語" },
+            page.SubtitleUrls.Select(t => t.Label).OrderBy(x => x, StringComparer.Ordinal).ToArray());
+        Assert.All(page.SubtitleUrls, t => Assert.EndsWith(".srt", t.Url));
+
+        // 重扫安全：不重复登记、不抹已有的名
+        var (again, _) = _db.FinalizeArtifacts(videoId, _videosDir);
+        Assert.Equal(0, again);
+        page = Assert.Single(_db.GetWatchData("BV1Q44v6RE2V")!.Pages);
+        Assert.Equal(3, page.SubtitleUrls.Count);
+    }
+
+    [Fact]
+    public void 字幕轨名解析_只认轨尾_脏形交空不吃亏()
+    {
+        // 认名的边界全挂在扫盘这一趟：撞车尾剔纯数字；脏形（纯数字尾、超长尾）认不出交 null。
+        // 另一枚闸也一并钉死：有带名轨时无名轨不上台（SubtitleTracksOf 的去重规则）。
+        var videoId = AddVideo("BV1TrackLabel1");
+        var dir = Path.Combine(_videosDir, "轨名边界");
+        Directory.CreateDirectory(dir);
+        var @base = Path.Combine(dir, "1-正片-1080P-AVC");
+        File.WriteAllText(@base + ".mp4", "video");
+        File.WriteAllText(@base + "_中文_998877.srt", "撞车尾");
+        File.WriteAllText(@base + "_999.srt", "纯数字尾");
+
+        _db.SaveSubmissionMetadata(
+            videoId,
+            new VideoMetaDraft("UP", 1, "区", "时间", "简介", "播放"),
+            new[] { new PageDraft("task-1", 1, "正片", 456, "03:30", @base) });
+        _db.FinalizeArtifacts(videoId, _videosDir);
+
+        var page = Assert.Single(_db.GetWatchData("BV1TrackLabel1")!.Pages);
+        var zh = Assert.Single(page.SubtitleUrls); // 脏形无名被带名轨挤下台（默认副本同一条退场规则）
+        Assert.Equal("中文", zh.Label); // 撞车尾剔纯数字 trackId，只留真名
+    }
+
+    [Fact]
+    public void 字幕全无名_脏形也照列_吃笨名兜底()
+    {
+        // 纯数字尾与 41 字超长尾都不像名：认不出交 null，但不得被拒登——
+        // 宁可屏上摆「字幕 1/2」笨名，也不能把真存在的轨藏进盘里看不见。
+        var videoId = AddVideo("BV1TrackDirty1");
+        var dir = Path.Combine(_videosDir, "脏形轨");
+        Directory.CreateDirectory(dir);
+        var @base = Path.Combine(dir, "1-正片-1080P-AVC");
+        File.WriteAllText(@base + ".mp4", "video");
+        File.WriteAllText(@base + "_一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一.vtt", "超长尾"); // 41 字，不像名
+        File.WriteAllText(@base + "_999.srt", "纯数字尾");
+
+        _db.SaveSubmissionMetadata(
+            videoId,
+            new VideoMetaDraft("UP", 1, "区", "时间", "简介", "播放"),
+            new[] { new PageDraft("task-1", 1, "正片", 456, "03:30", @base) });
+        _db.FinalizeArtifacts(videoId, _videosDir);
+
+        var page = Assert.Single(_db.GetWatchData("BV1TrackDirty1")!.Pages);
+        Assert.Equal(2, page.SubtitleUrls.Count); // 全无名 → 照列全量，前端吃「字幕 N」笨名
+        Assert.All(page.SubtitleUrls, t => Assert.Null(t.Label));
     }
 
     [Fact]
