@@ -1694,7 +1694,7 @@ function wakeControls() {
   hideTimer = setTimeout(() => {
     // 真缓冲（waiting）期间不落帘：素圈住在条里，条隐圈灭会让用户以为片子死了；缓冲一到货自恢复 5 秒落帘节奏。
     if (playing.value && !waiting.value && !rateMenu.value && !qualityMenu.value && !gearPanel.value && !playPanel.value && !statsOpen.value && !ctx.visible) showControls.value = false
-  }, 5000) // 站长口径：与续播小泡同步驻留五秒，鼠标一碰重新计时
+  }, 3000) // 鼠标一碰重新计时；首版跟续播小泡同步驻五秒，站长 11-11 实机嫌拖沓，缩到三秒（B 站同量级）；小泡那五秒是另份契约，不动
 }
 
 // ---- 右键菜单 ----
