@@ -75,24 +75,38 @@ function spaceHref(p) {
         <span class="text-xs text-inkFaint">{{ team.length }}人</span>
       </div>
       <div class="mt-2.5 grid grid-cols-3 gap-x-2 gap-y-3">
-        <a
+        <!-- 11-11 拆链重摆：整卡套一枚大 <a>、里面又嵌 RouterLink 是非法 HTML（a 套 a），
+             浏览器自己拆修 DOM 后 hover 判区失控——鼠标停在「空间」钮上名字也跟着划线（站长实机报的这单）。
+             现按各自命门分家：头像与名字是两枚独立的外链（直达 B 站空间），名字只悬自己才下划线；
+             角色纯文本；「空间」胶囊自管自己。没 mid 的成员三样全退回纯文本/无链，不给空链留缝。 -->
+        <div
           v-for="(p, i) in team"
           :key="`${p.mid ?? 'x'}-${i}`"
-          :href="spaceHref(p)"
-          :target="p.mid != null ? '_blank' : undefined"
-          rel="noreferrer"
-          class="group/mate flex min-w-0 flex-col items-center text-center"
-          :title="p.role ? `${p.name} · ${p.role}` : p.name"
+          class="flex min-w-0 flex-col items-center text-center"
         >
-          <img
-            :src="mateFace(p, i)"
-            :alt="p.name"
-            loading="lazy"
-            referrerpolicy="no-referrer"
-            class="h-12 w-12 rounded-full bg-white/5 object-cover ring-1 ring-black/5 dark:ring-white/10"
-            @error="onMateError(i)"
-          />
-          <span class="mt-1.5 w-full truncate text-xs text-stationPink transition group-hover/mate:underline">{{ p.name }}</span>
+          <component
+            :is="p.mid != null ? 'a' : 'div'"
+            v-bind="p.mid != null ? { href: spaceHref(p), target: '_blank', rel: 'noreferrer' } : {}"
+            class="min-w-0"
+            :title="p.role ? `${p.name} · ${p.role}` : p.name"
+          >
+            <img
+              :src="mateFace(p, i)"
+              :alt="p.name"
+              loading="lazy"
+              referrerpolicy="no-referrer"
+              class="h-12 w-12 rounded-full bg-white/5 object-cover ring-1 ring-black/5 dark:ring-white/10"
+              @error="onMateError(i)"
+            />
+          </component>
+          <component
+            :is="p.mid != null ? 'a' : 'span'"
+            v-bind="p.mid != null ? { href: spaceHref(p), target: '_blank', rel: 'noreferrer' } : {}"
+            class="mt-1.5 w-full truncate text-xs text-stationPink transition hover:underline"
+            :title="p.name"
+          >
+            {{ p.name }}
+          </component>
           <span class="mt-0.5 w-full truncate text-[11px] text-inkFaint">{{ p.role || '创作' }}</span>
           <!-- 站内入口（站长 11-02 点头要）：名字照旧直开 B 站空间，另挂一颗小蓝胶囊进分站里的这一位。
                这位分站一篇都没收过也不打紧 —— UP 空间那页自会说「分站还没收过这位的稿件」。 -->
@@ -104,7 +118,7 @@ function spaceHref(p) {
           >
             空间
           </RouterLink>
-        </a>
+        </div>
       </div>
     </template>
 
