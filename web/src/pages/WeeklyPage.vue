@@ -687,8 +687,8 @@ function loadQrScript() {
 async function ensureQr() {
   const o = posterOpts.value
   if (!o.showQr || !data.value) return
-  const w = WEEK_ID_RE.test(data.value.weekLabel ?? '') ? `?w=${encodeURIComponent(data.value.weekLabel)}` : ''
-  const text = `${location.origin}/weekly${w}`
+  // 码文与「复制图链」的链接同一张嘴（posterShareUrl），不许两头各拼各的
+  const text = posterShareUrl()
   if (qrCanvasCache && qrTextCache === text) return
   // 换周先作废旧码：新码没成之前不许拿旧周的码充数（扫码扫到上一周就是假凭据）
   if (text !== qrTextCache) { qrCanvasCache = null; qrTextCache = '' }
@@ -749,6 +749,67 @@ async function downloadPoster() {
   } catch {
     alert('海报没画出来，换个浏览器再试')
   }
+}
+
+// 本周周报的绝对地址：底部二维码的码文与「复制图链」的链接同一张嘴（11-11 加复制钮时并轨，
+// 防将来一头改参数另一头漂——扫码扫到的和粘出去的必须是同一期）。
+function posterShareUrl() {
+  const w = WEEK_ID_RE.test(data.value?.weekLabel ?? '') ? `?w=${encodeURIComponent(data.value.weekLabel)}` : ''
+  return `${location.origin}/weekly${w}`
+}
+
+/* 导出图进剪贴板（11-11 站长点名，手法移植自分享海报棚 SharePosterStudio）：
+   同一支笔 offscreen 重画一张 2x，toBlob 走 ClipboardItem；浏览器不配合就钮上认栽，下载钮照旧能走。 */
+const posterCopyState = ref('idle') // idle | ok | fail
+let posterCopyTimer = null
+function flashPosterCopy(stateRef) {
+  clearTimeout(posterCopyTimer)
+  posterCopyTimer = setTimeout(() => { stateRef.value = 'idle' }, 1600)
+}
+
+async function renderPosterOffscreen() {
+  await ensurePosterFont() // 字体/码都是模块级单例，二调即过；与下载钮同一路铺垫
+  await ensureQr()
+  const cv = document.createElement('canvas')
+  renderPosterOn(cv, POSTER_RENDER_SCALE)
+  return cv
+}
+
+async function posterCopyImage() {
+  try {
+    if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') throw new Error('unsupported')
+    const cv = await renderPosterOffscreen()
+    const blob = await new Promise((resolve, reject) => {
+      cv.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob 空'))), 'image/png')
+    })
+    await navigator.clipboard.write([new window.ClipboardItem({ 'image/png': blob })])
+    posterCopyState.value = 'ok'
+  } catch {
+    posterCopyState.value = 'fail'
+  }
+  flashPosterCopy(posterCopyState)
+}
+
+/* 图 + 链接同剪：只交两副面孔 text/html（海报 2x jpeg base64 内联 <img> + 链接段落）+ text/plain（纯链接），
+   绝不带 image/png——分享棚 11-05 贴板实验定案：QQ 见位图只吞图丢 HTML。jpeg 0.85 同一锅照抄（PNG base64 原尺寸 ~4MB 会显不出）；
+   文字只要链接本身，不要标题也不要分隔。粘聊天窗＝图，粘输入框＝链接。 */
+const posterCopyBothState = ref('idle')
+async function posterCopyImageLink() {
+  try {
+    if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') throw new Error('unsupported')
+    const cv = await renderPosterOffscreen()
+    const url = posterShareUrl()
+    const dataUrl = cv.toDataURL('image/jpeg', 0.85)
+    const html = `<p><img src="${dataUrl}"></p><p><a href="${url}">${url}</a></p>`
+    await navigator.clipboard.write([new window.ClipboardItem({
+      'text/plain': new Blob([url], { type: 'text/plain' }),
+      'text/html': new Blob([html], { type: 'text/html' }),
+    })])
+    posterCopyBothState.value = 'ok'
+  } catch {
+    posterCopyBothState.value = 'fail'
+  }
+  flashPosterCopy(posterCopyBothState)
 }
 
 </script>
@@ -1392,9 +1453,13 @@ async function downloadPoster() {
             </div>
           </div>
           <div class="flex items-center justify-between gap-3 border-t border-black/[.06] bg-white/70 px-6 py-3 dark:border-white/10 dark:bg-white/[.03]">
-            <p class="text-[11px] text-inkFaint">预览即成品 · 导出 {{ posterSize.w }} × {{ posterSize.h }} px</p>
+            <!-- 图链同剪成功时左栏让位给回执（与分享海报棚同款文案），平时报导出尺幅 -->
+            <p v-if="posterCopyBothState === 'ok'" class="min-w-0 truncate text-[11px] text-stationPink">图与链接都已入剪贴板 · 粘聊天窗＝图，粘文本框＝链接</p>
+            <p v-else class="min-w-0 truncate text-[11px] text-inkFaint">预览即成品 · 导出 {{ posterSize.w }} × {{ posterSize.h }} px</p>
             <div class="flex items-center gap-2">
               <button class="rounded-full border border-lineSoft bg-white px-4 py-1.5 text-sm text-inkSub transition hover:border-stationPink hover:text-stationPink dark:bg-white/5" @click="posterOpen = false">关闭</button>
+              <button class="rounded-full border border-lineSoft bg-white px-4 py-1.5 text-sm text-inkSub transition hover:border-stationPink hover:text-stationPink dark:bg-white/5" @click="posterCopyImage">{{ posterCopyState === 'ok' ? '已复制 ✓' : posterCopyState === 'fail' ? '复制失败，请走下载' : '复制图片' }}</button>
+              <button class="rounded-full border border-lineSoft bg-white px-4 py-1.5 text-sm text-inkSub transition hover:border-stationPink hover:text-stationPink dark:bg-white/5" title="图片与链接一并入剪贴板：粘聊天窗出图，粘输入框出链接" @click="posterCopyImageLink">{{ posterCopyBothState === 'ok' ? '图链已复制 ✓' : posterCopyBothState === 'fail' ? '复制失败，请走下载' : '复制图链' }}</button>
               <button class="rounded-full bg-stationPink px-5 py-1.5 text-sm font-medium text-white transition hover:opacity-90" @click="downloadPoster">下载 PNG</button>
             </div>
           </div>
