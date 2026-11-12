@@ -961,9 +961,9 @@ async function downloadPoster() {
               <span class="tabular-nums">占全站播放 {{ (data.personalVsAll.sharePermille / 10).toFixed(1) }}%</span>
             </span>
           </div>
-          <!-- 观看链漏斗（站长 11-06 点单案一）：与「游客过路率」同族手法；链上四枚已从瓦片里撤走，一数只说一遍 -->
+          <!-- 观看链漏斗（站长 11-06 点单案一）：与「游客过路率」同族手法；链上四枚已从瓦片里撤走，一数只说一遍。
+               顶上那行口径小字 11-11 站长钦删：漏斗自解释，悬停 tip 里已说清每一档——旁注是给读不懂的人准备的，而没人读不懂。 -->
           <div v-if="chainVisible" class="border-b border-lineSoft/60 px-5 pb-3 pt-4">
-            <p class="pb-2 text-[10.5px] leading-none text-inkFaint">观看链 · 条长对链首（口径同游客过路率）；次→部跨单位那步报「平均每部几放」，不硬编百分数</p>
             <div v-for="s in chainStages" :key="s.label" class="mb-1.5 flex items-center gap-2 last:mb-0">
               <span class="w-[58px] shrink-0 text-right text-[11px] text-inkSub">{{ s.label }}</span>
               <div class="h-[18px] min-w-0 flex-1 overflow-hidden rounded-[4px] bg-stationPink/[0.06] dark:bg-white/[0.06]">
