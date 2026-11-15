@@ -3575,25 +3575,24 @@ onUnmounted(() => {
         </ul>
       </section>
 
-      <!-- 分享链接设置：一口字段一张嘴（11-15 站长点单），播放器复制链接 / 海报棚两处 / 周报码文与图链都吃这儿的门面地址 -->
-      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[60]">
-        <div class="mb-4 flex items-center justify-between">
+      <!-- 分享链接设置：一口字段一张嘴（11-15 站长点单，11-15 晚站长嫌大改小卡），播放器复制链接 / 海报棚两处 / 周报码文与图链都吃这儿的门面地址。
+           不跨列：坐在台账备份（order-59）右侧半列；预览只留放映厅一枚作样，海报与周报同头不再各占一行。 -->
+      <section v-if="quietOpen" class="lbs-card order-[60] self-start">
+        <div class="mb-3 flex items-center justify-between gap-2">
           <h3 class="lbs-title !mb-0">分享链接设置</h3>
           <div class="flex items-center gap-2">
             <button class="lbs-btn-ghost" :disabled="shareBusy" @click="resetShareBase">恢复默认</button>
             <button class="lbs-btn" :disabled="shareBusy" @click="saveShareBase">{{ shareBusy ? '保存中……' : '保存设置' }}</button>
           </div>
         </div>
-        <p class="mb-3 text-xs leading-5 text-white/30">
+        <p class="mb-2 text-xs leading-5 text-white/30">
           分享链接、海报与周报二维码的链接头。留空则跟随访问地址。
         </p>
-        <p v-if="shareNotice" class="mb-3 font-mono text-xs" :class="shareNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">{{ shareNotice.text }}</p>
+        <p v-if="shareNotice" class="mb-2 font-mono text-xs" :class="shareNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">{{ shareNotice.text }}</p>
         <input v-model="shareInput" class="lbs-input" placeholder="http://localhost:8090（留空 = 跟随访问地址）" :disabled="shareBusy" />
-        <div class="mt-3 rounded-lg border border-dashed border-adminAccent/30 bg-adminAccent/[0.05] px-3 py-2.5">
-          <div class="mb-2 text-[10px] uppercase tracking-[0.14em] text-adminAccent/55">各处出口实时预览</div>
-          <div class="mb-1 flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">放映厅链接</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/video/BV1gEps62EQY?t=83</span></div>
-          <div class="mb-1 flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">海报链接文字</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/video/BV1gEps62EQY</span></div>
-          <div class="flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">周报二维码</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/weekly?w=2026-45</span></div>
+        <div class="mt-2 flex items-baseline gap-2 text-[11px]" title="海报链接文字与周报二维码同一张头">
+          <span class="shrink-0 text-white/35">例</span>
+          <span class="break-all font-mono text-white/60">{{ sharePreviewBase }}/video/BV1gEps62EQY?t=83</span>
         </div>
       </section>
       <!-- 下载设置：字段密又一年改不了几回，整块收进「货架」抽屉压底 -->
