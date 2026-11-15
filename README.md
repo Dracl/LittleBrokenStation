@@ -8,7 +8,6 @@
 
 ---
 
-分站不破，因为服务器在你手里。<br>
 把链接和收藏夹丢进去，长出一座**属于自己的**小站。
 
 [![许可证 GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
@@ -111,7 +110,7 @@ dotnet test tests/LBS.Tests -c Release --nologo
 ## 命名词源
 
 「破站」一词源自早年 A 站用户自嘲 B 站服务器不稳定，后来被 B 站用户自嘲时笑纳，成了社区昵称。
-本站名字里的「破」是对这个自嘲文化的致敬，「分站不破」则是我们的野心：跑在你自己手里的站，不该看别人脸色的服务器。
+本站名字里的「破」是对这个自嘲文化的致敬：跑在你自己手里的站，不该看别人脸色的服务器。
 
 ## 免责三件套
 
@@ -146,9 +145,3 @@ dotnet test tests/LBS.Tests -c Release --nologo
 - ✅ M4.5 容器化：Dockerfile + GHCR CI（已写就，单测 + 前端构建 + 起容器冒烟已并入 .github/workflows/oci.yml）
 - ✅ M5 到站与周报：新货到站播送、信匣与三路静音闸、分站周报、分享海报与周报海报双款调参台
 - 🔭 远期：接入 AI 功能
-
-<div align="center">
-
-<sub>分站不破，因为服务器在你手里。</sub>
-
-</div>
