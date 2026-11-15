@@ -1800,6 +1800,24 @@ app.MapPost("/api/videos/{id:long}/media-refresh", async (long id, HttpContext h
     };
 });
 
+// 重拉视频数据（稿件设置窗的独立钮与卡阵冒泡钮的顺带那件）：只办 media-refresh 的档案半——
+// 问 B 站要一份档案、窄口 UPDATE 六栏；封面件与媒体都不碰。门与 media-refresh 同形（MemberGate 点名挡匿名 401，归属归 CanManageVideo）。
+app.MapPost("/api/videos/{id:long}/meta-refresh", async (long id, HttpContext http, StationDb db, MediaRefreshService service, CancellationToken cancellationToken) =>
+{
+    if (!CanManageVideo(http, db, id))
+    {
+        return NotYourSubmission();
+    }
+
+    var outcome = await service.TryRefreshMetaAsync(id, cancellationToken);
+    return outcome.Status switch
+    {
+        MediaRefreshStatus.NotFound => Results.NotFound(new { message = outcome.Message }),
+        MediaRefreshStatus.NotArrived => Results.BadRequest(new { message = outcome.Message }),
+        _ => Results.Ok(new { ok = true, message = outcome.Message, meta = outcome.Meta }),
+    };
+});
+
 // 楼中楼按需补采：快照里没预配到的楼层点开时，分站现向 B 站翻这一楼并并回快照。
 // 先过看客钥匙：藏着的稿子与查无同一张 404 脸——这口会替分站出去问 B 站，不能谁都能拿着别人的 bvid 使。
 app.MapPost("/api/videos/{id:long}/comments/subs", async (long id, CommentArchiveService service, SubsRequest request, HttpContext http, StationDb db, CancellationToken cancellationToken) =>

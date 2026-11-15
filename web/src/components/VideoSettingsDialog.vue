@@ -59,6 +59,14 @@ const ARCHIVE_ACTIONS = [
     note: '缺的轨补齐，盘上旧轨同步刷新',
   },
   {
+    key: 'meta',
+    idle: '重拉视频数据',
+    busy: '数据重拉中…',
+    done: '已重拉',
+    hint: '问 B 站要一份档案：分区、简介、播放数、UP 名号与发布时间',
+    note: '标题与站内覆写不动，封面与媒体也不碰',
+  },
+  {
     key: 'media',
     idle: '重拉封面与媒体',
     busy: '拉取中…',
@@ -264,6 +272,7 @@ async function runArchive(item) {
     danmaku: item.key === 'danmaku',
     subtitles: item.key === 'subtitles',
     media: item.key === 'media',
+    meta: item.key === 'meta',
   })
   setAct(item.key, res.allOk ? 'done' : 'idle', res.text)
   if (res.ran && res.kind !== 'err') tellSaved(res) // 页面侧的收尾（重挂评论区、顶弹幕重取、重拉 /api/video）归父页

@@ -118,7 +118,51 @@ public sealed class MediaRefreshService(
     }
 
     /// <summary>
-    /// 单条缺件判定 + 只在真缺时回炉（判据与开机全库扫同一张嘴，预览行天生不算缺件）。
+    /// 重拉视频数据（稿件设置窗的独立钮与卡阵冒泡钮的顺带那件）：只办 <see cref="TryRefreshAsync"/> 的①——
+    /// 问 B 站要一份档案、窄口 UPDATE 六栏；封面件与媒体两件都不碰。标题与站内覆写照旧不动（同 UpdateArchiveFromView 的口径）。
+    /// </summary>
+    public async Task<MediaRefreshOutcome> TryRefreshMetaAsync(long videoId, CancellationToken cancellationToken)
+    {
+        var brief = db.GetVideoBrief(videoId);
+        if (brief is null)
+        {
+            return new MediaRefreshOutcome(MediaRefreshStatus.NotFound, "馆藏里没有这个编号");
+        }
+
+        if (brief.Value.Status != VideoStatus.Arrived)
+        {
+            return new MediaRefreshOutcome(
+                MediaRefreshStatus.NotArrived, $"这条还在下载中（{brief.Value.Status}），等这班到了再拉");
+        }
+
+        var bvid = brief.Value.Bvid;
+        string meta;
+        try
+        {
+            meta = await policy.RunForVideoAsync(videoId, async () =>
+            {
+                var view = await WbiRequestExecutor.ExecuteAsync(
+                    wbiKeys,
+                    (keys, unixTimeSeconds) => client.VideoViewInfoAsync(keys, unixTimeSeconds, bvid, -1, cancellationToken),
+                    timeProvider,
+                    cancellationToken);
+                return view is null ? MetaFailed : MetaFromView(videoId, view);
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "馆藏 {VideoId} 重拉视频数据：出号或问 B 站这一趟没走通", videoId);
+            meta = MetaFailed;
+        }
+
+        return new MediaRefreshOutcome(MediaRefreshStatus.Ok, MetaPhrase(meta), Meta: meta);
+    }
+
+    /// <summary>单条缺件判定 + 只在真缺时回炉（判据与开机全库扫同一张嘴，预览行天生不算缺件）。
     /// 静态口，测试可以绕开网络直接钉这条判据与它的副作用——与 ManageGate 那族「本仓没有 HTTP harness，
     /// 钉判据本身」同一做法。
     /// </summary>
@@ -164,9 +208,16 @@ public sealed class MediaRefreshService(
         }
 
         // 窄口回写：只有这六栏 + 封面链能从 B 站回灌，别的一律不动（理由写在 UpdateArchiveFromView 的注释里）。
-        var (metaWritten, _) = db.UpdateArchiveFromView(videoId, PatchOf(view));
+        var meta = MetaFromView(videoId, view);
         var cover = await RefreshCoverAsync(videoId, view, cancellationToken);
-        return (metaWritten ? MetaUpdated : MetaKept, cover);
+        return (meta, cover);
+    }
+
+    /// <summary>档案窄口回写（重拉媒体与重拉数据两条动线共用这一张嘴）：六栏里至少一栏真写到行上才算 updated。</summary>
+    private string MetaFromView(long videoId, VideoView view)
+    {
+        var (metaWritten, _) = db.UpdateArchiveFromView(videoId, PatchOf(view));
+        return metaWritten ? MetaUpdated : MetaKept;
     }
 
     /// <summary>

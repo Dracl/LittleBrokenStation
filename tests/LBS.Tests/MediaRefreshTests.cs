@@ -313,6 +313,9 @@ public sealed class MediaRefreshTests : IDisposable
     [InlineData("POST", "/api/videos/123/media-refresh", false, true)]
     [InlineData("POST", "/api/videos/123/media-refresh/", false, true)] // 门不能被一枚尾斜杠穿
     [InlineData("POST", "/api/videos/123/danmaku-refresh", false, true)]
+    [InlineData("POST", "/api/videos/123/meta-refresh", false, true)]   // 重拉视频数据同族：吃会员门，归属归端点 CanManageVideo
+    [InlineData("POST", "/api/videos/123/meta-refresh/", false, true)]  // 尾斜杠同样穿不了这扇门
+    [InlineData("GET", "/api/videos/123/meta-refresh", false, false)]   // 也只点 POST
     [InlineData("POST", "/api/videos/123/media-refreshX", false, false)] // 只点这个名字，不顺手拓形状
     [InlineData("GET", "/api/videos/123/media-refresh", false, false)]   // 只有 POST 被点名
     [InlineData("POST", "/api/videos/123/codecs", true, false)]          // 加档仍归站长门（别被这次改动带下水）

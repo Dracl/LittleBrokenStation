@@ -27,6 +27,7 @@ export function mediaSentence(body) {
 // 后端这些端点都回 { message }（人话），message 缺席 / 为空时才落到这里的兜底句上（say = 拿载荷里的词拼）。
 const ACTIONS = {
   comments: { path: 'comments', ok: '评论已归档', fail: '评论采集失败' },
+  meta: { path: 'meta-refresh', ok: '视频数据已重拉', fail: '视频数据重拉失败' },
   danmaku: { path: 'danmaku-refresh', ok: 'B 站弹幕已重拉', fail: '弹幕重拉失败' },
   subtitles: { path: 'subtitles-refresh', ok: '字幕存档已重拉', fail: '字幕重拉失败' },
   media: { path: 'media-refresh', ok: '封面与媒体已重拉', fail: '封面与媒体重拉失败', say: mediaSentence },
@@ -57,20 +58,21 @@ export async function postVideoAction(id, action) {
   }
 }
 
-// 一次（或几样一起）档案补采。放映厅那一枚弹幕 + 评论两个都要，设置面板里每颗钮只点自己那一样 —— 走的都是这条。
-// 字幕枚（subtitles）只归设置面板：整档刷新动的是盘上轨文件，放映厅那颗顺手钮不该敲它。
-// 返回：{ kind, text, commentsOk, danmakuOk, subtitlesOk, mediaOk, mediaReplaced, allOk, ran }
+// 一次（或几样一起）档案补采。卡阵与放映厅的冒泡钮三个都要（评论 + 弹幕 + 视频数据），设置面板里每颗钮只点自己那一样 —— 走的都是这条。
+// 字幕枚（subtitles）只归设置面板：整档刷新动的是盘上轨文件，那颗顺手钮不该敲它。
+// 返回：{ kind, text, commentsOk, danmakuOk, subtitlesOk, mediaOk, metaOk, mediaReplaced, allOk, ran }
 //   kind ∈ 'ok' | 'warn' | 'err'（该跑的几发全砸才算 err，只砸一部分是 warn）；text 是能直接念的那一句。
-//   media 默认不跑：放映厅那颗钮不该顺手去碰封面与媒体，只有面板那颗钮点名才走。
+//   media 默认不跑：顺手钮不该顺手动到封面与媒体，只有面板那颗钮点名才走；meta 默认跟着顺（档案六栏无害，不碰盘上件）。
 //   mediaReplaced 只在 media 那一发成了、且后端说 cover === 'replaced' 时为真 —— 封面件是原地覆盖同一个 rel，
 //   URL 一个字不变，得靠它告诉放映厅「这张图该重请一次」（kept / failed 一律不打那个戳，不该白刷）。
 //   同一个为真的那一刻这里还会清一次会员墙的小图缓存（清失败不影响这几个标志与 allOk，下面那段有账）。
-export async function refetchArchive(id, { comments = true, danmaku = true, subtitles = false, media = false } = {}) {
+export async function refetchArchive(id, { comments = true, danmaku = true, subtitles = false, media = false, meta = true } = {}) {
   const wants = []
   if (comments) wants.push('comments')
   if (danmaku) wants.push('danmaku')
   if (subtitles) wants.push('subtitles')
   if (media) wants.push('media')
+  if (meta) wants.push('meta')
   if (!wants.length)
     return {
       kind: 'ok',
@@ -79,6 +81,7 @@ export async function refetchArchive(id, { comments = true, danmaku = true, subt
       danmakuOk: false,
       subtitlesOk: false,
       mediaOk: false,
+      metaOk: false,
       mediaReplaced: false,
       allOk: true,
       ran: 0,
@@ -115,6 +118,7 @@ export async function refetchArchive(id, { comments = true, danmaku = true, subt
     danmakuOk: got.danmaku?.ok === true,
     subtitlesOk: got.subtitles?.ok === true,
     mediaOk,
+    metaOk: got.meta?.ok === true,
     mediaReplaced,
     allOk: fails === 0,
     ran: results.length,

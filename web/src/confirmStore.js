@@ -39,7 +39,7 @@ export function answerConfirm(ok) {
 /// 删档动线上的措辞单一出处：卡阵、大封面 banner、分区横滚行、放映厅都拉这两句，
 /// 免得同一个钮在四个页面四种说法。改词只改这里，别再在组件里手写 title。
 export const HINT_DELETE_VIDEO = '删掉这个馆藏：视频、弹幕、字幕、封面一起清掉'
-export const HINT_FETCH_COMMENTS = '重新拉一次 B 站评论和弹幕，不动站内弹幕'
+export const HINT_FETCH_COMMENTS = '重新拉一次 B 站评论、弹幕与视频数据，不动站内弹幕'
 
 /// 「删掉这一部」的问话全站一处：放映厅、网格卡阵、大封面首页共用同一句。
 /// 站长 11-11 拍板：回收站的存在不必向成员曝光，只说「删掉」就好（站内反悔的口子在站长室，不在问话里招供）。

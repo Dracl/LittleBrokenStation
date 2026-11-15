@@ -527,7 +527,7 @@ function bumpDanmaku() {
 async function refreshSnapshots() {
   if (manageBusy.value || !data.value) return
   manageBusy.value = true
-  // 两个动作都挤在这枚钮上（补采评论 + 重拉弹幕）。逻辑住在 utils/videoActions.js 的 refetchArchive，
+  // 三个动作都挤在这枚钮上（补采评论 + 重拉弹幕 + 重拉视频数据）。逻辑住在 utils/videoActions.js 的 refetchArchive，
   // 稿件设置面板里拆成两颗各点一样，走的也是那一份 —— 一处逻辑、两处入口，不抄第二遍。
   const res = await refetchArchive(data.value.id)
   if (res.commentsOk) commentsRev.value += 1

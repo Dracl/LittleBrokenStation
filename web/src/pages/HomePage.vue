@@ -9,6 +9,7 @@ import { askDeleteVideo } from '../confirmStore'
 import { isDark, toggleTheme } from '../theme'
 import BangumiHome from '../components/BangumiHome.vue'
 import { guardGuestNav } from '../utils/guestGate'
+import { refetchArchive } from '../utils/videoActions'
 
 // ─── 视图开关：大屏幕模式（大幕轮播 + 分区横滚行，照 B 站番剧区）为默认，网格卡阵是另一档。
 // 选择存 localStorage，下次进站还是上次的样子；没选过的新客默认落大屏幕模式。右下三颗圆钮最下面那颗切换。
@@ -240,17 +241,10 @@ async function fetchComments(video) {
   busy.add(video.id)
   commentBusy.value = busy
   try {
-    // 一枚钮两件活：评论快照 + B 站弹幕快照（站内弹幕住在 danmaku_local，重拉碰不到它），与放映厅同形。
-    const [cmt, dm] = await Promise.all([
-      fetch(`/api/videos/${video.id}/comments`, { method: 'POST' }).then((r) => r.json().catch(() => null).then((b) => ({ ok: r.ok, body: b }))),
-      fetch(`/api/videos/${video.id}/danmaku-refresh`, { method: 'POST' }).then((r) => r.json().catch(() => null).then((b) => ({ ok: r.ok, body: b }))),
-    ])
-    const parts = [
-      cmt.body?.message ?? (cmt.ok ? '评论已归档' : '评论采集失败'),
-      dm.body?.message ?? (dm.ok ? 'B 站弹幕已重拉' : '弹幕重拉失败'),
-    ]
-    const fails = [cmt.ok, dm.ok].filter((ok) => !ok).length
-    showNotice(fails === 2 ? 'err' : 'ok', parts.join('；'))
+    // 一枚钮三件活：评论快照 + B 站弹幕快照 + 视频数据（档案六栏）——走 utils/videoActions.js 的同一份 refetchArchive，
+    // 不再就地手抄第二份（站内弹幕住在 danmaku_local，重拉碰不到它；封面与媒体这两样顺手钮不碰）。
+    const res = await refetchArchive(video.id)
+    showNotice(res.kind, res.text)
   } catch {
     showNotice('err', '分站后端没有应答')
   } finally {
