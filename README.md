@@ -1,9 +1,21 @@
-分站不破，因为服务器在你手里。
+<div align="center">
 
-把链接和收藏夹丢进去，长出一座属于自己的小站。
+<img src="web/public/favicon.svg" width="110" alt="小破分站台标" />
 
-![许可证 GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
+# 小破分站
+
+<sub><b>L I T T L E&nbsp;&nbsp;B R O K E N&nbsp;&nbsp;S T A T I O N</b></sub>
+
+---
+
+分站不破，因为服务器在你手里。<br>
+把链接和收藏夹丢进去，长出一座**属于自己的**小站。
+
+[![许可证 GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 ![镜像](https://img.shields.io/badge/镜像-GHCR-cyan)
+[![docker pull](https://img.shields.io/badge/docker-pull-red?logo=docker&logoColor=white)](#快速开始)
+
+</div>
 
 小破分站（Little Broken Station，缩写 LBS）是一个自托管的 B 站视频归档站。
 把 B 站视频链接、收藏夹或 UP 主主页丢进去，它会把视频、弹幕、字幕、封面和元数据完整下载到本地，
@@ -43,14 +55,12 @@ docker run -d --name lbs \
   ghcr.io/dracl/littlebrokenstation:latest
 ```
 
-> **首启安全**：站上还没有主人的时候，第一位扫码/注册进来的成员会自动继位站长（拿到全站管理权）。
-> 首次启动务必只在内网或防火墙后把站打开，由你自己先把站长继位了，再考虑对外；继位完成前不要把端口挂上公网。
-
-> **发布 / 首站上线**：站上还没有主人的时候，第一位扫码/注册进站者**无条件继位站长**，这是设计内的 bootstrap，不是漏洞。
-> 所以公网暴露之前，先只在本地或局域网把站起来，自己扫码把站长席位占了，再考虑对外——端口先上公网、席位后占，等于把站门钥匙插在门外等人来拧。
-
 浏览器打开 `http://你的NAS:8090` 即可，站长室在 `/admin`。
 数据目录 `/data` 里有视频库、SQLite、cookies 和缓存，备份它等于备份整座分站。
+
+> **首启铁律 · 先占席，再开门**：站上还没有主人的时候，第一位扫码/注册进站者**无条件继位站长**
+> （拿到全站管理权）——这是设计内的 bootstrap，不是漏洞。所以公网暴露之前，先只在本地或局域网把站起来，
+> 自己扫码把站长席位占了，再考虑对外；端口先上公网、席位后占，等于把站门钥匙插在门外等人来拧。
 
 ### 容器变量
 
@@ -73,7 +83,7 @@ docker run -d --name lbs \
 分站自身只跑明文 HTTP，**公网暴露必须挂在 TLS 反向代理（nginx / Caddy）身后**；会话 cookie 已带上 Secure 语义
 （只在 HTTPS 信道上传；判据是请求本身是不是 HTTPS，所以反代必须透传 `X-Forwarded-Proto`，否则 https 站点也会发出不带 Secure 的票），
 明文直连公网等于把成员会话与站长锁一起裸奔。
-挂反代必须配 `LBS_TRUSTED_PROXY_CIDRS`（逗号分隔，如 `127.0.0.1/32,192.168.0.0/16`）：不配的话分站眼里所有人的 IP 都是代理机那一个，
+挂反代必须配 `LBS_TRUSTED_PROXY_CIDRS`（见上表）：不配的话分站眼里所有人的 IP 都是代理机那一个，
 小黑屋会变成「任何人输错 6 次锁全站」，扫码票的 IP 绑定也一并形同虚设。局域网直连用不着这一项。
 
 ## 本地开发
@@ -131,3 +141,9 @@ dotnet test tests/LBS.Tests -c Release --nologo
 - ✅ M4.5 容器化：Dockerfile + GHCR CI（已写就，单测 + 前端构建 + 起容器冒烟已并入 .github/workflows/oci.yml）
 - ✅ M5 到站与周报：新货到站播送、信匣与三路静音闸、分站周报、分享海报与周报海报双款调参台
 - 🔭 远期：接入 AI 功能
+
+<div align="center">
+
+<sub>分站不破，因为服务器在你手里。</sub>
+
+</div>
