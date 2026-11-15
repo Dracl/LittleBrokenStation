@@ -291,12 +291,7 @@ function goMessages() {
   <header class="h-10 bg-cardBg shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
     <div class="mx-auto flex h-full max-w-[1400px] items-center gap-5 px-6">
       <RouterLink to="/" class="flex shrink-0 items-center gap-2" aria-label="分站首页">
-        <svg viewBox="0 0 64 64" class="h-7 w-7">
-          <rect x="4" y="4" width="56" height="56" rx="14" fill="#fb7299" />
-          <path d="M20 22 L28 14 M44 22 L36 14" stroke="#ffffff" stroke-width="4" stroke-linecap="round" />
-          <rect x="14" y="22" width="36" height="26" rx="6" fill="#ffffff" />
-          <rect x="19" y="27" width="26" height="16" rx="3" fill="#fb7299" />
-        </svg>
+        <img src="/logo.png" class="h-7 w-7" alt="小破分站台标" />
         <span class="text-[15px] font-medium text-inkMain">小破分站</span>
       </RouterLink>
 
