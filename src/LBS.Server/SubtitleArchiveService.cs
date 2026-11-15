@@ -219,10 +219,15 @@ public sealed class SubtitleArchiveService(
     /// <summary>lan_doc 是给面板摆的名字，理论上是干净词，但文件名不赌它：非法字符一律换成下划线。</summary>
     internal static string SanitizeFileName(string label)
     {
+        // 不赌当前跑的平台：Windows 非法字符集最严（":?*<>|\ 全禁），Linux 最松（只禁 / 与 NUL）。
+        // 取两平台并集抹平：同一座库从容器盘搬去 Windows（备份搬家正是本站日常），轨名字符集不漂移。
         var invalid = Path.GetInvalidFileNameChars();
-        var chars = label.Trim().Select(c => invalid.Contains(c) ? '_' : c).ToArray();
+        var chars = label.Trim().Select(c => IsUnsafe(c, invalid) ? '_' : c).ToArray();
         return new string(chars);
     }
+
+    private static bool IsUnsafe(char c, char[] platformInvalid) =>
+        c < ' ' || c is '"' or '<' or '>' or '|' or '?' or '*' or ':' or '\\' or '/' || platformInvalid.Contains(c);
 
     private static string Norm(string? s) => (s ?? string.Empty).Trim().ToLowerInvariant();
 }
