@@ -9,6 +9,7 @@ import { subtitleTextToVtt, parseVttCues, activeCueAt } from '../utils/subtitleV
 import { loadStudioPrefs, saveStudioPrefs } from '../utils/studioPrefs'
 import { loadAssText, buildHeat, HEAT } from '../utils/dmHeat'
 import { member } from '../memberStore'
+import { siteBase } from '../utils/siteLink'
 import { requestConfirm } from '../confirmStore'
 
 const props = defineProps({
@@ -1417,8 +1418,9 @@ async function togglePip() {
   }
 }
 
-function copyLink() {
-  const url = `${window.location.origin}/watch/${props.bvid}?t=${Math.floor(currentTime.value)}`
+async function copyLink() {
+  // 链接头走全站分享一张嘴 siteLink（站长室可配门面地址，未配则跟随访问地址）
+  const url = `${await siteBase()}/watch/${props.bvid}?t=${Math.floor(currentTime.value)}`
   navigator.clipboard?.writeText(url).catch(() => {})
   ctx.visible = false
 }

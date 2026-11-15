@@ -10,6 +10,7 @@ import { friendlyTime } from '../utils/time'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 import { VIDEO_GONE_HINT } from '../utils/gone.js'
 import { remoteCoverFallback, remoteCoverThumb } from '../utils/coverSrc'
+import { forgetSiteBase } from '../utils/siteLink'
 
 const health = ref(null)
 const settings = ref(null)
@@ -2104,7 +2105,7 @@ async function bootAdmin() {
     .catch(() => {})
   fetch('/api/settings')
     .then((r) => r.json())
-    .then((s) => (settings.value = s))
+    .then((s) => { settings.value = s; shareInput.value = s?.shareBaseUrl ?? '' })
     .catch(() => {})
   loadSubscriptions()
   loadCrawlStatus()
@@ -2250,6 +2251,52 @@ const activeGroup = ref(savedAdminGroup())
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
 const quietOpen = ref(false) // 「货架」抽屉：悬停预览、下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面；下载设置压底
 const dlSettingsOpen = ref(false) // 下载设置整块太长（十几个字段密排），进抽屉还要滚一屏：默认折上，要改再展开（11-09 站长点名）
+// ── 分享链接设置（11-15 站长点单）：全站分享一张嘴（utils/siteLink）的门面地址，settings 表 share-base-url。
+// 判据与后端 ShareLinkEndpoints.TryNormalize 等样镜像，后端才是真闸——这里只求当场反馈。
+const shareInput = ref('')
+const shareBusy = ref(false)
+const shareNotice = ref(null) // { kind: 'ok' | 'err', text }
+watch(shareInput, () => { shareNotice.value = null }) // 重新动手改地址，上一条回执就翻篇：错误条赖在输入框上面比没有还误导
+const sharePreviewBase = computed(() => {
+  const raw = shareInput.value.trim()
+  return raw === '' ? window.location.origin : raw.replace(/\/+$/, '')
+})
+function shareDraftError(raw) {
+  if (raw === '') return null
+  let u = null
+  try { u = new URL(raw) } catch { return '只收 http(s):// 地址，认不出来' }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return '只收 http(s):// 地址'
+  if (u.username || u.password) return '地址里不许夹用户信息'
+  if (!u.hostname) return '域名没填，光有协议头不行'
+  if ((u.pathname !== '/' && u.pathname !== '') || u.search || u.hash) return '只填到端口为止，不许带路径、查询或锚点'
+  return null
+}
+async function saveShareBase() {
+  const raw = shareInput.value.trim()
+  const err = shareDraftError(raw)
+  if (err) { shareNotice.value = { kind: 'err', text: err }; return }
+  shareBusy.value = true
+  try {
+    const res = await fetch('/api/admin/settings/share-base-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: raw === '' ? null : raw.replace(/\/+$/, '') }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) { shareNotice.value = { kind: 'err', text: data?.message ?? '没存上，稍后再试' }; return }
+    shareNotice.value = { kind: 'ok', text: data.shareBaseUrl ? `已存：${data.shareBaseUrl}` : '已恢复默认：跟随访问地址' }
+    if (settings.value) settings.value = { ...settings.value, shareBaseUrl: data.shareBaseUrl ?? null }
+    forgetSiteBase() // 站长本页的分享口立刻吃新值，不必刷页
+  } catch {
+    shareNotice.value = { kind: 'err', text: '没存上，网络不配合' }
+  } finally {
+    shareBusy.value = false
+  }
+}
+async function resetShareBase() {
+  shareInput.value = ''
+  await saveShareBase()
+}
 const recycleOpen = ref(false) // 回收站那一堆（整片 / 弹幕 / 加档）默认折起：页尾不该常驻三张卡（11-09 站长点名）
 const recycleBinCount = ref(0) // 整片回收站的件数：那卡自持数据，靠它 emit 上来，只为顶上那枚徽章
 // 回收站徽章：三座加在一起。卡折起时仍挂在 DOM 里（v-show 不是 v-if），所以锁着盖子这数也是真的
@@ -3524,6 +3571,27 @@ onUnmounted(() => {
         </ul>
       </section>
 
+      <!-- 分享链接设置：一口字段一张嘴（11-15 站长点单），播放器复制链接 / 海报棚两处 / 周报码文与图链都吃这儿的门面地址 -->
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[60]">
+        <div class="mb-4 flex items-center justify-between">
+          <h3 class="lbs-title !mb-0">分享链接设置</h3>
+          <div class="flex items-center gap-2">
+            <button class="lbs-btn-ghost" :disabled="shareBusy" @click="resetShareBase">恢复默认</button>
+            <button class="lbs-btn" :disabled="shareBusy" @click="saveShareBase">{{ shareBusy ? '保存中……' : '保存设置' }}</button>
+          </div>
+        </div>
+        <p class="mb-3 text-xs leading-5 text-white/30">
+          分享链接、海报与周报二维码的链接头。留空则跟随访问地址。
+        </p>
+        <p v-if="shareNotice" class="mb-3 font-mono text-xs" :class="shareNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">{{ shareNotice.text }}</p>
+        <input v-model="shareInput" class="lbs-input" placeholder="http://localhost:8090（留空 = 跟随访问地址）" :disabled="shareBusy" />
+        <div class="mt-3 rounded-lg border border-dashed border-adminAccent/30 bg-adminAccent/[0.05] px-3 py-2.5">
+          <div class="mb-2 text-[10px] uppercase tracking-[0.14em] text-adminAccent/55">各处出口实时预览</div>
+          <div class="mb-1 flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">放映厅链接</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/watch/BV1gEps62EQY?t=83</span></div>
+          <div class="mb-1 flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">海报链接文字</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/watch/BV1gEps62EQY</span></div>
+          <div class="flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">周报二维码</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/weekly?w=2026-45</span></div>
+        </div>
+      </section>
       <!-- 下载设置：字段密又一年改不了几回，整块收进「货架」抽屉压底 -->
       <section v-if="quietOpen && eng && engDraft" class="lbs-card md:col-span-2 order-[62]">
         <div class="mb-4 flex items-center justify-between">
@@ -3972,7 +4040,7 @@ onUnmounted(() => {
       </button>
       <div v-else id="grp-quiet" class="order-[55] md:col-span-2 flex items-baseline gap-2.5 pt-3">
         <h2 class="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">货架</h2>
-        <span class="font-mono text-[11px] text-white/20">盖子已开 · 七张卡都在下面</span>
+        <span class="font-mono text-[11px] text-white/20">盖子已开 · 八张卡都在下面</span>
         <span class="ml-1 h-px flex-1 bg-white/5"></span>
         <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="quietOpen = false">盖回去</button>
       </div>

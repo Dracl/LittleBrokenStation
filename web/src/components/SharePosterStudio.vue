@@ -14,6 +14,7 @@ import {
   rgbCss,
 } from '../utils/videoPoster.js'
 import { loadStudioPrefs, saveStudioPrefs } from '../utils/studioPrefs.js'
+import { siteBase } from '../utils/siteLink.js'
 // qrcode.min.js 是 davidshimjs qrcodejs 原版经典脚本（没有模块导出），按资源 URL 注入 classic script
 // 让它把 QRCode 落到 window 上（与 LoginDialog 同一套路、同一份 vendored 文件）。
 import qrcodeScriptUrl from '../libs/qrcode.min.js?url'
@@ -140,7 +141,8 @@ async function makeQr(theme) {
     el.innerHTML = ''
     // eslint-disable-next-line no-new
     new window.QRCode(el, {
-      text: `${window.location.origin}/watch/${encodeURIComponent(bvid)}`,
+      // 码文走全站分享一张嘴 siteLink（站长室可配门面地址，未配则跟随访问地址）
+      text: `${await siteBase()}/watch/${encodeURIComponent(bvid)}`,
       width: 300,
       height: 300,
       colorDark: rgbCss(theme.qrPoint),
@@ -235,7 +237,7 @@ async function copyToClipboard() {
 const copyBothState = ref('idle')
 async function copyImageAndLink() {
   const bvid = String(props.model?.bvid ?? '').trim()
-  const url = `${window.location.origin}/watch/${encodeURIComponent(bvid)}`
+  const url = `${await siteBase()}/watch/${encodeURIComponent(bvid)}`
   try {
     if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') throw new Error('unsupported')
     const cv = document.createElement('canvas')

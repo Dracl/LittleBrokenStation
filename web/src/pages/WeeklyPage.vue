@@ -24,6 +24,7 @@ import {
   posterTheme,
 } from '../utils/weeklyPoster'
 import { ensurePosterFont } from '../utils/videoPoster'
+import { siteBase } from '../utils/siteLink'
 // qrcode.min.js 是登录窗/分享棚同款经典脚本（顶层 var QRCode，无模块导出），按资源 URL 注入
 import qrcodeScriptUrl from '../libs/qrcode.min.js?url'
 
@@ -688,7 +689,7 @@ async function ensureQr() {
   const o = posterOpts.value
   if (!o.showQr || !data.value) return
   // 码文与「复制图链」的链接同一张嘴（posterShareUrl），不许两头各拼各的
-  const text = posterShareUrl()
+  const text = await posterShareUrl()
   if (qrCanvasCache && qrTextCache === text) return
   // 换周先作废旧码：新码没成之前不许拿旧周的码充数（扫码扫到上一周就是假凭据）
   if (text !== qrTextCache) { qrCanvasCache = null; qrTextCache = '' }
@@ -753,9 +754,10 @@ async function downloadPoster() {
 
 // 本周周报的绝对地址：底部二维码的码文与「复制图链」的链接同一张嘴（11-11 加复制钮时并轨，
 // 防将来一头改参数另一头漂——扫码扫到的和粘出去的必须是同一期）。
-function posterShareUrl() {
+// 链接头走全站分享一张嘴 siteLink（站长室可配门面地址，未配则跟随访问地址）；两处调用点本来都是 async，接得住。
+async function posterShareUrl() {
   const w = WEEK_ID_RE.test(data.value?.weekLabel ?? '') ? `?w=${encodeURIComponent(data.value.weekLabel)}` : ''
-  return `${location.origin}/weekly${w}`
+  return `${await siteBase()}/weekly${w}`
 }
 
 /* 导出图进剪贴板（11-11 站长点名，手法移植自分享海报棚 SharePosterStudio）：
@@ -798,7 +800,7 @@ async function posterCopyImageLink() {
   try {
     if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') throw new Error('unsupported')
     const cv = await renderPosterOffscreen()
-    const url = posterShareUrl()
+    const url = await posterShareUrl()
     const dataUrl = cv.toDataURL('image/jpeg', 0.85)
     const html = `<p><img src="${dataUrl}"></p><p><a href="${url}">${url}</a></p>`
     await navigator.clipboard.write([new window.ClipboardItem({

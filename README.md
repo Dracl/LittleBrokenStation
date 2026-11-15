@@ -119,4 +119,4 @@ dotnet test tests/LBS.Tests -c Release --nologo
 - ✅ M4 上线：README 定稿、站长室改走 owner 会话门（身份即钥匙，口令锁留档待公网形态）、台账定时备份、收藏夹订阅实测
 - ✅ M4.5 容器化：Dockerfile + GHCR CI（已写就，单测 + 前端构建 + 起容器冒烟已并入 .github/workflows/oci.yml）
 - ✅ M5 到站与周报：新货到站播送、信匣与三路静音闸、分站周报、分享海报与周报海报双款调参台
-- 🔭 远期：多形态皮肤（日夜双形态已上线）、站长名片装扮
+- 🔭 远期：接入 AI 功能

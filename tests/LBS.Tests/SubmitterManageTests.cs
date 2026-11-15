@@ -138,7 +138,13 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/admin", true, false)]
     [InlineData("GET", "/api/downloads", true, false)]
     [InlineData("GET", "/api/downloads/", true, false)]
-    [InlineData("GET", "/api/settings/", true, false)]
+    [InlineData("GET", "/api/settings/engine/", true, false)]
+    [InlineData("POST", "/api/settings/engine", true, false)]
+    // /api/settings 本体 11-15 已公开（分享链接门面地址要递访客，见 ShareLinkEndpoints）；
+    // 引擎那口改成点名守护，前缀表若被改回 /api/settings 一锅端，这两格会先叫。
+    [InlineData("GET", "/api/settings/", false, false)]
+    [InlineData("GET", "/api/settings", false, false)]
+    [InlineData("POST", "/api/admin/settings/share-base-url", true, false)]
     // 公开门面不被剪子误封：带斜杠照样放行访客。
     [InlineData("GET", "/api/videos/", false, false)]
     [InlineData("GET", "/api/collections/", false, false)]

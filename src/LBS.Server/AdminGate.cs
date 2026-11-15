@@ -30,7 +30,10 @@ public sealed class AdminGate(StationDb db, ILogger<AdminGate> logger)
     private static readonly string[] AdminPrefixes =
     [
         "/api/admin/",
-        "/api/settings",
+        // /api/settings 本体已公开（分享链接门面地址要给访客读，见 ShareLinkEndpoints）；
+        // 引擎设置仍吃站长门，点名必须写全：前缀表是 StartsWith，光写 /api/settings 会把两者一锅端，
+        // 光摘掉又会把引擎门放掉（11-15 做分享链接设定时在此踩过）。
+        "/api/settings/engine",
         "/api/downloads/",
         // /api/login/ 随站级登录态一起拆了：分站不再存任何站级 B 站 cookie，
         // 成员配自己的号走 /api/member/accounts/*（那里按席位归属自管）。

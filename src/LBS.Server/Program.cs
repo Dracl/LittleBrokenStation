@@ -239,6 +239,7 @@ app.MapGet("/api/health", () => Results.Ok(new HealthInfo(
     ServerTimeUtc: DateTimeOffset.UtcNow)));
 
 app.MapEngineSettingsApi();
+app.MapShareLinkEndpoints();
 app.MapAdminRecycleEndpoints();
 app.MapPreviewApi();
 
@@ -2365,10 +2366,13 @@ app.MapPost("/api/admin/purge", async (PurgeRequest request, StationDb db, DataP
     }
 });
 
-app.MapGet("/api/settings", (DataPaths paths, HttpContext http) => Results.Ok(new
+app.MapGet("/api/settings", (DataPaths paths, StationDb db, HttpContext http) => Results.Ok(new
 {
     // 数据目录只向站长会话报家门：匿名访客没必要知道房子在哪（前端站长室的存储卡照常拿得到）。
     dataDir = MemberGate.IsOwner(MemberGate.Current(http)) ? paths.Root : null,
+    // 分享链接的门面地址（站长室「分享链接设置」写）：分享出去的链接本就抄得走，不是站长情报，
+    // 访客也读得。没配过回 null，前端（utils/siteLink.js）回退跟随访问地址。
+    shareBaseUrl = db.GetSetting(ShareLinkEndpoints.SettingKey),
     skin = new { bare = false, note = "皮肤系统未开工（README 远期项）" },
 }));
 

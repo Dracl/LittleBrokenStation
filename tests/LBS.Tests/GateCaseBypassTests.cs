@@ -68,7 +68,8 @@ public sealed class GateCaseBypassTests : IDisposable
     [InlineData("POST", "/API/admin/export", true, false)]
     [InlineData("POST", "/API/admin/codec-recycle/abc/restore", true, false)] // 加档回收站的恢复：换体也得在站长门里（旧账是 /API/admin/zones/set，那口已于 11-08 退休）
     [InlineData("GET", "/API/ADMIN/stats/", true, false)] // 换体 + 尾斜杠：两把穿门的钥匙叠在一起
-    [InlineData("GET", "/API/settings", true, false)]
+    [InlineData("GET", "/API/settings", false, false)] // 11-15 本体公开（分享门面地址），换体也不再是站长事务
+    [InlineData("GET", "/API/SETTINGS/engine", true, false)] // 引擎口改点名守护：换体与尾斜杠都不许穿
     [InlineData("GET", "/API/Stats/Collect", true, false)] // 精确点名型的站长情报：漏一个字母就漏一整口
     [InlineData("GET", "/API/stats/preview", true, false)]
     [InlineData("GET", "/API/Station/throttle", true, false)]
