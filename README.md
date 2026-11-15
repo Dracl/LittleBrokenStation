@@ -133,8 +133,8 @@ dotnet test tests/LBS.Tests -c Release --nologo
 
 另有两处设计思路上的致谢（只借鉴思路，未搬代码）：
 
-- 分享视频的海报绘图（动态卡片式推送图）参考了 [dynamic-bot](https://github.com/Colter23/dynamic-bot)
-- 反爬机制（节流、熔断冷却、指纹与抖动的采集姿态）参考了 [RC-WebGallery](https://github.com/JDui/RC-WebGallery)
+- 分享视频绘图参考了 [dynamic-bot](https://github.com/Colter23/dynamic-bot)（作者 Colter23）
+- 反爬机制参考了 [RC-WebGallery](https://github.com/JDui/RC-WebGallery)（作者 JDui）
 
 ## 路线图
 
