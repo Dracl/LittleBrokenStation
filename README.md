@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/public/favicon.svg" width="110" alt="小破分站台标" />
+<img src="web/public/logo.png" width="110" alt="小破分站台标" />
 
 # 小破分站
 
