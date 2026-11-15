@@ -19,7 +19,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS server-build
 WORKDIR /src
 # 版本号由 CI 用 git describe 递进来（见 .github/workflows/oci.yml），/api/health 报的就是它；
 # 本地不传就吃 0.0.1 老默认，不致于因缺 tag 而构不出来。
-ARG VERSION=0.0.1
+ARG VERSION=0.1.1
 # 编译图横跨 src → vendor/downkyicore（Engine 工程直弓 DownKyi.Worker），两棵树都得在
 COPY lbs.slnx ./
 COPY vendor/ vendor/
