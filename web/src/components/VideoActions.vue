@@ -57,22 +57,24 @@ function tap(key) {
     }
   }
   if (key === 'share') {
-    // 点击本体仍是「转发私信」主路（键盘 Enter / 触屏没有 hover，都从这一走）
-    closeShare()
-    emit('share')
+    // 本体点击不再直发私信：只弹菜单（见 toggleSharePanel），动作归菜单里选——这颗钮不再走 tap 的分发动画，
+    // 动画另有自己的开合节奏（toggleSharePanel 开头那一拍）。
+    return
   }
 }
 
-// ─── 分享钮的悬浮窗（站长 11-04 定稿）───
-// hover 弹两颗：「✉ 转发私信」= 点本体同一件事，「🖼 分享海报」= 开海报调参台。
+// ─── 分享钮的悬浮窗（站长 11-04 定稿，11-16 改交互）───
+// hover 弹两颗；点本体也弹（只弹菜单不干活，动作归两枚选项选）：「✉ 转发私信」，「🖼 分享海报」= 开海报调参台。
 // 延时吃全站那一把尺子（utils/useHoverGate：进 120ms / 出 260ms，触屏整个退化成只认点击），
 // 面板自己吃 mouseenter/mouseleave：鼠标从钮滑进面板那 8px 缝隙由 260ms 收尾补上，不掉。
 // 手感照顶栏铃铛预览卡：Teleport 到 body、白底细边阴影、贴钮下沿 8dp。
 const SHARE_PANEL_W = 216
 const shareOpen = ref(false)
 const shareBtn = ref(null)
+const sharePanelRef = ref(null)
+const sharePinned = ref(false) // 点击钉开的那次（触屏/键盘唯一入口）：鼠标移开不算离场理由
 const sharePanelStyle = ref({})
-const shareHover = useHoverGate(shareOpen, { onOpen: () => placeSharePanel() })
+const shareHover = useHoverGate(shareOpen, { onOpen: () => placeSharePanel(), shouldClose: () => !sharePinned.value })
 
 function placeSharePanel() {
   const el = shareBtn.value
@@ -85,7 +87,30 @@ function placeSharePanel() {
 
 function closeShare() {
   shareOpen.value = false
+  sharePinned.value = false
   shareHover.cancel()
+}
+
+// 本体点击不再直发私信（站长 11-16 点名）：只负责弹菜单，动作归菜单里那两枚选；触屏与键盘也从这里进。
+// 点击那一次是钉开的（pinned）：鼠标移开不赶它，收起要么选一项、要么点页面任意处（下面 onDocDown）。
+function toggleSharePanel() {
+  anim.share = false
+  requestAnimationFrame(() => (anim.share = true))
+  if (shareOpen.value) {
+    closeShare()
+    return
+  }
+  sharePinned.value = true
+  placeSharePanel()
+  shareOpen.value = true
+  shareHover.cancel()
+}
+
+// 钉开的菜单，页面任意处一点就收（触屏没有 onLeave，这一刀是它们唯一的关法）；点钮本体交给 toggle 自己翻面
+function onDocDown(e) {
+  if (!shareOpen.value) return
+  if (shareBtn.value?.contains(e.target) || sharePanelRef.value?.contains(e.target)) return
+  closeShare()
 }
 
 function pickShare(kind) {
@@ -101,10 +126,12 @@ function onViewportChange() {
 onMounted(() => {
   window.addEventListener('scroll', onViewportChange, true)
   window.addEventListener('resize', onViewportChange)
+  document.addEventListener('mousedown', onDocDown, true)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('scroll', onViewportChange, true)
   window.removeEventListener('resize', onViewportChange)
+  document.removeEventListener('mousedown', onDocDown, true)
 })
 
 function likeShown() {
@@ -164,7 +191,7 @@ function fmt(n) {
       aria-label="安利给分站朋友"
       aria-haspopup="menu"
       :aria-expanded="shareOpen ? 'true' : 'false'"
-      @click="tap('share')"
+      @click="toggleSharePanel()"
       @mouseenter="shareHover.onEnter()"
       @mouseleave="shareHover.onLeave()"
     >
@@ -182,6 +209,7 @@ function fmt(n) {
     <Teleport to="body">
       <div
         v-if="shareOpen"
+        ref="sharePanelRef"
         class="fixed z-[65] w-[216px] overflow-hidden rounded-lg border border-lineSoft bg-cardBg py-1 shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)]"
         :style="sharePanelStyle"
         role="menu"
