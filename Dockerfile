@@ -29,7 +29,10 @@ RUN dotnet publish src/LBS.Server -c Release -r linux-x64 --self-contained true 
 COPY --from=web-build /src/web/dist /publish/wwwroot
 
 # ---------- 运行时 ----------
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-bookworm
+# 注意：.NET 10 已下掉 bookworm 变体（MCR 上 10.0 只有 noble/resolute/alpine 等），
+# 硬写 10.0-bookworm 会在 load metadata 就 not found。选 noble（Ubuntu 24.04 LTS）：
+# 官方镜像自带 universe 源，ffmpeg / fonts-noto-cjk / curl 都在，apt 行为与 Debian 系同构。
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble
 # curl 既给 HEALTHCHECK 用，也给运维在容器里自查用
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk ca-certificates curl \
