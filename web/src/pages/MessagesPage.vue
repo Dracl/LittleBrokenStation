@@ -19,9 +19,9 @@ function gotoSharedDynamic(dyn) {
   if (dyn?.dynamicId) router.push({ path: '/dynamics', query: { focus: dyn.dynamicId } })
 }
 
-// 私信里的放映厅分享卡：点卡直落站内放映厅（后端定格里带 watchUrl，拿 bvid 拼同一扇门）。
+// 私信里的放映厅分享卡：点卡直落站内放映厅（后端定格里带 videoUrl，拿 bvid 拼同一扇门）。
 function gotoSharedVideo(dyn) {
-  if (dyn?.bvid) router.push(`/watch/${dyn.bvid}`)
+  if (dyn?.bvid) router.push(`/video/${dyn.bvid}`)
 }
 
 // 周报公告（后端 WeeklyReportWorker 播的「分站周报 · 2026-W44」）：认得出 ISO 周号才递一枚跳到那期的钮，
@@ -887,7 +887,7 @@ function peerLabel(p) {
                       class="max-w-[78%] min-w-0"
                       @open="gotoSharedDynamic(m.dyn)"
                     />
-                    <!-- 放映厅分享：同族同款 C2 融合气泡，点泡直落 /watch/bvid -->
+                    <!-- 放映厅分享：同族同款 C2 融合气泡，点泡直落 /video/bvid -->
                     <ShareCard
                       v-else-if="m.msgType === 'video' && m.dyn"
                       kind="video"

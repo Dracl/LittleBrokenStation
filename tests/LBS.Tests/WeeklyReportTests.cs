@@ -83,9 +83,9 @@ public sealed class WeeklyReportTests : IDisposable
         return id;
     }
 
-    /// <summary>往 events 台账塞一枪观看行为（形状照 WatchPage.vue 的上报实况：subject_type='video'、subject_id=BV 号）。
+    /// <summary>往 events 台账塞一枪观看行为（形状照 VideoPage.vue 的上报实况：subject_type='video'、subject_id=BV 号）。
     /// memberId 给上才算「成员自己干的」（个人账靠它认人；真实上报两个身份都带，不给就是 NULL）。</summary>
-    private void Watch(string bvid, long? mid, DateTimeOffset ts, string name = "watch.play", string? subjectType = "video", long? memberId = null)
+    private void Watch(string bvid, long? mid, DateTimeOffset ts, string name = "playback.play", string? subjectType = "video", long? memberId = null)
     {
         _db.InsertEventsBatch(new[]
         {
@@ -95,7 +95,7 @@ public sealed class WeeklyReportTests : IDisposable
                 name,
                 subjectType,
                 bvid,
-                name == "watch.heartbeat" ? """{"t":42}""" : null,
+                name == "playback.heartbeat" ? """{"t":42}""" : null,
                 mid is null ? "9.9.9.9" : null,
                 ts.ToString("O"),
                 memberId),
@@ -129,9 +129,9 @@ public sealed class WeeklyReportTests : IDisposable
         var noon = new DateTimeOffset(2026, 10, 20, 4, 0, 0, TimeSpan.Zero);   // 本地 10-20 正午
         var quiet = new DateTimeOffset(2026, 10, 22, 1, 30, 0, TimeSpan.Zero); // 本地 10-22 凌晨：只有闲逛，没观映
 
-        Watch("BVhomer", 770_001, noon, "watch.open", memberId: seat);
-        Watch("BVhomer", 770_001, noon, "watch.play", memberId: seat);
-        Watch("BVhomer", null, noon, "watch.play"); // 游客一枪观映：游客柱只认这一枪
+        Watch("BVhomer", 770_001, noon, "playback.open", memberId: seat);
+        Watch("BVhomer", 770_001, noon, "playback.play", memberId: seat);
+        Watch("BVhomer", null, noon, "playback.play"); // 游客一枪观映：游客柱只认这一枪
         Home(seat, 770_001, noon);
         Home(null, null, noon);
         Home(null, null, quiet);
@@ -163,11 +163,11 @@ public sealed class WeeklyReportTests : IDisposable
         var noon = new DateTimeOffset(2026, 10, 20, 4, 0, 0, TimeSpan.Zero);   // 本地 10-20 周二正午（W43 内）
         var sunNight = new DateTimeOffset(2026, 10, 25, 15, 0, 0, TimeSpan.Zero); // 本地 10-25 周日 23:00
 
-        Watch("BVheat", 771_001, old, "watch.open", memberId: seat);
-        Watch("BVheat", 771_001, wallDay, "watch.open", memberId: seat);
-        Watch("BVheat", 771_001, noon, "watch.open", memberId: seat);
-        Watch("BVheat", 771_001, noon, "watch.play", memberId: seat);
-        Watch("BVheat", 771_001, noon, "watch.heartbeat", memberId: seat); // 噪音枪：不进墙不进气泡
+        Watch("BVheat", 771_001, old, "playback.open", memberId: seat);
+        Watch("BVheat", 771_001, wallDay, "playback.open", memberId: seat);
+        Watch("BVheat", 771_001, noon, "playback.open", memberId: seat);
+        Watch("BVheat", 771_001, noon, "playback.play", memberId: seat);
+        Watch("BVheat", 771_001, noon, "playback.heartbeat", memberId: seat); // 噪音枪：不进墙不进气泡
         Home(seat, 771_001, noon);
         Home(null, null, sunNight);
 
@@ -368,7 +368,7 @@ public sealed class WeeklyReportTests : IDisposable
 
         // h1 再来两条重复观众（mid 归位）：去重后仍该是 1。
         Watch("BVh1", 1, inWeek.AddMinutes(5));
-        Watch("BVh1", 1, inWeek.AddMinutes(9), "watch.heartbeat");
+        Watch("BVh1", 1, inWeek.AddMinutes(9), "playback.heartbeat");
 
         // 游客（actor_mid NULL）围观 guest 片：一屋子人也不许充人头。
         Watch("BVguest", null, inWeek);
@@ -376,7 +376,7 @@ public sealed class WeeklyReportTests : IDisposable
 
         // 出桶一枪（上桶 W42）与 subject_type 缺失的一枪：都不进聚合。
         Watch("BVh2", 990, W43StartUtc.AddMinutes(-1));
-        Watch("BVh1", 777, inWeek, "watch.heartbeat", null);
+        Watch("BVh1", 777, inWeek, "playback.heartbeat", null);
 
         // 封面口径抽查：有 kind='cover' 产物行走 /media/，没有的吃 cover_url 热链。
         var h6Id = _db.ListVideos().First(v => v.Bvid == "BVh6").Id;
@@ -404,7 +404,7 @@ public sealed class WeeklyReportTests : IDisposable
                 new EventDraft(
                     mid is null ? EventActors.Guest : EventActors.Member,
                     mid,
-                    "watch.heartbeat",
+                    "playback.heartbeat",
                     "video",
                     bvid,
                     """{"t":""" + (startT + i * 30) + "}",
@@ -496,12 +496,12 @@ public sealed class WeeklyReportTests : IDisposable
         // 成员进厅：我 3 次 + 别人 2 次（时长均长的分母；进厅也得挂上自己的席位 id，个人账靠它认人）
         for (var i = 0; i < 3; i++)
         {
-            Watch("BVlong", 777_001, inWeek.AddMinutes(i), "watch.open", memberId: me);
+            Watch("BVlong", 777_001, inWeek.AddMinutes(i), "playback.open", memberId: me);
         }
 
         for (var i = 0; i < 2; i++)
         {
-            Watch("BVlong", 777_002, inWeek.AddMinutes(10 + i), "watch.open", memberId: other);
+            Watch("BVlong", 777_002, inWeek.AddMinutes(10 + i), "playback.open", memberId: other);
         }
 
         var report = _db.GetWeeklyReport(0, Now, me);
@@ -541,9 +541,26 @@ public sealed class WeeklyReportTests : IDisposable
         Assert.Equal(75, theirs.AvgOpenSeconds); // 150 ÷ 自己 2 次进厅
 
         // 时长环比：上周桶里 2 枪 = 60 秒，本桶 20 枪 = 600 秒（时长 = 枪数×30 是恒等式）
-        var watchTime = Assert.Single(report.Deltas, x => x.Key == "watchTime");
+        var watchTime = Assert.Single(report.Deltas, x => x.Key == "playbackTime");
         Assert.Equal(600, watchTime.Current);
         Assert.Equal(60, watchTime.Last);
+    }
+
+    [Fact]
+    public void 改名前的老watch行_周报照算_读侧双吃新老族()
+    {
+        // 11-15 观映族 watch.*→playback.*，台账老行不改写：统计读侧新老双认（IN 判据与 Legacy* 常量钉在 StationDb.Weekly.cs）。
+        // 这格没钉住，朋友升站后升级前的观映账会整片归零——数据命脉测试，改动统计 SQL 时别顺手删它。
+        var seat = Seat("老账来客");
+        var noon = new DateTimeOffset(2026, 10, 20, 4, 0, 0, TimeSpan.Zero); // 本地 10-20 正午，落在本周桶里
+
+        Watch("BVlegacy", 770_009, noon, "watch.play", memberId: seat);                // 老族一枪
+        Watch("BVlegacy", 770_009, noon.AddMinutes(1), "playback.play", memberId: seat); // 新族混一枪作对照
+        Watch("BVlegacy", null, noon.AddMinutes(2), "watch.open");                      // 游客老族进厅一枪
+
+        var report = _db.GetWeeklyReport(0, Now);
+        Assert.Equal(2, report.Play.Plays); // watch.play 与 playback.play 都算数
+        Assert.Equal(1, report.Play.Opens); // 老 watch.open 也进进厅账，不当没发生过
     }
 
     [Fact]
@@ -553,12 +570,12 @@ public sealed class WeeklyReportTests : IDisposable
         AddVideo("BVg1");
 
         // 游客看片：两个出口 IP（9.9.9.9 / 9.9.9.8）各若干枪 → 人数只能去重成 2 位，次数照枪数计。
-        Watch("BVg1", null, inWeek, "watch.open");
-        Watch("BVg1", null, inWeek.AddSeconds(1), "watch.play");
-        Watch("BVg1", null, inWeek.AddSeconds(2), "watch.play"); // 暂停后恢复会再报一次 play
+        Watch("BVg1", null, inWeek, "playback.open");
+        Watch("BVg1", null, inWeek.AddSeconds(1), "playback.play");
+        Watch("BVg1", null, inWeek.AddSeconds(2), "playback.play"); // 暂停后恢复会再报一次 play
         _db.InsertEventsBatch(new[]
         {
-            new EventDraft(EventActors.Guest, null, "watch.open", "video", "BVg1", null, "9.9.9.8", inWeek.AddMinutes(3).ToString("O")),
+            new EventDraft(EventActors.Guest, null, "playback.open", "video", "BVg1", null, "9.9.9.8", inWeek.AddMinutes(3).ToString("O")),
         });
 
         // 成员一枪：绝不能洘进游客账（actor_type=member）。
@@ -567,16 +584,16 @@ public sealed class WeeklyReportTests : IDisposable
         // 被挡拆两枩：片页被拦（想看看不了）与弹幕轮询被拦（自家代码空转）分开数。
         _db.InsertEventsBatch(new[]
         {
-            new EventDraft(EventActors.Guest, null, "watch.blocked", "path", "/api/watch/BVg1", null, "9.9.9.9", inWeek.AddMinutes(5).ToString("O")),
-            new EventDraft(EventActors.Guest, null, "watch.blocked", "path", "/api/videos/9/danmaku", null, "9.9.9.9", inWeek.AddMinutes(6).ToString("O")),
-            new EventDraft(EventActors.Guest, null, "watch.blocked", "path", "/api/videos/9/danmaku", null, "9.9.9.9", inWeek.AddMinutes(6).ToString("O")),
+            new EventDraft(EventActors.Guest, null, "playback.blocked", "path", "/api/watch/BVg1", null, "9.9.9.9", inWeek.AddMinutes(5).ToString("O")),
+            new EventDraft(EventActors.Guest, null, "playback.blocked", "path", "/api/videos/9/danmaku", null, "9.9.9.9", inWeek.AddMinutes(6).ToString("O")),
+            new EventDraft(EventActors.Guest, null, "playback.blocked", "path", "/api/videos/9/danmaku", null, "9.9.9.9", inWeek.AddMinutes(6).ToString("O")),
             // 游客搜索：只报回数，内容不入报。
             new EventDraft(EventActors.Guest, null, "search.query", "query", "miku", """{"hits":1}""", "9.9.9.9", inWeek.AddMinutes(7).ToString("O")),
             // 登录尝试两枪（扫码开台 + 密码试错）。
             new EventDraft(EventActors.Guest, null, "login.qr.start", "qr", "abc", null, "9.9.9.9", inWeek.AddMinutes(8).ToString("O")),
             new EventDraft(EventActors.Guest, null, "login.password.denied", "member", "ceshi", null, "9.9.9.8", inWeek.AddMinutes(9).ToString("O")),
             // 出桶一枪（上周 W42）：游客账也不许预支桶外的数。
-            new EventDraft(EventActors.Guest, null, "watch.open", "video", "BVg1", null, "8.8.8.8", W43StartUtc.AddMinutes(-30).ToString("O")),
+            new EventDraft(EventActors.Guest, null, "playback.open", "video", "BVg1", null, "8.8.8.8", W43StartUtc.AddMinutes(-30).ToString("O")),
         });
 
         var guest = _db.GetWeeklyReport(0, Now).Guest;
@@ -584,7 +601,7 @@ public sealed class WeeklyReportTests : IDisposable
         Assert.Equal(2, guest.Opens);
         Assert.Equal(2, guest.Plays);
         Assert.Equal(1, guest.Searches);
-        Assert.Equal(1, guest.BlockedWatch);
+        Assert.Equal(1, guest.BlockedPlayback);
         Assert.Equal(2, guest.BlockedDanmaku);
         Assert.Equal(2, guest.LoginTries);
     }

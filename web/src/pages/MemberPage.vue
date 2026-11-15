@@ -113,7 +113,7 @@ async function submitNickname() {
 }
 
 // ─── 我的合集：成员自管的抽屉。这里能建、能拆、能跳去正面看货；
-// 往抽屉里装片去放映厅（WatchPage）的「合集」钮，那才是装卸口。
+// 往抽屉里装片去放映厅（VideoPage）的「合集」钮，那才是装卸口。
 const myCollections = ref(null) // null = 没拉到；[] = 确实没建过
 const collBusy = ref(false)
 const collNotice = ref(null)

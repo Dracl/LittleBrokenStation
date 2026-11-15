@@ -89,7 +89,7 @@ public sealed class VideoReceiptCardTests : IDisposable
 
         var letter = Assert.Single(_db.ListMessages(seat), m => m.Kind == MemberMail.KindComplete);
         Assert.Equal(MemberMail.MsgTypeVideoReceipt, letter.MsgType);
-        Assert.Equal("/watch/BVrcpt000001", letter.Link);
+        Assert.Equal("/video/BVrcpt000001", letter.Link);
         Assert.Contains("完整入档", letter.Body); // 纯文本兜底照寄：渲染器认不出卡也不白屏
 
         var arr = JsonDocument.Parse(letter.PayloadJson!).RootElement.EnumerateArray().Single();

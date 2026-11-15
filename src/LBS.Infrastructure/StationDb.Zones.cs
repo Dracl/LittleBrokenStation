@@ -161,7 +161,7 @@ public sealed partial class StationDb
 
     /// <summary>
     /// 分区总览入口卡的底图：先按「次数」选冠军分区，再在冠军分区里取次数最高的那条，用它的封面。
-    /// 次数 = events 台账里 watch.play / watch.heartbeat 的行数，不去重人头（访客也算）——
+    /// 次数 = events 台账里 playback.play / playback.heartbeat 的行数（改名前老行 watch.* 同吃），不去重人头（访客也算）——
     /// 与周报「最多人看」的去重口径有意分开：那边数观众人数，这边数热度。
     /// 只认在站的货，与 ListZones 同一口径；顶级分区仍旧在 C# 里掰，不去 SQL 玩 LIKE。
     /// 按日固定：快照存 settings（日期 + 中选 bvid），当日命中就直接复用，免得站长自己每放一条视频首页就当场跳图。
@@ -215,11 +215,13 @@ public sealed partial class StationDb
                 FROM events e
                 JOIN videos v ON v.bvid = e.subject_id
                 LEFT JOIN video_meta vm ON vm.video_id = v.id
-                WHERE e.event IN ($play, $beat) AND e.subject_type = 'video' AND v.status = 'Arrived' AND {visSql}
+                WHERE e.event IN ($play, $playOld, $beat, $beatOld) AND e.subject_type = 'video' AND v.status = 'Arrived' AND {visSql}
                 GROUP BY v.id, v.bvid, v.title;
                 """;
-            command.Parameters.AddWithValue("$play", WatchPlayEvent);
-            command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
             bindVis(command);
             using var reader = command.ExecuteReader();
             while (reader.Read())

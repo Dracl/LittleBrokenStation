@@ -329,19 +329,19 @@ public sealed class CommentArchiveTests : IDisposable
             new VideoMetaDraft("UP", 1, "音乐", null, null, null),
             [new PageDraft("t1", 1, "正片", 9, "03:00", basePath)]);
 
-        Assert.Null(_db.GetWatchData("BV1Ax411d7jD")!.CommentsUrl);
+        Assert.Null(_db.GetPlaybackData("BV1Ax411d7jD")!.CommentsUrl);
 
         Directory.CreateDirectory(Path.GetDirectoryName(basePath)!);
         File.WriteAllText(basePath + ".comments.json", "{}");
         _db.RegisterCommentsArtifact(videoId, "万恶之源/1-万恶之源-720P-AVC.comments.json");
 
         Assert.Equal("万恶之源/1-万恶之源-720P-AVC.comments.json", _db.GetArtifactRel(videoId, "comments"));
-        Assert.Equal("/media/万恶之源/1-万恶之源-720P-AVC.comments.json", _db.GetWatchData("BV1Ax411d7jD")!.CommentsUrl);
+        Assert.Equal("/media/万恶之源/1-万恶之源-720P-AVC.comments.json", _db.GetPlaybackData("BV1Ax411d7jD")!.CommentsUrl);
 
         // 补采换路径重登记：只留最新一条。
         File.WriteAllText(basePath + "-v2.comments.json", "{}");
         _db.RegisterCommentsArtifact(videoId, "万恶之源/1-万恶之源-720P-AVC-v2.comments.json");
-        Assert.Equal("/media/万恶之源/1-万恶之源-720P-AVC-v2.comments.json", _db.GetWatchData("BV1Ax411d7jD")!.CommentsUrl);
+        Assert.Equal("/media/万恶之源/1-万恶之源-720P-AVC-v2.comments.json", _db.GetPlaybackData("BV1Ax411d7jD")!.CommentsUrl);
     }
 
     [Fact]

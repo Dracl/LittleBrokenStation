@@ -78,7 +78,7 @@ const titleKey = ref(null)
     <ul class="space-y-3">
       <li v-for="v in items" :key="v.id">
         <div class="flex w-full">
-          <RouterLink :to="`/watch/${v.bvid}`" class="relative block h-[80px] w-[141px] shrink-0 overflow-hidden rounded-[6px] bg-[#c9ccd0] dark:bg-[#23262e]">
+          <RouterLink :to="`/video/${v.bvid}`" class="relative block h-[80px] w-[141px] shrink-0 overflow-hidden rounded-[6px] bg-[#c9ccd0] dark:bg-[#23262e]">
             <img
               v-if="coverSrcOf(v, 141)"
               :src="coverSrcOf(v, 141)"
@@ -98,7 +98,7 @@ const titleKey = ref(null)
                  第二行文字之后的空白、行下方的余量都不响应，光标也不变手型（染粉与手型同一个元素，同一块区域）。 -->
             <span class="line-clamp-2 text-[15px] font-medium leading-[19px] text-inkMain">
               <RouterLink
-                :to="`/watch/${v.bvid}`"
+                :to="`/video/${v.bvid}`"
                 class="transition"
                 :class="titleKey === v.id ? 'text-stationPink' : ''"
                 @mouseenter="titleKey = v.id"

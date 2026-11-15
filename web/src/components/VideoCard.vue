@@ -167,7 +167,7 @@ onBeforeUnmount(() => preview.dispose())
 <template>
   <div class="cv-auto">
     <RouterLink
-      :to="`/watch/${video.bvid}`"
+      :to="`/video/${video.bvid}`"
       class="relative block aspect-[16/10] w-full overflow-hidden rounded-xl bg-[#f1f2f3] dark:bg-[#23262e]"
       @mouseenter="onCoverEnter"
       @mouseleave="onCoverLeave"
@@ -236,8 +236,8 @@ onBeforeUnmount(() => preview.dispose())
     <!-- 标题区 42px：方框尺寸照旧（调参台上站长定的热区 48 已盖满，行高与 min-h 都不动），
          但可点只给字面 —— 外层 p 管两行截断与 tooltip，真正可点的是内联那枚 RouterLink，
          所以第二行文字之后的空白不响应；染粉与手型同一个元素、同一块区域。 -->
-    <p v-if="keyword" class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain" :title="video.title || video.bvid"><RouterLink :to="`/watch/${video.bvid}`" class="transition" :class="titleHover ? 'text-stationPink' : ''" @mouseenter="titleHover = true" @mouseleave="titleHover = false" v-html="titleHtml"></RouterLink></p>
-    <p v-else class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain" :title="video.title || video.bvid"><RouterLink :to="`/watch/${video.bvid}`" class="transition" :class="titleHover ? 'text-stationPink' : ''" @mouseenter="titleHover = true" @mouseleave="titleHover = false">{{ video.title || video.bvid }}</RouterLink></p>
+    <p v-if="keyword" class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain" :title="video.title || video.bvid"><RouterLink :to="`/video/${video.bvid}`" class="transition" :class="titleHover ? 'text-stationPink' : ''" @mouseenter="titleHover = true" @mouseleave="titleHover = false" v-html="titleHtml"></RouterLink></p>
+    <p v-else class="mt-2 line-clamp-2 min-h-[42px] text-[15px] font-medium leading-[22px] text-inkMain" :title="video.title || video.bvid"><RouterLink :to="`/video/${video.bvid}`" class="transition" :class="titleHover ? 'text-stationPink' : ''" @mouseenter="titleHover = true" @mouseleave="titleHover = false">{{ video.title || video.bvid }}</RouterLink></p>
     <div
       class="group/up relative mt-1 flex items-center gap-1 rounded-sm text-[13px] leading-[20px] text-inkFaint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationBlue/60"
       :class="canOpenUp ? 'cursor-pointer' : ''"

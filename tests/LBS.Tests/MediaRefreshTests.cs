@@ -150,14 +150,14 @@ public sealed class MediaRefreshTests : IDisposable
         Assert.True(cover);
 
         // 该动的动了
-        var data = _db.GetWatchData("BVmref000001")!;
+        var data = _db.GetPlaybackData("BVmref000001")!;
         Assert.Equal("鬼畜>调教", data.Zone);
         Assert.Equal("B站新简介", data.Description);
         Assert.Equal("1.2万", data.ViewCountText);
         Assert.Equal("B站新UP", data.UpName);
         Assert.Equal(456, data.UpMid);
         Assert.Equal("2026-06-01 12:00:00", data.PublishText);
-        // 封面链跟着新链走——问的是台账那一栏（`WatchData.CoverUrl` 下发的是**有效值**，
+        // 封面链跟着新链走——问的是台账那一栏（`PlaybackData.CoverUrl` 下发的是**有效值**，
         // 这条稿有本地件，拿它比热链必然对不上，那是读侧本就该如斯，不是档案没写进去）。
         Assert.Equal("https://pic.example/new.jpg", _db.GetCoverUrl(id));
         Assert.StartsWith("/media/", data.CoverUrl); // 本地件还在，放映厅照旧优先本地
@@ -188,7 +188,7 @@ public sealed class MediaRefreshTests : IDisposable
             Zone: "音乐>翻唱", Description: "B站新简介", UpName: "B站新UP", UpMid: 456));
         Assert.True(meta);
 
-        var data = _db.GetWatchData("BVmref000002")!;
+        var data = _db.GetPlaybackData("BVmref000002")!;
         // 面板念的还是站内那三份（覆写中），三枚标也都还在
         Assert.Equal("站长自己起的标题", data.Title);
         Assert.Equal("站长自己写的简介", data.Description);

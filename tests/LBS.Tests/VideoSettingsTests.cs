@@ -123,15 +123,15 @@ public sealed class VideoSettingsTests : IDisposable
         var id = Arrive("BVset0000001", "B站原标题");
 
         Assert.True(_db.SetVideoTitleOverride(id, input));
-        Assert.Equal(expected ?? "B站原标题", _db.GetWatchData("BVset0000001")!.Title);
-        Assert.Equal(expected is not null, _db.GetWatchData("BVset0000001")!.TitleOverridden);
+        Assert.Equal(expected ?? "B站原标题", _db.GetPlaybackData("BVset0000001")!.Title);
+        Assert.Equal(expected is not null, _db.GetPlaybackData("BVset0000001")!.TitleOverridden);
 
         // 再来一次：还原回 B 站那份，覆写标跟着落回假
         Assert.True(_db.SetVideoTitleOverride(id, "另一句站内标题"));
-        Assert.Equal("另一句站内标题", _db.GetWatchData("BVset0000001")!.Title);
+        Assert.Equal("另一句站内标题", _db.GetPlaybackData("BVset0000001")!.Title);
         Assert.True(_db.SetVideoTitleOverride(id, null));
-        Assert.Equal("B站原标题", _db.GetWatchData("BVset0000001")!.Title);
-        Assert.False(_db.GetWatchData("BVset0000001")!.TitleOverridden);
+        Assert.Equal("B站原标题", _db.GetPlaybackData("BVset0000001")!.Title);
+        Assert.False(_db.GetPlaybackData("BVset0000001")!.TitleOverridden);
     }
 
     [Fact]
@@ -140,7 +140,7 @@ public sealed class VideoSettingsTests : IDisposable
         var id = Arrive("BVset0000002");
 
         Assert.True(_db.SetVideoDescOverride(id, "  站内自己写的简介  "));
-        var watched = _db.GetWatchData("BVset0000002")!;
+        var watched = _db.GetPlaybackData("BVset0000002")!;
         Assert.Equal("站内自己写的简介", watched.Description); // 去首尾空白，段内空格留着
         Assert.True(watched.DescOverridden);
 
@@ -152,8 +152,8 @@ public sealed class VideoSettingsTests : IDisposable
 
         // 还原：空串也算（与标题、分区同一克制）
         Assert.True(_db.SetVideoDescOverride(id, ""));
-        Assert.Equal("B站原简介", _db.GetWatchData("BVset0000002")!.Description);
-        Assert.False(_db.GetWatchData("BVset0000002")!.DescOverridden);
+        Assert.Equal("B站原简介", _db.GetPlaybackData("BVset0000002")!.Description);
+        Assert.False(_db.GetPlaybackData("BVset0000002")!.DescOverridden);
         Assert.Single(_db.SearchVideos("B站原简介", null));
     }
 
@@ -161,25 +161,25 @@ public sealed class VideoSettingsTests : IDisposable
     public void 分区改派在放映厅也照得住_还原后回B站户口()
     {
         var id = Arrive("BVset0000010", zone: "音乐>翻唱");
-        Assert.Equal("音乐>翻唱", _db.GetWatchData("BVset0000010")!.Zone);
-        Assert.False(_db.GetWatchData("BVset0000010")!.ZoneOverridden);
+        Assert.Equal("音乐>翻唱", _db.GetPlaybackData("BVset0000010")!.Zone);
+        Assert.False(_db.GetPlaybackData("BVset0000010")!.ZoneOverridden);
 
         // 改派：放映厅与分区页同一张嘴（EffZoneExpr 本来就是那一个出口，这里钉的是放映厅别再只吃 vm.zone）
         Assert.True(_db.SetVideoZoneOverride(id, "鬼畜>调教"));
-        Assert.Equal("鬼畜>调教", _db.GetWatchData("BVset0000010")!.Zone);
-        Assert.True(_db.GetWatchData("BVset0000010")!.ZoneOverridden);
+        Assert.Equal("鬼畜>调教", _db.GetPlaybackData("BVset0000010")!.Zone);
+        Assert.True(_db.GetPlaybackData("BVset0000010")!.ZoneOverridden);
         Assert.Equal("鬼畜>调教", Assert.Single(_db.ListZoneVideos("鬼畜"), v => v.Id == id).Zone);
 
         // 认不了的值：回 false 且一个字节都不动（投稿人本人也吃 TryNormalizeZone 这一张嘴）
         Assert.False(_db.SetVideoZoneOverride(id, "音乐>翻唱>再来一层"));
         Assert.False(_db.SetVideoZoneOverride(id, new string('区', StationDb.MaxZoneNameLength + 1)));
         Assert.False(_db.SetVideoZoneOverride(id, "   >  "));
-        Assert.Equal("鬼畜>调教", _db.GetWatchData("BVset0000010")!.Zone);
+        Assert.Equal("鬼畜>调教", _db.GetPlaybackData("BVset0000010")!.Zone);
 
         // 还原：空串 = 清空改派，户口回跟 B 站档案走
         Assert.True(_db.SetVideoZoneOverride(id, ""));
-        Assert.Equal("音乐>翻唱", _db.GetWatchData("BVset0000010")!.Zone);
-        Assert.False(_db.GetWatchData("BVset0000010")!.ZoneOverridden);
+        Assert.Equal("音乐>翻唱", _db.GetPlaybackData("BVset0000010")!.Zone);
+        Assert.False(_db.GetPlaybackData("BVset0000010")!.ZoneOverridden);
     }
 
     [Fact]
@@ -195,15 +195,15 @@ public sealed class VideoSettingsTests : IDisposable
         Assert.DoesNotContain(_db.ListVideos(), v => v.Id == id);
         Assert.Contains(_db.ListVideos(VisibilityScope.Of(me)), v => v.Id == id);
         Assert.Contains(_db.ListVideos(VisibilityScope.Everything), v => v.Id == id);
-        Assert.Null(_db.GetWatchData("BVset0000020"));
-        Assert.Equal("private", _db.GetWatchData("BVset0000020", VisibilityScope.Of(me))!.Visibility);
+        Assert.Null(_db.GetPlaybackData("BVset0000020"));
+        Assert.Equal("private", _db.GetPlaybackData("BVset0000020", VisibilityScope.Of(me))!.Visibility);
         Assert.Empty(_db.SearchVideos("公开的一首", null));
 
         // 转回公开：同一张嘴回去，锁没了
         Assert.True(_db.SetVideoVisibility(id, VideoVisibility.Public));
         Assert.Equal(VideoVisibility.Public, _db.GetVideoVisibility(id));
         Assert.Contains(_db.ListVideos(), v => v.Id == id);
-        Assert.Equal("public", _db.GetWatchData("BVset0000020")!.Visibility);
+        Assert.Equal("public", _db.GetPlaybackData("BVset0000020")!.Visibility);
         Assert.Single(_db.SearchVideos("公开的一首", null));
     }
 
@@ -256,7 +256,7 @@ public sealed class VideoSettingsTests : IDisposable
         var sibling = Arrive("BVset0000101", "同区的另一首", zone: "音乐>翻唱");
         var collection = _db.CreateCollection("集", null, me);
         Assert.True(_db.AddItem(collection, id));
-        _db.UpsertWatchHistory(me, id, 1, 30, 100);
+        _db.UpsertVideoHistory(me, id, 1, 30, 100);
 
         Assert.True(_db.SetVideoTitleOverride(id, "站内改的标题"));
 
@@ -270,17 +270,17 @@ public sealed class VideoSettingsTests : IDisposable
         // ④ 相关推荐
         Assert.Equal("站内改的标题", Assert.Single(_db.GetRelatedVideos(sibling, 50), v => v.Id == id).Title);
         // ⑤ 放映厅
-        Assert.Equal("站内改的标题", _db.GetWatchData("BVset0000100")!.Title);
+        Assert.Equal("站内改的标题", _db.GetPlaybackData("BVset0000100")!.Title);
         // ⑥ 合集简报封面之外，片单那条也得上新标题
         Assert.Equal("站内改的标题", Assert.Single(_db.GetCollection(collection)!.Items, i => i.Id == id).Title);
         // ⑦ 观看历史
-        Assert.Equal("站内改的标题", Assert.Single(_db.GetWatchHistory(me), r => r.VideoId == id).Title);
+        Assert.Equal("站内改的标题", Assert.Single(_db.GetVideoHistory(me), r => r.VideoId == id).Title);
 
         // 还原后七处一起回旧口径（同一条 SQL 表达式，不会有一处漏改）
         Assert.True(_db.SetVideoTitleOverride(id, null));
         Assert.Equal("B站长标题", Assert.Single(_db.ListVideos(), v => v.Id == id).Title);
-        Assert.Equal("B站长标题", _db.GetWatchData("BVset0000100")!.Title);
-        Assert.Equal("B站长标题", Assert.Single(_db.GetWatchHistory(me), r => r.VideoId == id).Title);
+        Assert.Equal("B站长标题", _db.GetPlaybackData("BVset0000100")!.Title);
+        Assert.Equal("B站长标题", Assert.Single(_db.GetVideoHistory(me), r => r.VideoId == id).Title);
     }
 
     [Fact]
@@ -311,7 +311,7 @@ public sealed class VideoSettingsTests : IDisposable
     public void 覆写标随载荷下发_数据层不送自管权()
     {
         var id = Arrive("BVset0000200", "原标题", coverUrl: "https://pic.example/hot.jpg");
-        var fresh = _db.GetWatchData("BVset0000200")!;
+        var fresh = _db.GetPlaybackData("BVset0000200")!;
 
         // 没覆写过的三栏都是假
         Assert.False(fresh.TitleOverridden);
@@ -326,7 +326,7 @@ public sealed class VideoSettingsTests : IDisposable
         Assert.True(_db.SetVideoTitleOverride(id, "新标题"));
         Assert.True(_db.SetVideoDescOverride(id, "新简介"));
         Assert.True(_db.SetVideoZoneOverride(id, "鬼畜"));
-        var edited = _db.GetWatchData("BVset0000200")!;
+        var edited = _db.GetPlaybackData("BVset0000200")!;
         Assert.True(edited.TitleOverridden);
         Assert.True(edited.DescOverridden);
         Assert.True(edited.ZoneOverridden);
@@ -351,7 +351,7 @@ public sealed class VideoSettingsTests : IDisposable
         _db.Initialize();
 
         // 存量行没覆写：三栏照吃 B 站归档那份（封面走本地件优先）
-        var before = _db.GetWatchData("BVset0000700")!;
+        var before = _db.GetPlaybackData("BVset0000700")!;
         Assert.Equal("B站原标题", before.Title);
         Assert.Equal("B站原简介", before.Description);
         Assert.Equal("音乐>翻唱", before.Zone);
@@ -360,9 +360,9 @@ public sealed class VideoSettingsTests : IDisposable
 
         // 补完的列写得了也还得回去
         Assert.True(_db.SetVideoTitleOverride(id, "站内新标题"));
-        Assert.Equal("站内新标题", _db.GetWatchData("BVset0000700")!.Title);
+        Assert.Equal("站内新标题", _db.GetPlaybackData("BVset0000700")!.Title);
         Assert.True(_db.SetVideoTitleOverride(id, null));
-        Assert.Equal("B站原标题", _db.GetWatchData("BVset0000700")!.Title);
+        Assert.Equal("B站原标题", _db.GetPlaybackData("BVset0000700")!.Title);
     }
 
     // ─── ④ revive / requeue 的钥匙判定（本仓无 HTTP harness，钉门判据本身）───

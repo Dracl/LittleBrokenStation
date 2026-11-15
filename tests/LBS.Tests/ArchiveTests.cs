@@ -48,7 +48,7 @@ public sealed class ArchiveTests : IDisposable
                 new PageDraft("task-2", 2, "幕后", 457, "01:00", Path.Combine(_videosDir, "测试标题", "2-幕后-1080P-AVC")),
             });
 
-        var data = _db.GetWatchData("BV1z341187Y9");
+        var data = _db.GetPlaybackData("BV1z341187Y9");
 
         Assert.NotNull(data);
         Assert.Equal("UP主小明", data.UpName);
@@ -81,7 +81,7 @@ public sealed class ArchiveTests : IDisposable
         Assert.Equal(0, missing);
         Assert.Equal(4, archived);
 
-        var data = _db.GetWatchData("BV1GJ411x7h7");
+        var data = _db.GetPlaybackData("BV1GJ411x7h7");
         Assert.NotNull(data);
         var page = Assert.Single(data.Pages);
         Assert.Equal("/media/测试标题/1-正片-1080P-AVC.mp4", page.VideoUrl);
@@ -121,7 +121,7 @@ public sealed class ArchiveTests : IDisposable
         Assert.Equal(0, missing);
         Assert.Equal(5, archived); // mp4 + 无名副本 + 三枚真名轨；.comments.json 不登
 
-        var page = Assert.Single(_db.GetWatchData("BV1Q44v6RE2V")!.Pages);
+        var page = Assert.Single(_db.GetPlaybackData("BV1Q44v6RE2V")!.Pages);
         Assert.Equal(3, page.SubtitleUrls.Count); // 有带名轨就只列带名轨，无名副本退场不撞车
         Assert.Equal(
             new[] { "English", "中文", "日本語" },
@@ -131,7 +131,7 @@ public sealed class ArchiveTests : IDisposable
         // 重扫安全：不重复登记、不抹已有的名
         var (again, _) = _db.FinalizeArtifacts(videoId, _videosDir);
         Assert.Equal(0, again);
-        page = Assert.Single(_db.GetWatchData("BV1Q44v6RE2V")!.Pages);
+        page = Assert.Single(_db.GetPlaybackData("BV1Q44v6RE2V")!.Pages);
         Assert.Equal(3, page.SubtitleUrls.Count);
     }
 
@@ -154,7 +154,7 @@ public sealed class ArchiveTests : IDisposable
             new[] { new PageDraft("task-1", 1, "正片", 456, "03:30", @base) });
         _db.FinalizeArtifacts(videoId, _videosDir);
 
-        var page = Assert.Single(_db.GetWatchData("BV1TrackLabel1")!.Pages);
+        var page = Assert.Single(_db.GetPlaybackData("BV1TrackLabel1")!.Pages);
         var zh = Assert.Single(page.SubtitleUrls); // 脏形无名被带名轨挤下台（默认副本同一条退场规则）
         Assert.Equal("中文", zh.Label); // 撞车尾剔纯数字 trackId，只留真名
     }
@@ -178,7 +178,7 @@ public sealed class ArchiveTests : IDisposable
             new[] { new PageDraft("task-1", 1, "正片", 456, "03:30", @base) });
         _db.FinalizeArtifacts(videoId, _videosDir);
 
-        var page = Assert.Single(_db.GetWatchData("BV1TrackDirty1")!.Pages);
+        var page = Assert.Single(_db.GetPlaybackData("BV1TrackDirty1")!.Pages);
         Assert.Equal(2, page.SubtitleUrls.Count); // 全无名 → 照列全量，前端吃「字幕 N」笨名
         Assert.All(page.SubtitleUrls, t => Assert.Null(t.Label));
     }
@@ -199,7 +199,7 @@ public sealed class ArchiveTests : IDisposable
     [Fact]
     public void 未入库的BV_观看404()
     {
-        Assert.Null(_db.GetWatchData("BV1noT411x7h7"));
+        Assert.Null(_db.GetPlaybackData("BV1noT411x7h7"));
     }
 
     [Fact]
@@ -207,8 +207,8 @@ public sealed class ArchiveTests : IDisposable
     {
         // BV 号是大小写敏感的 base62，库里存什么样子就该用什么查得到（真机抓出的 bug）。
         AddVideo("BV1Ax411d7jD");
-        Assert.NotNull(_db.GetWatchData("BV1Ax411d7jD"));
-        Assert.Null(_db.GetWatchData("BV1AX411D7JD"));
+        Assert.NotNull(_db.GetPlaybackData("BV1Ax411d7jD"));
+        Assert.Null(_db.GetPlaybackData("BV1AX411D7JD"));
     }
 
     [Fact]
@@ -232,7 +232,7 @@ public sealed class ArchiveTests : IDisposable
         Assert.Equal(3, deleted);
         Assert.False(File.Exists(@base + ".mp4"));
         Assert.False(Directory.Exists(dir)); // 空目录一并清掉
-        Assert.Null(_db.GetWatchData("BV1de411x7h7"));
+        Assert.Null(_db.GetPlaybackData("BV1de411x7h7"));
         Assert.Null(_db.GetVideoForDelete(videoId));
     }
 }

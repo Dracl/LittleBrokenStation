@@ -13,7 +13,7 @@ namespace LBS.Infrastructure;
 public sealed partial class StationDb
 {
     /// <summary>一条观看历史（片名与封面是 JOIN 来的现取值，不是本表快照）。</summary>
-    public sealed record WatchHistoryRow(
+    public sealed record VideoHistoryRow(
         long VideoId,
         string Bvid,
         string? Title,
@@ -25,15 +25,15 @@ public sealed partial class StationDb
         string UpdatedAtUtc);
 
     /// <summary>续播点位（GET progress 的料）。</summary>
-    public sealed record WatchProgress(int PageIdx, double PositionSec, double DurationSec, string UpdatedAtUtc);
+    public sealed record VideoProgress(int PageIdx, double PositionSec, double DurationSec, string UpdatedAtUtc);
 
     /// <summary>报一个观看位置：一 P 一坑，同 P 新位盖旧位、updated_at_utc 翻新；别的 P 有自己的坑，互不相犯。</summary>
-    public void UpsertWatchHistory(long memberId, long videoId, int pageIdx, double positionSec, double durationSec)
+    public void UpsertVideoHistory(long memberId, long videoId, int pageIdx, double positionSec, double durationSec)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO watch_history (member_id, video_id, page_idx, position_sec, duration_sec, updated_at_utc)
+            INSERT INTO video_history (member_id, video_id, page_idx, position_sec, duration_sec, updated_at_utc)
             VALUES ($m, $v, $p, $pos, $dur, $now)
             ON CONFLICT (member_id, video_id, page_idx) DO UPDATE
                 SET position_sec = excluded.position_sec,
@@ -55,7 +55,7 @@ public sealed partial class StationDb
     /// 自己藏的那几条照旧在。
     /// 一 P 一坑后同一部片可能躺着几行，列表收成一卡一片：窗口函数取每部片最近更新的那一 P 露面，
     /// 不让多 P 片子把历史卡阵撑成 P 陈列架。</remarks>
-    public IReadOnlyList<WatchHistoryRow> GetWatchHistory(long memberId, int limit = 100, VisibilityScope? scope = null)
+    public IReadOnlyList<VideoHistoryRow> GetVideoHistory(long memberId, int limit = 100, VisibilityScope? scope = null)
     {
         var (visSql, bindVis) = VisibilityFilter(scope ?? VisibilityScope.PublicOnly, "v");
         using var connection = Open(_dbPath);
@@ -68,7 +68,7 @@ public sealed partial class StationDb
             FROM (
                 SELECT video_id, page_idx, position_sec, duration_sec, updated_at_utc,
                        row_number() OVER (PARTITION BY video_id ORDER BY updated_at_utc DESC, rowid DESC) AS rn
-                FROM watch_history WHERE member_id = $m
+                FROM video_history WHERE member_id = $m
             ) h
             JOIN videos v ON v.id = h.video_id
             WHERE h.rn = 1 AND {visSql}
@@ -80,10 +80,10 @@ public sealed partial class StationDb
         bindVis(command);
 
         using var reader = command.ExecuteReader();
-        var list = new List<WatchHistoryRow>();
+        var list = new List<VideoHistoryRow>();
         while (reader.Read())
         {
-            list.Add(new WatchHistoryRow(
+            list.Add(new VideoHistoryRow(
                 reader.GetInt64(0),
                 reader.GetString(1),
                 reader.IsDBNull(2) ? null : reader.GetString(2),
@@ -99,13 +99,13 @@ public sealed partial class StationDb
     }
 
     /// <summary>某人某片的一个点位：pageIdx 给了就查那一 P 的坑，不给取最近更新的那一 P；没看过返回 null（前端按「从头播」处置）。</summary>
-    public WatchProgress? GetWatchHistoryOne(long memberId, long videoId, int? pageIdx = null)
+    public VideoProgress? GetVideoHistoryOne(long memberId, long videoId, int? pageIdx = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT page_idx, position_sec, duration_sec, updated_at_utc
-            FROM watch_history WHERE member_id = $m AND video_id = $v
+            FROM video_history WHERE member_id = $m AND video_id = $v
               AND ($p IS NULL OR page_idx = $p)
             ORDER BY updated_at_utc DESC, rowid DESC
             LIMIT 1;
@@ -119,26 +119,26 @@ public sealed partial class StationDb
             return null;
         }
 
-        return new WatchProgress(reader.GetInt32(0), reader.GetDouble(1), reader.GetDouble(2), reader.GetString(3));
+        return new VideoProgress(reader.GetInt32(0), reader.GetDouble(1), reader.GetDouble(2), reader.GetString(3));
     }
 
     /// <summary>销一个人的某片历史（看完的自动清、用户手动清共用这一下）；没这行返回 false。</summary>
-    public bool DeleteWatchHistory(long memberId, long videoId)
+    public bool DeleteVideoHistory(long memberId, long videoId)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM watch_history WHERE member_id = $m AND video_id = $v;";
+        command.CommandText = "DELETE FROM video_history WHERE member_id = $m AND video_id = $v;";
         command.Parameters.AddWithValue("$m", memberId);
         command.Parameters.AddWithValue("$v", videoId);
         return command.ExecuteNonQuery() > 0;
     }
 
     /// <summary>清空某人全部观看历史，返回清掉的行数（本来就是空的回 0，不算错）。</summary>
-    public int ClearWatchHistory(long memberId)
+    public int ClearVideoHistory(long memberId)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM watch_history WHERE member_id = $m;";
+        command.CommandText = "DELETE FROM video_history WHERE member_id = $m;";
         command.Parameters.AddWithValue("$m", memberId);
         return command.ExecuteNonQuery();
     }

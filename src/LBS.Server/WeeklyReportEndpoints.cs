@@ -132,8 +132,8 @@ public static class WeeklyReportEndpoints
                 },
                 activity = new
                 {
-                    watchPlays = report.WatchPlays,
-                    watchOpens = report.WatchOpens,
+                    playbackPlays = report.PlaybackPlays,
+                    playbackOpens = report.PlaybackOpens,
                     home = report.Play.Home,
                     beams = report.Play.Beams,
                     uniqueViewers = report.UniqueViewers,
@@ -151,7 +151,7 @@ public static class WeeklyReportEndpoints
                     opens = report.Guest.Opens,
                     plays = report.Guest.Plays,
                     searches = report.Guest.Searches,
-                    blockedWatch = report.Guest.BlockedWatch,
+                    blockedPlayback = report.Guest.BlockedPlayback,
                     blockedDanmaku = report.Guest.BlockedDanmaku,
                     loginTries = report.Guest.LoginTries,
                     home = report.Guest.Home,

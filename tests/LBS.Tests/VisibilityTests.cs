@@ -93,7 +93,7 @@ public sealed class VisibilityTests : IDisposable
         return id;
     }
 
-    /// <summary>往台账塞 n 枪观看（形状照 WatchPage.vue 的上报实况；入口卡底图按这个选冠军分区）。</summary>
+    /// <summary>往台账塞 n 枪观看（形状照 VideoPage.vue 的上报实况；入口卡底图按这个选冠军分区）。</summary>
     private void Watch(string bvid, int times)
     {
         for (var i = 0; i < times; i++)
@@ -104,7 +104,7 @@ public sealed class VisibilityTests : IDisposable
                 new EventDraft(
                     EventActors.Guest,
                     null,
-                    beat ? "watch.heartbeat" : "watch.play",
+                    beat ? "playback.heartbeat" : "playback.play",
                     "video",
                     bvid,
                     beat ? """{"t":42}""" : null,
@@ -142,10 +142,10 @@ public sealed class VisibilityTests : IDisposable
         Assert.Contains(_db.ListZoneVideos("音乐", VisibilityScope.Everything), v => v.Id == mine);
 
         // 放映厅：别人连「这条存在」都问不出来（与查无同一张面孔），本人拿到的载荷带得出可见性
-        Assert.Null(_db.GetWatchData("BVvis0000001"));
-        Assert.Null(_db.GetWatchData("BVvis0000001", VisibilityScope.Of(Seat("第三者"))));
-        Assert.Equal("private", _db.GetWatchData("BVvis0000001", VisibilityScope.Of(me))!.Visibility);
-        Assert.Equal("public", _db.GetWatchData("BVvis0000002", VisibilityScope.Everything)!.Visibility);
+        Assert.Null(_db.GetPlaybackData("BVvis0000001"));
+        Assert.Null(_db.GetPlaybackData("BVvis0000001", VisibilityScope.Of(Seat("第三者"))));
+        Assert.Equal("private", _db.GetPlaybackData("BVvis0000001", VisibilityScope.Of(me))!.Visibility);
+        Assert.Equal("public", _db.GetPlaybackData("BVvis0000002", VisibilityScope.Everything)!.Visibility);
 
         // 无归属的私有行（爬虫代投 / 老数据反查失败）：只有站长握得住，与 CanManageVideo 同一口径
         var orphan = Arrive("BVvis0000003", "没主人的", visibility: VideoVisibility.Private);
@@ -412,19 +412,19 @@ public sealed class VisibilityTests : IDisposable
         var other = Seat("看过的人");
         var hidden = Arrive("BVvis0000080", "藏的一首", submitter: me, visibility: VideoVisibility.Private);
         var open = Arrive("BVvis0000081", "人人听的");
-        _db.UpsertWatchHistory(other, hidden, 1, 10, 100);
-        _db.UpsertWatchHistory(other, open, 1, 10, 100);
-        _db.UpsertWatchHistory(me, hidden, 1, 20, 100);
+        _db.UpsertVideoHistory(other, hidden, 1, 10, 100);
+        _db.UpsertVideoHistory(other, open, 1, 10, 100);
+        _db.UpsertVideoHistory(me, hidden, 1, 20, 100);
 
         // 别人历史里不该再挂私有稿的标题封面（行不删，只是看不见，与「片被删了行就自然看不见」同一套路）
-        Assert.Equal(new[] { open }, _db.GetWatchHistory(other).Select(r => r.VideoId));
-        Assert.Equal(new[] { open }, _db.GetWatchHistory(other, 100, VisibilityScope.Of(other)).Select(r => r.VideoId));
+        Assert.Equal(new[] { open }, _db.GetVideoHistory(other).Select(r => r.VideoId));
+        Assert.Equal(new[] { open }, _db.GetVideoHistory(other, 100, VisibilityScope.Of(other)).Select(r => r.VideoId));
 
         // 本人查自己的：自己藏的那条照旧在
-        Assert.Equal(new[] { hidden }, _db.GetWatchHistory(me, 100, VisibilityScope.Of(me)).Select(r => r.VideoId));
+        Assert.Equal(new[] { hidden }, _db.GetVideoHistory(me, 100, VisibilityScope.Of(me)).Select(r => r.VideoId));
 
         // 站长全见；行还在（尺子一换就回来，没说删）
-        Assert.Equal(2, _db.GetWatchHistory(other, 100, VisibilityScope.Everything).Count);
+        Assert.Equal(2, _db.GetVideoHistory(other, 100, VisibilityScope.Everything).Count);
     }
 
     [Fact]

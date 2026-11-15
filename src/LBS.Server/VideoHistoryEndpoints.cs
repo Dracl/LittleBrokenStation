@@ -13,7 +13,7 @@ namespace LBS.Server;
 /// /api/videos/{id}/progress 由 MemberGate 的 /api/videos/ 前缀认下（见 MemberGate.RequiresMember）；
 /// /api/member/history 那三条不在两张门的视野里，端点自己防御式查 MemberGate.Current，没席位一律 401 中文。
 /// </summary>
-public static class WatchHistoryEndpoints
+public static class VideoHistoryEndpoints
 {
     /// <summary>开个头地板：没到 5 秒又不算续播，就别往历史里塞行。</summary>
     internal const double StartFloorSec = 5;
@@ -59,21 +59,21 @@ public static class WatchHistoryEndpoints
         // 要不要跳回交给前端 loadResumePoint 的 95% 闸（过线从头播，不把刚看完的人抓回末尾）。
         if (position >= duration * FinishedRatio)
         {
-            db.UpsertWatchHistory(memberId, videoId, page, position, duration);
+            db.UpsertVideoHistory(memberId, videoId, page, position, duration);
             return (null, ProgressOutcome.Finished);
         }
 
         // 刚开个头：这一 P 的坑是空的就不占（别的 P 有行不算，坑各管各的）；本 P 有行则照常覆盖，别把上次看到的点顶没了还留着旧数。
-        if (position < StartFloorSec && db.GetWatchHistoryOne(memberId, videoId, page) is null)
+        if (position < StartFloorSec && db.GetVideoHistoryOne(memberId, videoId, page) is null)
         {
             return (null, ProgressOutcome.Ignored);
         }
 
-        db.UpsertWatchHistory(memberId, videoId, page, position, duration);
+        db.UpsertVideoHistory(memberId, videoId, page, position, duration);
         return (null, ProgressOutcome.Saved);
     }
 
-    public static void MapWatchHistoryEndpoints(this WebApplication app)
+    public static void MapVideoHistoryEndpoints(this WebApplication app)
     {
         // 报进度：路径以 /progress 收尾，MemberGate 的 /api/videos/ 那一块认它（GET/POST 都吃会员门）。
         // 两道门各管一头：会员门拿「是不是自己人」，看客钥匙拿「这部你看不得」——后者一律 404（与查无同一张脸）。
@@ -122,7 +122,7 @@ public static class WatchHistoryEndpoints
                 return Results.Json(new { message = "馆藏里没这个视频" }, statusCode: StatusCodes.Status404NotFound);
             }
 
-            var progress = db.GetWatchHistoryOne(me.Id, id, pageIdx);
+            var progress = db.GetVideoHistoryOne(me.Id, id, pageIdx);
             return progress is null
                 ? Results.Json((object?)null)
                 : Results.Ok(new { pageIdx = progress.PageIdx, positionSec = progress.PositionSec, durationSec = progress.DurationSec });
@@ -137,7 +137,7 @@ public static class WatchHistoryEndpoints
             }
 
             // 历史是个人足迹，本人全见：递 Of(自己) 而不是访客尺子，自己藏着的货在自己历史里照旧露面。
-            var items = db.GetWatchHistory(me.Id, 100, ViewerGate.Scope(http)).Select(r => new
+            var items = db.GetVideoHistory(me.Id, 100, ViewerGate.Scope(http)).Select(r => new
             {
                 videoId = r.VideoId,
                 bvid = r.Bvid,
@@ -164,7 +164,7 @@ public static class WatchHistoryEndpoints
                 return Results.Json(new { message = "得说清删哪一部" }, statusCode: StatusCodes.Status400BadRequest);
             }
 
-            return db.DeleteWatchHistory(me.Id, videoId)
+            return db.DeleteVideoHistory(me.Id, videoId)
                 ? Results.Ok(new { message = "这部从历史里抹掉了" })
                 : Results.Ok(new { message = "历史里本来就没有这部" });
         });
@@ -176,7 +176,7 @@ public static class WatchHistoryEndpoints
                 return Results.Json(new { message = "还没登录，清谁的历史" }, statusCode: StatusCodes.Status401Unauthorized);
             }
 
-            var cleared = db.ClearWatchHistory(me.Id);
+            var cleared = db.ClearVideoHistory(me.Id);
             return Results.Ok(new
             {
                 cleared,

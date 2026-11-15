@@ -14,6 +14,9 @@ public static class EventIngestEndpoints
 {
     private static readonly string[] ClientAllowed =
     [
+        // 观映族 11-15 改名 watch.* → playback.*；老名留守：朋友机器上缓存的旧前端 bundle 还会报老串，
+        // 拒了就断账——老串继续照落，统计读侧（StationDb.Weekly.cs）新老双吃接得住。
+        "playback.open", "playback.play", "playback.pause", "playback.heartbeat", "playback.leave",
         "watch.open", "watch.play", "watch.pause", "watch.heartbeat", "watch.leave",
         "page.view", "home.open",
     ];

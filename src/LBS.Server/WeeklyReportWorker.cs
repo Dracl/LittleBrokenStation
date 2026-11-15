@@ -114,8 +114,8 @@ public sealed class WeeklyReportWorker(StationDb db, ILogger<WeeklyReportWorker>
     internal static bool IsQuietWeek(StationDb.WeeklyReport report) =>
         report.NewsCount == 0
         && report.DanmakuAdded == 0
-        && report.WatchOpens == 0
-        && report.WatchPlays == 0
+        && report.PlaybackOpens == 0
+        && report.PlaybackPlays == 0
         && report.Duration.Shots == 0
         && report.Searches == 0
         && report.Submissions == 0
@@ -186,7 +186,7 @@ public sealed class WeeklyReportWorker(StationDb db, ILogger<WeeklyReportWorker>
             : null);
         Row("观看热度",
             report.UniqueViewers > 0 ? $"去重观众 {report.UniqueViewers} 人" : null,
-            report.WatchPlays > 0 ? $"播放 {report.WatchPlays} 次" : null,
+            report.PlaybackPlays > 0 ? $"播放 {report.PlaybackPlays} 次" : null,
             report.Searches > 0 ? $"搜索 {report.Searches} 回" : null);
         Row("投稿入库",
             report.Submissions > 0 ? $"投稿 {report.Submissions} 次" : null,
@@ -203,7 +203,7 @@ public sealed class WeeklyReportWorker(StationDb db, ILogger<WeeklyReportWorker>
             Row("站外游客",
                 $"{report.Guest.Heads} 位未登录",
                 report.Guest.Opens > 0 ? $"进厅 {report.Guest.Opens} 次" : null,
-                report.Guest.BlockedWatch > 0 ? $"{report.Guest.BlockedWatch} 回想进片页被门挡住" : null);
+                report.Guest.BlockedPlayback > 0 ? $"{report.Guest.BlockedPlayback} 回想进片页被门挡住" : null);
         }
 
         // 时长那一块：只报成员心跳换算的墙钟秒（游客看不了片，一枪不入账），零心跳就不摆空账。

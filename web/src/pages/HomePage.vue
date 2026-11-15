@@ -293,7 +293,7 @@ function showNotice(kind, text) {
 
 onMounted(() => {
   // 进主页一枪（周报七日动静的「主页」柱）：每次挂载算一回（刷新、回首页都算），成员游客一视同仁；
-  // 与观映账分家（subjectType=page），游客柱继续只数 watch.*。
+  // 与观映账分家（subjectType=page），游客柱继续只数 playback.*（改名前老行 watch.* 同认）。
   fetch('/api/events/ingest', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -357,7 +357,7 @@ watch(sentinelEl, (el) => {
 
 <template>
   <!-- 根上挂一道捕获拦：访客（member 为空）点卡片进放映厅、点分区行、点合集入口这些一律不跳页，
-       改成开现成那扇登录窗（utils/guestGate.js，与顶栏「登录 / 注册」同一扇）。只认落在 /watch · /zones ·
+       改成开现成那扇登录窗（utils/guestGate.js，与顶栏「登录 / 注册」同一扇）。只认落在 /video · /zones ·
        /collections · /collection · /dynamics 那些 <a> 上的点击，卡面、悬停预览、翻页箭头与站长那几枚 hover 钮一概不碰；
        大屏幕模式（BangumiHome）就挂在下面，一并罩住，成员则整个放行。 -->
   <div class="min-h-screen" @click.capture="guardGuestNav">
@@ -405,7 +405,7 @@ watch(sentinelEl, (el) => {
             @mouseenter="featPaused = true"
             @mouseleave="featPaused = false"
           >
-            <RouterLink :to="`/watch/${featured[featIdx]?.bvid}`" class="absolute inset-0 block">
+            <RouterLink :to="`/video/${featured[featIdx]?.bvid}`" class="absolute inset-0 block">
               <div :key="featured[featIdx]?.bvid ?? featIdx" class="hero-layers absolute inset-0">
                 <div class="hero-blur" :style="{ backgroundImage: `url('${featCover}')` }"></div>
                 <div class="hero-soft">

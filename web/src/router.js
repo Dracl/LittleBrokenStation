@@ -4,7 +4,7 @@ import AdminPage from './pages/AdminPage.vue'
 import MemberPage from './pages/MemberPage.vue'
 import HistoryPage from './pages/HistoryPage.vue'
 import MessagesPage from './pages/MessagesPage.vue'
-import WatchPage from './pages/WatchPage.vue'
+import VideoPage from './pages/VideoPage.vue'
 import SearchPage from './pages/SearchPage.vue'
 import DynamicsPage from './pages/DynamicsPage.vue'
 import ZonePage from './pages/ZonePage.vue'
@@ -20,7 +20,10 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'home', component: HomePage, meta: { title: '分站首页 - 小破分站' } },
-    { path: '/watch/:bvid', name: 'watch', component: WatchPage, meta: { title: '在线观看 - 小破分站' } },
+    { path: '/video/:bvid', name: 'video', component: VideoPage, meta: { title: '在线观看 - 小破分站' } },
+    // 老放映厅门牌（11-15 改名前全站的 /watch/bvid，包拮已发出去的朋友聊天记与库内老私信卡）：
+    // 永久重定向进新页，query/hash 照带（?t= 续播时间点不能丢），params 透传。
+    { path: '/watch/:bvid', redirect: (to) => ({ path: `/video/${to.params.bvid}`, query: to.query, hash: to.hash }) },
     { path: '/search', name: 'search', component: SearchPage, meta: { title: '站内搜索 - 小破分站' } },
     { path: '/dynamics', name: 'dynamics', component: DynamicsPage, meta: { title: 'UP 主动态 - 小破分站', guestBlocked: true } },
     { path: '/zones', name: 'zones', component: ZonePage, meta: { title: '分区 - 小破分站', guestBlocked: true } },

@@ -83,7 +83,7 @@ public sealed class RecycleRepostTests : IDisposable
         var (memberId, _) = _db.CreateMemberInvite("席位二号");
         var collection = _db.CreateCollection("睡前听", null, memberId);
         Assert.True(_db.AddItem(collection, oldId));
-        _db.UpsertWatchHistory(memberId, oldId, 1, 30, 240);
+        _db.UpsertVideoHistory(memberId, oldId, 1, 30, 240);
         _db.AddLocalDanmaku(oldId, 1, 3.5, "站内朋友发的弹幕", "dm-1", false);
 
         Assert.True(_db.MoveVideoToRecycle(oldId, _videosDir, _recycleDir, "站长", 0).Ok);
@@ -93,7 +93,7 @@ public sealed class RecycleRepostTests : IDisposable
         var detail = _db.GetCollection(collection);
         Assert.NotNull(detail);
         Assert.Empty(detail.Items);
-        Assert.Empty(_db.GetWatchHistory(memberId));
+        Assert.Empty(_db.GetVideoHistory(memberId));
         Assert.Empty(_db.ListLocalDanmaku(newId));
 
         // 旧账没死，只是看不见：把回收站那份恢复回来，抽屉条目与进度会跟着回来（前提是没人占着这个 BV）。
@@ -148,13 +148,13 @@ public sealed class RecycleRepostTests : IDisposable
         var oldId = SeedArrived("BV1repost05", out _);
         Assert.True(_db.MoveVideoToRecycle(oldId, _videosDir, _recycleDir, "站长", 0).Ok);
         var newId = SeedArrived("BV1repost05", out var basePath, "second");
-        Assert.NotNull(_db.GetWatchData("BV1repost05"));
+        Assert.NotNull(_db.GetPlaybackData("BV1repost05"));
 
         Assert.Equal(1, _db.PurgeAllRecycle(_recycleDir));
 
         // 清的是回收站，不是在架馆藏：新片的行、播放链路、盘上文件都得原样在。
         Assert.NotNull(_db.GetVideoBrief(newId));
-        Assert.NotNull(_db.GetWatchData("BV1repost05"));
+        Assert.NotNull(_db.GetPlaybackData("BV1repost05"));
         Assert.True(File.Exists(basePath + ".mp4"));
     }
 
@@ -173,7 +173,7 @@ public sealed class RecycleRepostTests : IDisposable
         // 缺件不挡恢复（清单记了但盘上没有就当本来就缺），于是账上有一行馆藏、播放指向不存在的文件。
         Assert.True(restored.Ok, restored.Message);
         Assert.Equal(0, restored.Files);
-        Assert.NotNull(_db.GetWatchData("BV1repost06"));
+        Assert.NotNull(_db.GetPlaybackData("BV1repost06"));
         Assert.False(File.Exists(basePath + ".mp4"));
     }
 }

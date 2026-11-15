@@ -326,7 +326,7 @@ function openLogin(mode) {
                    封面放大与右上角「删除」钮浮出都靠 coverKey，整格不再是一整块热区。
                    外层格子的 relative 得留着（删除钮的 absolute 靠它定位），类名 .hist-cell 也不能动（入场退场动画绑在那里）。 -->
               <RouterLink
-                :to="`/watch/${item.bvid}`"
+                :to="`/video/${item.bvid}`"
                 class="relative block aspect-[16/10] w-full overflow-hidden bg-black/[0.06] no-underline"
                 @mouseenter="coverKey = item.videoId"
                 @mouseleave="coverKey = null"
@@ -357,7 +357,7 @@ function openLogin(mode) {
                      第二行文字之后的空白、行下方的余量都不响应，光标也不变手型（染粉与手型同一个元素、同一块区域）。 -->
                 <span class="line-clamp-2 block text-[13px] leading-[19px] text-inkMain" :title="item.title || item.bvid">
                   <RouterLink
-                    :to="`/watch/${item.bvid}`"
+                    :to="`/video/${item.bvid}`"
                     class="no-underline transition"
                     :class="titleKey === item.videoId ? 'text-stationPink' : ''"
                     @mouseenter="titleKey = item.videoId"

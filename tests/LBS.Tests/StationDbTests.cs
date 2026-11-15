@@ -402,22 +402,22 @@ public sealed class StationDbTests : IDisposable
 
         // 开观看页是热路径：读侧一概不探。没写过的两列就是 NULL（不给 0 冒充零码率）；
         // 而且读完 stream_probed 仍是 NULL —— 读侧一旦偷偷起 ffprobe，这枚戳会被盖成 1。
-        var first = Assert.Single(Assert.Single(_db.GetWatchData("BV1Ax411d7jD")!.Pages).CodecVersions);
+        var first = Assert.Single(Assert.Single(_db.GetPlaybackData("BV1Ax411d7jD")!.Pages).CodecVersions);
         Assert.Null(first.VideoKbps);
         Assert.Null(first.AudioKbps);
         Assert.Null(加档行防抖戳(id, 1, "hevc"));
 
         // 文件压根不在盘上（被手删 / rel 指向不存在的路径）也一样正常返回 null 不抛，照旧不盖戳。
         File.Delete(Path.Combine(_tempDir, "v", "kbps.P1-HEVC.mp4"));
-        var 缺件 = Assert.Single(Assert.Single(_db.GetWatchData("BV1Ax411d7jD")!.Pages).CodecVersions);
+        var 缺件 = Assert.Single(Assert.Single(_db.GetPlaybackData("BV1Ax411d7jD")!.Pages).CodecVersions);
         Assert.Null(缺件.VideoKbps);
         Assert.Null(缺件.Bytes);
-        Assert.Null(_db.GetWatchData("BV1Ax411d7jD")!.Pages[0].VideoKbps); // 主版本正片还没落盘
+        Assert.Null(_db.GetPlaybackData("BV1Ax411d7jD")!.Pages[0].VideoKbps); // 主版本正片还没落盘
         Assert.Null(加档行防抖戳(id, 1, "hevc"));
 
         // 写入侧（同步员定档那一刻探完落库）写进来就原样吐回去（JSON 契约：videoKbps / audioKbps）
         _db.SetCodecStreams(rowId, 1200, 128, probed: true);
-        var written = Assert.Single(Assert.Single(_db.GetWatchData("BV1Ax411d7jD")!.Pages).CodecVersions);
+        var written = Assert.Single(Assert.Single(_db.GetPlaybackData("BV1Ax411d7jD")!.Pages).CodecVersions);
         Assert.Equal(1200, written.VideoKbps);
         Assert.Equal(128, written.AudioKbps);
         Assert.Equal(1, 加档行防抖戳(id, 1, "hevc"));
@@ -425,11 +425,11 @@ public sealed class StationDbTests : IDisposable
         // probed=false 只销防抖戳（留着写入侧重探），已落库的值不清空
         _db.SetCodecStreams(rowId, null, null, probed: false);
         Assert.Null(加档行防抖戳(id, 1, "hevc"));
-        Assert.Equal(1200, Assert.Single(Assert.Single(_db.GetWatchData("BV1Ax411d7jD")!.Pages).CodecVersions).VideoKbps);
+        Assert.Equal(1200, Assert.Single(Assert.Single(_db.GetPlaybackData("BV1Ax411d7jD")!.Pages).CodecVersions).VideoKbps);
 
         // 主版本同一口径：到站那一刻一趟 ProbeStreams 把 codec + 双轨 kbps + 防抖戳一次写掉
         _db.SetPageStreams(id, 1, "avc", 2400, 192);
-        var main = Assert.Single(_db.GetWatchData("BV1Ax411d7jD")!.Pages);
+        var main = Assert.Single(_db.GetPlaybackData("BV1Ax411d7jD")!.Pages);
         Assert.Equal("avc", main.Codec);
         Assert.Equal(2400, main.VideoKbps);
         Assert.Equal(192, main.AudioKbps);
@@ -437,7 +437,7 @@ public sealed class StationDbTests : IDisposable
 
         // 没实测到编码名也不拿 null 去擦已有的 codec：播放页版本区块拿它决定整块显不显
         _db.SetPageStreams(id, 1, null, null, null);
-        Assert.Equal("avc", Assert.Single(_db.GetWatchData("BV1Ax411d7jD")!.Pages).Codec);
+        Assert.Equal("avc", Assert.Single(_db.GetPlaybackData("BV1Ax411d7jD")!.Pages).Codec);
     }
 
     /// <summary>直读加档行的 stream_probed（NULL=还没探过，1=探过一次）：验「库被动过没有」而不靠推断。</summary>
@@ -507,7 +507,7 @@ public sealed class StationDbTests : IDisposable
         SqliteConnection.ClearAllPools();
         _db.Initialize(); // 重开闸门：EnsureColumn 把列补回来
 
-        var data = _db.GetWatchData("BV1Ax411d7jD");
+        var data = _db.GetPlaybackData("BV1Ax411d7jD");
         Assert.NotNull(data);
         Assert.Null(Assert.Single(Assert.Single(data!.Pages).CodecVersions).VideoKbps); // 老行没实测值 → NULL，不给 0
         Assert.Null(加档行防抖戳(id, 1, "av1")); // 也不拿老行去补探：读侧一个文件都不扰
@@ -519,7 +519,7 @@ public sealed class StationDbTests : IDisposable
         _db.MarkCodecDeferred(rowId, DateTimeOffset.UtcNow.AddSeconds(30), "已存在未完成的同名任务");
         Assert.Equal("Downloading", _db.GetCodecVersions(id).Single(r => r.Codec == "av1").Status);
         _db.SetCodecStreams(rowId, 800, 96, probed: true);
-        var row = Assert.Single(Assert.Single(_db.GetWatchData("BV1Ax411d7jD")!.Pages).CodecVersions);
+        var row = Assert.Single(Assert.Single(_db.GetPlaybackData("BV1Ax411d7jD")!.Pages).CodecVersions);
         Assert.Equal(800, row.VideoKbps);
         Assert.Equal(96, row.AudioKbps);
         Assert.Contains(_db.GetDueCodecRetries(DateTimeOffset.UtcNow.AddMinutes(1)), r => r.Id == rowId);

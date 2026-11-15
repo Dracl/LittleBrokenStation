@@ -135,8 +135,8 @@ const activityRows = computed(() => {
   if (!a) return []
   return [
     { label: '主页', value: a.home ?? 0, unit: '回', tip: '全站打开首页的枪数（成员游客一视同仁）' },
-    { label: '进厅', value: a.watchOpens, unit: '次' },
-    { label: '播放', value: a.watchPlays, unit: '次' },
+    { label: '进厅', value: a.playbackOpens, unit: '次' },
+    { label: '播放', value: a.playbackPlays, unit: '次' },
     { label: '观众人头', value: a.uniqueViewers, unit: '位' },
     { label: '搜索', value: a.searches, unit: '回' },
     { label: '投稿', value: a.submissions, unit: '次' },
@@ -180,7 +180,7 @@ const activityDeltas = computed(() =>
     { key: 'plays', label: '播放' },
     { key: 'viewers', label: '人头' },
     { key: 'searches', label: '搜索' },
-    { key: 'watchTime', label: '时长' },
+    { key: 'playbackTime', label: '时长' },
   ]
     .map((x) => ({ ...x, d: deltaOf(x.key) }))
     // 卡头角标只摆真能比出大小的：上周零数时「新增」只是「分站那周还没开张」，四枚一样的字没信息量，不摆
@@ -282,7 +282,7 @@ const guestRows = computed(() => {
   if (!g) return []
   return [
     { label: '搜索', value: g.searches, unit: '回', tip: '只报回数，内容不入报' },
-    { label: '想进片页被挡', value: g.blockedWatch, unit: '次', tip: '游客被门禁挡在片页外（哪天把片页锁进会员区，这枚就是想看却进不来的人数）' },
+    { label: '想进片页被挡', value: g.blockedPlayback, unit: '次', tip: '游客被门禁挡在片页外（哪天把片页锁进会员区，这枚就是想看却进不来的人数）' },
     { label: '弹幕被挡', value: g.blockedDanmaku, unit: '次', tip: '游客读弹幕被挡回的前端重试，当运维噪音看，不当观众' },
     { label: '想登录', value: g.loginTries, unit: '回', tip: '游客发扫码 / 密码试错等登录尝试的枪数' },
   ].filter((r) => r.value > 0)
@@ -398,7 +398,7 @@ const newsWallItems = computed(() =>
 const hotCoverKey = ref(null) // 鼠标当前压在哪条热榜的封面上 → 封面放大（倍率与缓动跟新货那条对齐）
 const hotTitleKey = ref(null) // 鼠标当前压在哪条热榜的标题字上 → 只有标题染粉
 
-// 代次护城（照 WatchPage 的 relatedSeq）：连点上/下一周时，慢的那个回包不能把新周盖掉
+// 代次护城（照 VideoPage 的 relatedSeq）：连点上/下一周时，慢的那个回包不能把新周盖掉
 let loadSeq = 0
 
 async function load() {
@@ -558,7 +558,7 @@ function posterQuip(d) {
   }
   const dp = deltaOf('plays')
   if (dp && dp.dir === 'up') return `播放比上周多了 ${dp.pct}%，这周火力全开`
-  if ((d.activity?.watchPlays ?? 0) === 0) return '这一周分站静悄悄，连弹幕都去午休了'
+  if ((d.activity?.playbackPlays ?? 0) === 0) return '这一周分站静悄悄，连弹幕都去午休了'
   return '每一枪都记在台账上，这页就是证据'
 }
 
@@ -568,8 +568,8 @@ function posterModel() {
   const d = data.value
   return {
     weekLabel: d.weekLabel ?? '',
-    plays: d.activity?.watchPlays ?? 0,
-    opens: d.activity?.watchOpens ?? 0,
+    plays: d.activity?.playbackPlays ?? 0,
+    opens: d.activity?.playbackOpens ?? 0,
     viewers: d.activity?.uniqueViewers ?? 0,
     newsCount: d.news?.count ?? 0,
     danmakuAdded: d.danmakuAdded ?? 0,
@@ -1144,7 +1144,7 @@ async function posterCopyImageLink() {
                   >{{ i + 1 }}</span>
                   <!-- 封面一枚 RouterLink 指向播放页：放大走 hotCoverKey，倍率与缓动跟同页新货那条一致（scale-[1.03] + transition duration-300），不自创 -->
                   <RouterLink
-                    :to="`/watch/${h.bvid}`"
+                    :to="`/video/${h.bvid}`"
                     class="relative block h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]"
                     @mouseenter="hotCoverKey = h.bvid"
                     @mouseleave="hotCoverKey = null"
@@ -1166,7 +1166,7 @@ async function posterCopyImageLink() {
                          文字之后的空白、行下方的余量都不响应，光标也不变手型（染粉与手型同一个元素、同一块区域）。 -->
                     <span class="block truncate text-[14px] font-medium text-inkMain" :title="h.title || h.bvid">
                       <RouterLink
-                        :to="`/watch/${h.bvid}`"
+                        :to="`/video/${h.bvid}`"
                         class="transition"
                         :class="hotTitleKey === h.bvid ? 'text-stationPink' : ''"
                         @mouseenter="hotTitleKey = h.bvid"
@@ -1197,7 +1197,7 @@ async function posterCopyImageLink() {
                   <li v-for="(v, i) in durationBars.videos" :key="v.bvid" class="border-b border-lineSoft/60 py-2 last:border-b-0">
                     <div class="flex items-center gap-2">
                       <span class="w-4 shrink-0 text-center text-[13px] font-semibold" :class="i < 3 ? 'text-stationPink' : 'text-inkFaint'">{{ i + 1 }}</span>
-                      <RouterLink :to="`/watch/${v.bvid}`" class="min-w-0 flex-1">
+                      <RouterLink :to="`/video/${v.bvid}`" class="min-w-0 flex-1">
                         <span class="block truncate text-[13px] font-medium text-inkMain" :title="v.title || v.bvid">{{ v.title || v.bvid }}</span>
                         <span class="mt-0.5 block text-[10px] text-inkFaint">{{ v.shots }} 枪心跳 · <template v-if="v.finishPermille != null">看到 {{ Math.round(v.finishPermille / 10) }}%</template><template v-else>片长没档</template></span>
                       </RouterLink>

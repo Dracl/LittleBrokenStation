@@ -770,7 +770,7 @@ public sealed class StatusSyncWorker(
         }
 
         db.SetVideoStat(videoId, stat.Like, stat.Coin, stat.Favorite, stat.Share, stat.Reply);
-        db.SetVideoStaff(videoId, WatchStaffCodec.ToJson(StaffMap.ToWatch(stat.Staff)));
+        db.SetVideoStaff(videoId, PlaybackStaffCodec.ToJson(StaffMap.ToPlayback(stat.Staff)));
         logger.LogInformation(
             "馆藏 {VideoId} 互动数据入库：赞{Like} 币{Coin} 藏{Fav}（创作团队 {Team} 人）",
             videoId,

@@ -61,7 +61,7 @@ function persistLiked() {
   }
 }
 
-// 代次护城（照 WatchPage 的 relatedSeq）：切 P 时旧评论表的迟到回包不能盖新页
+// 代次护城（照 VideoPage 的 relatedSeq）：切 P 时旧评论表的迟到回包不能盖新页
 let loadSeq = 0
 
 async function load(src) {

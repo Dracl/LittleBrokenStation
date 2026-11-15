@@ -55,28 +55,28 @@ function playNextPage() {
 // 轮询本身不能停：加档行从 Downloading 变定档得靠这一发把面板催回来。
 // 每次请求记录 BV、页面代次和请求序号，只有当前页面的最新请求能写回状态。
 // 前台加载期间跳过静默刷新：避免轮询取代初始化请求，丢掉推荐/续播初始化或卡住 loading。
-let watchEpoch = 0
-let watchReqSeq = 0
+let videoEpoch = 0
+let videoReqSeq = 0
 
-function watchFresh(tok) {
-  return tok.epoch === watchEpoch
-    && tok.seq === watchReqSeq
+function videoFresh(tok) {
+  return tok.epoch === videoEpoch
+    && tok.seq === videoReqSeq
     && String(route.params.bvid ?? '') === tok.bvid
 }
 
-async function loadWatch(silent = false, withRelated = !silent) {
+async function loadVideo(silent = false, withRelated = !silent) {
   if (silent && loading.value) return
   if (!silent) {
     loading.value = true
     gateState.value = null
   }
-  const tok = { bvid: String(route.params.bvid ?? ''), epoch: watchEpoch, seq: ++watchReqSeq }
+  const tok = { bvid: String(route.params.bvid ?? ''), epoch: videoEpoch, seq: ++videoReqSeq }
   try {
-    const res = await fetch(`/api/watch/${tok.bvid}`)
-    if (!watchFresh(tok)) return
+    const res = await fetch(`/api/video/${tok.bvid}`)
+    if (!videoFresh(tok)) return
     if (res.ok) {
       const body = await res.json() // 第二道核对排在 await json 之后：fetch 先到、json 迟到，也算迟到包
-      if (!watchFresh(tok)) return
+      if (!videoFresh(tok)) return
       data.value = body
       if (withRelated) {
         loadRelated(data.value.id)
@@ -84,9 +84,9 @@ async function loadWatch(silent = false, withRelated = !silent) {
       }
       ensureCodecPoll() // 上一轮还没跑完的加档（含刷新前点的那些）：服务端有货就接着刷，不冻在快照上
       if (!openReported) {
-        // 进入并加载成功：报一枪 watch.open（同一 BV 一次，换 P 不重报）
+        // 进入并加载成功：报一枪 playback.open（同一 BV 一次，换 P 不重报）
         openReported = true
-        reportEvent('watch.open')
+        reportEvent('playback.open')
       }
       if (!silent) {
         const firstPlayable = data.value.pages.find((p) => p.videoUrl) ?? data.value.pages[0]
@@ -95,19 +95,19 @@ async function loadWatch(silent = false, withRelated = !silent) {
         loadResumePoint(data.value.id, activeIndex.value)
       }
     } else if (!silent) {
-      if (!watchFresh(tok)) return
+      if (!videoFresh(tok)) return
       data.value = null
       // 门禁与查无此片是两回事：401=还没站籍，别拿「不存在」糊弄门外的客人
       gateState.value = res.status === 401 ? 'login' : 'missing'
     }
   } catch {
-    if (!silent && watchFresh(tok)) {
+    if (!silent && videoFresh(tok)) {
       data.value = null
       gateState.value = 'missing'
     }
   } finally {
     // 关 loading 的权力只属于仍是当前前台的那一发：作废的旧前台不许摸掉新发前台的 loading
-    if (!silent && watchFresh(tok)) loading.value = false
+    if (!silent && videoFresh(tok)) loading.value = false
   }
 }
 
@@ -147,13 +147,13 @@ function restartFromStart() {
 async function loadResumePoint(videoId, pageIndex) {
   const seq = ++resumeSeq
   // 换 BV 后在飞的那发同样作废（seq 只在新的 loadResumePoint 启动时才推，单靠它兑不住卸载后的迟到包）
-  const tok = { seq, epoch: watchEpoch, bvid: String(route.params.bvid ?? '') }
+  const tok = { seq, epoch: videoEpoch, bvid: String(route.params.bvid ?? '') }
   resumeSec.value = 0
   clearResumeTip()
   try {
     const res = await fetch(`/api/videos/${videoId}/progress?pageIdx=${pageIndex}`)
     const p = res.ok ? await res.json() : null
-    if (seq !== resumeSeq || tok.epoch !== watchEpoch || String(route.params.bvid ?? '') !== tok.bvid) return // 期间又切了 P / 换了 BV / 卸了页：这一发是迟到应答，丢
+    if (seq !== resumeSeq || tok.epoch !== videoEpoch || String(route.params.bvid ?? '') !== tok.bvid) return // 期间又切了 P / 换了 BV / 卸了页：这一发是迟到应答，丢
     if (!p) return // 没看过（或后端没应答）：从头播就是正确答案
     if (Number(p.pageIdx) !== pageIndex) return
     const sec = Number(p.positionSec)
@@ -319,19 +319,19 @@ watch(autoRelated, (v) => localStorage.setItem('lbs.autoRelated', v ? '1' : '0')
 
 function playNextVideo() {
   const next = related.value.find((v) => v.bvid && v.bvid !== route.params.bvid)
-  if (next) router.push(`/watch/${next.bvid}`)
+  if (next) router.push(`/video/${next.bvid}`)
 }
 
 // 代次护城：现在每 BV 只取一次，但换片时旧请求迟到落地会把上一支的推荐流盖到新页上
 // （自动连播取的就是 related[0]，盖一下就会接错片），所以谁最新谁写。
-// seq 单轨不够：换 BV 后、新 watch 回包前没有新的 loadRelated 去推 seq，窗口里旧回的迟到应答仍是「最新」；
+// seq 单轨不够：换 BV 后、新 /api/video 回包前没有新的 loadRelated 去推 seq，窗口里旧回的迟到应答仍是「最新」；
 // 所以要另对出发时的 epoch + 路由 BV，换 BV watcher 把 seq 推上去并清旧列表兼两道。
 let relatedSeq = 0
 
 async function loadRelated(id) {
   const seq = ++relatedSeq
-  const tok = { seq, epoch: watchEpoch, bvid: String(route.params.bvid ?? '') }
-  const fresh = () => tok.seq === relatedSeq && tok.epoch === watchEpoch && String(route.params.bvid ?? '') === tok.bvid
+  const tok = { seq, epoch: videoEpoch, bvid: String(route.params.bvid ?? '') }
+  const fresh = () => tok.seq === relatedSeq && tok.epoch === videoEpoch && String(route.params.bvid ?? '') === tok.bvid
   try {
     const res = await fetch(`/api/videos/${id}/related`)
     const body = res.ok ? await res.json() : []
@@ -352,8 +352,8 @@ async function loadLocalDanmaku() {
   if (!data.value) return
   // 同族护城（此前完全裸奔）：出发时捕获这份页的 videoId + 路由 epoch + BV + 自身序号，
   // 回包后四项对不上就不写；换 BV watcher 会把 seq 推上去并清掉旧列表。
-  const tok = { id: data.value.id, epoch: watchEpoch, bvid: String(route.params.bvid ?? ''), seq: ++danmakuSeq }
-  const fresh = () => tok.seq === danmakuSeq && tok.epoch === watchEpoch && String(route.params.bvid ?? '') === tok.bvid
+  const tok = { id: data.value.id, epoch: videoEpoch, bvid: String(route.params.bvid ?? ''), seq: ++danmakuSeq }
+  const fresh = () => tok.seq === danmakuSeq && tok.epoch === videoEpoch && String(route.params.bvid ?? '') === tok.bvid
   try {
     const res = await fetch(`/api/videos/${tok.id}/danmaku`)
     const body = res.ok ? await res.json() : []
@@ -469,11 +469,11 @@ function onShared(message) {
   showNotice('ok', message ?? '已塞进对方信箱')
 }
 
-// ─── 分享海报：从现成 watch 数据组一张海报的 model，画笔（utils/videoPoster.js）自己判同源。
+// ─── 分享海报：从现成 video 数据组一张海报的 model，画笔（utils/videoPoster.js）自己判同源。
 // 登录闸与 openShare 同一个口径：没站籍先弹登录窗，不把调参台递到门外人手上。全程零上送。
 const posterFor = ref(null)
 
-// 时长优先吃 payload：watch 载荷顶层没 durationText（那是 VideoEntry / 分 P 上的字段），
+// 时长优先吃 payload：video 载荷顶层没 durationText（那是 VideoEntry / 分 P 上的字段），
 // 就拿当前分 P 那一份；还没有就问播放器里的 <video>（已元数据就绪才有值），拿不到就不画时长片。
 function posterDuration(d) {
   const pages = d.pages ?? []
@@ -558,10 +558,10 @@ function openSettings() {
   settingsOpen.value = !settingsOpen.value
 }
 
-// 面板里存好了 / 动作跑完了：重拉 /api/watch/{bvid}，改过的栏一律以服务端为准（前端不自改本地对象）。
-// 顺序要紧：bumpDanmaku 改的就是 data.pages 里那份 danmakuUrl，loadWatch 会把整页换掉它，得排在后面。
+// 面板里存好了 / 动作跑完了：重拉 /api/video/{bvid}，改过的栏一律以服务端为准（前端不自改本地对象）。
+// 顺序要紧：bumpDanmaku 改的就是 data.pages 里那份 danmakuUrl，loadVideo 会把整页换掉它，得排在后面。
 async function onSettingsSaved(res) {
-  await loadWatch(true)
+  await loadVideo(true)
   if (res?.commentsOk) commentsRev.value += 1
   if (res?.danmakuOk) bumpDanmaku()
   // 重拉落地之后才打戳：拿服务端那份新 coverUrl 拼，不拿旧的拼一半。
@@ -584,7 +584,7 @@ watch(
   },
 )
 
-// ─── 编码加档：点单后轮询 watch，直到该编码所有分 P 都脱离 Downloading ───
+// ─── 编码加档：点单后轮询 /api/video，直到该编码所有分 P 都脱离 Downloading ───
 let codecPoll = null
 
 // 播放器点加档时已本地显了「进站中」；这一发要是被驳回，得靠这个 prop 把乐观态催回来。
@@ -632,7 +632,7 @@ function startCodecPoll(codec = null) {
     // 迟到的旧 tick 整发作废——尤其不许它拿自己的 settled 判断去 clearInterval 掉新任 interval。
     const bvid = String(route.params.bvid ?? '')
     ticks += 1
-    await loadWatch(true)
+    await loadVideo(true)
     if (codecPoll !== handle || String(route.params.bvid ?? '') !== bvid) return
     const rows = (data.value?.pages ?? []).flatMap((p) => p.codecVersions ?? []).filter((c) => !codec || c.codec === codec)
     const settled = rows.length > 0 && rows.every((c) => c.status !== 'Downloading')
@@ -670,15 +670,15 @@ function reportEvent(name, payload = null) {
 
 // play/pause 不冒泡，挂在 document 上用捕获监听兜住播放器内部的 <video>
 function onMediaPlay() {
-  reportEvent('watch.play')
+  reportEvent('playback.play')
 }
 
 function onMediaPause() {
-  reportEvent('watch.pause')
+  reportEvent('playback.pause')
 }
 
 onBeforeUnmount(() => {
-  watchEpoch += 1 // 卸载：在飞的 loadWatch（含静默轮询那几发）整发作废，迟到包不再写任何状态
+  videoEpoch += 1 // 卸载：在飞的 loadVideo（含静默轮询那几发）整发作废，迟到包不再写任何状态
   if (codecPoll) {
     // 停轮询必顺手摘 handle：在飞的旧 tick 靠 codecPoll !== handle 那道闸作废，
     // 卸载后旧 tick 既清不到定时器也摸不到任何状态（epoch 已推）。
@@ -692,21 +692,21 @@ onBeforeUnmount(() => {
     clearInterval(heartTimer)
     heartTimer = null
   }
-  reportEvent('watch.leave')
+  reportEvent('playback.leave')
 })
 
 onMounted(() => {
-  loadWatch()
+  loadVideo()
   document.addEventListener('play', onMediaPlay, true)
   document.addEventListener('pause', onMediaPause, true)
   // 播放中每 30 秒一条心跳，带当前秒数；没在播就不报，不充数
   heartTimer = setInterval(() => {
     const v = document.querySelector('video')
-    if (v && !v.paused && !v.ended) reportEvent('watch.heartbeat', { t: Math.floor(v.currentTime) })
+    if (v && !v.paused && !v.ended) reportEvent('playback.heartbeat', { t: Math.floor(v.currentTime) })
   }, 30000)
 })
 watch(() => route.params.bvid, () => {
-  watchEpoch += 1 // 换 BV：上一支在飞的所有请求整发作废（含 finally 关 loading 的权力与派生的 related/弹幕/续播）
+  videoEpoch += 1 // 换 BV：上一支在飞的所有请求整发作废（含 finally 关 loading 的权力与派生的 related/弹幕/续播）
   if (codecPoll) {
     // 旧片的轮询不许接着敲新片的接口：新页数据未回，且旧轮的 codec 过滤对新片是错配；
     // 先停掉，新片若还挂着 Downloading 的加档行，由新前台成功后的 ensureCodecPoll 自动续上。
@@ -719,8 +719,8 @@ watch(() => route.params.bvid, () => {
   myCollections.value = null
   collectionsOpen.value = false
   // 上一支的 related/续播/本地弹幕：在飞请求把 seq 推上去作废（迟到包写不进），旧显示当场清掉，
-  // 免得新 watch 回包前的窗口里，旧片的推荐流/续播泡/弹幕列表顶着新片的壳子。
-  // 新片那三份由新前台 loadWatch 落地时重新派生（loadRelated / loadLocalDanmaku / loadResumePoint）。
+  // 免得新 /api/video 回包前的窗口里，旧片的推荐流/续播泡/弹幕列表顶着新片的壳子。
+  // 新片那三份由新前台 loadVideo 落地时重新派生（loadRelated / loadLocalDanmaku / loadResumePoint）。
   relatedSeq += 1
   related.value = []
   resumeSeq += 1
@@ -728,15 +728,15 @@ watch(() => route.params.bvid, () => {
   clearResumeTip()
   danmakuSeq += 1
   localDanmaku.value = []
-  loadWatch()
+  loadVideo()
 })
 
 // 播放器壳宽（VideoPlayer 量好的）：两栏内容用它封顶，保证不超出视频卡片
 const playerShellW = ref(0)
 
-// 封面唯一取数口：watch 载荷里的 coverUrl 已是读侧拼好的「本地原图优先」成品（/media/… 或 B 站直链），
+// 封面唯一取数口：video 载荷里的 coverUrl 已是读侧拼好的「本地原图优先」成品（/media/… 或 B 站直链），
 // 播放器开场、封面浮窗、安利卡三处共用这一份。曾经这里写的是 data.localCover || data.coverUrl，
-// 但 watch 载荷压根不下发 localCover（那是列表用的 VideoEntry 字段），前半支永远轮不到。
+// 但 video 载荷压根不下发 localCover（那是列表用的 VideoEntry 字段），前半支永远轮不到。
 const coverSrc = computed(() => data.value?.coverUrl || '')
 
 // ─── 换完封面得真让屏上那张重请一次 ───
@@ -831,7 +831,7 @@ const coverFresh = computed(() => {
             @request-codec="requestCodec"
             @shell-width="playerShellW = $event"
             @codec-change="playerCodec = $event"
-            @codec-arrived="loadWatch(true)"
+            @codec-arrived="loadVideo(true)"
             @send-danmaku="onSendDanmaku"
             @delete-danmaku="onDeleteDanmaku"
             @report-danmaku="onReportDanmaku"
@@ -1039,7 +1039,7 @@ const coverFresh = computed(() => {
       <!-- 视频分享海报调参台：与安利卡同区，弹层自己 Teleport 到 body -->
       <SharePosterStudio v-if="posterFor" :model="posterFor" @close="posterFor = null" />
 
-      <!-- 稿件设置：左缘第二颗把手开的。存好 / 档案动作跑完都走 onSettingsSaved 重拉 watch，
+      <!-- 稿件设置：左缘第二颗把手开的。存好 / 档案动作跑完都走 onSettingsSaved 重拉 /api/video，
            面板不自己改本地对象（免得两处真相），改过的字与那几面覆写标一律等服务端那份回来 -->
       <VideoSettingsDialog
         v-if="settingsOpen && data"

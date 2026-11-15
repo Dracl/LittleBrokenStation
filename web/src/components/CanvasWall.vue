@@ -869,7 +869,7 @@ defineExpose({ zoomIn, zoomOut, fit })
         v-for="it in shown"
         :key="it.videoId"
         :ref="cardRef(it.videoId)"
-        :to="`/watch/${it.bvid}`"
+        :to="`/video/${it.bvid}`"
         class="wall-card absolute block overflow-hidden rounded-lg border border-white/10 bg-[#1d1a16] shadow-[0_2px_10px_rgba(0,0,0,0.35)] outline-none transition-[box-shadow] focus-visible:ring-2 focus-visible:ring-stationPink hover:!z-[300]"
         :style="{ left: `${it.x}px`, top: `${it.y}px`, width: `${CARD_W}px`, height: `${CARD_H}px`, '--rot': `${it.rot}deg`, animationDelay: `${Math.min(Math.round(Math.hypot(it.x + CARD_W / 2, it.y + CARD_H / 2) / 2.2), 1100)}ms` }"
         :title="it.title || it.bvid"

@@ -40,7 +40,7 @@ public sealed partial class StationDb
     /// <summary>热力墙/迷你折线的横扫：周报那周再往前数共 8 个整周（与热力墙 8 列对齐）。</summary>
     public const int WeeklyHeatWeeks = 8;
 
-    /// <summary>心跳一枪代表的墙钟秒数：前端 WatchPage 每 30 秒报一枪且「没在播就不报」，
+    /// <summary>心跳一枪代表的墙钟秒数：前端 VideoPage 每 30 秒报一枪且「没在播就不报」，
     /// 时长 = 枪数×30；看半分钟以下走人记 0，所以时长永远宁少不多。</summary>
     public const int WeeklyHeartbeatSeconds = 30;
 
@@ -53,15 +53,21 @@ public sealed partial class StationDb
     /// <summary>时长榜的榜长（与热榜同长，五排一屏）。</summary>
     public const int WeeklyDurationTake = 5;
 
-    // 观看事件在台账里的名字是 EventIngestEndpoints 白名单那几枚字符串：heartbeat 有 EventNames 常量挂号，
-    // watch.play 从来只有白名单字面量（StationEvents.cs 里没有 WatchPlay），这里照实况对齐，不另造名字。
-    private const string WatchPlayEvent = "watch.play";
+    // 观映事件族 11-15 整体改名 watch.* → playback.*（与投稿族 video.* 分家：同前缀会在台账筛族里混一锅）。
+    // 台账老行不改写、新行只写 playback.*：所有统计判据一律 IN (新, 老) 双吃——老行不认，周报当日清零。
+    // playback.play 与历代同名：从来只有 ingest 白名单字面量，这里照实况对齐，不另挂号。
+    private const string PlaybackPlayEvent = "playback.play";
+    private const string LegacyOpenEvent = "watch.open";
+    private const string LegacyPlayEvent = "watch.play";
+    private const string LegacyHeartbeatEvent = "watch.heartbeat";
+    private const string LegacyBlockedEvent = "watch.blocked";
 
     /// <summary>活动口径（热力墙/时段矩阵共用）：只数真动静的行为枪——进厅/播放/首页/搜索/投稿/发弹幕/登录成功。
     /// 心跳、门禁拦挡、弹幕轮询这些噪音一律不掺：心跳一杆能顶百杆，画出来满墙红是假红。</summary>
     private static readonly string[] HeatEvents =
     [
-        EventNames.WatchOpen, WatchPlayEvent, EventNames.HomeOpen, EventNames.SearchQuery,
+        EventNames.PlaybackOpen, PlaybackPlayEvent, LegacyOpenEvent, LegacyPlayEvent,
+        EventNames.HomeOpen, EventNames.SearchQuery,
         EventNames.VideoSubmit, EventNames.DanmakuSend, EventNames.LoginSuccess,
     ];
 
@@ -109,11 +115,11 @@ public sealed partial class StationDb
     public sealed record WeeklySparks(long[] News, long[] Danmaku, long[] Stock);
 
     /// <summary>站外游客账：全部拿 actor_type='guest' 的行走，身份只能拿 IP 去重（游客无 mid）。
-    /// BlockedWatch 是游客想进片页被门禁挡下的枪数（subject_id 形如 /api/watch/BV…，与弹幕轮询的空转分开数）；
+    /// BlockedPlayback 是游客想进片页被门禁挡下的枪数（subject_id 形如 /api/video/BV…，改名前老行是 /api/watch/BV…，两前缀都认；与弹幕轮询的空转分开数）；
     /// BlockedDanmaku 是游客读弹幕被挡的枪数（前端重试造成的噪音，不当「想看被拦」的硬信号）。外发禁带 IP 本体；
     /// Home 是游客逛首页枪数（只摆数不进 Heads 口径，人头继续只认有观映意图的行）。</summary>
     public sealed record WeeklyGuest(
-        long Heads, long Opens, long Plays, long Searches, long BlockedWatch, long BlockedDanmaku, long LoginTries, long Home);
+        long Heads, long Opens, long Plays, long Searches, long BlockedPlayback, long BlockedDanmaku, long LoginTries, long Home);
 
     /// <summary>全站家底：videos/bytes 复用 AdminStats 口径（总稿件行数含未到站的、bytes 是视频库磁盘现扫）；members 数 members 全行（与数据交换的清点同口径）；动态/评论/私信/弹幕总数都取全表 COUNT。</summary>
     public sealed record WeeklyTotals(long Videos, long Members, long Danmaku, long Bytes, long Dynamics, long DynamicComments, long DmMessages);
@@ -152,8 +158,8 @@ public sealed partial class StationDb
         IReadOnlyList<WeeklyNewsItem> News,
         IReadOnlyList<WeeklyHotItem> Hottest,
         long DanmakuAdded,
-        long WatchPlays,
-        long WatchOpens,
+        long PlaybackPlays,
+        long PlaybackOpens,
         long UniqueViewers,
         long Searches,
         long Submissions,
@@ -302,7 +308,7 @@ public sealed partial class StationDb
         return total;
     }
 
-    /// <summary>心跳 payload 里的播放头秒数（形如 <c>{"t":149}</c>，前端 WatchPage 报的 v.currentTime 取整）；
+    /// <summary>心跳 payload 里的播放头秒数（形如 <c>{"t":149}</c>，前端 VideoPage 报的 v.currentTime 取整）；
     /// 读不出返回 null（探针手填的脏 payload 或老数据不带 t），当「没报过位置」认，不炸报表。</summary>
     public static long? ReadHeartbeatPosition(string? payload)
     {
@@ -436,7 +442,7 @@ public sealed partial class StationDb
                            COUNT(*)
                     FROM events e
                     JOIN videos v ON v.bvid = e.subject_id
-                    WHERE e.event IN ($play, $beat)
+                    WHERE e.event IN ($play, $playOld, $beat, $beatOld)
                       AND e.subject_type = 'video'
                       AND e.ts_utc >= $since AND e.ts_utc < $until
                       AND {visSql}
@@ -445,8 +451,10 @@ public sealed partial class StationDb
                     ORDER BY COUNT(DISTINCT e.actor_mid) DESC, COUNT(*) DESC, MAX(e.id) DESC
                     LIMIT $take;
                     """;
-                command.Parameters.AddWithValue("$play", WatchPlayEvent);
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 command.Parameters.AddWithValue("$take", WeeklyHotTake);
@@ -476,19 +484,22 @@ public sealed partial class StationDb
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = """
-                    SELECT COALESCE(SUM(CASE WHEN event = $open THEN 1 ELSE 0 END), 0),
-                           COALESCE(SUM(CASE WHEN event = $play THEN 1 ELSE 0 END), 0),
-                           COALESCE(SUM(CASE WHEN event = $beat THEN 1 ELSE 0 END), 0),
-                           COUNT(DISTINCT CASE WHEN event IN ($play, $beat) THEN NULLIF(actor_mid, '') END),
+                    SELECT COALESCE(SUM(CASE WHEN event IN ($open, $openOld) THEN 1 ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN event IN ($play, $playOld) THEN 1 ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN event IN ($beat, $beatOld) THEN 1 ELSE 0 END), 0),
+                           COUNT(DISTINCT CASE WHEN event IN ($play, $playOld, $beat, $beatOld) THEN NULLIF(actor_mid, '') END),
                            (SELECT COUNT(*) FROM events WHERE event = $home AND subject_type = 'page' AND ts_utc >= $since AND ts_utc < $until)
                     FROM events
                     WHERE subject_type = 'video'
-                      AND event IN ($open, $play, $beat)
+                      AND event IN ($open, $openOld, $play, $playOld, $beat, $beatOld)
                       AND ts_utc >= $since AND ts_utc < $until;
                     """;
-                command.Parameters.AddWithValue("$open", "watch.open");
-                command.Parameters.AddWithValue("$play", WatchPlayEvent);
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$open", EventNames.PlaybackOpen);
+                command.Parameters.AddWithValue("$openOld", LegacyOpenEvent);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
                 command.Parameters.AddWithValue("$home", EventNames.HomeOpen);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
@@ -538,7 +549,7 @@ public sealed partial class StationDb
                     FROM events e
                     JOIN videos v ON v.bvid = e.subject_id
                     JOIN video_meta m ON m.video_id = v.id
-                    WHERE e.event IN ($play, $beat) AND e.subject_type = 'video'
+                    WHERE e.event IN ($play, $playOld, $beat, $beatOld) AND e.subject_type = 'video'
                       AND e.ts_utc >= $since AND e.ts_utc < $until
                       AND {visSql}
                     GROUP BY COALESCE(NULLIF(m.up_name, ''), '未署名 UP')
@@ -546,8 +557,10 @@ public sealed partial class StationDb
                     ORDER BY COUNT(DISTINCT e.actor_mid) DESC, COUNT(*) DESC
                     LIMIT $take;
                     """;
-                command.Parameters.AddWithValue("$play", WatchPlayEvent);
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 command.Parameters.AddWithValue("$take", WeeklyHotTake);
@@ -567,7 +580,7 @@ public sealed partial class StationDb
                     FROM events e
                     JOIN videos v ON v.bvid = e.subject_id
                     JOIN video_meta m ON m.video_id = v.id
-                    WHERE e.event IN ($play, $beat) AND e.subject_type = 'video'
+                    WHERE e.event IN ($play, $playOld, $beat, $beatOld) AND e.subject_type = 'video'
                       AND e.ts_utc >= $since AND e.ts_utc < $until
                       AND {visSql}
                     GROUP BY COALESCE(NULLIF(m.zone, ''), '未标分区')
@@ -575,8 +588,10 @@ public sealed partial class StationDb
                     ORDER BY COUNT(DISTINCT e.actor_mid) DESC, COUNT(*) DESC
                     LIMIT $take;
                     """;
-                command.Parameters.AddWithValue("$play", WatchPlayEvent);
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 command.Parameters.AddWithValue("$take", WeeklyHotTake);
@@ -607,11 +622,12 @@ public sealed partial class StationDb
                     FROM events e
                     JOIN videos v ON v.bvid = e.subject_id
                     LEFT JOIN video_meta m ON m.video_id = v.id
-                    WHERE e.event = $beat AND e.subject_type = 'video' AND e.actor_type = $member
+                    WHERE e.event IN ($beat, $beatOld) AND e.subject_type = 'video' AND e.actor_type = $member
                       AND e.ts_utc >= $since AND e.ts_utc < $until
                       AND {visSql};
                     """;
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
                 command.Parameters.AddWithValue("$member", EventActors.Member);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
@@ -702,11 +718,12 @@ public sealed partial class StationDb
             {
                 command.CommandText = """
                     SELECT COUNT(*) FROM events
-                    WHERE subject_type = 'video' AND actor_type = $member AND event = $open
+                    WHERE subject_type = 'video' AND actor_type = $member AND event IN ($open, $openOld)
                       AND ts_utc >= $since AND ts_utc < $until;
                     """;
                 command.Parameters.AddWithValue("$member", EventActors.Member);
-                command.Parameters.AddWithValue("$open", "watch.open");
+                command.Parameters.AddWithValue("$open", EventNames.PlaybackOpen);
+                command.Parameters.AddWithValue("$openOld", LegacyOpenEvent);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
                 memberOpens = Convert.ToInt64(command.ExecuteScalar() ?? 0L);
@@ -723,9 +740,9 @@ public sealed partial class StationDb
                 using var command = connection.CreateCommand();
                 command.CommandText = """
                     SELECT
-                        (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event = $open AND ts_utc >= $since AND ts_utc < $until),
-                        (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event = $play AND ts_utc >= $since AND ts_utc < $until),
-                        (SELECT COUNT(DISTINCT subject_id) FROM events WHERE actor_member_id = $me AND event IN ($play, $beat) AND ts_utc >= $since AND ts_utc < $until),
+                        (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event IN ($open, $openOld) AND ts_utc >= $since AND ts_utc < $until),
+                        (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event IN ($play, $playOld) AND ts_utc >= $since AND ts_utc < $until),
+                        (SELECT COUNT(DISTINCT subject_id) FROM events WHERE actor_member_id = $me AND event IN ($play, $playOld, $beat, $beatOld) AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event = $search AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event = $submit AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event IN ($loginOk, $loginPw) AND ts_utc >= $since AND ts_utc < $until),
@@ -737,9 +754,12 @@ public sealed partial class StationDb
                         (SELECT COUNT(*) FROM events WHERE actor_member_id = $me AND event = $home AND subject_type = 'page' AND ts_utc >= $since AND ts_utc < $until);
                     """;
                 command.Parameters.AddWithValue("$me", viewer);
-                command.Parameters.AddWithValue("$open", "watch.open");
-                command.Parameters.AddWithValue("$play", WatchPlayEvent);
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$open", EventNames.PlaybackOpen);
+                command.Parameters.AddWithValue("$openOld", LegacyOpenEvent);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
                 command.Parameters.AddWithValue("$search", "search.query");
                 command.Parameters.AddWithValue("$submit", EventNames.VideoSubmit);
                 command.Parameters.AddWithValue("$loginOk", EventNames.LoginSuccess);
@@ -764,7 +784,7 @@ public sealed partial class StationDb
                     WITH ranked AS (
                         SELECT actor_mid, COUNT(*) AS plays
                         FROM events
-                        WHERE event = $play AND subject_type = 'video'
+                        WHERE event IN ($play, $playOld) AND subject_type = 'video'
                           AND actor_mid IS NOT NULL AND ts_utc >= $since AND ts_utc < $until
                         GROUP BY actor_mid
                     )
@@ -773,7 +793,8 @@ public sealed partial class StationDb
                            (SELECT COUNT(*) FROM ranked);
                     """;
                 vsCommand.Parameters.AddWithValue("$me", vsMe);
-                vsCommand.Parameters.AddWithValue("$play", WatchPlayEvent);
+                vsCommand.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                vsCommand.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
                 vsCommand.Parameters.AddWithValue("$since", since);
                 vsCommand.Parameters.AddWithValue("$until", until);
                 using var vsReader = vsCommand.ExecuteReader();
@@ -802,11 +823,13 @@ public sealed partial class StationDb
                         FROM events e
                         JOIN videos v ON v.bvid = e.subject_id
                         WHERE e.actor_member_id = $me AND e.subject_type = 'video'
-                          AND e.event IN ($beat, $open) AND e.ts_utc >= $since AND e.ts_utc < $until;
+                          AND e.event IN ($beat, $beatOld, $open, $openOld) AND e.ts_utc >= $since AND e.ts_utc < $until;
                         """;
                     command.Parameters.AddWithValue("$me", durMe);
-                    command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
-                    command.Parameters.AddWithValue("$open", "watch.open");
+                    command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                    command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
+                    command.Parameters.AddWithValue("$open", EventNames.PlaybackOpen);
+                    command.Parameters.AddWithValue("$openOld", LegacyOpenEvent);
                     command.Parameters.AddWithValue("$since", since);
                     command.Parameters.AddWithValue("$until", until);
                     using var reader = command.ExecuteReader();
@@ -814,7 +837,7 @@ public sealed partial class StationDb
                     while (reader.Read())
                     {
                         var bvid = reader.GetString(0);
-                        if (reader.GetString(2) == "watch.open")
+                        if (reader.GetString(2) is "watch.open" or "playback.open")
                         {
                             opens++;
                             continue;
@@ -853,21 +876,24 @@ public sealed partial class StationDb
             {
                 command.CommandText = """
                     SELECT substr(datetime(ts_utc, $shift), 1, 10) AS local_day,
-                           COALESCE(SUM(CASE WHEN event = $open THEN 1 ELSE 0 END), 0),
-                           COALESCE(SUM(CASE WHEN event = $play THEN 1 ELSE 0 END), 0),
-                           COUNT(DISTINCT CASE WHEN event IN ($play, $beat) THEN NULLIF(actor_mid, '') END),
+                           COALESCE(SUM(CASE WHEN event IN ($open, $openOld) THEN 1 ELSE 0 END), 0),
+                           COALESCE(SUM(CASE WHEN event IN ($play, $playOld) THEN 1 ELSE 0 END), 0),
+                           COUNT(DISTINCT CASE WHEN event IN ($play, $playOld, $beat, $beatOld) THEN NULLIF(actor_mid, '') END),
                            COALESCE(SUM(CASE WHEN actor_type = $guest THEN 1 ELSE 0 END), 0),
                            COUNT(DISTINCT CASE WHEN actor_type = $guest AND ip IS NOT NULL AND ip <> '' THEN ip END)
                     FROM events
-                    WHERE subject_type = 'video' AND event IN ($open, $play, $beat)
+                    WHERE subject_type = 'video' AND event IN ($open, $openOld, $play, $playOld, $beat, $beatOld)
                       AND ts_utc >= $since AND ts_utc < $until
                     GROUP BY local_day
                     ORDER BY local_day;
                     """;
                 command.Parameters.AddWithValue("$shift", "+8 hours");
-                command.Parameters.AddWithValue("$open", "watch.open");
-                command.Parameters.AddWithValue("$play", WatchPlayEvent);
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$open", EventNames.PlaybackOpen);
+                command.Parameters.AddWithValue("$openOld", LegacyOpenEvent);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
                 command.Parameters.AddWithValue("$guest", EventActors.Guest);
                 command.Parameters.AddWithValue("$since", since);
                 command.Parameters.AddWithValue("$until", until);
@@ -1042,7 +1068,7 @@ public sealed partial class StationDb
             }
 
             // 站外访客账：全部限 actor_type='guest'，身份拿 IP 去重（本库访客无 mid，也没存 dmid 进台账）。
-            // BlockedWatch 与 BlockedDanmaku 分开数：后者是前端弹幕轮询被门禁挡回的空转（实测占 blocked 的大头），
+            // BlockedPlayback 与 BlockedDanmaku 分开数：后者是前端弹幕轮询被门禁挡回的空转（实测占 blocked 的大头），
             // 当「有人想看被拦」的硬信号会吹胀，所以不当观众看、只当运维噪音摆。外发只给计数，IP 本体一律不出库。
             using (var command = connection.CreateCommand())
             {
@@ -1050,27 +1076,31 @@ public sealed partial class StationDb
                     SELECT
                         (SELECT COUNT(DISTINCT ip) FROM events
                           WHERE actor_type = $guest AND ip IS NOT NULL AND ip <> ''
-                            AND event IN ($open, $play, $beat, $block, $search) AND ts_utc >= $since AND ts_utc < $until),
+                            AND event IN ($open, $openOld, $play, $playOld, $beat, $beatOld, $block, $blockOld, $search) AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events
-                          WHERE actor_type = $guest AND event = $open AND subject_type = 'video' AND ts_utc >= $since AND ts_utc < $until),
+                          WHERE actor_type = $guest AND event IN ($open, $openOld) AND subject_type = 'video' AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events
-                          WHERE actor_type = $guest AND event = $play AND subject_type = 'video' AND ts_utc >= $since AND ts_utc < $until),
+                          WHERE actor_type = $guest AND event IN ($play, $playOld) AND subject_type = 'video' AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events
                           WHERE actor_type = $guest AND event = $search AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events
-                          WHERE actor_type = $guest AND event = $block AND subject_type = 'path' AND subject_id LIKE '/api/watch/%' AND ts_utc >= $since AND ts_utc < $until),
+                          WHERE actor_type = $guest AND event IN ($block, $blockOld) AND subject_type = 'path' AND (subject_id LIKE '/api/watch/%' OR subject_id LIKE '/api/video/%') AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events
-                          WHERE actor_type = $guest AND event = $block AND subject_id LIKE '%/danmaku%' AND ts_utc >= $since AND ts_utc < $until),
+                          WHERE actor_type = $guest AND event IN ($block, $blockOld) AND subject_id LIKE '%/danmaku%' AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events
                           WHERE actor_type = $guest AND event IN ($qrStart, $qrScan, $pwDeny) AND ts_utc >= $since AND ts_utc < $until),
                         (SELECT COUNT(*) FROM events
                           WHERE actor_type = $guest AND event = $home AND subject_type = 'page' AND ts_utc >= $since AND ts_utc < $until);
                     """;
                 command.Parameters.AddWithValue("$guest", EventActors.Guest);
-                command.Parameters.AddWithValue("$open", "watch.open");
-                command.Parameters.AddWithValue("$play", WatchPlayEvent);
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
-                command.Parameters.AddWithValue("$block", "watch.blocked");
+                command.Parameters.AddWithValue("$open", EventNames.PlaybackOpen);
+                command.Parameters.AddWithValue("$openOld", LegacyOpenEvent);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
+                command.Parameters.AddWithValue("$block", EventNames.PlaybackBlocked);
+                command.Parameters.AddWithValue("$blockOld", LegacyBlockedEvent);
                 command.Parameters.AddWithValue("$search", "search.query");
                 command.Parameters.AddWithValue("$qrStart", "login.qr.start");
                 command.Parameters.AddWithValue("$qrScan", "login.qr.scanned");
@@ -1140,18 +1170,21 @@ public sealed partial class StationDb
                     SELECT
                         (SELECT COUNT(*) FROM videos v WHERE v.created_at_utc >= $psince AND v.created_at_utc < $psince2 AND v.status = $arrived AND {visSql}),
                         (SELECT COUNT(*) FROM danmaku_local WHERE created_at_utc >= $psince AND created_at_utc < $psince2),
-                        (SELECT COUNT(*) FROM events WHERE event = $open AND subject_type = 'video' AND ts_utc >= $psince AND ts_utc < $psince2),
-                        (SELECT COUNT(*) FROM events WHERE event = $play AND subject_type = 'video' AND ts_utc >= $psince AND ts_utc < $psince2),
-                        (SELECT COUNT(DISTINCT CASE WHEN event IN ($play, $beat) THEN NULLIF(actor_mid, '') END) FROM events WHERE subject_type = 'video' AND event IN ($play, $beat) AND ts_utc >= $psince AND ts_utc < $psince2),
+                        (SELECT COUNT(*) FROM events WHERE event IN ($open, $openOld) AND subject_type = 'video' AND ts_utc >= $psince AND ts_utc < $psince2),
+                        (SELECT COUNT(*) FROM events WHERE event IN ($play, $playOld) AND subject_type = 'video' AND ts_utc >= $psince AND ts_utc < $psince2),
+                        (SELECT COUNT(DISTINCT CASE WHEN event IN ($play, $playOld, $beat, $beatOld) THEN NULLIF(actor_mid, '') END) FROM events WHERE subject_type = 'video' AND event IN ($play, $playOld, $beat, $beatOld) AND ts_utc >= $psince AND ts_utc < $psince2),
                         (SELECT COUNT(*) FROM events WHERE event = $search AND ts_utc >= $psince AND ts_utc < $psince2),
-                        (SELECT COUNT(*) FROM events WHERE event = $beat AND subject_type = 'video' AND actor_type = $member AND ts_utc >= $psince AND ts_utc < $psince2);
+                        (SELECT COUNT(*) FROM events WHERE event IN ($beat, $beatOld) AND subject_type = 'video' AND actor_type = $member AND ts_utc >= $psince AND ts_utc < $psince2);
                     """;
                 command.Parameters.AddWithValue("$psince", prevSince);
                 command.Parameters.AddWithValue("$psince2", prevUntil);
                 command.Parameters.AddWithValue("$arrived", arrived);
-                command.Parameters.AddWithValue("$open", "watch.open");
-                command.Parameters.AddWithValue("$play", WatchPlayEvent);
-                command.Parameters.AddWithValue("$beat", EventNames.WatchHeartbeat);
+                command.Parameters.AddWithValue("$open", EventNames.PlaybackOpen);
+                command.Parameters.AddWithValue("$openOld", LegacyOpenEvent);
+                command.Parameters.AddWithValue("$play", PlaybackPlayEvent);
+                command.Parameters.AddWithValue("$playOld", LegacyPlayEvent);
+                command.Parameters.AddWithValue("$beat", EventNames.PlaybackHeartbeat);
+                command.Parameters.AddWithValue("$beatOld", LegacyHeartbeatEvent);
                 command.Parameters.AddWithValue("$search", "search.query");
                 command.Parameters.AddWithValue("$member", EventActors.Member);
                 bindVis(command);
@@ -1164,7 +1197,7 @@ public sealed partial class StationDb
                 deltas.Add(new WeeklyDelta("viewers", play.ViewerHeads, reader.GetInt64(4)));
                 deltas.Add(new WeeklyDelta("searches", searches, reader.GetInt64(5)));
                 // 时长环比也拿枪数换算（时长 = 枪数×30 是恒等式，上桶不必重跑一遍归堆）。
-                deltas.Add(new WeeklyDelta("watchTime", durationSeconds, reader.GetInt64(6) * WeeklyHeartbeatSeconds));
+                deltas.Add(new WeeklyDelta("playbackTime", durationSeconds, reader.GetInt64(6) * WeeklyHeartbeatSeconds));
             }
         }
 

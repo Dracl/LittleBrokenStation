@@ -127,7 +127,7 @@ public sealed class NotifyMuteTests : IDisposable
         var seat = AdmitSeat(1001, "站长"); // 首位即站长，单席位也够钉单发路
         _db.SetNotifyMutes(seat, new[] { NotifyMutes.Submit });
 
-        var muted = _db.SendToMember(seat, MemberMail.KindComplete, "投稿已入档", "正文", "/watch/BVmute00001",
+        var muted = _db.SendToMember(seat, MemberMail.KindComplete, "投稿已入档", "正文", "/video/BVmute00001",
             muteChannel: NotifyMutes.Submit);
         Assert.Equal(0, muted); // 没落库：id 从 1 起，0＝静默收手
         // 首席位自带一封欢迎信，只能按 kind 数——欢迎信不在可关之列，不配当反例。

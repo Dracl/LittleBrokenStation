@@ -66,7 +66,7 @@ public static class MemberMail
                 });
             db.SendToMember(submitterMemberId, KindComplete, "投稿已入档",
                 $"「{display}」完整入档：正片、弹幕、字幕与封面都已上架，随时可放映。",
-                $"/watch/{target.Bvid}", msgType: card is null ? null : MsgTypeVideoReceipt, payloadJson: payloadJson,
+                $"/video/{target.Bvid}", msgType: card is null ? null : MsgTypeVideoReceipt, payloadJson: payloadJson,
                 muteChannel: NotifyMutes.Submit);
         }, videoId);
     }

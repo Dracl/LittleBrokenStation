@@ -8,7 +8,7 @@ namespace LBS.Server;
 /// <summary>
 /// 成员门闸：橱窗与放映厅的分界线。
 /// 访客（无 lbs_member cookie）只能逛首页卡阵、搜索、看封面标题；
-/// 放映厅（watch 数据）、弹幕读写、相关推荐、直链下载、投稿一律要会员会话。
+/// 放映厅（video 装配数据，旧名 watch）、弹幕读写、相关推荐、直链下载、投稿一律要会员会话。
 /// 会话 = HttpOnly cookie 里的随机令牌，库里只存它的 SHA256，30 天有效（落盘，重启不踢朋友）。
 /// 门在数据上不在页面壳上——与 AdminGate 同一套哲学。
 /// </summary>
@@ -32,7 +32,9 @@ public sealed class MemberGate(StationDb db)
         }
 
         // 放映厅数据（整页装配：流地址、评论区、UP 名片）
-        if (path.StartsWith("/api/watch", StringComparison.OrdinalIgnoreCase))
+        // 放映厅数据（video 装配，旧名 watch，11-15 改名）：点名带尾斜杠——不写斜杠会把公开的
+        // /api/videos 清单与 /api/videos/{id} 详情一并误封成会员事务（门闸宁挡不漏也不能乱挡）。
+        if (path.StartsWith("/api/video/", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }

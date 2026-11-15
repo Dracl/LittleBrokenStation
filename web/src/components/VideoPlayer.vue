@@ -408,7 +408,7 @@ watch(
 
 // 服务端又报回这一行的活档（站长从回收站整组恢复回来了、或别处重新点单把这版请回来了）：本地那面「已删除」
 // 旗子交回去，行恢复成本来面目。账以服务端为准，前端这面旗子只负责撑到重拉落地那一下，不自建一套版本台账。
-// 删成那次重拉带回来的是「这一行没了」，不清旗——旗不清，行才灰得住（父页 loadWatch 重拉是整包换掉 pages 的）。
+// 删成那次重拉带回来的是「这一行没了」，不清旗——旗不清，行才灰得住（父页 loadVideo 重拉是整包换掉 pages 的）。
 watch(rawVersions, (rows) => {
   for (const r of rows) {
     if (r?.status === 'Arrived' || r?.status === 'Downloading') recycledCodecs.value.delete(r.codec)
@@ -421,7 +421,7 @@ watch(rawVersions, (rows) => {
 // 真门在端点里（站长与这稿的投稿人删得动，其余 403 not-your-submission），
 // 这里藏钮只是不把「按了也是白按」的钮摆给成员看（与站内弹幕 canDelete 同一范式）。
 // 身份读全站那一份 memberStore（TopBar / 个人空间 / 分区都读它）：page 里根本没有 isStationOwner 那格——
-// 它在 /api/watch 的顶层载荷上（分 P 行只带 codecVersions / mainBytes 那些），播放器不该自己造一个。
+// 它在 /api/video 的顶层载荷上（分 P 行只带 codecVersions / mainBytes 那些），播放器不该自己造一个。
 const isStationOwner = computed(() => member.value?.role === 'owner')
 
 // 只给「已到货的加档行」摆这枚钮：主版本的文件记在 pages 表那一格，这口删的是 video_codecs 行，
@@ -470,7 +470,7 @@ async function deleteCodecRow(codec) {
     }
     recycledCodecs.value.add(target) // 父页那一发重拉可能正赶在路上（带回来的还是删前的行），落定这一刻把旗子按回去
     codecDelNote.value = { text: body?.message ?? '已删除，文件与台账记录已移入回收站', bad: false }
-    emit('codec-arrived') // 请父页重拉 watch，交权给服务端那本账（照引擎到货那条 emit 同一姿势，不另发明一套）
+    emit('codec-arrived') // 请父页重拉 /api/video，交权给服务端那本账（照引擎到货那条 emit 同一姿势，不另发明一套）
   } catch {
     recycledCodecs.value.delete(target)
     codecDelNote.value = { text: '分站后端没有应答，这一版没删成', bad: true }
@@ -481,7 +481,7 @@ async function deleteCodecRow(codec) {
 
 // 进站中的引擎实况：有 Downloading 行时每 5 秒拉一发轻量进度端点（与站长室队列同一本账），
 // 「进站中」后缀上百分比/已下/速度；某编码从进度表消失而版本行还报 Downloading = 十有八九定档了，
-// 请父页重拉 watch（@codec-arrived），行自己会换成 Arrived 并带出大小与码率。
+// 请父页重拉 /api/video（@codec-arrived），行自己会换成 Arrived 并带出大小与码率。
 // 块子必须摆在 pendingCodecs/versionInfo 之后：immediate 首评就会碰这两家，摆前面是自爆 TDZ（盐系少女事故）。
 const codecProg = ref({})
 let progTimer = null
@@ -785,7 +785,7 @@ function pickSubtitle(i) {
 // 台账里 129 条字幕全是 .srt（引擎写盘原样）：就算转好 VTT，::cue 仍做不了染色定位拖拽——
 // 11-11 深夜起不再劳驾浏览器排版（解析器在 utils/subtitleVtt.js，纯函数 node 直测）。
 // 盘上原始文件一个字节不动（导出包里躺着的仍是原字幕）。
-// 代次护城（观看页 watchEpoch 同族）：切 P 时旧批迟到不许写新页的 cue。
+// 代次护城（观看页 videoEpoch 同族）：切 P 时旧批迟到不许写新页的 cue。
 // watch 的账键用 joined 串：观看页 5 秒轮询每轮回新 body，盯数组引用会每 5 秒白重拉一遍字幕。
 const subCues = ref([]) // 每条轨的 cue 清单：[[{start,end,text}], ...]
 let subFetchSeq = 0
@@ -1420,7 +1420,7 @@ async function togglePip() {
 
 async function copyLink() {
   // 链接头走全站分享一张嘴 siteLink（站长室可配门面地址，未配则跟随访问地址）
-  const url = `${await siteBase()}/watch/${props.bvid}?t=${Math.floor(currentTime.value)}`
+  const url = `${await siteBase()}/video/${props.bvid}?t=${Math.floor(currentTime.value)}`
   navigator.clipboard?.writeText(url).catch(() => {})
   ctx.visible = false
 }

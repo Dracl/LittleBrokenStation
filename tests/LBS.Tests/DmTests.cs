@@ -284,7 +284,7 @@ public sealed class DmTests : IDisposable
             Assert.Equal("BVshare001", card.RootElement.GetProperty("bvid").GetString());
             Assert.Equal("好片子", card.RootElement.GetProperty("title").GetString());
             Assert.Equal("https://i0.hdslb.com/c.jpg", card.RootElement.GetProperty("cover").GetString());
-            Assert.Equal("/watch/BVshare001", card.RootElement.GetProperty("watchUrl").GetString());
+            Assert.Equal("/video/BVshare001", card.RootElement.GetProperty("videoUrl").GetString());
         }
 
         // 归档封面后卡面升级 /media/（与观看页同形，本地优先）；安利语可不写（空串，卡即正文）。
@@ -301,7 +301,7 @@ public sealed class DmTests : IDisposable
         var convo = _db.ListDmConversation(peer, me);
         var landed = Assert.Single(convo, m => m.Id == id);
         Assert.Equal("video", landed.MsgType);
-        Assert.Contains("/watch/BVshare001", landed.DynJson);
+        Assert.Contains("/video/BVshare001", landed.DynJson);
 
         // 校验嘴脸与动态分享同款：空气收信人/自娱自乐/查无此片/安利语超长/待邀空席。
         // 查无那例递的是 true：要验的是「没这个片子」那张脸（在不在馆那道判据在前），不是看客钥匙。

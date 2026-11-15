@@ -20,7 +20,7 @@ function coverSrc(d) {
 </script>
 
 <template>
-  <RouterLink v-if="d.inStation" :to="`/watch/${d.bvid}`" :class="shell">
+  <RouterLink v-if="d.inStation" :to="`/video/${d.bvid}`" :class="shell">
     <div class="relative aspect-[16/10] bg-[#eef0f2] dark:bg-white/5">
       <img
         v-if="d.cover || d.coverLocal"

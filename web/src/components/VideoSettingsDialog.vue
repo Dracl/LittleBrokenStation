@@ -12,12 +12,12 @@ import { postVideoAction, refetchArchive, removeVideoEntry } from '../utils/vide
 // 夜里 --card-bg == --page-bg：层次全靠那道 border-lineSoft，不靠底色拉。
 //
 // 落库走 PATCH /api/videos/{id}：只递真改过的栏，还原那一栏递 null；后端只回 { ok: true }，
-// 不含新值 —— 所以存完 emit('saved') 让父页重拉 /api/watch/{bvid}，前端不自改本地对象，免得两处真相。
+// 不含新值 —— 所以存完 emit('saved') 让父页重拉 /api/video/{bvid}，前端不自改本地对象，免得两处真相。
 // 「覆写中」显不显一律看后端下发的 titleOverridden / descOverridden / zoneOverridden，前端不自己比原值。
 const props = defineProps({
   // watch 那坨载荷（含 id / bvid / visibility / title / description / zone /
   // canManage / isStationOwner / *Overridden）。显隐由父页的 v-if 管：只在开着的时候存在。
-  // 简介这一栏全站只叫 description（与 watch 载荷、放映厅正文同一格，不留第二个名字）；
+  // 简介这一栏全站只叫 description（与 video 载荷、放映厅正文同一格，不留第二个名字）；
   // 只有那面「覆写过」的旗子叫 descOverridden —— 它说的是那件事，不是那格字段。
   data: { type: Object, required: true },
 })
@@ -195,7 +195,7 @@ function settle({ status, data }) {
   return { kind: 'err', text: data?.message ?? '分站收不下这次改动，稍后再试' }
 }
 
-// 存好了请父页重拉 watch：面板不自己改本地对象，改完的标题与那几面覆写标一律以服务端为准。
+// 存好了请父页重拉 /api/video：面板不自己改本地对象，改完的标题与那几面覆写标一律以服务端为准。
 function tellSaved(detail) {
   pendingRefill = true
   emit('saved', detail ?? null)
@@ -254,7 +254,7 @@ function actBtnClass(item) {
 }
 
 // 弹幕 / 评论 / 封面与媒体各走 refetchArchive 那一份逻辑，只是每颗钮只点自己那一样（放映厅那枚是两个一起点）。
-// 跑成任何一发都 tellSaved：父页重拉 /api/watch，封面、那几栏与覆写标一律跟着服务端归位
+// 跑成任何一发都 tellSaved：父页重拉 /api/video，封面、那几栏与覆写标一律跟着服务端归位
 // （/media 的图后端已带 no-cache，img 会自己复核，这里不另加 cache-buster）。
 async function runArchive(item) {
   if (busy.value || removing.value || anyActBusy.value) return
@@ -266,7 +266,7 @@ async function runArchive(item) {
     media: item.key === 'media',
   })
   setAct(item.key, res.allOk ? 'done' : 'idle', res.text)
-  if (res.ran && res.kind !== 'err') tellSaved(res) // 页面侧的收尾（重挂评论区、顶弹幕重取、重拉 watch）归父页
+  if (res.ran && res.kind !== 'err') tellSaved(res) // 页面侧的收尾（重挂评论区、顶弹幕重取、重拉 /api/video）归父页
 }
 
 async function runOwner(item) {
@@ -481,7 +481,7 @@ const OVERRIDE_CHIP = 'rounded-full border border-stationBlue/30 px-1.5 py-px te
               </div>
               <div class="flex items-start gap-3 py-2.5">
                 <RouterLink
-                  :to="{ path: `/watch/${props.data?.bvid}` }"
+                  :to="{ path: `/video/${props.data?.bvid}` }"
                   class="w-[124px] shrink-0 rounded-lg border border-lineSoft px-3 py-1.5 text-center text-[12px] text-inkSub transition hover:border-stationPink/50 hover:text-stationPink"
                   title="加档点单在放映厅的播放器里（版本行折叠那排），这里不重做一份"
                 >

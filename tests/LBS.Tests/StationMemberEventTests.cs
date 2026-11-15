@@ -210,7 +210,7 @@ public class StationMemberEventTests : IDisposable
             drafts.Add(new EventDraft(
                 i % 7 == 0 ? EventActors.Guest : EventActors.Member,
                 i % 7 == 0 ? null : 42L,
-                isWatch ? EventNames.WatchOpen : EventNames.SearchQuery,
+                isWatch ? EventNames.PlaybackOpen : EventNames.SearchQuery,
                 isWatch ? "video" : "query",
                 isWatch ? $"BV{i}" : "idm",
                 null, "1.2.3.4",
@@ -220,9 +220,9 @@ public class StationMemberEventTests : IDisposable
         _db.InsertEventsBatch(drafts);
         Assert.Equal(300, _db.CountEvents());
 
-        var watches = _db.QueryEvents(eventPrefix: "watch.");
-        Assert.Equal(100, watches.Count);
-        Assert.All(watches, e => Assert.Equal(EventNames.WatchOpen, e.Event));
+        var plays = _db.QueryEvents(eventPrefix: "playback.");
+        Assert.Equal(100, plays.Count);
+        Assert.All(plays, e => Assert.Equal(EventNames.PlaybackOpen, e.Event));
 
         var byMember = _db.QueryEvents(actorMid: 42L);
         Assert.Equal(300 - 43, byMember.Count); // 300 里 7 的倍数下标是 guest
@@ -249,7 +249,7 @@ public class StationMemberEventTests : IDisposable
 
         for (var i = 0; i < 50; i++)
         {
-            recorder.Record(EventActors.Member, 7L, EventNames.WatchHeartbeat, "video", "BV1x", null, "9.9.9.9");
+            recorder.Record(EventActors.Member, 7L, EventNames.PlaybackHeartbeat, "video", "BV1x", null, "9.9.9.9");
         }
 
         recorder.RecordWithPayload(EventActors.System, null, EventNames.VideoArrived, "video", "BV1x",

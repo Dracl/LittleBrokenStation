@@ -51,7 +51,7 @@ public sealed partial class StationDb
     }
 
     /// <summary>
-    /// 查事件（新→旧）。各过滤器可叠：身份、mid、事件名前缀（"watch." 即全部观看行为）、时间窗。
+    /// 查事件（新→旧）。各过滤器可叠：身份、mid、事件名前缀（"playback." 即全部观看行为；改名前老行是 "watch."）、时间窗。
     /// limit 兜住体量；AI 分析按前缀+时间窗切片取数。
     /// </summary>
     public IReadOnlyList<EventRow> QueryEvents(int limit = 500, string? actorType = null,

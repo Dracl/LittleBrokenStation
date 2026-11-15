@@ -66,7 +66,7 @@ public sealed class InboxClearTests : IDisposable
         // 两席各有私发与广播两路信（欢迎信也在账上，一并该销自己的那份）
         _db.SendToMember(me, MemberMail.KindWelcome, "欢迎来到小破分站", "正文", "/me");
         _db.SendToMember(me, MemberMail.KindArrival, "分站到货 · 1 件新货", "正文");
-        _db.SendToMember(peer, MemberMail.KindComplete, "投稿已入档", "正文", "/watch/BVclr000001");
+        _db.SendToMember(peer, MemberMail.KindComplete, "投稿已入档", "正文", "/video/BVclr000001");
         _db.BroadcastToActive(MemberMail.KindAnnounce, "全站大事件", "正文");
         var mineBefore = _db.ListMessages(me).Count;
         Assert.True(mineBefore >= 3);

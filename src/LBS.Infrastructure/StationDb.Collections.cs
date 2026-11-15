@@ -7,7 +7,7 @@ namespace LBS.Infrastructure;
 /// 站内合集：会员自己攒的片单（站内版收藏夹）。三条口径：
 /// ① 归属只认 owner_member_id——谁开的集谁管，站长兜底代管（403 归端点判，台账不掺和身份）；
 /// ② item 只存 (collection_id, video_id) 这一对，片名封面一律读时 JOIN videos 现取
-///    （与 watch_history 同一哲学：片被删了这条 item 就自然看不见，不留在库里当死行）；
+///    （与 video_history 同一哲学：片被删了这条 item 就自然看不见，不留在库里当死行）；
 /// ③ 只数已入站（Arrived）的货：排队里的稿子连档案都不齐，不配占集里的名额，
 ///    所以计数、封面、片单三处一律带 status='Arrived' 的同一把尺子；
 /// ④ 可见性（public/private）：公开集人人可见，私有集只有东家与站长可见（尺子从 VisibilityFilter 那一个出口出）；

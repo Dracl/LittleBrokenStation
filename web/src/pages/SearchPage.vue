@@ -11,7 +11,7 @@ const videos = ref([])
 const loading = ref(false)
 const sort = ref('') // '' = 最新入库，'plays' = 最多播放
 
-// 代次护城（照 WatchPage 的 relatedSeq）：连打关键字 / 切排序时，慢的那个回包不能盖掉新结果
+// 代次护城（照 VideoPage 的 relatedSeq）：连打关键字 / 切排序时，慢的那个回包不能盖掉新结果
 let searchSeq = 0
 
 async function search() {

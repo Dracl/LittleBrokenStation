@@ -4,7 +4,7 @@
 // 那颗钮本身的外形与藏法不在这里，抽成了 SideHandle（下面新挂的「稿件设置」把手共用同一颗），
 // 尺子在 utils/sideDock.js；本组件只管什么时候该有这颗钮、以及封面卡开在哪儿。
 // 图不经 coverThumb —— 库里 154 条稿子全部有本地 .Cover.jpg（artifacts kind='cover'），
-// watch 载荷里的 coverUrl 已是「本地原图优先」的成品，直出就是原图，热链只是补员没赶到时的兜底。
+// video 载荷里的 coverUrl 已是「本地原图优先」的成品，直出就是原图，热链只是补员没赶到时的兜底。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ImageLightbox from './ImageLightbox.vue'
 import SideHandle from './SideHandle.vue'

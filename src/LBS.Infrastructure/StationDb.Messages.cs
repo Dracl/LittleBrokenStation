@@ -24,7 +24,7 @@ public sealed partial class StationDb
         string? Link,
         string CreatedAtUtc,
         string? ReadAtUtc,
-        // 信里那条 /watch/{bvid} 现在落不落得进去：由读路径现算（不存字段），null = 这封信不携片链。
+        // 信里那条 /video/{bvid}（11-15 改名前的老信存的是 /watch/{bvid}）现在落不落得进去：由读路径现算（不存字段），null = 这封信不携片链。
         bool? VideoInStation = null,
         string? MsgType = null,
         string? PayloadJson = null);
@@ -99,10 +99,11 @@ public sealed partial class StationDb
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT m.id, m.to_member_id, m.from_mid, m.kind, m.title, m.body, m.link, m.created_at_utc, m.read_at_utc, s.nickname,
-                   -- 归档回执的 link 形状由 MemberMail.NotifyVideoArrived 唯一写钉死为 /watch/ + bvid，
-                   -- substr 剥前七字符即得 bvid；welcome 那类 link 是 /me，靠 kind 闸住不进去。
+                   -- 归档回执的 link 形状由 MemberMail.NotifyVideoArrived 唯一写钉死为 /video/ + bvid（11-15 改名前的老行是 /watch/ + bvid，
+                   -- 两前缀都认且同为七字，substr 同位剥 bvid——老行不认，老回执的片链就集体变哑）；
+                   -- welcome 那类 link 是 /me，靠 kind 闸住不进去。
                    -- 这里用 EXISTS 而不是标量子查询：子查询查无此行会给 NULL，跟「没带片链」的 NULL 撞成一堆，分不开。
-                   CASE WHEN m.kind = 'complete' AND m.link LIKE '/watch/%' THEN
+                   CASE WHEN m.kind = 'complete' AND (m.link LIKE '/watch/%' OR m.link LIKE '/video/%') THEN
                        EXISTS (SELECT 1 FROM videos v WHERE v.bvid = substr(m.link, 8) AND v.status = 'Arrived')
                    END,
                    m.msg_type, m.payload_json

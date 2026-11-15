@@ -24,7 +24,7 @@ public static class DmEndpoints
     /// <summary>
     /// 放映厅安利的校验 + 定格（与动态分享同一张嘴，端点 lambda 与测试直驱的都是这里）：
     /// 错误给状态码与文案，null = 放行；DynJson 是随信落库的视频族卡面（与动态分享 dyn_json 同族），
-    /// 带 watchUrl = /watch/bvid，对方点卡直落站内放映厅。
+    /// 带 videoUrl = /video/bvid，对方点卡直落站内放映厅。
     /// </summary>
     /// <param name="viewerCanView">这位能不能看这部（调用方拿 <see cref="ViewerGate.CanView"/> 算好递进来，
     /// 必传不给默认值）：藏着的稿子安利不出去，否则任何人都能借安利把别人的私稿端回全站眼前。
@@ -79,7 +79,7 @@ public static class DmEndpoints
             upName = snap.UpName,
             // 时长与动态分享同口径：定格时就收成 B 站冒号制（3:45），库里那三种方言（4m45s / 03:45 / 243）不进 JSON。
             durationText = snap.DurationText is { } dur ? DurationText.Normalize(dur) : null,
-            watchUrl = $"/watch/{snap.Bvid}",
+            videoUrl = $"/video/{snap.Bvid}",
         });
         return (null, target, note, dynJson);
     }
@@ -292,7 +292,7 @@ public static class DmEndpoints
         });
 
         // 放映厅安利：动态分享的视频形态——bvid 必查在馆，定格卡面随信落库（dyn_json 视频族），
-        // 对方会话里点卡直落 /watch/{bvid}。校验全收进 ValidateVideoShare（与动态分享同规）。
+        // 对方会话里点卡直落 /video/{bvid}。校验全收进 ValidateVideoShare（与动态分享同规）。
         app.MapPost("/api/videos/{bvid}/share", (string bvid, VideoShareRequest? request, StationDb db, HttpContext http) =>
         {
             if (MemberGate.Current(http) is not { } me)

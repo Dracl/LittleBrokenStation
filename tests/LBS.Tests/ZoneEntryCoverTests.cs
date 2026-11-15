@@ -73,7 +73,7 @@ public sealed class ZoneEntryCoverTests : IDisposable
             ("$p", $"covers/{bvid}.jpg"),
             ("$b", bvid));
 
-    /// <summary>往台账塞 n 枪观看（play 与 heartbeat 交替，形状照 WatchPage.vue 的上报实况）。mid 给空 = 访客。</summary>
+    /// <summary>往台账塞 n 枪观看（play 与 heartbeat 交替，形状照 VideoPage.vue 的上报实况）。mid 给空 = 访客。</summary>
     private void Watch(string bvid, int times, long? mid = null)
     {
         for (var i = 0; i < times; i++)
@@ -84,7 +84,7 @@ public sealed class ZoneEntryCoverTests : IDisposable
                 new EventDraft(
                     mid is null ? EventActors.Guest : EventActors.Member,
                     mid,
-                    beat ? "watch.heartbeat" : "watch.play",
+                    beat ? "playback.heartbeat" : "playback.play",
                     "video",
                     bvid,
                     beat ? """{"t":42}""" : null,

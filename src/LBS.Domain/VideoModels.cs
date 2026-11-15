@@ -4,20 +4,20 @@ namespace LBS.Domain;
 
 /// <summary>放映厅「创作团队」一员（B 站 view 接口 staff 数组的归档形）：Role 是 B 站给的角色文本（UP主/作词/视频制作…）。
 /// 联合创作稿才有；Face 本地优先（/avatars/...），拉不到留热链，与 up_face 同一口径。</summary>
-public sealed record WatchStaff(long? Mid, string Name, string? Role, string? Face);
+public sealed record PlaybackStaff(long? Mid, string Name, string? Role, string? Face);
 
 /// <summary>创作团队的落库形态：video_meta.staff_json 一列存 camelCase JSON 数组。
-/// 写侧（Server 采到就写）与读侧（GetWatchData）共用这一张嘴，免得两头各写一份字段名、哪天错开就静默变成「没团队」。
+/// 写侧（Server 采到就写）与读侧（GetPlaybackData）共用这一张嘴，免得两头各写一份字段名、哪天错开就静默变成「没团队」。
 /// 空列表当 null 存：采过、但这稿不是联合创作，与「压根没采过」在库里同形 —— 分不分得清不重要，要不要再出去采由 stat_probed 定。</summary>
-public static class WatchStaffCodec
+public static class PlaybackStaffCodec
 {
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
 
-    public static string? ToJson(IReadOnlyList<WatchStaff>? staff) =>
+    public static string? ToJson(IReadOnlyList<PlaybackStaff>? staff) =>
         staff is null || staff.Count == 0 ? null : JsonSerializer.Serialize(staff, Options);
 
     /// <summary>脏数据一律当「没团队」读回 null：放映厅不该因为一列写坏而整页 500。</summary>
-    public static IReadOnlyList<WatchStaff>? FromJson(string? json)
+    public static IReadOnlyList<PlaybackStaff>? FromJson(string? json)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
@@ -26,7 +26,7 @@ public static class WatchStaffCodec
 
         try
         {
-            return JsonSerializer.Deserialize<List<WatchStaff>>(json, Options);
+            return JsonSerializer.Deserialize<List<PlaybackStaff>>(json, Options);
         }
         catch (JsonException)
         {
@@ -117,11 +117,11 @@ public sealed record PageWithFiles(
     string? QualityName = null,
     int? AudioQualityId = null);
 
-/// <summary>GET /api/watch/{bvid} 的完整载荷。</summary>
+/// <summary>GET /api/video/{bvid}（旧名 /api/watch，11-15 改名）的完整载荷。</summary>
 /// <remarks>Title / Zone / Description 三栏下发的是**有效值**（站内覆写优先，没覆写才吃 B 站归档那份，
 /// 表达式在 StationDb.VideoSettings.cs / StationDb.Zones.cs），与卡阵、分区页、合集、观看历史同一张嘴；
 /// 面板要区分「这栏是站内改过的」看尾追那三枚 *Overridden 标。</remarks>
-public sealed record WatchData(
+public sealed record PlaybackData(
     long Id,
     string Bvid,
     string Url,
@@ -152,13 +152,13 @@ public sealed record WatchData(
     bool CanManage = false,
     // 创作团队（联合创作稿的 B 站 staff 档案）：null = 这稿还没采过 staff（老稿一律如此，按约不回头补）；
     // 采到过、但不是联合创作也给 null（空列表落库即 null）。前端只在 ≥2 人时摆那块，单人不必占位。
-    IReadOnlyList<WatchStaff>? Staff = null,
+    IReadOnlyList<PlaybackStaff>? Staff = null,
     // 这稿的可见性字面量（'public'/'private'，与 VisibilityCodec 同一张嘴）：放映厅拿它画那枚「锁」，
     // 也是端点拿「自己才能改可见性」回显的料。老调用点不传就是 null（不是「公开」，只是没说）。
     string? Visibility = null,
     // ─── 以下是「稿件设置」面板那几栏（全尾追带默认值，不动既有位置）───
     // 这位是站长吗（role=owner）：面板拿它决定显不显站长那一组（重新排队 / 强制重下 / 加档）。
-    // 与 CanManage 同一分工：数据层不认身份不查角色，默认假，正身由 /api/watch 端点盖（免得哪里漏赋值就白送）。
+    // 与 CanManage 同一分工：数据层不认身份不查角色，默认假，正身由 /api/video 端点盖（免得哪里漏赋值就白送）。
     bool IsStationOwner = false,
     // 这三栏是否处于「本地覆写中」（site_* 槽非空）：前端据此把输入框标「已改」并摆「还原」钮；
     // 上面那三栏（title/desc/zone）念的已经是有效值，覆写中就是站内那份。

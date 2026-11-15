@@ -1445,7 +1445,7 @@ const eventsTotal = ref(0)
 const eventsLoading = ref(false)
 const eventsNotice = ref('')
 const eventsActor = ref('') // '' = 全部；guest 访客 / member 席位 / admin 站长 / system 站内
-const eventsPrefix = ref('') // 事件名前缀：watch. 是全部观映账，admin. 是被门挡下的那些，login. 是进门那一串
+const eventsPrefix = ref('') // 事件名前缀：playback. 是全部观映账（改名前的老行是 watch.，族筛里单列一枚），admin. 是被门挡下的那些，login. 是进门那一串
 const eventsLimit = ref(200)
 const eventsOpen = ref(null) // 展开看详情的那一行 id：只开一行，读起来不散
 // 摆多少行由这一格管：默认十条，每按一次往上加 50 行（11-09 站长：不要一展开就是 200 行的墙）
@@ -1469,6 +1469,9 @@ const EVENT_LABEL = {
   'site.visit': '访问分站', 'search.query': '搜索', 'card.click': '点卡片',
   'watch.open': '进放映厅', 'home.open': '进首页', 'watch.heartbeat': '观映心跳',
   'watch.seek': '拖动进度', 'watch.blocked': '观映被挡', 'danmaku.send': '发弹幕',
+  // 11-15 观映族改名 watch.*→playback.*：新行走下面这几枚，上面 watch.* 那串留给改名前的老台账（账不迁，标签双挂）
+  'playback.open': '进放映厅', 'playback.play': '按下播放', 'playback.pause': '按下暂停',
+  'playback.leave': '离开放映厅', 'playback.heartbeat': '观映心跳', 'playback.seek': '拖动进度', 'playback.blocked': '观映被挡',
   'download.link': '取播放直链', 'video.submit': '投稿', 'video.arrived': '稿件到站',
   'video.failed': '稿件下载失败', 'video.removed': '稿件删除', 'video.settings': '改稿件设置',
   'member.invite': '发邀请码', 'member.invite.revoke': '作废邀请码', 'member.ban': '封禁席位',
@@ -1486,7 +1489,8 @@ const EVENT_LABEL = {
 // 事件族：拿来做筛子与未命中时的前缀，后缀仍是 ASCII 的原样贴出（它是查询用的钥匙，不是给人读的）
 const EVENT_FAMILY = [
   { prefix: '', label: '全部事件' },
-  { prefix: 'watch.', label: '观映（进厅 / 心跳 / 拖进度 / 被挡）' },
+  { prefix: 'playback.', label: '观映（进厅 / 心跳 / 拖进度 / 被挡）' },
+  { prefix: 'watch.', label: '观映 · 旧（11-15 改名前的老账）' },
   { prefix: 'login.', label: '进门（扫码 / 账密 / 退席）' },
   { prefix: 'video.', label: '稿件（投稿 / 到站 / 失败 / 删除 / 改设置）' },
   { prefix: 'member.', label: '席位（邀请 / 封禁 / 除名 / 改名 / 采号）' },
@@ -2988,7 +2992,7 @@ onUnmounted(() => {
               v-model="eventsPrefix"
               class="eng-input !w-32 !py-1 font-mono text-[11px]"
               placeholder="自定前缀"
-              title="上面那一屏筛不到的拿这儿：如 watch. 或 danmaku.recycle"
+              title="上面那一屏筛不到的拿这儿：如 playback. 或 danmaku.recycle"
               @keyup.enter="loadEventsLedger"
             />
             <select v-model.number="eventsLimit" class="eng-input !w-auto !py-1 text-[11px]" title="摆最近多少条">
@@ -3503,7 +3507,7 @@ onUnmounted(() => {
               <p class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[11px] text-white/45">
                 <RouterLink
                   v-if="item.inStation"
-                  :to="`/watch/${item.bvid}`"
+                  :to="`/video/${item.bvid}`"
                   class="text-adminAccent/80 transition hover:text-adminAccent hover:underline"
                   :title="`去放映厅看这条弹幕（${item.bvid}）`"
                 >
@@ -3587,8 +3591,8 @@ onUnmounted(() => {
         <input v-model="shareInput" class="lbs-input" placeholder="http://localhost:8090（留空 = 跟随访问地址）" :disabled="shareBusy" />
         <div class="mt-3 rounded-lg border border-dashed border-adminAccent/30 bg-adminAccent/[0.05] px-3 py-2.5">
           <div class="mb-2 text-[10px] uppercase tracking-[0.14em] text-adminAccent/55">各处出口实时预览</div>
-          <div class="mb-1 flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">放映厅链接</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/watch/BV1gEps62EQY?t=83</span></div>
-          <div class="mb-1 flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">海报链接文字</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/watch/BV1gEps62EQY</span></div>
+          <div class="mb-1 flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">放映厅链接</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/video/BV1gEps62EQY?t=83</span></div>
+          <div class="mb-1 flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">海报链接文字</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/video/BV1gEps62EQY</span></div>
           <div class="flex items-baseline gap-2 text-[11px]"><span class="w-[74px] shrink-0 text-white/35">周报二维码</span><span class="break-all font-mono text-white/75">{{ sharePreviewBase }}/weekly?w=2026-45</span></div>
         </div>
       </section>

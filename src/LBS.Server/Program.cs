@@ -547,7 +547,7 @@ static bool IsStaleTransientPath(string path) =>
     || path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
 
 // 成员门闸（先盖章后验门）：访客只逛橱窗（首页卡阵/搜索/封面），放映厅、弹幕、投稿一律要会员会话；
-// 被拦访客的欲看而不得记 watch.blocked 供 AI 分析。
+// 被拦访客的欲看而不得记 playback.blocked 供 AI 分析。
 app.Use(async (context, next) =>
 {
     var path = context.Request.Path.Value ?? "";
@@ -563,7 +563,7 @@ app.Use(async (context, next) =>
         else if (MemberGate.RequiresMember(context.Request))
         {
             context.RequestServices.GetRequiredService<EventRecorder>()
-                .Record(EventActors.Guest, null, EventNames.WatchBlocked, "path", path,
+                .Record(EventActors.Guest, null, EventNames.PlaybackBlocked, "path", path,
                     ip: context.Connection.RemoteIpAddress?.ToString());
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(new { error = "member-required", message = "用站名密码登录后才能看视频、弹幕与评论区" });
@@ -693,7 +693,7 @@ app.MapAdminDanmakuRecycleEndpoints();
 app.MapAdminCodecRecycleEndpoints(); // 加档版本回收站（11-08 站长拍板）：删掉的加档连行带件封在这里，整组恢复 / 整组销毁都只站长按得动
 app.MapMemberDanmakuRecycleEndpoints(); // 个人空间「我收回的弹幕」：自己收回的那几条自己恢复，不必求站长
 app.MapWeeklyReportEndpoints(); // 分站周报：成员登录后 /api/weekly 看本周战报（/weekly 页）
-app.MapWatchHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
+app.MapVideoHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
 app.MapMemberWallApi(); // 会员墙（馆藏壁）：投稿+历史聚合，喂个人空间顶上的画布窗口
 app.MapZonesEndpoints(); // 站内分区：顶级清单与卡阵公开，改派在站长门内
 app.MapCollectionsEndpoints(); // 站内合集：清单与详情公开，开集/销集/加减片子在 /api/member/collections 下端点自防
@@ -708,14 +708,14 @@ app.MapAdminDynamicEndpoints();
 System.Collections.Concurrent.ConcurrentDictionary<long, byte> upCardInFlight = new();
 System.Collections.Concurrent.ConcurrentDictionary<long, byte> statInFlight = new();
 
-app.MapGet("/api/watch/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, HttpContext http) =>
+app.MapGet("/api/video/{bvid}", (string bvid, StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, HttpContext http) =>
 {
     // BV 号是大小写敏感的 base62，先原样精确查，再补一记大写化兜底（照顾手打习惯）。
     // 尺子递到这里：私有稿在别人那一趟就是 null，与「查无此片」同一张 404 脸、同一句话（不许回 403，
     // 不给「有这稿但不给你看」的信号）；本人/站长拿到的载荷顶层带 visibility（放映厅那枚「私有」药丸读它）。
     var input = bvid.Trim();
     var scope = ViewerScope(http);
-    var data = db.GetWatchData(input, scope) ?? db.GetWatchData(input.ToUpperInvariant(), scope);
+    var data = db.GetPlaybackData(input, scope) ?? db.GetPlaybackData(input.ToUpperInvariant(), scope);
     if (data is not null)
     {
         BackfillUpCard(db, upInfo, policy, loggerFactory, dataPaths, data);
@@ -768,7 +768,7 @@ app.MapGet("/api/videos/{id:long}/related", (long id, StationDb db, HttpContext 
 
 // 头像值不能只判非空：早年那一代把 up_face 写成 /avatars/up-{mid}.jpg，命名换 sha1 后盘上文件已经没了，
 // 留着就是 UpCard 的 img 永远 404 到「粉底首字」占位。改走 NeedsRefetch 验货（空串仍是失败销账，不回头扰 B 站）。
-void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, DataPaths paths, WatchData data)
+void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, DataPaths paths, PlaybackData data)
 {
     if (data.UpMid is not { } mid || !LbsUpInfoFetcher.NeedsRefetch(data.UpFace, paths.Avatars))
     {
@@ -811,7 +811,7 @@ void BackfillUpCard(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy poli
 
 // 互动数据（点赞/投币/收藏/分享）与创作团队的后补：未销账且没采过时，开页异步采一次（一发 view 拿齐）；
 // 成败都销账，不反复扰 B 站。新货入站时 StatusSyncWorker 已先采过一轮，这里只接漏网的。
-void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, WatchData data)
+void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy, ILoggerFactory loggerFactory, PlaybackData data)
 {
     if (data.Bvid is null || !db.ShouldBackfillStat(data.Id))
     {
@@ -833,7 +833,7 @@ void BackfillStat(StationDb db, LbsUpInfoFetcher upInfo, LbsCollectPolicy policy
             {
                 db.SetVideoStat(data.Id, stat.Like, stat.Coin, stat.Favorite, stat.Share, stat.Reply);
                 // 同一次 view 顺带带回的创作团队一并落账（联合创作稿才有，普通稿写 null）。
-                db.SetVideoStaff(data.Id, WatchStaffCodec.ToJson(StaffMap.ToWatch(stat.Staff)));
+                db.SetVideoStaff(data.Id, PlaybackStaffCodec.ToJson(StaffMap.ToPlayback(stat.Staff)));
             }
             else
             {
@@ -1079,7 +1079,7 @@ app.MapPost("/api/videos/{id:long}/claim", async (long id, long? memberId, HttpC
 //   IsPatch + 纯数字 id 那一条，401 与删稿同一句话；放映厅面板「先登录」那一支就读它），端点里再核 CanManageVideo
 //   （席位在、但这稿不是他的 → 403）。归属这一道必须长在端点里：不学 /revive /requeue 只靠 AdminGate 点名清单的旧账——
 //   那份清单漂一个词就是匿名可写；而 MemberGate 只认「有没有席位」，投稿人本人能进靠的正是端点这一道（站长拿席位会话进门）。
-// 成功只回 { ok = true }，不在这儿拼一份稿件 DTO：前端保存后重拉 /api/watch（那里下发的是有效值），
+// 成功只回 { ok = true }，不在这儿拼一份稿件 DTO：前端保存后重拉 /api/video（那里下发的是有效值），
 //   两处真相的毛病就是这么留下来的。
 app.MapPatch("/api/videos/{id:long}", async (long id, HttpContext http, StationDb db, EventRecorder events) =>
 {
@@ -1190,7 +1190,7 @@ app.MapPatch("/api/videos/{id:long}", async (long id, HttpContext http, StationD
 });
 
 // 编码加档：给已到站馆藏点单另一个编码版本（avc/hevc/av1），后台整视频补货，
-// 每分 P 一行账，完成后同步员扫盘定档；watch 接口的 codecVersions 随叫随查。
+// 每分 P 一行账，完成后同步员扫盘定档；video 装配接口的 codecVersions 随叫随查。
 // ─── 站内弹幕 ──────────────────────────────────────────────────────
 // 访客发的弹幕存分站自己的库（B 站爬的不掺进来）：刷新不丢，站内互见。
 // ─── 身份：匿名访客凭证 + 主人模式 ────────────────────────

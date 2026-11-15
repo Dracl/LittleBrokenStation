@@ -64,7 +64,7 @@ function fmtDur(t) {
     <!-- 货单：一件一行，行与行细线分隔；整行是个链接，hover 整行泛粉底（与信箱列表行同款手感） -->
     <ul>
       <li v-for="(card, i) in cards" :key="card.bvid" :class="i > 0 ? 'border-t border-lineSoft/60' : ''">
-        <RouterLink :to="`/watch/${card.bvid}`" class="group flex items-stretch gap-3 px-4 py-3 transition hover:bg-stationPink/5">
+        <RouterLink :to="`/video/${card.bvid}`" class="group flex items-stretch gap-3 px-4 py-3 transition hover:bg-stationPink/5">
           <!-- 封面：16:10 定宽，与首页卡阵同比例；没料时整块缺席（文字顶上来，不留灰坑） -->
           <span v-if="thumbOf(card)" class="relative h-[62px] w-[99px] shrink-0 overflow-hidden rounded-lg bg-[#eef0f2] dark:bg-[#23262e]">
             <img :src="thumbOf(card)" referrerpolicy="no-referrer" loading="lazy" class="absolute inset-0 h-full w-full object-cover" alt="" @error="$event.target.style.display = 'none'" />

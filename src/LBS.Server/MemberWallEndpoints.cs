@@ -76,10 +76,10 @@ public static class MemberWallEndpoints
                 }
             }
 
-            // 历史随后：GetWatchHistory 本就按 updated_at 倒序，最近看的排前头。
+            // 历史随后：GetVideoHistory 本就按 updated_at 倒序，最近看的排前头。
             if (wantHistory)
             {
-                foreach (var r in db.GetWatchHistory(me.Id, WallCap, viewer))
+                foreach (var r in db.GetVideoHistory(me.Id, WallCap, viewer))
                 {
                     if (seen.Add(r.VideoId))
                     {

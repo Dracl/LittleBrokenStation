@@ -7,7 +7,7 @@ namespace LBS.Tests;
 
 /// <summary>
 /// UP 名片同站蹭脸：头像命名换 sha1 后，早年 /avatars/up-{mid}.jpg 那代老账全体丢件——
-/// 展示层（GetWatchData）从同一 UP 的别稿蹭现货，开局对账（BackfillUpCardsFromShared）批量落账，
+/// 展示层（GetPlaybackData）从同一 UP 的别稿蹭现货，开局对账（BackfillUpCardsFromShared）批量落账，
 /// 蹭源只认盘上真在的本地件：热链不配当被蹭源，也不该被蹭走。
 /// </summary>
 public sealed class UpCardSharingTests : IDisposable
@@ -62,7 +62,7 @@ public sealed class UpCardSharingTests : IDisposable
         Seed("BVSHARE00001", 777, "/avatars/good.jpg", "签名在", 30000, createFaceFile: "good.jpg");
         Seed("BVSHARE00002", 777, "/avatars/up-777.jpg"); // 早年命名，盘上没这文件
 
-        var data = _db.GetWatchData("BVSHARE00002");
+        var data = _db.GetPlaybackData("BVSHARE00002");
         Assert.NotNull(data);
         Assert.Equal("/avatars/good.jpg", data.UpFace); // 别稿的现货顶上，UpCard 不再吃 404
         Assert.Equal("签名在", data.UpSign); // 本行签名空着时一并垫上
@@ -74,7 +74,7 @@ public sealed class UpCardSharingTests : IDisposable
     {
         Seed("BVNOSRC00001", 888, "/avatars/up-888.jpg");
 
-        var data = _db.GetWatchData("BVNOSRC00001");
+        var data = _db.GetPlaybackData("BVNOSRC00001");
         Assert.NotNull(data);
         Assert.Equal("/avatars/up-888.jpg", data.UpFace); // 没现货就原样，前端自会落默认小人
     }
@@ -85,8 +85,8 @@ public sealed class UpCardSharingTests : IDisposable
         Seed("BVHOTL000001", 999, "https://i0.hdslb.com/x.jpg"); // 热链账：站长方针白嫖图床，不蹭
         Seed("BVHOTL000002", 999, null); // 空账：同 mid 只有热链可看，没有本地现货
 
-        Assert.Equal("https://i0.hdslb.com/x.jpg", _db.GetWatchData("BVHOTL000001")!.UpFace);
-        Assert.Null(_db.GetWatchData("BVHOTL000002")!.UpFace); // 热链不配当蹭源，空账继续空着
+        Assert.Equal("https://i0.hdslb.com/x.jpg", _db.GetPlaybackData("BVHOTL000001")!.UpFace);
+        Assert.Null(_db.GetPlaybackData("BVHOTL000002")!.UpFace); // 热链不配当蹭源，空账继续空着
     }
 
     [Fact]

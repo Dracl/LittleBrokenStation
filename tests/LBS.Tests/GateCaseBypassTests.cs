@@ -79,7 +79,7 @@ public sealed class GateCaseBypassTests : IDisposable
     [InlineData("DELETE", "/API/videos/123/codecs/hevc", false, true)] // 删自己那版加档的件：11-08 摘给投稿人自管，换体也要落会员门（匿名 401，归属在端点）
     [InlineData("POST", "/API/videos/123/codecs/cancel", false, true)] // 取消自己那单加档：同上（点单仍留站长门）
     // 会员门：放映厅、投稿与配套设施，换体一律算会员事务（匿名据此 401）。
-    [InlineData("GET", "/API/watch/BV1x411c7mD", false, true)]
+    [InlineData("GET", "/API/video/BV1x411c7mD", false, true)]
     [InlineData("GET", "/API/VIDEOS/123/danmaku", false, true)]
     [InlineData("GET", "/API/videos/123/related", false, true)]
     [InlineData("GET", "/API/Videos/123/download", false, true)]

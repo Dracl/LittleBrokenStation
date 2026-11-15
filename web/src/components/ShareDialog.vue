@@ -84,7 +84,7 @@ async function submit() {
         <span v-else class="flex h-10 w-[68px] shrink-0 items-center justify-center rounded-md bg-stationPink/15 text-[11px] text-stationPink">{{ (target.bvid || '?').slice(0, 6) }}</span>
         <span class="min-w-0 flex-1">
           <span class="block truncate text-[12px] font-medium text-inkMain">{{ target.title || target.bvid }}</span>
-          <span class="block truncate text-[12px] text-inkSub">{{ target.upName || '站内放映厅' }} · /watch/{{ target.bvid }}</span>
+          <span class="block truncate text-[12px] text-inkSub">{{ target.upName || '站内放映厅' }} · /video/{{ target.bvid }}</span>
         </span>
       </div>
       <div v-else class="mx-4 mt-3 flex items-center gap-2.5 rounded-xl bg-[#f6f7f8] dark:bg-[#23262e] px-3 py-2.5">

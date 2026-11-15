@@ -35,7 +35,7 @@ function hydrate() {
   for (const k of ['like', 'coin', 'fav']) lit[k] = !!(props.storeKey && m[`${props.storeKey}:${k}`])
 }
 hydrate()
-// 同一路由组件切集复用（/watch/:bvid 换视频不重新挂载），换视频时重新对齐本机存档
+// 同一路由组件切集复用（/video/:bvid 换视频不重新挂载），换视频时重新对齐本机存档
 watch(() => props.storeKey, hydrate)
 
 function tap(key) {

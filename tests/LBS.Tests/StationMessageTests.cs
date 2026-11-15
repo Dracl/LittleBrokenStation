@@ -164,7 +164,7 @@ public sealed class StationMessageTests : IDisposable
         Assert.Equal("complete", receipt.Kind);
         Assert.Equal("投稿已入档", receipt.Title);
         Assert.Contains("我的投稿", receipt.Body);
-        Assert.Equal("/watch/BV1me", receipt.Link);
+        Assert.Equal("/video/BV1me", receipt.Link);
     }
 
     [Fact]

@@ -126,7 +126,7 @@ public sealed class SubmitterManageTests : IDisposable
     [InlineData("GET", "/api/videos/123/related/", false, true)]
     [InlineData("GET", "/api/videos/123/download/", false, true)]
     [InlineData("GET", "/api/videos/123/progress/", false, true)]
-    [InlineData("GET", "/api/watch/BV1x411c7mD/", false, true)]
+    [InlineData("GET", "/api/video/BV1x411c7mD/", false, true)]
     [InlineData("DELETE", "/api/videos/123/", false, true)]
     [InlineData("POST", "/api/videos/123/comments/", false, true)]
     [InlineData("POST", "/api/videos/123/comments/subs/", false, true)]
@@ -224,7 +224,7 @@ public sealed class SubmitterManageTests : IDisposable
         _db.FinalizeArtifacts(videoId, _videosDir);
 
         // 前端只会解 ass：台账里 xml 那行抢了先，重拉完看着就像「没生效」。
-        Assert.Equal("/media/两行台账/1-正片-1080P-AVC.ass", _db.GetWatchData("BV1dm0000002")!.Pages[0].DanmakuUrl);
+        Assert.Equal("/media/两行台账/1-正片-1080P-AVC.ass", _db.GetPlaybackData("BV1dm0000002")!.Pages[0].DanmakuUrl);
     }
 
     [Fact]
@@ -242,7 +242,7 @@ public sealed class SubmitterManageTests : IDisposable
             new[] { new PageDraft("t1", 1, "正片", 1, "03:30", @base) });
         _db.FinalizeArtifacts(videoId, _videosDir);
 
-        Assert.Equal("/media/只有xml/1-正片.xml", _db.GetWatchData("BV1dm0000003")!.Pages[0].DanmakuUrl);
+        Assert.Equal("/media/只有xml/1-正片.xml", _db.GetPlaybackData("BV1dm0000003")!.Pages[0].DanmakuUrl);
     }
 
     [Theory]
@@ -281,7 +281,7 @@ public sealed class SubmitterManageTests : IDisposable
     }
 
     [Fact]
-    public void WatchData与VideoEntry默认不给自管权()
+    public void PlaybackData与VideoEntry默认不给自管权()
     {
         var videoId = AddVideo("BV1flag00001");
         _db.SaveSubmissionMetadata(
@@ -290,7 +290,7 @@ public sealed class SubmitterManageTests : IDisposable
             new[] { new PageDraft("t1", 1, "正片", 1, "03:30", Path.Combine(_videosDir, "flag")) });
 
         // 权限布尔归端点算（它才知道当前会话是谁），数据层给的必须是假，免得哪里漏赋值就白送。
-        Assert.False(_db.GetWatchData("BV1flag00001")!.CanManage);
+        Assert.False(_db.GetPlaybackData("BV1flag00001")!.CanManage);
         Assert.All(_db.ListVideos(), v => Assert.False(v.CanManage));
     }
 }

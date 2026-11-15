@@ -9,7 +9,7 @@ namespace LBS.Tests;
 
 /// <summary>
 /// 分轨码率的唯一来源是写入侧：MediaStreamProber 在「主片到站归档后」与「加档扫盘定档后」各探一次
-/// （起进程的活集中在这一个类，StationDb 与热路径 GetWatchData 都不起进程、也不补探）。
+/// （起进程的活集中在这一个类，StationDb 与热路径 GetPlaybackData 都不起进程、也不补探）。
 /// 要验「真探得到值」得有真件，没装 ffmpeg/ffprobe 的机器上那几例直接放过；
 /// 防抖、点名口径与实测编码那几例不依赖外部工具，什么时候都跑。
 /// </summary>
@@ -66,7 +66,7 @@ public sealed class MediaStreamProberTests : IDisposable
         _db.FinalizeArtifacts(id, _tempDir); // local_video_path 从 null 变有值的那一刻
         prober.ProbeArrivedVideo(id);
 
-        var page = Assert.Single(_db.GetWatchData(bvid)!.Pages);
+        var page = Assert.Single(_db.GetPlaybackData(bvid)!.Pages);
         Assert.Equal("avc", page.Codec);
         Assert.NotNull(page.VideoKbps);
         Assert.NotNull(page.AudioKbps);
@@ -84,7 +84,7 @@ public sealed class MediaStreamProberTests : IDisposable
         Assert.True(_db.FinalizeCodecVersion(row.Id, Path.Combine(dir, $"{bvid}.P1-HEVC"), _tempDir));
         prober.ProbeCodecFile(row.Id, id, 1, "hevc");
 
-        var version = Assert.Single(Assert.Single(_db.GetWatchData(bvid)!.Pages).CodecVersions);
+        var version = Assert.Single(Assert.Single(_db.GetPlaybackData(bvid)!.Pages).CodecVersions);
         Assert.Equal("Arrived", version.Status);
         Assert.NotNull(version.VideoKbps);
         Assert.NotNull(version.AudioKbps);
@@ -118,7 +118,7 @@ public sealed class MediaStreamProberTests : IDisposable
 
         var id = 到站带页(bvid, mainBase);
         // 全程只走归档链路（FinalizeArtifacts 写 local_video_path → 同步员那一刻探测），
-        // 一次都没调 GetWatchData：开片才走的路径不该是码率的来源。
+        // 一次都没调 GetPlaybackData：开片才走的路径不该是码率的来源。
         _db.FinalizeArtifacts(id, _tempDir);
         _prober.ProbeArrivedVideo(id);
 
@@ -143,7 +143,7 @@ public sealed class MediaStreamProberTests : IDisposable
         Assert.Single(_db.GetPagesAwaitingStreamProbe(id)); // 刚落盘又没探过 → 该探
 
         _prober.ProbeArrivedVideo(id);
-        var page = Assert.Single(_db.GetWatchData(bvid)!.Pages);
+        var page = Assert.Single(_db.GetPlaybackData(bvid)!.Pages);
         Assert.Null(page.VideoKbps); // 探不到就 null，不给 0 冒充零码率
         Assert.Null(page.AudioKbps);
         Assert.Equal(1, 分页防抖戳(id, 1)); // 探失败也算「探过一次」：不致于每轮到它都重探
@@ -247,13 +247,13 @@ public sealed class MediaStreamProberTests : IDisposable
 
         // 同步员从在途任务拄下来的实发规格：清晰度菜单直接照报，Hi-Res 徽记拿 id 当硬判据。
         _db.SetPageQuality(id, 116, "1080P 60帧", 31251);
-        var page = Assert.Single(_db.GetWatchData(bvid)!.Pages);
+        var page = Assert.Single(_db.GetPlaybackData(bvid)!.Pages);
         Assert.Equal("1080P 60帧", page.QualityName);
         Assert.Equal(31251, page.AudioQualityId);
 
         // COALESCE 只补不擦：空手再来一趟不许把已入账的真值擦掉。
         _db.SetPageQuality(id, null, null, null);
-        page = Assert.Single(_db.GetWatchData(bvid)!.Pages);
+        page = Assert.Single(_db.GetPlaybackData(bvid)!.Pages);
         Assert.Equal("1080P 60帧", page.QualityName);
         Assert.Equal(31251, page.AudioQualityId);
 
@@ -261,7 +261,7 @@ public sealed class MediaStreamProberTests : IDisposable
         Assert.True(_db.AddCodecVersion(id, 1, "hevc"));
         var row = _db.GetCodecVersions(id).Single(r => r.Codec == "hevc");
         _db.SetCodecQuality(row.Id, 116, "1080P 60帧", 30251);
-        var version = Assert.Single(Assert.Single(_db.GetWatchData(bvid)!.Pages).CodecVersions);
+        var version = Assert.Single(Assert.Single(_db.GetPlaybackData(bvid)!.Pages).CodecVersions);
         Assert.Equal("1080P 60帧", version.QualityName);
         Assert.Equal(30251, version.AudioQualityId);
     }
@@ -314,7 +314,7 @@ public sealed class MediaStreamProberTests : IDisposable
         return command.ExecuteScalar() as string;
     }
 
-    /// <summary>绕开 Db 类直探台账取一个整数列：验「写入侧到底有没有把值写进库」，不靠 GetWatchData 转达。</summary>
+    /// <summary>绕开 Db 类直探台账取一个整数列：验「写入侧到底有没有把值写进库」，不靠 GetPlaybackData 转达。</summary>
     private int? 直读整数(string sql, long videoId, int pageIdx, string? codec)
     {
         using var connection = 台账();

@@ -415,7 +415,7 @@ onBeforeUnmount(() => {
 
       <!-- 信息胶囊：▶ + 标题 + UP/播放数，整颗点进放映厅；住在 tab 排头顶，不被小图咬住副标题 -->
       <RouterLink
-        :to="`/watch/${heroCur.bvid}`"
+        :to="`/video/${heroCur.bvid}`"
         class="absolute bottom-[52px] right-[calc(max(20px,(100vw-1400px)/2+20px))] z-10 flex max-w-[min(560px,72%)] items-center gap-2.5 rounded-full bg-black/60 py-1.5 pl-1.5 pr-4 text-white shadow-lg backdrop-blur transition hover:bg-black/72"
       >
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#1ba4d6]">
@@ -470,7 +470,7 @@ onBeforeUnmount(() => {
         @mouseenter="heroIdx = i"
       >
         <!-- hover 选中、点击进放映厅：与 banner 胶囊同一套互动语法（悬停管选中，点击不浪费） -->
-        <RouterLink :to="`/watch/${v.bvid}`" :aria-label="`打开 ${v.title || v.bvid}`">
+        <RouterLink :to="`/video/${v.bvid}`" :aria-label="`打开 ${v.title || v.bvid}`">
           <div
             class="aspect-[153/83] w-[186px] overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]"
             :class="i === heroIdx ? 'ring-2 ring-white shadow-xl dark:ring-white/80' : 'ring-1 ring-black/10 dark:ring-white/10'"
@@ -548,7 +548,7 @@ onBeforeUnmount(() => {
                UP 行自己可点，统计行与底部余量都是死区。本层的 group 也下岗了（站长 11-02 把右上那两枚管理钮也收进封面，改由 coverKey 驱动，见 toolsOnOf），relative 留着给它们定位。 -->
           <!-- 封面：指向放映厅的那枚链接。放大只跟「鼠标在封面上」走（coverKey），停在标题、UP 行上都不再牵动它 -->
           <RouterLink
-            :to="`/watch/${item.bvid}`"
+            :to="`/video/${item.bvid}`"
             class="relative block aspect-[16/10] overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]"
             @mouseenter="onRowCoverEnter(row, item)"
             @mouseleave="onRowCoverLeave(row, item)"
@@ -600,7 +600,7 @@ onBeforeUnmount(() => {
                跟标题分家的只有下面那行 UP——它自己可点，上借 3px、下借 4px。 -->
           <p class="mt-2 line-clamp-2 min-h-[42px] text-[14.5px] font-medium leading-[20px] text-inkMain" :title="item.title || item.bvid">
             <RouterLink
-              :to="`/watch/${item.bvid}`"
+              :to="`/video/${item.bvid}`"
               class="transition"
               :class="titleKey === item.bvid ? 'text-stationPink' : ''"
               @mouseenter="titleKey = item.bvid"

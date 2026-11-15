@@ -457,14 +457,14 @@ watch(mid, load)
           </div>
 
           <!-- 热门归档条（站长 11-06 点单案一）：空白的页头下半区喂内容——本站归档里播放 top4，
-               点击与网格卡同路（/watch/{bvid}）；不超 4 条整段不摆，复读机不上架。 -->
+               点击与网格卡同路（/video/{bvid}）；不超 4 条整段不摆，复读机不上架。 -->
           <div v-if="hotPicks.length" class="px-6 pb-5">
             <div class="mb-2.5 flex items-baseline justify-between">
               <h2 class="text-[14px] font-semibold text-inkMain">TA 的热门归档</h2>
               <span class="text-[11px] text-inkFaint">按本站归档的播放数排</span>
             </div>
             <div class="grid grid-cols-2 gap-x-4 gap-y-3 md:grid-cols-4">
-              <RouterLink v-for="v in hotPicks" :key="'hot-' + v.bvid" :to="`/watch/${v.bvid}`" class="group block min-w-0">
+              <RouterLink v-for="v in hotPicks" :key="'hot-' + v.bvid" :to="`/video/${v.bvid}`" class="group block min-w-0">
                 <div
                   class="relative aspect-[16/10] overflow-hidden rounded-lg bg-[#f1f2f3] dark:bg-[#23262e]"
                   @mouseenter="onHotCoverEnter(v)"

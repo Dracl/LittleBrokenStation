@@ -142,7 +142,7 @@ async function makeQr(theme) {
     // eslint-disable-next-line no-new
     new window.QRCode(el, {
       // 码文走全站分享一张嘴 siteLink（站长室可配门面地址，未配则跟随访问地址）
-      text: `${await siteBase()}/watch/${encodeURIComponent(bvid)}`,
+      text: `${await siteBase()}/video/${encodeURIComponent(bvid)}`,
       width: 300,
       height: 300,
       colorDark: rgbCss(theme.qrPoint),
@@ -237,7 +237,7 @@ async function copyToClipboard() {
 const copyBothState = ref('idle')
 async function copyImageAndLink() {
   const bvid = String(props.model?.bvid ?? '').trim()
-  const url = `${await siteBase()}/watch/${encodeURIComponent(bvid)}`
+  const url = `${await siteBase()}/video/${encodeURIComponent(bvid)}`
   try {
     if (!navigator.clipboard || typeof window.ClipboardItem !== 'function') throw new Error('unsupported')
     const cv = document.createElement('canvas')

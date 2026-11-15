@@ -35,7 +35,7 @@ public sealed partial class StationDb
 
         using var pragma = connection.CreateCommand();
         // busy_timeout 放宽到 15 秒：巡捕批量落库的高峰，读写撞车时让 SQLite 自己多等几秒，
-        // 别让 GetWatchData 这种无辜读客吃 database is locked。
+        // 别让 GetPlaybackData 这种无辜读客吃 database is locked。
         pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=15000;";
         pragma.ExecuteNonQuery();
 
@@ -226,7 +226,7 @@ public sealed partial class StationDb
         using (var history = connection.CreateCommand())
         {
             history.CommandText = """
-                CREATE TABLE IF NOT EXISTS watch_history (
+                CREATE TABLE IF NOT EXISTS video_history (
                     member_id    INTEGER NOT NULL,
                     video_id     INTEGER NOT NULL,
                     page_idx     INTEGER NOT NULL,
@@ -235,12 +235,13 @@ public sealed partial class StationDb
                     updated_at_utc TEXT NOT NULL,
                     PRIMARY KEY (member_id, video_id, page_idx)
                 );
-                CREATE INDEX IF NOT EXISTS idx_watchhistory_member ON watch_history (member_id, updated_at_utc);
+                CREATE INDEX IF NOT EXISTS idx_videohistory_member ON video_history (member_id, updated_at_utc);
                 """;
             history.ExecuteNonQuery();
         }
 
         MigrateWatchHistoryPerPage(connection);
+        MigrateVideoHistoryFromLegacy(connection); // 老库的 watch_history 连窝端进 video_history（11-15 观映族改名）
 
         // 站内合集：会员自己攒的片单。集只存名、简介与东家；item 只存 (collection_id, video_id) 这一对，
         // 片名封面一律读时 JOIN videos 现取（片被删了这条 item 就自然看不见，不留死行，与观看历史同一哲学）。
@@ -382,7 +383,7 @@ public sealed partial class StationDb
         EnsureColumn(connection, "video_meta", "stat_share", "INTEGER");
         EnsureColumn(connection, "video_meta", "stat_reply", "INTEGER");
         EnsureColumn(connection, "video_meta", "stat_probed", "INTEGER");
-        // 创作团队（联合创作稿的 B 站 staff 名单）：camelCase JSON 数组，读写共用 WatchStaffCodec。
+        // 创作团队（联合创作稿的 B 站 staff 名单）：camelCase JSON 数组，读写共用 PlaybackStaffCodec。
         // 不另开 staff_probed 销账位：团队与互动数据是同一次 view 拿的，要不要再出去由 stat_probed 定。
         EnsureColumn(connection, "video_meta", "staff_json", "TEXT");
         // 站内弹幕的发送者匿名凭证（仅发送者本人可删，主人例外）。
@@ -815,6 +816,32 @@ public sealed partial class StationDb
     /// (member_id, video_id, page_idx) 一 P 一坑；老表同一部片只有一行，搬过去天然无撞键。
     /// 新库首开建的已是新表（DDL 里主键带着 page_idx），检测即返回；四步重建走一把事务，中途炸了老行原样躺着。
     /// </summary>
+    /// <summary>
+    /// watch_history 整表搬家进 video_history（11-15 观映族 watch.*→playback.* 的表名跟族）。
+    /// 幂等判据 = 老表不在即返回；INSERT OR IGNORE 兜住「搬了一半断电」的残局（同键同值，重放无害）。
+    /// 顺序钉死：必须在 MigrateWatchHistoryPerPage 之后——那条管老表的主键形，操作的就是这里改名前的老表。
+    /// </summary>
+    private static void MigrateVideoHistoryFromLegacy(SqliteConnection connection)
+    {
+        using (var probe = connection.CreateCommand())
+        {
+            probe.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'watch_history';";
+            if (probe.ExecuteScalar() is null) return;
+        }
+        using var migrate = connection.CreateCommand();
+        migrate.Transaction = connection.BeginTransaction();
+        migrate.CommandText = """
+            INSERT OR IGNORE INTO video_history (member_id, video_id, page_idx, position_sec, duration_sec, updated_at_utc)
+                SELECT member_id, video_id, page_idx, position_sec, duration_sec, updated_at_utc FROM watch_history;
+            DROP TABLE watch_history;
+            """;
+        migrate.ExecuteNonQuery();
+        migrate.Transaction.Commit();
+        using var index = connection.CreateCommand();
+        index.CommandText = "CREATE INDEX IF NOT EXISTS idx_videohistory_member ON video_history (member_id, updated_at_utc);";
+        index.ExecuteNonQuery();
+    }
+
     private static void MigrateWatchHistoryPerPage(SqliteConnection connection)
     {
         string? schema;
@@ -3339,7 +3366,7 @@ public sealed partial class StationDb
     }
 
     /// <summary>观看页数据：档案 + 分 P + 本地文件。查不到 bvid 或这稿对这位藏着 → 都回 null（同一张面孔，不告诉门外它存在）。</summary>
-    public WatchData? GetWatchData(string bvid, VisibilityScope? scope = null)
+    public PlaybackData? GetPlaybackData(string bvid, VisibilityScope? scope = null)
     {
         var (visSql, bindVis) = VisibilityFilter(scope ?? VisibilityScope.PublicOnly, "v");
         using var connection = Open(_dbPath);
@@ -3567,7 +3594,7 @@ public sealed partial class StationDb
             AudioQualityId: p.AudioQualityId
         )).ToList();
 
-        return new WatchData(
+        return new PlaybackData(
             id, primaryBvid, url, title, status, coverFinal,
             upName, zone, publishText, description, viewCount,
             DateTimeOffset.Parse(createdAtText), pageFiles,
@@ -3583,9 +3610,9 @@ public sealed partial class StationDb
             statFav,
             statShare,
             statReply,
-            Staff: WatchStaffCodec.FromJson(staffJson),
+            Staff: PlaybackStaffCodec.FromJson(staffJson),
             Visibility: VisibilityCodec.ToColumn(visibility),
-            // 稿件设置面板那几栏（IsStationOwner 不在这里算：数据层不认身份，与 CanManage 同一分工，归 /api/watch 端点盖）。
+            // 稿件设置面板那几栏（IsStationOwner 不在这里算：数据层不认身份，与 CanManage 同一分工，归 /api/video 端点盖）。
             TitleOverridden: titleOverridden,
             DescOverridden: descOverridden,
             ZoneOverridden: zoneOverridden);

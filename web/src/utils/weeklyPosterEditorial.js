@@ -694,8 +694,8 @@ function ledger(g, M, T, W, y, opts) {
   if (!opts.show.chips) return y
   const chips = []
   const gst = M.guest ?? {}
-  if ((gst.heads ?? 0) > 0 || (gst.blockedWatch ?? 0) > 0) {
-    chips.push({ label: '站外游客', value: `${gst.heads ?? 0} 位`, note: `逛主页 ${gst.home ?? 0} 枪 · 被挡 ${gst.blockedWatch ?? 0} 次` })
+  if ((gst.heads ?? 0) > 0 || (gst.blockedPlayback ?? 0) > 0) {
+    chips.push({ label: '站外游客', value: `${gst.heads ?? 0} 位`, note: `逛主页 ${gst.home ?? 0} 枪 · 被挡 ${gst.blockedPlayback ?? 0} 次` })
   }
   if (M.personal && M.personalDuration) {
     chips.push({ label: '我的战报', value: M.personalValue, note: `看完 ${M.personalDuration.finished ?? 0} 部 · 登录 ${M.personal.logins ?? 0} 回` })

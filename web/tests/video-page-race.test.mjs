@@ -1,4 +1,4 @@
-// WatchPage 换 BV / 轮询 / 卸载的竞争回归：装载真实 <script setup> 执行，不镜像实现。
+// VideoPage 换 BV / 轮询 / 卸载的竞争回归：装载真实 <script setup> 执行，不镜像实现。
 // 覆盖：A/B 逆序、fetch 后 json 迟到、旧前台 finally 不摸新 loading、卸载作废、
 // 换 BV 停轮询且旧 tick 不得动新 interval、silent 不抢前台 loading、换 BV 窗口期 related/弹幕迟到包。
 import { test } from 'node:test'
@@ -9,7 +9,7 @@ import { loadVueScriptSetup, makeNet } from './helpers/load-script.mjs'
 import { hooks, resetHooks } from './helpers/vue-hoist.mjs'
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url))
-const WATCH_PAGE = join(ROOT, '..', 'src', 'pages', 'WatchPage.vue')
+const WATCH_PAGE = join(ROOT, '..', 'src', 'pages', 'VideoPage.vue')
 
 const STUB_NAMES = [
   'useRoute', 'useRouter', 'refetchArchive', 'removeVideoEntry', 'mentionHtml',
@@ -17,10 +17,10 @@ const STUB_NAMES = [
 ]
 
 const EXPORTS = [
-  'loadWatch', 'startCodecPoll', 'ensureCodecPoll',
+  'loadVideo', 'startCodecPoll', 'ensureCodecPoll',
   'data', 'loading', 'gateState', 'activeIndex', 'related', 'localDanmaku', 'resumeSec', 'resumeTip',
 ]
-const PEEK = 'codecPoll, watchEpoch, watchReqSeq, relatedSeq, danmakuSeq, resumeSeq'
+const PEEK = 'codecPoll, videoEpoch, videoReqSeq, relatedSeq, danmakuSeq, resumeSeq'
 
 function stubsSource() {
   return `
@@ -70,7 +70,7 @@ async function boot(bvid = 'BV_A') {
   return { mod, t: mod.__t, peek: mod.__peek, route, fireBvidWatchers, ...net }
 }
 
-const watchPayload = (id, bvid, extraPages = {}) => ({
+const videoPayload = (id, bvid, extraPages = {}) => ({
   id,
   bvid,
   pages: [{ index: 1, videoUrl: `/media/${bvid}.mp4`, codec: 'avc', codecVersions: [], ...extraPages }],
@@ -79,9 +79,9 @@ const watchPayload = (id, bvid, extraPages = {}) => ({
 test('T1 换BV逆序：旧BV的完整迟到包不得覆盖新页（A/B逆序）', async () => {
   const { t, route, net, plan, deferred, fireBvidWatchers, flush } = await boot()
   const gateA = deferred()
-  plan({ match: '/api/watch/BV_A', body: watchPayload(1, 'BV_A'), gate: gateA.promise })
-  plan({ match: '/api/watch/BV_B', body: watchPayload(2, 'BV_B') })
-  const pA = t.loadWatch()
+  plan({ match: '/api/video/BV_A', body: videoPayload(1, 'BV_A'), gate: gateA.promise })
+  plan({ match: '/api/video/BV_B', body: videoPayload(2, 'BV_B') })
+  const pA = t.loadVideo()
   assert.equal(t.loading.value, true)
   route.params.bvid = 'BV_B'
   assert.equal(fireBvidWatchers(), 1)
@@ -97,9 +97,9 @@ test('T1 换BV逆序：旧BV的完整迟到包不得覆盖新页（A/B逆序）'
 test('T2 fetch先到json迟到：旧BV body迟于新页落地不覆盖', async () => {
   const { t, route, plan, deferred, fireBvidWatchers, flush } = await boot()
   const jsonA = deferred()
-  plan({ match: '/api/watch/BV_A', body: watchPayload(1, 'BV_A'), jsonGate: jsonA.promise })
-  plan({ match: '/api/watch/BV_B', body: watchPayload(2, 'BV_B') })
-  const pA = t.loadWatch()
+  plan({ match: '/api/video/BV_A', body: videoPayload(1, 'BV_A'), jsonGate: jsonA.promise })
+  plan({ match: '/api/video/BV_B', body: videoPayload(2, 'BV_B') })
+  const pA = t.loadVideo()
   route.params.bvid = 'BV_B'
   fireBvidWatchers()
   await flush()
@@ -115,9 +115,9 @@ test('T3 旧前台finally不摸新前台的loading', async () => {
   const { t, route, plan, deferred, fireBvidWatchers, flush } = await boot()
   const gateA = deferred()
   const gateB = deferred()
-  plan({ match: '/api/watch/BV_A', body: watchPayload(1, 'BV_A'), gate: gateA.promise })
-  plan({ match: '/api/watch/BV_B', body: watchPayload(2, 'BV_B'), gate: gateB.promise })
-  const pA = t.loadWatch()
+  plan({ match: '/api/video/BV_A', body: videoPayload(1, 'BV_A'), gate: gateA.promise })
+  plan({ match: '/api/video/BV_B', body: videoPayload(2, 'BV_B'), gate: gateB.promise })
+  const pA = t.loadVideo()
   route.params.bvid = 'BV_B'
   fireBvidWatchers()
   gateA.resolve() // 旧前台先回：finally 不许关掉 B 的 loading
@@ -133,14 +133,14 @@ test('T3 旧前台finally不摸新前台的loading', async () => {
 
 test('T4 卸载：迟到包整发作废，轮询停掉摘handle且旧tick不作操作', async () => {
   const { t, peek, net, plan, deferred, flush } = await boot()
-  const dl = watchPayload(1, 'BV_A', { codecVersions: [{ codec: 'hevc', status: 'Downloading' }] })
+  const dl = videoPayload(1, 'BV_A', { codecVersions: [{ codec: 'hevc', status: 'Downloading' }] })
   const silentGate = deferred()
-  plan({ match: '/api/watch/BV_A', body: dl, gate: silentGate.promise }) // 先注册：被 tick 消耗
+  plan({ match: '/api/video/BV_A', body: dl, gate: silentGate.promise }) // 先注册：被 tick 消耗
   const gate = deferred()
-  plan({ match: '/api/watch/BV_A', body: watchPayload(1, 'BV_A'), gate: gate.promise }) // 后注册：被前台消耗
+  plan({ match: '/api/video/BV_A', body: videoPayload(1, 'BV_A'), gate: gate.promise }) // 后注册：被前台消耗
   t.startCodecPoll('hevc') // 手开一轮，让一个 silent tick 在飞
   assert.ok(peek().codecPoll, '轮询已开')
-  const p = t.loadWatch()
+  const p = t.loadVideo()
   hooks.unmount.at(-1)() // 卸载钩子（最后注册的那支：codecPoll/heartTimer 那组）
   assert.equal(peek().codecPoll, null, '卸载必须停轮询并摘 handle')
   gate.resolve()
@@ -154,17 +154,17 @@ test('T4 卸载：迟到包整发作废，轮询停掉摘handle且旧tick不作�
 
 test('T5 换BV停轮询：在飞旧tick不得清掉新任interval', async () => {
   const { t, peek: pk, route, plan, deferred, fireBvidWatchers, flush } = await boot()
-  const dlBody = watchPayload(1, 'BV_A', { codecVersions: [{ codec: 'hevc', status: 'Downloading' }] })
-  plan({ match: '/api/watch/BV_A', body: dlBody }) // 前台 A：立刻回
+  const dlBody = videoPayload(1, 'BV_A', { codecVersions: [{ codec: 'hevc', status: 'Downloading' }] })
+  plan({ match: '/api/video/BV_A', body: dlBody }) // 前台 A：立刻回
   const silentA = deferred()
-  plan({ match: '/api/watch/BV_A', body: dlBody, gate: silentA.promise }) // 轮询 tick 1：在飞
-  await t.loadWatch()
+  plan({ match: '/api/video/BV_A', body: dlBody, gate: silentA.promise }) // 轮询 tick 1：在飞
+  await t.loadVideo()
   assert.ok(pk().codecPoll, '前台发现有 Downloading 加档行，ensureCodecPoll 自动开轮')
   // 前台期间跳过静默请求；前台完成后启动一发真正等待响应的 tick。
   t.startCodecPoll('hevc')
   route.params.bvid = 'BV_B'
   const gateB = deferred()
-  plan({ match: '/api/watch/BV_B', body: watchPayload(2, 'BV_B', { codecVersions: [{ codec: 'hevc', status: 'Downloading' }] }), gate: gateB.promise })
+  plan({ match: '/api/video/BV_B', body: videoPayload(2, 'BV_B', { codecVersions: [{ codec: 'hevc', status: 'Downloading' }] }), gate: gateB.promise })
   fireBvidWatchers()
   await flush()
   assert.equal(pk().codecPoll, null, '换 BV watcher 停旧轮询并摘 handle')
@@ -172,7 +172,7 @@ test('T5 换BV停轮询：在飞旧tick不得清掉新任interval', async () => 
   await flush()
   assert.ok(pk().codecPoll, '新片仍有在途加档，由 ensureCodecPoll 续上')
   const newPoll = pk().codecPoll
-  silentA.resolve() // 这时才让旧 tick 的 await loadWatch(true) 返回
+  silentA.resolve() // 这时才让旧 tick 的 await loadVideo(true) 返回
   await flush()
   await flush()
   assert.equal(pk().codecPoll, newPoll, '旧 tick 的 settled 判断不得 clearInterval 新任')
@@ -183,10 +183,10 @@ test('T5 换BV停轮询：在飞旧tick不得清掉新任interval', async () => 
 test('T6 前台加载期间跳过silent轮询，related与续播正常初始化', async () => {
   const { t, net, plan, deferred, flush } = await boot()
   const gateFg = deferred()
-  plan({ match: '/api/watch/BV_A', body: watchPayload(1, 'BV_A'), gate: gateFg.promise }) // 前台
-  plan({ match: '/api/watch/BV_A', body: watchPayload(1, 'BV_A', { codecVersions: [] }) }) // 轮询位
-  const pFg = t.loadWatch()
-  const pSilent = t.loadWatch(true)
+  plan({ match: '/api/video/BV_A', body: videoPayload(1, 'BV_A'), gate: gateFg.promise }) // 前台
+  plan({ match: '/api/video/BV_A', body: videoPayload(1, 'BV_A', { codecVersions: [] }) }) // 轮询位
+  const pFg = t.loadVideo()
+  const pSilent = t.loadVideo(true)
   await pSilent
   await flush()
   assert.equal(t.loading.value, true, '跳过 silent 不得关前台的 loading')
@@ -201,15 +201,15 @@ test('T6 前台加载期间跳过silent轮询，related与续播正常初始化'
 
 test('T7 换BV空窗期：旧related/本地弹幕迟到包不写且旧显示已清', async () => {
   const { t, route, plan, deferred, fireBvidWatchers, flush } = await boot()
-  plan({ match: '/api/watch/BV_A', body: watchPayload(1, 'BV_A') })
+  plan({ match: '/api/video/BV_A', body: videoPayload(1, 'BV_A') })
   const relA = deferred()
   const dmA = deferred()
   plan({ match: '/api/videos/1/related', body: [{ bvid: 'REL_OLD' }], gate: relA.promise })
   plan({ match: '/api/videos/1/danmaku', body: [{ id: 9, text: '旧弹幕' }], gate: dmA.promise })
-  await t.loadWatch() // A 前台落地 → related/弹幕各一发在飞
+  await t.loadVideo() // A 前台落地 → related/弹幕各一发在飞
   route.params.bvid = 'BV_B'
   const gateB = deferred()
-  plan({ match: '/api/watch/BV_B', body: watchPayload(2, 'BV_B'), gate: gateB.promise })
+  plan({ match: '/api/video/BV_B', body: videoPayload(2, 'BV_B'), gate: gateB.promise })
   plan({ match: '/api/videos/2/related', body: [{ bvid: 'REL_NEW' }] })
   plan({ match: '/api/videos/2/danmaku', body: [{ id: 8, text: '新弹幕' }] })
   fireBvidWatchers()

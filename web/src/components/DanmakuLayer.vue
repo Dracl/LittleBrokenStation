@@ -607,7 +607,7 @@ function frame() {
 // ---- 站内弹幕：点击命中出操作泡（自己的→删除，别人的→举报）----
 const pick = ref(null) // { id, left, top, canDelete, reported } CSS 像素
 
-// 举报态只在 WatchPage 的 localItems 上存一份（item.reported）：现取现用，不在这里拿副本过日子。
+// 举报态只在 VideoPage 的 localItems 上存一份（item.reported）：现取现用，不在这里拿副本过日子。
 function isReported(localId) {
   return (props.localItems ?? []).some((it) => it.id === localId && it.reported === true)
 }

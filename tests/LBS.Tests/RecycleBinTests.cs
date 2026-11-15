@@ -81,7 +81,7 @@ public sealed class RecycleBinTests : IDisposable
 
         // 台账主行没了：列表、搜索、相关推荐、观看页都查不到它。
         Assert.Null(_db.GetVideoBrief(videoId));
-        Assert.Null(_db.GetWatchData("BV1recycle01"));
+        Assert.Null(_db.GetPlaybackData("BV1recycle01"));
         Assert.Empty(_db.ListLocalDanmaku(videoId));
         Assert.Empty(_db.GetDanmakuPageTargets(videoId));
 
@@ -123,7 +123,7 @@ public sealed class RecycleBinTests : IDisposable
         var brief = _db.GetVideoBrief(videoId);
         Assert.NotNull(brief);
         Assert.Equal("BV1recycle02", brief.Value.Bvid);
-        var data = _db.GetWatchData("BV1recycle02");
+        var data = _db.GetPlaybackData("BV1recycle02");
         Assert.NotNull(data);
         Assert.Equal("/media/BV1recycle02/1-正片-1080P-AVC.mp4", Assert.Single(data.Pages).VideoUrl);
 
