@@ -1,11 +1,11 @@
-# 镜像上线：push 主干或打 v* 标签时构建 Dockerfile 并推 GHCR。
+# 镜像上线：打 v* 标签或页面上手动触发（workflow_dispatch，选 main 即发当前主干）时才构建 Dockerfile 并推 GHCR。
+# push main 的自动触发 11-15 站长点名摘除：日常刻码不该频繁烧镜像构建，想上船再手动跑一发。
 # 镜像名全小写（GHCR 对大写不客气）；GHCR 私有包首次推送需在仓库 Packages 设置里
 # 给 Actions 授权，或干脆先 public 再转 private。
 name: 镜像上线
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
