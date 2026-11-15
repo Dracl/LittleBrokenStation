@@ -86,6 +86,7 @@ public static class EventNames
     public const string CodecRecyclePurge = "codec.recycle.purge";
     public const string MemberSetPrimary = "member.set_primary";
     public const string MemberDropAccount = "member.drop_account";
+    public const string MemberUseFace = "member.use_face";
     public const string MemberRegister = "member.register";
     public const string MemberPasswordChange = "member.password.change";
 

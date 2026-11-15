@@ -144,11 +144,12 @@ public sealed partial class StationDb
                 // 头名即站长：同一语句内自问“站上有主吗”，无主则认主者继位，不给竞速留缝。
                 // 自改过名号的席位（nickname_locked=1）补绑时不被 B 站昵称盖脸：素净席位平时碰不到
                 // TouchMemberLogin（那语句 WHERE mid = $mid），补绑才是唯一会被盖的场合，这里不挡那枚锁就白打。
+                // 自挑过脸的席位（face_locked=1）同理不被盖：从自己号池挑的脸，不能被补绑的登录身份悄悄顶掉。
                 command.CommandText = """
                     UPDATE members
                     SET mid = $mid,
                         nickname = CASE WHEN COALESCE(nickname_locked, 0) = 1 THEN nickname ELSE $name END,
-                        face_url = CASE WHEN COALESCE(nickname_locked, 0) = 1 THEN face_url ELSE $face END,
+                        face_url = CASE WHEN COALESCE(nickname_locked, 0) = 1 OR COALESCE(face_locked, 0) = 1 THEN face_url ELSE $face END,
                         status = 'active',
                         invite_code = NULL, bound_at_utc = $now, last_login_at_utc = $now,
                         role = CASE WHEN NOT EXISTS (SELECT 1 FROM members WHERE role = 'owner')
@@ -319,11 +320,12 @@ public sealed partial class StationDb
         using var command = connection.CreateCommand();
         // 自改过名号的席位（nickname_locked=1）不再被 B 站刷新盖脸：不锁就会「改了名、下次登录又变回去」。
         // 名与脸同进同退——只锁名不锁脸会留下一张「张三的名、李四的脸」的拼接名片。
+        // 自挑过脸的席位（face_locked=1）另走自己的锁：只挑脸不改名的，重登也不能把他挑的脸盖回登录身份的脸。
         command.CommandText = """
             UPDATE members
             SET last_login_at_utc = $now,
                 nickname = CASE WHEN COALESCE(nickname_locked, 0) = 1 THEN nickname ELSE COALESCE($name, nickname) END,
-                face_url = CASE WHEN COALESCE(nickname_locked, 0) = 1 THEN face_url ELSE COALESCE($face, face_url) END
+                face_url = CASE WHEN COALESCE(nickname_locked, 0) = 1 OR COALESCE(face_locked, 0) = 1 THEN face_url ELSE COALESCE($face, face_url) END
             WHERE mid = $mid;
             """;
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
@@ -369,6 +371,22 @@ public sealed partial class StationDb
             WHERE id = $id AND status <> 'invited';
             """;
         command.Parameters.AddWithValue("$name", nickname);
+        command.Parameters.AddWithValue("$id", memberId);
+        return command.ExecuteNonQuery() > 0;
+    }
+
+    /// <summary>自挑站脸（11-16 站长点名「使用头像」）：把成员从自己账号池挑中的那张 B 站脸立为站脸，
+    /// 同时打 face_locked：日后重绑/重登的 B 站刷新都不再盖它（与 nickname_locked 分家，换脸不连名也锁）。
+    /// 待邀空席不接（本人还没到场）。席位不在返回 false。</summary>
+    public bool SetMemberFace(long memberId, string faceUrl)
+    {
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE members SET face_url = $face, face_locked = 1
+            WHERE id = $id AND status <> 'invited';
+            """;
+        command.Parameters.AddWithValue("$face", faceUrl);
         command.Parameters.AddWithValue("$id", memberId);
         return command.ExecuteNonQuery() > 0;
     }

@@ -890,6 +890,15 @@ async function doLogout() {
                   设为主号
                 </button>
                 <button
+                  v-if="acc.faceUrl"
+                  class="rounded-lg border border-lineSoft bg-cardBg px-3 py-1 text-xs text-inkSub transition hover:border-stationPink/50 hover:text-stationPink disabled:opacity-40"
+                  :disabled="busy"
+                  title="把这个 B 站号的头像立为你的站脸（立了就上锁，重绑重登不再被登录身份盖回）"
+                  @click="accountAction('face', acc)"
+                >
+                  使用头像
+                </button>
+                <button
                   class="rounded-lg border border-lineSoft bg-cardBg px-3 py-1 text-xs text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:opacity-40"
                   :disabled="busy"
                   @click="accountAction('delete', acc)"

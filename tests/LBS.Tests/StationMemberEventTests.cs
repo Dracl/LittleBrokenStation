@@ -178,6 +178,33 @@ public class StationMemberEventTests : IDisposable
     }
 
     [Fact]
+    public void SetMemberFace_PickedFaceSurvivesRebindRefresh()
+    {
+        var (id, _) = _db.CreateMemberInvite(null);
+        // 绑 B 站：登录身份的脸先落席（无锁时就是寻常待遇）
+        _db.BindMember(id, 701L, "碧洛", "https://face.example/login.jpg");
+
+        // 成员自挑一张号池脸当站脸
+        Assert.True(_db.SetMemberFace(id, "https://face.example/picked.jpg"));
+        Assert.Equal("https://face.example/picked.jpg", _db.GetMemberById(id)!.FaceUrl);
+
+        // 重登刷新：脸被 face_locked 钉住不回退，昵称没锁照旧换新（脸锁与名锁各自独立）
+        _db.TouchMemberLogin(701L, "碧洛改名", "https://face.example/other.jpg");
+        var seat = _db.GetMemberById(id)!;
+        Assert.Equal("https://face.example/picked.jpg", seat.FaceUrl);
+        Assert.Equal("碧洛改名", seat.Nickname);
+    }
+
+    [Fact]
+    public void SetMemberFace_InvitedSeatTurnedAway()
+    {
+        var (id, _) = _db.CreateMemberInvite(null);
+        // 本人还没到场的空席：脸立不得
+        Assert.False(_db.SetMemberFace(id, "https://face.example/any.jpg"));
+        Assert.Null(_db.GetMemberById(id)!.FaceUrl);
+    }
+
+    [Fact]
     public void PickAccount_EmptyPool_ReturnsNull()
     {
         var (id, _) = _db.CreateMemberInvite(null);

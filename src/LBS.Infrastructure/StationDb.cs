@@ -654,6 +654,10 @@ public sealed partial class StationDb
         // 素净席位自改名（11-08 站长拍板）：昵称自己说了算那一刻起打锁，
         // 日后补绑 B 站号与每次重登都不再拿 B 站昵称盖它（不锁就会发生「改了名、下次登录又变回去」）。
         EnsureColumn(connection, "members", "nickname_locked", "INTEGER");
+        // 自挑脸锁（11-16 站长点名「使用头像」按钮）：成员从自己账号池里挑了某张 B 站脸当站脸那一刻打锁，
+        // 日后重绑/重登都不再拿登录身份的脸盖它（不锁就会「小号的脸用得好好的、主号补扫一次又变回去」）。
+        // 与 nickname_locked 分家：只想换脸不该连名也锁死；两锁谁立都不盖脸（名与脸同进同退的老规矩不变）。
+        EnsureColumn(connection, "members", "face_locked", "INTEGER");
         // 公告撤回（11-08）：同一次播送共用一个批次号，撤回只打时间戳不进删除——
         // 成员已读没读、铃铛数多少都能复原（把 revoked_at_utc 拍回 NULL 即恢复）。
         EnsureColumn(connection, "messages", "batch_id", "TEXT");

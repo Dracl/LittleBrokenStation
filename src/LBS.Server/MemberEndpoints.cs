@@ -317,6 +317,34 @@ public static class MemberEndpoints
             return Results.Ok(new { message = "主号已切换，下载默认用它" });
         });
 
+        // 使用头像（11-16 站长点名）：把自己账号池里某号的脸立为站脸。只认自己池里的号（同 primary/delete 的门风），
+        // 脸落库同时打 face_locked（重绑重登不再拿登录身份的脸盖它）；cookie 依旧只进不出，前端只拿到一句回执。
+        app.MapPost("/api/member/accounts/face", (AccountIdRequest request, StationDb db, EventRecorder events,
+            HttpContext http) =>
+        {
+            var member = MemberGate.Current(http);
+            if (member is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var account = db.ListMemberAccounts(member.Id).SingleOrDefault(a => a.Id == request.Id);
+            if (account is null)
+            {
+                return Results.Json(new { message = "这个号不在你的池里" }, statusCode: StatusCodes.Status404NotFound);
+            }
+
+            if (string.IsNullOrWhiteSpace(account.FaceUrl))
+            {
+                return Results.Json(new { message = "这个号还没存脸，解绑后重新扫码绑一次就有了" }, statusCode: StatusCodes.Status409Conflict);
+            }
+
+            db.SetMemberFace(member.Id, account.FaceUrl);
+            events.Record(EventActors.Member, member.Mid, EventNames.MemberUseFace, "account", request.Id.ToString(),
+                ip: http.Connection.RemoteIpAddress?.ToString(), actorMemberId: member.Id);
+            return Results.Ok(new { message = "换脸成功，分站这就认这张", faceUrl = account.FaceUrl });
+        });
+
         app.MapPost("/api/member/accounts/delete", (AccountIdRequest request, StationDb db, EventRecorder events,
             HttpContext http) =>
         {
