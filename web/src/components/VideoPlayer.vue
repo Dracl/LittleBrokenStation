@@ -743,9 +743,10 @@ const SUB_SIZE_ITEMS = [['sm', '小'], ['standard', '标准'], ['lg', '大'], ['
 // 真变大（全屏 1080）才大出一戞，真变小（小窗）才缩。首版比例尺拿 460px 样本定标，
 // 而画面区实高是视口驱动的 (innerHeight-170)×1.06≈950px——整整小了一半，开着等比字号翻倍，
 // 站长实机吐槽的就是这笔账（11-11 重新定标）。
+// 11-17 站长重定下两档：小=旧标准（13→19），标准提到两档中间（19→24，不越旧大档 28）；大/特大未动。
 const SUB_REF_H = 880 // 定标锚：典型画面区高
-const SUB_SIZE_RATIO = { sm: 13 / SUB_REF_H, standard: 19 / SUB_REF_H, lg: 28 / SUB_REF_H, xl: 41 / SUB_REF_H } // ×画面区高
-const SUB_SIZE_PX = { sm: 13, standard: 19, lg: 28, xl: 41 } // 等比缩放关掉（默认）的定字号：站长实机验过舒服的就是这一路
+const SUB_SIZE_RATIO = { sm: 19 / SUB_REF_H, standard: 24 / SUB_REF_H, lg: 28 / SUB_REF_H, xl: 41 / SUB_REF_H } // ×画面区高
+const SUB_SIZE_PX = { sm: 19, standard: 24, lg: 28, xl: 41 } // 等比缩放关掉（默认）的定字号：站长实机验过舒服的就是这一路
 if (!SUB_SIZE_PX[subPrefs.size]) subPrefs.size = 'standard' // 旧账归位：撤掉的档位（如特小）不得留在本机账里当家
 const SUB_COLOR_ITEMS = [['#FFFFFF', '白'], ['#FFE135', '柠黄'], ['#6EE7FF', '天青'], ['#FF9ECD', '樱粉'], ['#8CFF9E', '薄荷']]
 const SUB_OUTLINE_ITEMS = [['none', '无描边'], ['light', '轻'], ['mid', '中'], ['strong', '重']]
@@ -837,7 +838,15 @@ const subFontPx = computed(() => {
 })
 const subBoxStyle = computed(() => {
   const p = subPrefs.pos || SUB_ANCHORS[subPrefs.anchor] || SUB_ANCHORS['bottom-center']
-  return { left: `${p.x}%`, top: `${p.y}%`, transform: 'translate(-50%, -50%)' }
+  let y = p.y
+  // 控制条现身时钳住下沿：进度条不再压字（11-17 站长令「字幕优先级比进度条高」）。
+  // 只钳显示、不改落点账——拖拽里的 pos 原样存，条子收起字幕自己回原位（B 站同款脾气）。
+  // 64px 是控制条交互行高；字号一半也让开，免得半行字淹进渐变；封顶 45% 防极端字号把字幕顶到脑门。
+  if (showControls.value && !subDragging.value) {
+    const clearPct = Math.min(45, ((64 + subFontPx.value * 0.9) / (videoBoxH.value || 360)) * 100)
+    y = Math.min(y, 100 - clearPct)
+  }
+  return { left: `${p.x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }
 })
 const subCueStyle = computed(() => ({
   color: SUB_COLOR_ITEMS.some(([c]) => c === subPrefs.color) ? subPrefs.color : SUB_DEFAULTS.color,
@@ -1934,11 +1943,13 @@ const STROKE_ITEMS = [
 
     <!-- 字幕浮窗（11-11 深夜起自绘）：怎么摆由设置说了算（subPrefs），摆在哪由锚点/拖拽说了算。
          按住可任意拖（百分比位置本机认账）；click/dblclick 都 stop：拖拽不许被当成点画面暂停、双击全屏。
-         z 比控制条（z-10）低、比弹幕画布（无 z 靠 DOM 序）高：不挡操作，也不让字埋弹幕底下。 -->
+         11-17 层叠改朝：z-[15] 骑在控制条（z-10）头上、面板菜单（z-20+）脚下——进度条不再压字；
+         控制条现身时另钳到条沿上方（只钳显示不改账），拖拽中不钳：pointer capture 把指针钉在浮窗上，
+         压在条子上也拖得动，不会误拖进度。弹幕画布（无 z 靠 DOM 序）仍在字幕底下。 -->
     <div
       v-if="subFloatShown"
-      class="absolute z-[5] max-w-[86%] select-none text-center"
-      :class="subDragging ? 'cursor-grabbing sub-dragging' : 'cursor-grab'"
+      class="absolute z-[15] max-w-[86%] select-none text-center"
+      :class="subDragging ? 'cursor-grabbing sub-dragging' : 'cursor-grab transition-[top] duration-300'"
       :style="subBoxStyle"
       title="按住可拖动字幕位置"
       @pointerdown="subDragDown"

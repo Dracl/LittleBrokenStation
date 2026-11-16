@@ -77,6 +77,8 @@ public static class DmEndpoints
             title = snap.Title,
             cover = snap.Cover,
             upName = snap.UpName,
+            // UP 真脸随快照一并定格（11-17 站长令：私信卡与看板娘荐片卡同步带脸，不再顶着灰人）。
+            upFace = snap.UpFace,
             // 时长与动态分享同口径：定格时就收成 B 站冒号制（3:45），库里那三种方言（4m45s / 03:45 / 243）不进 JSON。
             durationText = snap.DurationText is { } dur ? DurationText.Normalize(dur) : null,
             videoUrl = $"/video/{snap.Bvid}",
@@ -210,7 +212,19 @@ public static class DmEndpoints
 
             db.MarkDmRead(me.Id, peerMemberId);
             // 按查看者自己的清空章过滤：盖章前的老话对这侧隐身（对方视角不受影响）
-            var messages = db.ListDmConversation(me.Id, peerMemberId, viewerMemberId: me.Id).Select(m => new
+            var rows = db.ListDmConversation(me.Id, peerMemberId, viewerMemberId: me.Id).ToList();
+            // 老卡补脸（11-17 站长令）：当年定格的视频族快照没存 UP 脸，读口按 bvid 现取真脸盖上——
+            // 脸是化妆非内容真相，不破定格语义；新卡写侧已自带，有脸的旧卡也不重复化妆。
+            var need = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in rows)
+            {
+                if (m.MsgType == "video" && FacelessCardBvid(m.DynJson) is { } b)
+                {
+                    need.Add(b);
+                }
+            }
+            var faces = need.Count > 0 ? db.GetUpFacesByBvids(need) : new Dictionary<string, string>();
+            var messages = rows.Select(m => new
             {
                 id = m.Id,
                 fromMemberId = m.FromMemberId,
@@ -219,7 +233,7 @@ public static class DmEndpoints
                 createdAtUtc = m.CreatedAtUtc,
                 readAtUtc = m.ReadAtUtc,
                 msgType = m.MsgType,
-                dyn = ParseShareCard(m.DynJson),
+                dyn = WithBackfilledFace(ParseShareCard(m.DynJson), m.DynJson, faces),
                 // 分享卡是发送那一刻定格的：片子进了回收站，卡上标题封面照样完好，得给个死活。
                 videoGone = m.MsgType == "video" && m.VideoInStation != true,
             });
@@ -328,6 +342,35 @@ public static class DmEndpoints
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    /// <summary>这张定格快照若是「缺脸」的视频族卡（11-17 站长令前的老卡），回它的 bvid；
+    /// 有脸/不是视频族/坏 JSON 都回 null——不用化妆。</summary>
+    private static string? FacelessCardBvid(string? dynJson)
+    {
+        if (ParseShareCard(dynJson) is not { } el) return null;
+        if (!el.TryGetProperty("type", out var t) || t.GetString() != "video") return null;
+        if (el.TryGetProperty("upFace", out var f) && f.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(f.GetString())) return null;
+        return el.TryGetProperty("bvid", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString() : null;
+    }
+
+    /// <summary>读口现取的脸盖上：只给缺脸视频卡化，库里没真脸就不动；有脸卡原样递。
+    /// JsonElement 不可变：拿原字典补一枚 upFace 再序列化，不手撮括号（11-16 那根 ']' 的教训还热乎）。</summary>
+    private static JsonElement? WithBackfilledFace(JsonElement? dyn, string? dynJson, IReadOnlyDictionary<string, string> faces)
+    {
+        if (dyn is null) return null;
+        var bvid = FacelessCardBvid(dynJson);
+        if (bvid is null || !faces.TryGetValue(bvid, out var face)) return dyn;
+        try
+        {
+            var bag = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dynJson!) ?? new Dictionary<string, JsonElement>();
+            bag["upFace"] = JsonSerializer.SerializeToElement(face);
+            return JsonSerializer.Deserialize<JsonElement>(JsonSerializer.Serialize(bag));
+        }
+        catch (JsonException)
+        {
+            return dyn; // 化妆失败不拦阅读：原卡照旧灰人
         }
     }
 

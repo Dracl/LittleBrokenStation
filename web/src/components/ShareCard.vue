@@ -36,19 +36,19 @@ function summary(dyn) {
       <div class="mb-2 mt-2 border-t border-dashed border-lineSoft"></div>
     </template>
 
-    <!-- 来源行：小头像 + 名号 + 类型 pill + 时间，压灰让位；video 型的 upFace 是看板娘片卡现取的 UP 名片脸，
-         私信那种定格快照没这栏，照旧默认灰人。 -->
-    <div class="flex items-center gap-1.5">
+    <!-- 来源行（11-17 站长丙档升格）：头像 26px 当半个报头用，名号 13.5px 半粗、pill 与时分同步步提号；
+         私信与看板娘荐片卡共用本件，改一处全域同步；私信定格快照没存 upFace 的老卡，后端读口已按 bvid 现取补脸。 -->
+    <div class="flex items-center gap-2">
       <img
         :src="kind === 'dynamic' ? (dyn.authorFace || defaultAvatar) : (dyn.upFace || defaultAvatar)"
         referrerpolicy="no-referrer"
-        class="h-4 w-4 shrink-0 rounded-full object-cover"
+        class="h-[26px] w-[26px] shrink-0 rounded-full object-cover"
         alt=""
         @error="onAvatarError"
       />
-      <span class="truncate text-[11px] font-semibold text-inkSub">{{ kind === 'dynamic' ? (dyn.authorName || 'B站作者') : (dyn.upName || '站内放映厅') }}</span>
-      <span class="shrink-0 rounded bg-stationPink/10 px-1 text-[9.5px] leading-[15px] text-stationPink">{{ kind === 'dynamic' ? '动态' : '馆藏' }}</span>
-      <span class="shrink-0 text-[10.5px] text-inkFaint">· {{ kind === 'dynamic' ? friendlyTime(dyn.publishedAtUtc) : dyn.bvid }}</span>
+      <span class="truncate text-[13.5px] font-semibold text-inkSub">{{ kind === 'dynamic' ? (dyn.authorName || 'B站作者') : (dyn.upName || '站内放映厅') }}</span>
+      <span class="shrink-0 rounded bg-stationPink/10 px-1.5 text-[11.5px] leading-[19px] text-stationPink">{{ kind === 'dynamic' ? '动态' : '馆藏' }}</span>
+      <span class="shrink-0 text-[12px] text-inkFaint">· {{ kind === 'dynamic' ? friendlyTime(dyn.publishedAtUtc) : dyn.bvid }}</span>
     </div>
 
     <!-- 内容段：有图集走图集（单图大图/两列九宫，比例自适应不裁切）；片卡封面并排；无图动态只剩文字 -->

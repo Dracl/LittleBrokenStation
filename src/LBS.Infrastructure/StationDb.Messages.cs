@@ -319,8 +319,9 @@ public sealed partial class StationDb
         return Convert.ToInt64(command.ExecuteScalar());
     }
 
-    /// <summary>放映厅分享定格快照：bvid 必查到馆（Arrived 才算在馆）；封面本地优先（与观看页同形 /media/…），无归档回落热链。</summary>
-    public sealed record VideoShareSnapshot(string Bvid, string? Title, string? Cover, string? UpName, string? DurationText);
+    /// <summary>放映厅分享定格快照：bvid 必查到馆（Arrived 才算在馆）；封面本地优先（与观看页同形 /media/…），无归档回落热链。
+    /// UpFace（11-17 站长令）：UP 名片采集员的正账脸，随快照一并定格；空串=采失败销账，当没有。</summary>
+    public sealed record VideoShareSnapshot(string Bvid, string? Title, string? Cover, string? UpName, string? DurationText, string? UpFace);
 
     public VideoShareSnapshot? GetVideoShareSnapshot(string bvid)
     {
@@ -331,7 +332,8 @@ public sealed partial class StationDb
                    COALESCE((SELECT '/media/' || a.rel_path FROM artifacts a WHERE a.video_id = v.id AND a.kind = 'cover' ORDER BY a.id LIMIT 1),
                             v.cover_url),
                    m.up_name,
-                   (SELECT p.duration_text FROM pages p WHERE p.video_id = v.id ORDER BY p.idx LIMIT 1)
+                   (SELECT p.duration_text FROM pages p WHERE p.video_id = v.id ORDER BY p.idx LIMIT 1),
+                   m.up_face
             FROM videos v
             LEFT JOIN video_meta m ON m.video_id = v.id
             WHERE v.bvid = $bvid AND v.status = $status;
@@ -349,7 +351,43 @@ public sealed partial class StationDb
             reader.IsDBNull(1) ? null : reader.GetString(1),
             reader.IsDBNull(2) ? null : reader.GetString(2),
             reader.IsDBNull(3) ? null : reader.GetString(3),
-            reader.IsDBNull(4) ? null : reader.GetString(4));
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5));
+    }
+
+    /// <summary>读口补脸用（11-17 站长令，私信老卡快照没存 up_face 那一代）：按 bvid 批量取 UP 真脸，
+    /// 空值行不递（没采过=没有，前端自摆灰人）；形状与 video_meta.up_face 同形。</summary>
+    public IReadOnlyDictionary<string, string> GetUpFacesByBvids(IReadOnlyCollection<string> bvids)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (bvids.Count == 0)
+        {
+            return map;
+        }
+
+        using var connection = Open(_dbPath);
+        using var command = connection.CreateCommand();
+        var names = bvids.Take(300).ToArray(); // 一场会话的卡数远够不着封顶，防 IN 参数失控
+        var placeholders = string.Join(',', names.Select((_, i) => $"$b{i}"));
+        command.CommandText = $"""
+            SELECT v.bvid, m.up_face FROM videos v JOIN video_meta m ON m.video_id = v.id
+            WHERE v.bvid IN ({placeholders});
+            """;
+        for (var i = 0; i < names.Length; i++)
+        {
+            command.Parameters.AddWithValue($"$b{i}", names[i]);
+        }
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (!reader.IsDBNull(1) && reader.GetString(1) is { Length: > 0 } face)
+            {
+                map[reader.GetString(0)] = face;
+            }
+        }
+
+        return map;
     }
 
     /// <summary>
