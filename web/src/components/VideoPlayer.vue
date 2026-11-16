@@ -841,9 +841,10 @@ const subBoxStyle = computed(() => {
   let y = p.y
   // 控制条现身时钳住下沿：进度条不再压字（11-17 站长令「字幕优先级比进度条高」）。
   // 只钳显示、不改落点账——拖拽里的 pos 原样存，条子收起字幕自己回原位（B 站同款脾气）。
-  // 64px 是控制条交互行高；字号一半也让开，免得半行字淹进渐变；封顶 45% 防极端字号把字幕顶到脑门。
+  // 避让线算细（11-17 回填）：控制条高≈78px，轨道带住在其底 46～66px——浮窗坐在轨道上会偷走 pointerdown，
+  // 拖进度条变成拖字幕（拖拽失灵的真凶）。留够两行歌词（1.2×字号）+ 4px 安全缝，单行多行都压不到轨道。
   if (showControls.value && !subDragging.value) {
-    const clearPct = Math.min(45, ((64 + subFontPx.value * 0.9) / (videoBoxH.value || 360)) * 100)
+    const clearPct = Math.min(45, ((70 + subFontPx.value * 1.2) / (videoBoxH.value || 360)) * 100)
     y = Math.min(y, 100 - clearPct)
   }
   return { left: `${p.x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }
@@ -1363,32 +1364,44 @@ function volFromPointer(e) {
 }
 
 function volTrackDown(e) {
+  if (e.button > 0) return // 右键/中键不碰音量（与进度条同规）
   volDragging.value = true
   volClearTimer()
   volPinned.value = true // 拖拽锁：无论 hover 与否都保持可见 + 可命中
-  volTrackEl.value?.setPointerCapture(e.pointerId) // 滑出元素也能续拖
   volFromPointer(e) // 单点轨道任意位置直接跳到该音量
   e.preventDefault()
+  window.addEventListener('pointermove', onVolDragMove)
+  window.addEventListener('pointerup', onVolDragEnd)
+  window.addEventListener('pointercancel', onVolDragEnd)
+}
+
+function onVolDragMove(e) {
+  if (volDragging.value) volFromPointer(e)
+}
+
+function onVolDragEnd(e) {
+  if (!volDragging.value) return
+  volDragging.value = false
+  window.removeEventListener('pointermove', onVolDragMove)
+  window.removeEventListener('pointerup', onVolDragEnd)
+  window.removeEventListener('pointercancel', onVolDragEnd)
+  const inside = Boolean(e) && volInsidePoint(e)
+  volHovering.value = inside
+  if (inside) {
+    volClearTimer()
+    volPinned.value = false // 人还在，hover 状态接管，锁当场卸
+  } else {
+    volArmHide(150) // 松手即离场：宽限期内锁继续撑着，timer 回调里才卸锁再收
+  }
 }
 
 function volTrackMove(e) {
   if (volDragging.value) volFromPointer(e)
 }
 
-function volTrackUp(e) {
-  volDragging.value = false
-  try {
-    volTrackEl.value?.releasePointerCapture(e.pointerId)
-  } catch {
-    /* 已自动释放，不管 */
-  }
-  volHovering.value = volInsidePoint(e)
-  if (volHovering.value) {
-    volClearTimer()
-    volPinned.value = false // 人还在，hover 状态接管，锁当场卸
-  } else {
-    volArmHide(150) // 松手即离场：宽限期内锁继续撑着，timer 回调里才卸锁再收
-  }
+// 音量条保险丝：切窗吞了松手时由 blur 收网（幂等）。
+function volAbort() {
+  onVolDragEnd()
 }
 
 function setRate(x) {
@@ -1670,32 +1683,81 @@ function downloadLog() {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000)
 }
 
-// ---- 进度条拖拽 ----
+// ---- 进度条拖拽（11-17 B 站式重做：window 级监听对 + 视觉/真 seek 两本账）----
+// 两代病根都查明：① pointer capture 挂账拐点击（已拆，改 window 监听网）；
+// ② 真 seek 吃 seekTo 的 120ms 合并——连续拖动时每发 move 都重置 timer，手不停永不落地，
+// 而填充条又绑 video 的 timeupdate，于是整段拖拽纹丝不动、松手才一跳（站长 11-17 亲测的「拖不动」）。
+// 从此视觉跟手、落地踩拍：拖拽中填充/时间字直接吃指针位置，真 seek 按 80ms 节拍追帧（不饿死），松手即清尾。
 let dragging = false
-function trackSeek(e) {
+let lastSeekFlush = 0
+// 悬停与拖拽两本账（11-17 站长二测拍板）：光鼠标扫过只亮时间气泡，填充条不许动；
+// 按下之后填充才跟手——两件事共用一个 dragVisual 时曾把悬停也拖动了条，已拆。
+function hoverFrom(e) {
   const el = trackEl.value
-  if (!el) return
-  const rect = el.getBoundingClientRect()
-  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
-  seekTo(ratio * duration.value)
-}
-function trackDown(e) {
-  dragging = true
-  trackEl.value?.setPointerCapture(e.pointerId)
-  trackSeek(e)
-}
-function trackMove(e) {
-  const el = trackEl.value
-  if (!el) return
+  if (!el) return false
   const rect = el.getBoundingClientRect()
   hover.x = Math.min(rect.width, Math.max(0, e.clientX - rect.left))
   hover.t = (hover.x / rect.width) * duration.value
   hover.show = true
-  if (dragging) trackSeek(e)
+  return true
 }
-function trackUp(e) {
+function dragVisual(e) {
+  if (!hoverFrom(e)) return
+  currentTime.value = hover.t // 乐观填充：真 seek 还在 throttle 排队，条先跟手走（仅拖拽中调用）
+}
+function trackSeekRealtime(sec) {
+  const v = video.value
+  if (!v || !Number.isFinite(v.duration)) return
+  seekTarget = Math.min(Math.max(0, sec), v.duration - 0.05)
+  const now = performance.now()
+  if (now - lastSeekFlush >= 80) {
+    lastSeekFlush = now
+    flushSeek() // 距上一发落地够久了——当场落，连续拖拽不再被合并 timer 饿死
+  } else {
+    clearTimeout(seekMergeTimer)
+    seekMergeTimer = setTimeout(flushSeek, 80)
+  }
+}
+function blockDragStart(e) {
+  e.preventDefault() // 拖拽中禁原生拖放（DnD 一开会把 pointer 流整个掐走）
+}
+function trackDown(e) {
+  if (e.button > 0) return // 右键/中键不算拖进度：菜单照常弹，进度不许动（触屏/画笔 button 都是 0，不伤）
+  dragging = true
+  wakeControls() // 拖进度条也是主动操作：确保帘子起
+  dragVisual(e)
+  trackSeekRealtime(hover.t)
+  e.preventDefault() // 拖拽别变选字/拖图
+  window.addEventListener('pointermove', onTrackDragMove)
+  window.addEventListener('pointerup', onTrackDragEnd)
+  window.addEventListener('pointercancel', onTrackDragEnd)
+  window.addEventListener('dragstart', blockDragStart)
+}
+function onTrackDragMove(e) {
+  if (!dragging) return
+  dragVisual(e)
+  trackSeekRealtime(hover.t)
+}
+function onTrackDragEnd() {
+  if (!dragging) return
   dragging = false
-  trackEl.value?.releasePointerCapture?.(e.pointerId)
+  window.removeEventListener('pointermove', onTrackDragMove)
+  window.removeEventListener('pointerup', onTrackDragEnd)
+  window.removeEventListener('pointercancel', onTrackDragEnd)
+  window.removeEventListener('dragstart', blockDragStart)
+  if (seekTarget != null) flushSeek() // 松手即收尾：最后一发不等 timer
+}
+function trackMove(e) {
+  if (dragging) {
+    dragVisual(e)
+    trackSeekRealtime(hover.t)
+  } else {
+    hoverFrom(e) // 纯悬停：只亮气泡，填充条纹丝不动
+  }
+}
+// 最后一道保险丝：切窗吞了松手时由 blur 收网（幂等，正常拖拽里是空转）。
+function trackAbort() {
+  onTrackDragEnd()
 }
 
 // ---- 控制条显隐 ----
@@ -1725,6 +1787,9 @@ function openCtxAt(clientX, clientY) {
   showControls.value = true
 }
 function closeCtx() {
+  // 11-17 站长令「点视频外空白不该起帘」的正主：这颗挂在 document 全局 click 上，本意是点别处关右键菜单，
+  // 旧账却无条件掀帘——菜单没开时页面任意一发点击都白弹一次控制条。改为只有关了真菜单才掀（那才叫操作）。
+  if (!ctx.visible) return
   ctx.visible = false
   wakeControls()
 }
@@ -1800,12 +1865,21 @@ function onFsChange() {
   isFs.value = Boolean(document.fullscreenElement)
 }
 
+// 全局拖拽保险丝：两根滑杆共用一双眼睛盯 window——拖到窗外松手、Alt-Tab 切走，
+// pointerup 永不到货时把挂账的 dragging + capture 一并收兵（幂等，正常拖拽全程空转）。
+function cancelStrayDrags() {
+  trackAbort()
+  volAbort()
+}
+
 onMounted(() => {
   measureShell()
   loadEngineDefaults()
   window.addEventListener('keydown', onKey)
   window.addEventListener('keyup', onKeyUp)
   window.addEventListener('blur', endHoldGesture) // 切走窗口时按键释放收不到，直接归位
+  window.addEventListener('blur', cancelStrayDrags) // 拖拽同款病：切走时 pointerup 永不到货（11-17）
+  window.addEventListener('pointerup', cancelStrayDrags) // 第二道保险：page 任意处松手都收兵（正常拖拽时元素先行、这里空转）
   document.addEventListener('fullscreenchange', onFsChange)
   document.addEventListener('click', closeCtx)
   progressBeat = setInterval(onProgressBeat, PROGRESS_BEAT_MS) // 心跳只管正常播放那一段（函数里自己筛）
@@ -1835,6 +1909,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
   window.removeEventListener('keyup', onKeyUp)
   window.removeEventListener('blur', endHoldGesture)
+  window.removeEventListener('blur', cancelStrayDrags)
+  window.removeEventListener('pointerup', cancelStrayDrags)
   document.removeEventListener('fullscreenchange', onFsChange)
   document.removeEventListener('click', closeCtx)
   clearInterval(progressBeat)
@@ -1864,13 +1940,15 @@ const STROKE_ITEMS = [
   <!-- 外壳：播放器本体 + 下方弹幕条成一个整体（直角，与 B 站新版一致）；限宽居中，避免通栏 16:9 在高分屏上吃满一整屏 -->
   <div class="flex justify-center">
   <div ref="shellEl" class="shrink-0 bg-cardBg" :style="shellStyle">
+  <!-- 11-17 站长令：鼠标离开画面不再掀帘（旧账 mouseleave 里的 playing && wakeControls() 让控制条在离场那一刻凭空弹出，
+       人已在视频外再一点就成了「外面点一下它弹出来」的闹鬼现场）——落帘与否只由画面内的动静说了算。 -->
   <div
     ref="root"
     class="group relative isolate aspect-video w-full select-none overflow-hidden bg-black outline-none"
     tabindex="0"
     @mousemove="wakeControls"
     @mousedown="onRootMouseDown"
-    @mouseleave="hover.show = false; playing && wakeControls()"
+    @mouseleave="hover.show = false"
     @contextmenu.prevent="openCtx"
   >
     <video
@@ -2020,7 +2098,6 @@ const STROKE_ITEMS = [
         class="group/track relative -mt-7 mb-1 cursor-pointer py-2"
         @pointerdown="trackDown"
         @pointermove="trackMove"
-        @pointerup="trackUp"
         @pointerleave="hover.show = false"
       >
         <!-- 弹幕高能条：官方口径的直方图贴轨道正上方（峰 48px 白 15% 平滑 5s，站长定稿）。
@@ -2102,8 +2179,6 @@ const STROKE_ITEMS = [
                 class="relative h-[60px] w-2 cursor-pointer touch-none"
                 @pointerdown="volTrackDown"
                 @pointermove="volTrackMove"
-                @pointerup="volTrackUp"
-                @pointercancel="volTrackUp"
               >
                 <span class="absolute left-1/2 top-0 h-full w-0.5 -translate-x-1/2 rounded bg-white/90"></span>
                 <span class="absolute bottom-0 left-1/2 w-0.5 -translate-x-1/2 rounded bg-[#00aedc]" :style="{ height: volumePercent + '%' }"></span>
