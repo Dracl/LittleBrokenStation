@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { requestConfirm } from '../confirmStore'
+import { dockHover, ensureStatus, panelOpen, refreshStatus, status } from '../agentDockStore'
 import ShareCard from './ShareCard.vue'
 
 // ─── 看板娘坞（M1.5；旧名「分站 AI 坞」，11-16 站长拍板改口更灵动）───────────────────────────────────────────────────
@@ -12,6 +13,12 @@ import ShareCard from './ShareCard.vue'
 // 闸门听后端的：GET /api/agent/status 的 visible 不放行就整块不进 DOM（连统计请求也不发）。
 // 没接线的席位点钮直接带去 /me 接线（ready=false 时展开输入框也是死路，不如指对门）；钮描琥珀边自报待接线。ESC 可收面板。
 const router = useRouter()
+// 气泡钮落点可择（11-17 站长令：放映厅没第三颗打底，与日夜钮一并落底）：首页留 9rem 原位。
+// idleFade：放映厅影院渐隐的入场券（VideoPage 的 useIdleFade 发令）——聊天卡开着或指针停在钮上时不沉。
+const props = defineProps({
+  bubbleBottom: { type: String, default: '9rem' },
+  idleFade: { type: Boolean, default: false },
+})
 // 聊天走 SSE：fetch + getReader + TextDecoder 按行切，只吃 data: 帧——delta 追加进气泡，
 // done 收尾，error 气泡内红字；HTTP 非 200 读 json.message 原样贴（401/403/429 同一张嘴）。
 // 历史与展开态都存本机 localStorage（读写一律 try/catch，与 utils/studioPrefs 同一脾气）：
@@ -38,8 +45,8 @@ function lsSet(key, val) {
 }
 
 // ─── 闸门：/api/agent/status ───────────────────────────────────────────
-// null = 还没问到（或没问到过）：宁可什么都不摆，也不让一条点开是死的 AI 条糊在首页上。
-const status = ref(null)
+// 闸门听后端的：status 票存共享 store（全站一份，站厅⇄放映厅翻面不重敲）；visible 不放行整块不进 DOM。
+// 亮钮时机由 store 的 dockReveal 统一发令（11-17 站长令：与日夜/切换模式同刻揭幕，一颗不抢跑），这里只管终审。
 const visible = computed(() => status.value?.visible === true)
 
 // ─── 展开态与历史 ──────────────────────────────────────────────────────
@@ -48,7 +55,14 @@ const messages = ref([]) // {role:'user'|'assistant', content:string, error?:boo
 
 // 聊天卡开在右下贴角（11-17 站长终稿：右对齐），首页那三个点（切换模式/日夜）让位——
 // 展开时给 html 挂 agent-open 标记，style.css 里那族 .home-dock 淡出卸点击；收起自行回淡。
-watch(open, (v) => document.documentElement.classList.toggle('agent-open', v))
+watch(open, (v) => {
+  document.documentElement.classList.toggle('agent-open', v)
+  panelOpen.value = v // 放映厅渐隐的证人：卡开着，钮群到点也不许沉
+})
+
+// 影院渐隐的沉没判定（11-17 站长令）：只听从页面发令（idleFade），且卡开着/指针在钮上不沉。
+const dockFaded = computed(() => props.idleFade && !open.value && !dockHover.value)
+function setHover(v) { dockHover.value = v }
 
 // 表格撑卡令（11-17 站长：85% 气泡里的四列表格挤得看不见 UP 主）：对话里出现过表格，悬浮卡从 400px 撑到 680px——
 // 左岸锚定只向右伸展不跳屏；新话题后回到 Runo 常态，纯文字会话永不占宽。
@@ -79,7 +93,7 @@ function pickReasoning(v) {
 //（最近 20 条、单条掐 4000 字、总量 20000 超了从最旧丢；estTokens 与后端 EstimateTokens 同尺：CJK 每字计 1，其余 4 字折 1）。
 // 工具执行卡的短名：后端回 search_videos 这类大名，卡面说人话
 function toolLabel(name) {
-  return { search_videos: '查片', list_arrivals: '到货', site_stats: '站况', member_activity: '我的账' }[name] || name
+  return { search_videos: '查片', list_arrivals: '到货', site_stats: '站况', member_activity: '我的账', weekly_report: '周报', zone_videos: '分区', watch_history: '足迹' }[name] || name
 }
 
 const ctxPop = ref(false)
@@ -123,12 +137,7 @@ function ctxChipClick() {
 }
 
 onMounted(async () => {
-  try {
-    const res = await fetch('/api/agent/status')
-    status.value = res.ok ? await res.json().catch(() => null) : null
-  } catch {
-    status.value = null
-  }
+  await ensureStatus() // 全站只敲一次；揭幕与终审都归 store 发落
   if (!visible.value) return
   // 本机存过的思考档要还在现行选型里才继续用：配置页改过档位，旧的自动回落「默认」
   const savedReason = String(lsGet(REASON_KEY, '') ?? '')
@@ -155,16 +164,31 @@ function onKeydown(e) {
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  clearTimeout(wireHintTimer)
   document.documentElement.classList.remove('agent-open') // 卸载兼摘标记，不给别的页面留幽灵隐藏
 })
 
-// 点气泡钮：没接线（ready=false）不带进输入框——那只会对着 403 发懵，直接带去个人空间接线；
+// 点气泡钮：没接线（ready=false）不强押 /me（11-17 站长二令：只弹个小提示，去不去填由人）；
 // 问到 ready=true 才弹聊天卡，没问到（status null）也先弹让聊天自己说话。
-function tapBar() {
+// 旧票不可尽信（11-17 站长报障：存完接线回首页，点钮仍拿旧未接线票作数）——未接线先当场催验一回。
+const wireHint = ref(false)
+let wireHintTimer = 0
+function showWireHint() {
+  wireHint.value = true
+  clearTimeout(wireHintTimer)
+  wireHintTimer = setTimeout(() => { wireHint.value = false }, 6000) // 轻提醒不打扰：六秒自收
+}
+watch(status, (s) => { if (s?.ready) wireHint.value = false }) // 别的途径把线补齐了，提示自收
+
+async function tapBar() {
   if (status.value?.ready === false) {
-    router.push('/me')
+    await refreshStatus()
+  }
+  if (status.value?.ready === false) {
+    showWireHint()
     return
   }
+  wireHint.value = false
   setOpen(true)
 }
 
@@ -189,6 +213,20 @@ async function newChat() {
   lsSet(HIST_KEY, [])
   draft.value = ''
   nextTick(autoGrow)
+}
+
+// 空屏预设问（11-17 站长令：学样张给新人几行「点了就走」的引导）：半透明文字、不描边不画圈；
+// 题面即发送文案，四问各自亮一手真本事（到货/人气/荐片卡/上手向导），全是现有工具接得住的。
+const quickAsks = [
+  { icon: '📦', q: '今天站内进了什么新货？', d: '看看近几日到站的鲜货名录' },
+  { icon: '🔥', q: '最近站内谁最有人气？', d: '站内观众票选的热门片' },
+  { icon: '🎬', q: '给我推荐两支好片', d: '带封面卡，点了直落放映厅' },
+  { icon: '💬', q: '我刚来，这站怎么玩？', d: '让她带你上手这座分站' },
+]
+function sendQuick(q) {
+  if (streaming.value) return
+  draft.value = q
+  send()
 }
 
 // 收起条不摆统计 chip（11-16 站长二修：今天 +N / 馆藏 N 两枚撤下，不必天天噮）；
@@ -472,12 +510,14 @@ function onEnter(e) {
          靠粉晕与玫红描边以示身份；没接线描琥珀边自报待接线；流式中角落粉点呼吸报信 ═══ -->
     <button
       type="button"
-      class="home-dock fixed bottom-[9rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border shadow-[0_6px_20px_rgba(251,114,153,0.25)] backdrop-blur transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationPink/40"
-      :class="status?.ready === false
+      class="home-dock dock-in fixed right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border shadow-[0_6px_20px_rgba(251,114,153,0.25)] backdrop-blur transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stationPink/40"
+      :class="[status?.ready === false
         ? 'border-amber-400/70 bg-[radial-gradient(circle_at_30%_25%,#33291b,#171207_72%)]'
-        : 'border-stationPink/55 bg-[radial-gradient(circle_at_30%_25%,#3a2130,#171016_72%)]'"
-      :style="open ? { boxShadow: '0 0 0 3px rgba(251,114,153,0.25), 0 6px 20px rgba(251,114,153,0.35)' } : null"
-      :title="status?.ready === false ? '看板娘：还没接线，点开个人空间' : '看板娘：聊两句（ESC 收起）'"
+        : 'border-stationPink/55 bg-[radial-gradient(circle_at_30%_25%,#3a2130,#171016_72%)]', dockFaded ? 'dock-faded' : '']"
+      @mouseenter="setHover(true)"
+      @mouseleave="setHover(false)"
+      :style="{ bottom: props.bubbleBottom, ...(open ? { boxShadow: '0 0 0 3px rgba(251,114,153,0.25), 0 6px 20px rgba(251,114,153,0.35)' } : {}) }"
+      :title="status?.ready === false ? '看板娘：还没接线，点开看提示' : '看板娘：聊两句（ESC 收起）'"
       aria-label="看板娘"
       @click="tapBar"
     >
@@ -486,6 +526,23 @@ function onEnter(e) {
       </svg>
       <span v-if="streaming && !open" class="absolute right-1.5 top-1.5 h-2.5 w-2.5 animate-pulse rounded-full bg-stationPink" aria-hidden="true"></span>
     </button>
+
+    <!-- 没接线轻提醒（11-17 站长二令：不强押 /me，只弹小提示）：深色小卡骑在钮上方，六秒自收；
+         去不去填由人——「去接线」钮才载去个人空间。 -->
+    <div
+      v-if="wireHint"
+      class="dock-pop fixed right-6 z-40 w-[248px] rounded-xl bg-zinc-800 px-3.5 py-2.5 text-[12px] leading-[17px] text-white shadow-[0_8px_28px_rgba(0,0,0,0.3)]"
+      :style="{ bottom: `calc(${props.bubbleBottom} + 3.4rem)` }"
+    >
+      还没接上线路呢——她正在柜台打瞌睡。去个人空间 → 分站 AI 把 Key 填上就能开聊。
+      <button
+        type="button"
+        class="mt-2 w-full rounded-lg bg-stationPink/90 py-1.5 text-[12px] font-medium text-white transition hover:opacity-90"
+        @click="wireHint = false; router.push('/me')"
+      >
+        去接线
+      </button>
+    </div>
 
     <!-- ═══ 悬浮聊天卡（点开态）：右下贴角常驻（11-17 站长终稿：右对齐；展开时首页钮列淡出让位，不重叠），弹入从右滑入；内容壳仍是 Runo 式输入卡（11-16 站长样张定版） ═══ -->
     <div
@@ -513,7 +570,7 @@ function onEnter(e) {
 
       <!-- 消息区：有对话才占高（悬浮卡改 max-h 50vh 掐顶，不糊屏幕；美化令双气泡+消毒版 markdown 照旧）；
            成员右玫红、AI 左浅灰带 ✨ 头像；AI 文案走 renderMd：先 escapeHtml 全转义再注入自家标签，v-html 只吃消毒后的产物 -->
-      <div v-if="messages.length" ref="msgsEl" class="max-h-[min(50vh,440px)] space-y-3 overflow-y-auto px-5 py-3">
+      <div v-if="messages.length" ref="msgsEl" class="max-h-[min(84vh,744px,calc(100vh_-_300px))] space-y-3 overflow-y-auto px-5 py-3">
         <template v-for="(m, i) in messages" :key="i">
           <div v-if="m.role === 'user'" class="flex justify-end">
             <div class="max-w-[82%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-stationPink/10 px-4 py-2.5 text-[13.5px] leading-[21px] text-inkMain">{{ m.content }}</div>
@@ -557,8 +614,26 @@ function onEnter(e) {
         </template>
       </div>
 
-      <!-- 消息区与输入区的分隔（11-16 站长令）：有对话才摆线，新开屏时输入区紧挨卡头不孤零零画杠 -->
-      <div v-if="messages.length" class="mx-5 border-t border-lineSoft"></div>
+      <!-- 空屏引导（11-17 站长令）：没开过口时摆几行预设问，一点即发；半透明文字不画圈不描边，
+           hover 才起淡底——像样张那叠预设，但只借它的神不抢屏 -->
+      <div v-if="!messages.length" class="px-3 pb-1 pt-1.5">
+        <button
+          v-for="qa in quickAsks"
+          :key="qa.q"
+          type="button"
+          class="group block w-full rounded-lg px-2.5 py-2 text-left transition hover:bg-black/5 dark:hover:bg-white/10"
+          @click="sendQuick(qa.q)"
+        >
+          <span class="flex items-center gap-2 text-[13.5px] leading-[20px] text-inkSub/70 transition group-hover:text-inkMain">
+            <span class="w-4 shrink-0 text-center text-[13px] opacity-80 transition group-hover:opacity-100" aria-hidden="true">{{ qa.icon }}</span>{{ qa.q }}
+          </span>
+          <span class="mt-0.5 block pl-6 text-[11.5px] leading-[16px] text-inkFaint/75 transition group-hover:text-inkSub">{{ qa.d }}</span>
+        </button>
+      </div>
+
+      <!-- 消息区与输入区的分隔（11-16 站长令）：有对话才摆线；11-17 二修：空屏摆着预设问也算「有内容」，
+           线照摆——预设问与输入框之间不该糊在一起 -->
+      <div class="mx-5 border-t border-lineSoft"></div>
 
       <!-- 输入区：textarea 无边框直接融入卡面（Runo 样张的呼吸感），自增高 2-6 行照旧 -->
       <textarea

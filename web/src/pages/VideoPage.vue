@@ -16,16 +16,27 @@ import SharePosterStudio from '../components/SharePosterStudio.vue'
 import DanmakuList from '../components/DanmakuList.vue'
 import UpNextList from '../components/UpNextList.vue'
 import EmptyTv from '../components/EmptyTv.vue'
+import AgentDock from '../components/AgentDock.vue'
+import DayNightButton from '../components/DayNightButton.vue'
 import VisibilityPill from '../components/VisibilityPill.vue'
 import PlayCountIcon from '../components/PlayCountIcon.vue'
 import DanmakuCountIcon from '../components/DanmakuCountIcon.vue'
 import { member, loginDialogOpen } from '../memberStore'
+import { dockHover, panelOpen } from '../agentDockStore'
+import { useIdleFade } from '../utils/useIdleFade'
 import { submitDialogOpen } from '../submitStore'
 import { HINT_DELETE_VIDEO, HINT_FETCH_COMMENTS } from '../confirmStore'
 import { refetchArchive, removeVideoEntry } from '../utils/videoActions'
 
 const route = useRoute()
 const router = useRouter()
+// 影院渐隐的发令器（11-17 站长令·二修）：只有指针伸进右下角那一片才算动静；
+// 感应区罩住两颗钮再外扩一圈（钮占 bottom 24/84 共 44px 高，x 从右边数 110px），
+// 纯数学判定不拦点击；卡开着或指针在钮上时到点也不沉（证人住 agentDockStore）
+const dockIdle = useIdleFade(
+  () => panelOpen.value || dockHover.value,
+  () => ({ x: window.innerWidth - 110, y: window.innerHeight - 150, w: 110, h: 150 }),
+)
 const data = ref(null)
 const gateState = ref(null) // null=正常 | 'login'=访客挡在放映厅门外 | 'missing'=馆藏确无此片
 const loading = ref(true)
@@ -1053,6 +1064,11 @@ const coverFresh = computed(() => {
       >
         {{ notice.text }}
       </p>
+      <!-- 右下角钮群（11-17 站长令：放映厅也坐镇看板娘与日夜钮；切换模式是站厅的活，不跟班）：
+           两颗一路落底（间距照旧 60px）；影院渐隐——鼠标静 15 秒慢慢沉底（dock-faded 慢沉 0.8s），
+           一动即回；聊天卡开着或指针停在钮上时不沉（证人住 agentDockStore） -->
+      <DayNightButton bottom="1.5rem" :faded="dockIdle" />
+      <AgentDock bubble-bottom="5.25rem" :idle-fade="dockIdle" />
     </main>
   </div>
 </template>

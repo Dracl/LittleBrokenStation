@@ -6,9 +6,10 @@ import { heroCoverSrc } from '../utils/coverSrc'
 import { previewHovering } from '../utils/previewHover'
 import { submitDialogOpen } from '../submitStore'
 import { askDeleteVideo } from '../confirmStore'
-import { isDark, toggleTheme } from '../theme'
+import DayNightButton from '../components/DayNightButton.vue'
 import BangumiHome from '../components/BangumiHome.vue'
 import AgentDock from '../components/AgentDock.vue'
+import { dockReveal } from '../agentDockStore'
 import { guardGuestNav } from '../utils/guestGate'
 import { refetchArchive } from '../utils/videoActions'
 
@@ -48,13 +49,7 @@ function onViewTap() {
   toggleView()
 }
 
-// ─── 日夜开关：坐在首页右下角换一批钮上方，同款黑玻离圆钮。
-// 只管把 html.dark 掰上掰下（真活在 style.css 的变量里），图标跟着当前昼夜换脸。
-const nightMode = ref(isDark())
-function flipDayNight() {
-  toggleTheme()
-  nightMode.value = isDark()
-}
+// （日夜钮 11-17 抽成 DayNightButton 组件：放映厅同颗钮共吃一份，挂点见 template）
 
 // 两百多件馆藏每 5 秒整数组替换，深响应式代理是白付的税；shallowRef 只在整组换新的时候通知视图。
 const videos = shallowRef([])
@@ -513,26 +508,14 @@ watch(sentinelEl, (el) => {
       </template>
     </main>
 
-    <!-- 日夜开关：压在切换模式正上方，白昼见月、夜里见日（11-16 重排：换一批退位后它往上提了一格） -->
-    <button
-      class="home-dock fixed bottom-[5.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
-      :title="nightMode ? '切回白昼' : '切进黑夜'"
-      :aria-label="nightMode ? '切回白昼' : '切进黑夜'"
-      @click="flipDayNight"
-    >
-      <svg v-if="nightMode" viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-        <circle cx="12" cy="12" r="4.2" />
-        <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6" />
-      </svg>
-      <svg v-else viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M20.8 13.4A8.6 8.6 0 1 1 10.6 3.2a6.8 6.8 0 0 0 10.2 10.2z" />
-      </svg>
-    </button>
+    <!-- 日夜开关（抽成组件，放映厅同款） -->
+    <DayNightButton />
 
     <!-- 切换模式 + 换一批飞钮（11-16 站长重排令）：两钮归一——悬停切换模式时换一批从左岸滑出；
          触屏长按切换模式 550ms 召唤。点切换模式本体仍是秒切视图（网格卡阵 ⇄ 大屏幕；叫法 11-03 站长点名单改大屏幕）
          （11-16 补刀：上一刀只拆了钮列忘了拔旧的独立换一批，它恰好坐在日夜原位上把日夜盖没，现已连根带走） -->
-    <div class="home-dock fixed bottom-6 right-6 z-40 flex items-center gap-2.5" @mouseenter="flyShow" @mouseleave="flyHideSoon">
+    <!-- 三钮同闸（11-17 站长令）：与看板娘/日夜同刻揭幕（dock-in 同族入场），切换模式从此不抢跑 -->
+    <div v-if="dockReveal" class="home-dock dock-in fixed bottom-6 right-6 z-40 flex items-center gap-2.5" @mouseenter="flyShow" @mouseleave="flyHideSoon">
       <button
         class="flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition-all duration-200 origin-right hover:rotate-6 hover:border-stationPink/60 hover:text-stationPink"
         :class="flyOpen ? 'scale-100 opacity-100' : 'pointer-events-none scale-0 opacity-0'"

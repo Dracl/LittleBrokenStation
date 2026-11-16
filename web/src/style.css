@@ -255,6 +255,19 @@
   display: none;
 }
 
+/* 三钮同刻揭幕入场（11-17 站长令：看板娘等回票、日夜与切换模式抢跑——三颗改共吃 agentDockStore 的揭幕闸，
+   同帧入场同一口气；scale 轻放不至抢戏，与 agent-open 的退场让位各管一头） */
+@keyframes dock-in {
+  from { opacity: 0; transform: scale(0.82); }
+  to { opacity: 1; transform: none; }
+}
+.dock-in { animation: dock-in 0.22s ease-out; }
+
+/* 影院渐隐（11-17 站长令：放映厅鼠标静 15 秒，钮群慢慢沉下去不扰看电影）：
+   与 agent-open 的让位（快 0.2s）分工——沉是慢沉（0.8s）且卸点击，免点到隐形幽灵钮；
+   鼠标一动即回（回程吃 .home-dock 本来的 0.2s，不让人等）。 */
+.dock-faded { opacity: 0; pointer-events: none; transition-duration: 0.8s; }
+
 /* 看板娘聊天卡展开时（html.agent-open，11-17 站长终稿：面板右对齐贴角），
    右下角那族黑玻璃圆钮（切换模式/日夜/看板娘，均挂 .home-dock）整族淡出让位，不收点击；收起后淡回。 */
 .home-dock { transition: opacity 0.2s ease, transform 0.2s ease; }

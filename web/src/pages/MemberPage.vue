@@ -5,6 +5,7 @@ import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
 import { member, loaded, loginDialogOpen, loginDialogMode, load as loadMember, logout as logoutMember } from '../memberStore'
 import { requestConfirm } from '../confirmStore'
+import { refreshStatus } from '../agentDockStore'
 import { friendlyTime } from '../utils/time'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 import WallWindow from '../components/WallWindow.vue'
@@ -100,6 +101,7 @@ async function saveAi() {
       aiCfg.value = data
       aiDraft.value = fillAiDraft(data) // 刚递出去的 key 落回空白，下回留空还是「不改」
       aiTest.value = null
+      refreshStatus() // 首页那边的 status 旧票跟着换新：存完就能聊，不该再被点去 /me（11-17 根治）
     } else {
       aiNotice.value = { kind: 'err', text: data?.message ?? '保存没成' }
     }
@@ -149,6 +151,7 @@ async function clearAi() {
     if (res.ok) {
       aiNotice.value = { kind: 'ok', text: data?.message ?? '线拆了' }
       await loadAi()
+      refreshStatus() // 拆线也是大事实：首页钮当场转琥珀待接线脸，不拿旧票冒充已接线
     } else {
       aiNotice.value = { kind: 'err', text: data?.message ?? '拆线没成' }
     }

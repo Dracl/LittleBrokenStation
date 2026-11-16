@@ -46,7 +46,7 @@ public static class AgentEndpoints
         不要发emoji作为表情包，可以使用颜文字，比如٩(•̤̀ᵕ•̤́๑) 之类的。
         """;
 
-    /// <summary>六把只读工具（M2 + 11-17 拉取制改造扩容）：全是现成取数口的包装，递出去的只有成员本就看得到的人话字段（可见性尺同搜索页），
+    /// <summary>七把只读工具（M2 + 11-17 拉取制扩容 + 同日观影足迹）：全是现成取数口的包装，递出去的只有成员本就看得到的人话字段（可见性尺同搜索页），
     /// 写类操作（投稿/推荐）不在这张桌上——prompt 里钉死「动手的活还没上岗」。</summary>
     private static readonly LlmToolSpec[] AgentTools =
     {
@@ -58,6 +58,8 @@ public static class AgentEndpoints
             """{"type":"object","properties":{}}"""),
         new("member_activity", "查当前这位成员自己的站内活动：累计投稿与到货、站内弹幕条数、最新投稿。问自己的账时用。",
             """{"type":"object","properties":{}}"""),
+        new("watch_history", "查当前这位成员自己的观看足迹（最近看过的片，新先）：标题、BV号、看到过哪一 P、最近观看时刻。问「我最近看过什么」「上次看的那支」「我都看过哪些片」时用。只回足迹名录，没有观看进度与播放时长。",
+            """{"type":"object","properties":{"limit":{"type":"integer","description":"最多几条，默认10，封顶20"}}}"""),
         new("weekly_report", "取一站分站周报（week：0=最近一个已过完的周，1..4 往前数）：新货名录与件数、站内热榜（去重观众）、热门 UP 与热门分区（人头/次数/片数）、逐日被看曲线、全站动向（被看次数/观众/搜索/投稿/弹幕/新成员/评论归档）、游客动向，以及你本人的本周战绩（打开/播放/看片数/搜索/投稿/弹幕/评论）与占全站份额和排名。问「这周/上周怎么样」「我本周战绩」时用。",
             """{"type":"object","properties":{"week":{"type":"integer","description":"往前数第几周，0..4，默认 0"}}}"""),
         new("zone_videos", "列分站某个顶级分区的货架（到站新先），回标题/BV/UP主/发布日期。问「音乐/动画…区有什么」时用；分区名先喊 site_stats 拿分区清单。",
@@ -600,7 +602,7 @@ public static class AgentEndpoints
     /// <summary>标题掐尖：prompt 里的名录不拿长标题霸屏。</summary>
     private static string Shorten(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
-    /// <summary>工具台（M2 + 拉取制扩容）：六把只读口全在服务器内跑，成员递的参数只当查数线索、不当权限——
+    /// <summary>工具台（M2 + 拉取制扩容 + 观影足迹）：七把只读口全在服务器内跑，成员递的参数只当查数线索、不当权限——
     /// 可见性尺永远由站里掌（Of(member.Id) / Everything）；出错回人话 + 给模型的 error 体，不抛不爆流。</summary>
     private static (string Summary, string Json) RunTool(StationDb db, StationMember member, string name, string argsRaw)
     {
@@ -754,6 +756,25 @@ public static class AgentEndpoints
                         }
 
                         return ($"分区 {zone.Trim()} 摆出 {shelves.Length} 件", JsonSerializer.Serialize(new { zone = zone.Trim(), videos = shelves }));
+                    }
+
+                    case "watch_history":
+                    {
+                        var limit = ClampInt(root, "limit", 10, 1, 20);
+                        // 与 /api/member/history 同口径：历史是本人足迹，本人全见（自己藏着的照旧露面）；
+                        // 别人后来转私的行被尺子挡下——行不删，只是看不见。position/duration 两栏不进回包：
+                        // 站长 11-17 点单「只要足迹不要时长」，续播点位是放映厅的私事，不递进模型上下文。
+                        var hScope = MemberGate.IsOwner(member) ? VisibilityScope.Everything : VisibilityScope.Of(member.Id);
+                        var foot = db.GetVideoHistory(member.Id, limit, hScope)
+                            .Select(r => new
+                            {
+                                title = Shorten(r.Title ?? r.Bvid, 40),
+                                bvid = r.Bvid,
+                                page = r.PageIdx,
+                                watched_at = LocalStamp(r.UpdatedAtUtc),
+                            })
+                            .ToArray();
+                        return ($"观影足迹 {foot.Length} 部", JsonSerializer.Serialize(new { videos = foot }));
                     }
 
                     case "member_activity":
