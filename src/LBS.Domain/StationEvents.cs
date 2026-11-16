@@ -84,6 +84,11 @@ public static class EventNames
     public const string CodecRecycle = "codec.recycle";
     public const string CodecRecycleRestore = "codec.recycle.restore";
     public const string CodecRecyclePurge = "codec.recycle.purge";
+    // 成员回收站弹窗（11-16 站长拍板）的两枚动作：恢复是自己反悔请回架上；
+    // 「销毁」只是成员视角的隐藏戳（货与清单都在，站长室照旧捞得起）——台账名字必须与真销毁分家，
+    // 不然查账会把藏起来的当没了的。
+    public const string VideoRecycleSelfRestore = "video.recycle.self.restore";
+    public const string VideoRecycleSelfHide = "video.recycle.self.hide";
     public const string MemberSetPrimary = "member.set_primary";
     public const string MemberDropAccount = "member.drop_account";
     public const string MemberUseFace = "member.use_face";
@@ -102,4 +107,14 @@ public static class EventNames
     public const string AdminAction = "admin.action";
     public const string AdminAnnounce = "admin.announce";
     public const string AdminBlocked = "admin.blocked";
+
+    // 分站 AI（M1）：每轮对话一行，日额度就从这些行数出来（账即是额度，不养第二本计数器）。
+    // M2 的工具调用（投稿/推荐）同口记账：工具那一发也是模型往返，共吃日额度，不再另立名字。
+    public const string AgentChat = "agent.chat";
+    // 一个字都没从上游吐回来的失败发（地址不通/key 作废这类）：记行留痕但不进额度账——
+    // AI 宕机不该烧成员的额度，额度反的是滥用不是意外（数额度的 CountAgentChatsToday 只认 agent.chat）。
+    public const string AgentChatFail = "agent.chat.fail";
+
+    /// <summary>站长改写看板娘性格卡（11-16 站长令：默认 prompt 暴露可改）：每次存卡一行，改了什么字数进 payload。</summary>
+    public const string AdminAgentPersona = "admin.agent.persona";
 }

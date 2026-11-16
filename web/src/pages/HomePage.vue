@@ -8,6 +8,7 @@ import { submitDialogOpen } from '../submitStore'
 import { askDeleteVideo } from '../confirmStore'
 import { isDark, toggleTheme } from '../theme'
 import BangumiHome from '../components/BangumiHome.vue'
+import AgentDock from '../components/AgentDock.vue'
 import { guardGuestNav } from '../utils/guestGate'
 import { refetchArchive } from '../utils/videoActions'
 
@@ -18,6 +19,33 @@ const viewMode = ref(localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'anime
 function toggleView() {
   viewMode.value = viewMode.value === 'grid' ? 'anime' : 'grid'
   localStorage.setItem(VIEW_KEY, viewMode.value)
+}
+
+// ─── 换一批飞钮（11-16 站长重排令）：换一批从钮列退位，悬停「切换模式」时从左岸滑出。
+// 移开迟 300ms 收起（收路上点得到）；触屏无悬停 → 长按切换模式 550ms 召唤，那次 tap 不再当成切视图。
+const flyOpen = ref(false)
+let flyTimer = 0
+let pressTimer = 0
+let longPressed = false
+function flyShow() {
+  clearTimeout(flyTimer)
+  flyOpen.value = true
+}
+function flyHideSoon() {
+  clearTimeout(flyTimer)
+  flyTimer = setTimeout(() => { flyOpen.value = false }, 300)
+}
+function onPressStart() {
+  longPressed = false
+  clearTimeout(pressTimer)
+  pressTimer = setTimeout(() => { longPressed = true; flyShow() }, 550)
+}
+function onPressCancel() {
+  clearTimeout(pressTimer)
+}
+function onViewTap() {
+  if (longPressed) { longPressed = false; return } // 长按召唤过飞钮，这发不算切视图
+  toggleView()
 }
 
 // ─── 日夜开关：坐在首页右下角换一批钮上方，同款黑玻离圆钮。
@@ -485,9 +513,9 @@ watch(sentinelEl, (el) => {
       </template>
     </main>
 
-    <!-- 日夜开关：压在换一批正上方，白昼见月、夜里见日 -->
+    <!-- 日夜开关：压在切换模式正上方，白昼见月、夜里见日（11-16 重排：换一批退位后它往上提了一格） -->
     <button
-      class="fixed bottom-[9.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
+      class="home-dock fixed bottom-[5.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
       :title="nightMode ? '切回白昼' : '切进黑夜'"
       :aria-label="nightMode ? '切回白昼' : '切进黑夜'"
       @click="flipDayNight"
@@ -501,37 +529,48 @@ watch(sentinelEl, (el) => {
       </svg>
     </button>
 
-    <!-- 换一批：重抽种子重洗卡阵与大幕（大屏幕模式下 banner 也跟着重抽），轮询期间顺序锁定 -->
-    <button
-      class="fixed bottom-[5.25rem] right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:rotate-6 hover:border-stationPink/60 hover:text-stationPink"
-      title="换一批：重新洗牌首页卡阵"
-      aria-label="换一批"
-      @click="reshuffle"
-    >
-      <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
-        <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-    </button>
+    <!-- 切换模式 + 换一批飞钮（11-16 站长重排令）：两钮归一——悬停切换模式时换一批从左岸滑出；
+         触屏长按切换模式 550ms 召唤。点切换模式本体仍是秒切视图（网格卡阵 ⇄ 大屏幕；叫法 11-03 站长点名单改大屏幕）
+         （11-16 补刀：上一刀只拆了钮列忘了拔旧的独立换一批，它恰好坐在日夜原位上把日夜盖没，现已连根带走） -->
+    <div class="home-dock fixed bottom-6 right-6 z-40 flex items-center gap-2.5" @mouseenter="flyShow" @mouseleave="flyHideSoon">
+      <button
+        class="flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition-all duration-200 origin-right hover:rotate-6 hover:border-stationPink/60 hover:text-stationPink"
+        :class="flyOpen ? 'scale-100 opacity-100' : 'pointer-events-none scale-0 opacity-0'"
+        :tabindex="flyOpen ? 0 : -1"
+        title="换一批：重新洗牌首页卡阵"
+        aria-label="换一批"
+        @click="reshuffle"
+      >
+        <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+      <button
+        class="flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
+        :class="flyOpen ? 'border-stationPink/60 text-stationPink' : ''"
+        :title="viewMode === 'grid' ? '切到大屏幕模式（悬停/长按出换一批）' : '切回网格卡阵（悬停/长按出换一批）'"
+        :aria-label="viewMode === 'grid' ? '切到大屏幕模式' : '切回网格卡阵'"
+        @click="onViewTap"
+        @touchstart.passive="onPressStart"
+        @touchmove.passive="onPressCancel"
+        @touchcancel="onPressCancel"
+      >
+        <svg v-if="viewMode === 'grid'" viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
+          <rect x="3" y="4" width="18" height="9" rx="2" />
+          <path d="M3 16.5h7.5M3 20h11" stroke-linecap="round" />
+          <path d="M15.5 16.5h5.5M15.5 20h3" stroke-linecap="round" opacity="0.45" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
+          <rect x="3.5" y="3.5" width="7" height="7" rx="1.8" />
+          <rect x="13.5" y="3.5" width="7" height="7" rx="1.8" />
+          <rect x="3.5" y="13.5" width="7" height="7" rx="1.8" />
+          <rect x="13.5" y="13.5" width="7" height="7" rx="1.8" />
+        </svg>
+      </button>
+    </div>
 
-    <!-- 视图切换：压在换一批正下方，网格卡阵 ⇄ 大屏幕模式（图标跟着当前视图换脸；叫法 11-03 站长点名单改大屏幕） -->
-    <button
-      class="fixed bottom-6 right-6 z-40 flex h-11 w-11 items-center justify-center rounded-full border border-white/15 bg-black/60 text-white/70 shadow-lg backdrop-blur transition hover:border-stationPink/60 hover:text-stationPink"
-      :title="viewMode === 'grid' ? '切到大屏幕模式' : '切回网格卡阵'"
-      :aria-label="viewMode === 'grid' ? '切到大屏幕模式' : '切回网格卡阵'"
-      @click="toggleView"
-    >
-      <svg v-if="viewMode === 'grid'" viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
-        <rect x="3" y="4" width="18" height="9" rx="2" />
-        <path d="M3 16.5h7.5M3 20h11" stroke-linecap="round" />
-        <path d="M15.5 16.5h5.5M15.5 20h3" stroke-linecap="round" opacity="0.45" />
-      </svg>
-      <svg v-else viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8">
-        <rect x="3.5" y="3.5" width="7" height="7" rx="1.8" />
-        <rect x="13.5" y="3.5" width="7" height="7" rx="1.8" />
-        <rect x="3.5" y="13.5" width="7" height="7" rx="1.8" />
-        <rect x="13.5" y="13.5" width="7" height="7" rx="1.8" />
-      </svg>
-    </button>
+    <!-- 看板娘悬浮坞（11-16 重排令）：trigger 圆钮压在日夜正上方，点开弹右下悬浮聊天卡；闸门与聊天全住 AgentDock -->
+    <AgentDock />
   </div>
 </template>
 

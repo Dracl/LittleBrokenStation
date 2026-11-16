@@ -1478,9 +1478,11 @@ const EVENT_LABEL = {
   'member.unban': '解封席位', 'member.delete': '撤席位', 'member.exile': '除名席位',
   'member.restore': '召回席位', 'member.nickname': '改席位名号', 'member.set_primary': '设主采集号',
   'member.drop_account': '摘 B 站号', 'member.register': '注册席位', 'member.password.change': '改密码',
-  'admin.announce': '发公告', 'admin.announce.revoke': '撤公告',
+  'admin.announce': '发公告', 'admin.announce.revoke': '撤公告', 'admin.agent.persona': '看板娘性格卡',
   'danmaku.recycle': '弹幕进回收站', 'danmaku.recycle.restore': '恢复弹幕',
   'codec.recycle': '加档进回收站', 'codec.recycle.restore': '恢复加档版本', 'codec.recycle.purge': '销毁加档版本',
+  // 成员回收站弹窗（11-16）的两枚：恢复是自己请回；「销毁」只是盖隐藏戳——台账对站长说实话，货没真没。
+  'video.recycle.self.restore': '成员自恢复视频', 'video.recycle.self.hide': '成员销毁视频（实为隐藏，货还封着）',
   'login.qr.start': '发起扫码', 'login.qr.scanned': '扫码已扫', 'login.qr.success': '扫码进门',
   'login.qr.expired': '扫码过期', 'login.qr.denied': '扫码被拒', 'login.logout': '退席',
   'login.password': '账密进门', 'login.password.denied': '账密被拒',
@@ -2253,6 +2255,143 @@ function savedAdminGroup() {
 
 const activeGroup = ref(savedAdminGroup())
 const dangerOpen = ref(false) // 危险区默认收起：常年在底下亮着红边，看久了就当背景板，误点机会少一层
+// ─── 看板娘性格卡（11-16 站长令：默认 prompt 暴露可改）───
+// 性格与说话风格站长随便写，全站成员共用一张；日期、成员名、家底数字与数据查账规矩由站里每轮自动注入，不进这张卡。
+// 留空 = 用内置默认（placeholder 就是默认原文，站长所见即所得）。
+const personaDraft = ref('')
+const personaDefault = ref(null) // null = 还没拉；拉到后是默认原文（placeholder 的料）
+const personaIsCustom = ref(false)
+const personaBusy = ref(false)
+const personaMaxChars = ref(4000)
+const personaNotice = ref(null) // {kind:'ok'|'err', text}
+async function loadPersona() {
+  try {
+    const res = await fetch('/api/admin/agent/persona')
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`)
+    personaDraft.value = data?.persona ?? ''
+    personaDefault.value = data?.defaultPersona ?? ''
+    personaIsCustom.value = data?.isCustom === true
+    personaMaxChars.value = data?.maxChars ?? 4000
+  } catch (e) {
+    personaNotice.value = { kind: 'err', text: `性格卡没拉到：${e.message}` }
+  }
+}
+async function savePersona() {
+  if (personaBusy.value) return
+  personaBusy.value = true
+  try {
+    const res = await fetch('/api/admin/agent/persona', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ persona: personaDraft.value }),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`)
+    personaIsCustom.value = data?.isCustom === true
+    personaNotice.value = { kind: 'ok', text: personaIsCustom.value ? '性格卡已存，她下一轮开口就换这副嗓子' : '性格卡清空了，她回到站内原性' }
+  } catch (e) {
+    personaNotice.value = { kind: 'err', text: `存卡没成：${e.message}` }
+  } finally {
+    personaBusy.value = false
+  }
+}
+function restorePersonaDefault() {
+  personaDraft.value = ''
+  savePersona()
+}
+
+// ─── 失败件明细（11-16 站长令：Failed 的 last_error 沉在首页卡阵最尾，后台只看得到页头一个数）───
+// 数据同源首页卡阵 /api/videos（站长尺本就带 Failed 行，status 数值 3），动作全走首页那三扇现成门：
+// requeue（重试；孤儿稿回 409 requireClaim → 本行换成「挂我名下重投」）、claim（挂到站长名下并顺手退队）、DELETE（进回收站）。
+// 文案全是后端写好的中文，前端只负责贴进条——全站铁律。
+const failedItems = ref(null) // null = 还没拉；数组 = Failed 行
+const failedBusy = ref(null) // 在途那行的 id，防连点
+const failedNotice = ref(null) // {kind:'ok'|'err'|'warn', text}
+const failedArmed = ref(null) // 销毁二段式：哪条正等第二下
+let failedArmTimer = null
+let failedNoticeTimer = null
+
+function fmtFailedAge(iso) {
+  if (!iso) return ''
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return ''
+  const days = Math.floor((Date.now() - t) / 86400000)
+  if (days <= 0) {
+    const hours = Math.floor((Date.now() - t) / 3600000)
+    return hours <= 0 ? '在途未满一小时' : `在途 ${hours} 小时`
+  }
+  return `在途 ${days} 天`
+}
+
+function sayFailed(kind, text) {
+  failedNotice.value = { kind, text }
+  if (failedNoticeTimer) clearTimeout(failedNoticeTimer)
+  failedNoticeTimer = setTimeout(() => (failedNotice.value = null), 6000)
+}
+
+async function loadFailed() {
+  try {
+    const res = await fetch('/api/videos')
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    failedItems.value = Array.isArray(data) ? data.filter((v) => v.status === 3) : []
+    failedArmed.value = null
+  } catch (e) {
+    failedNotice.value = { kind: 'err', text: `失败件没拉到：${e.message}` }
+  }
+}
+
+async function failedAction(video, mode) {
+  if (failedBusy.value) return
+  failedBusy.value = video.id
+  try {
+    if (mode === 'retry') {
+      const res = await fetch(`/api/videos/${video.id}/requeue`, { method: 'POST' })
+      const body = await res.json().catch(() => null)
+      if (res.status === 409 && body?.requireClaim) {
+        // 无归属孤儿稿：后端单列 requireClaim 旗，这一行就挂成待认领，文案照贴后端那句
+        video.requireClaim = true
+        sayFailed('warn', body.message ?? '这条稿子没有投稿人席位')
+      } else {
+        sayFailed(res.ok ? 'ok' : 'err', body?.message ?? (res.ok ? '已退回队列' : '重投没排上'))
+        if (res.ok) loadFailed()
+      }
+    } else if (mode === 'claim') {
+      const res = await fetch(`/api/videos/${video.id}/claim`, { method: 'POST' })
+      const body = await res.json().catch(() => null)
+      sayFailed(res.ok ? 'ok' : 'err', body?.message ?? (res.ok ? '已挂到你名下退回队列' : '认领没成'))
+      if (res.ok) loadFailed()
+    } else {
+      const res = await fetch(`/api/videos/${video.id}`, { method: 'DELETE' })
+      const body = await res.json().catch(() => null)
+      sayFailed(res.ok ? 'ok' : 'err', body?.message ?? (res.ok ? '已进回收站' : '销毁没成'))
+      if (res.ok) loadFailed()
+    }
+  } catch {
+    sayFailed('err', '分站后端没有应答')
+  } finally {
+    failedBusy.value = null
+  }
+}
+
+function failedDestroy(video) {
+  // 二段式防手滑（与 purge 卡同精神）：第一下上弦，5 秒不补第二下作废
+  if (failedArmed.value === video.id) {
+    if (failedArmTimer) clearTimeout(failedArmTimer)
+    failedArmed.value = null
+    failedAction(video, 'destroy')
+    return
+  }
+  failedArmed.value = video.id
+  if (failedArmTimer) clearTimeout(failedArmTimer)
+  failedArmTimer = setTimeout(() => (failedArmed.value = null), 5000)
+}
+
+function gotoFailedCard() {
+  document.getElementById('grp-failed')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
 const quietOpen = ref(false) // 「货架」抽屉：悬停预览、下载设置、成员与公告、备份与搬家这些，盖子在碎纸机上面；下载设置压底
 const dlSettingsOpen = ref(false) // 下载设置整块太长（十几个字段密排），进抽屉还要滚一屏：默认折上，要改再展开（11-09 站长点名）
 // ── 分享链接设置（11-15 站长点单）：全站分享一张嘴（utils/siteLink）的门面地址，settings 表 share-base-url。
@@ -2308,11 +2447,13 @@ const recycleBadge = computed(() => (dmRecycle.value?.length ?? 0) + (codecRecyc
 watch(quietOpen, (open) => { if (open && announceBatches.value === null) loadAnnounceBatches() }) // 抽屉掀开才拉：这节就在抽屉里，盖子没开就拉纯属白跑一趟
 // 事件台账 11-09 也从抽屉里拎出来了（站长点名：查账是常事，不该藏在「设好就不碰」那一堆里），改到下面进页就拉
 watch(quietOpen, (open) => { if (open && pendingInvites.value === null) loadPendingInvites() }) // 抽屉掀开才拉：这节就在抽屉里
+watch(quietOpen, (open) => { if (open && personaDefault.value === null) loadPersona() }) // 看板娘性格卡也住在抽屉里，掀开才拉
 // 三座回收站 11-09 从「货架」搬到碎纸机那一块：常在页尾不进抽屉，所以进页就拉（列表小，而且站长随时想看有没有误删）
 onMounted(() => {
   if (dmRecycle.value === null) loadDmRecycle()
   if (codecRecycle.value === null) loadCodecRecycle()
   if (eventsRows.value === null) loadEventsLedger() // 台账也常在页尾，进页就拉（默认只露十条，不阻渲染）
+  if (failedItems.value === null) loadFailed() // 失败件明细常驻卡：进页拉一次，重拉钮与动作后补拉
 })
 // 加档牌面上的人话编码名：后端回的是 'avc'/'hevc'/'av1'，没见过的原样贴出，不替它编个名
 const CODEC_LABEL = { avc: 'AVC', hevc: 'HEVC', av1: 'AV1' }
@@ -2492,7 +2633,7 @@ onUnmounted(() => {
             <span class="text-adminAccent/80">完成 {{ stats?.arrived ?? '—' }}</span>
             <span class="text-white/35">下载中 {{ stats?.downloading ?? '—' }}</span>
             <span class="text-white/35">排队 {{ stats?.pending ?? '—' }}</span>
-            <span :class="stats?.failed ? 'text-rose-300/80' : 'text-white/35'">失败 {{ stats?.failed ?? '—' }}</span>
+            <span :class="stats?.failed ? 'cursor-pointer text-rose-300/80 underline decoration-rose-400/30 underline-offset-2 hover:text-rose-200' : 'text-white/35'" title="跳到下面的失败件明细卡" @click="gotoFailedCard">失败 {{ stats?.failed ?? '—' }}</span>
           </div>
         </div>
         <div class="grid grid-cols-2 gap-x-6 gap-y-6 sm:grid-cols-3 lg:grid-cols-5">
@@ -2961,6 +3102,34 @@ onUnmounted(() => {
         </div>
       </section>
 
+      <!-- 看板娘性格卡（11-16 站长令）：性格与说话风格全站共享一张卡，留空用内置默认；家底数字与查账规矩每轮硬注入，拆不掉底线 -->
+      <section v-if="quietOpen" class="lbs-card md:col-span-2 order-[59]">
+        <div class="mb-3 flex items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            看板娘性格卡
+            <span class="ml-1 rounded-full border px-2 py-0.5 text-[10px] normal-case tracking-normal" :class="personaIsCustom ? 'border-adminAccent/40 text-adminAccent/80' : 'border-white/10 text-white/40'">
+              {{ personaIsCustom ? '自定义性格生效中' : '内置默认性格' }}
+            </span>
+          </h3>
+          <span class="font-mono text-[11px] text-white/25">{{ personaDraft.length }} / {{ personaMaxChars }} 字</span>
+        </div>
+        <p class="mb-3 text-xs leading-5 text-white/35">
+          她是谁、什么口气、怎么说话，全由你写，全站成员共用这一张卡。日期、成员名、家底数字与数据查账规矩由站里每轮自动注入，不进这张卡——性格怎么写都拆不掉防编造的底线。留空保存 = 回到站内原性（框里淡字就是默认原文，照抄着改也行）。
+        </p>
+        <textarea
+          v-model="personaDraft"
+          rows="7"
+          :maxlength="personaMaxChars"
+          :placeholder="personaDefault ?? '（默认原文还没拉到——盖子合上再掀开试试）'"
+          class="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-3 text-[13px] leading-6 text-white/85 placeholder:text-white/25 focus:border-adminAccent/50 focus:outline-none"
+        ></textarea>
+        <div class="mt-3 flex items-center gap-2">
+          <button class="lbs-btn" :disabled="personaBusy" @click="savePersona">{{ personaBusy ? '存卡中…' : '保存性格卡' }}</button>
+          <button class="lbs-btn-ghost" :disabled="personaBusy || (!personaIsCustom && !personaDraft)" @click="restorePersonaDefault">恢复默认</button>
+          <p v-if="personaNotice" class="ml-2 font-mono text-[11px]" :class="personaNotice.kind === 'ok' ? 'text-adminAccent/80' : 'text-rose-300/80'">{{ personaNotice.text }}</p>
+        </div>
+      </section>
+
       <!-- 事件台账（11-08）：后端早有取数口，前端一直没接线；站长查「谁撞过门」如今不必手搓 sqlite。
            只读不写：这里没有任何改库的钮，看客与执法分开，误按的可能留零。 -->
       <!-- 事件台账 11-09 从「货架」抽屉拎出来常驻（站长点名：查账是常事，不该压在「设好就不碰」那一堆底下），自带组头与导航胶囊 -->
@@ -3342,6 +3511,46 @@ onUnmounted(() => {
             </ul>
           </div>
         </div>
+      </section>
+
+      <section id="grp-failed" class="lbs-card md:col-span-2 order-[22] border-l-2 border-l-rose-400/40">
+        <div class="mb-4 flex items-center justify-between gap-2">
+          <h3 class="lbs-title !mb-0">
+            失败件明细
+            <span class="ml-1 rounded-full border px-2 py-0.5 text-[10px] normal-case tracking-normal" :class="failedItems?.length ? 'border-rose-400/40 text-rose-300' : 'border-emerald-400/30 text-emerald-300'">
+              {{ failedItems === null ? '拉账中…' : failedItems.length ? `${failedItems.length} 件在途` : '队列干净' }}
+            </span>
+          </h3>
+          <div class="flex items-center gap-2">
+            <p v-if="failedNotice" class="font-mono text-[11px]" :class="{ 'text-adminAccent/80': failedNotice.kind === 'ok', 'text-rose-300/80': failedNotice.kind === 'err', 'text-amber-300/80': failedNotice.kind === 'warn' }">{{ failedNotice.text }}</p>
+            <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="loadFailed">重拉</button>
+          </div>
+        </div>
+        <p v-if="failedItems === null" class="text-xs text-white/30">失败件账目拉取中……</p>
+        <p v-else-if="!failedItems.length" class="text-xs text-white/30">眼下没有卡着的失败件。</p>
+        <ul v-else class="space-y-3">
+          <li v-for="item in failedItems" :key="`fail-${item.id}`" class="rounded-lg border border-rose-400/15 bg-rose-400/[0.04] px-3.5 py-3">
+            <div class="flex flex-wrap items-baseline gap-2">
+              <span class="min-w-0 flex-1 truncate text-sm text-white/85" :title="item.title || '标题都没归档（这稿没走到 B 站归档那步）'">{{ item.title || '（标题未归档）' }}</span>
+              <span class="shrink-0 font-mono text-[10px] text-white/30">{{ item.bvid }}</span>
+              <span class="shrink-0 text-[10px] text-white/30">{{ fmtFailedAge(item.createdAtUtc) }}</span>
+            </div>
+            <p class="mt-1.5 break-words text-[12px] leading-5 text-rose-300/75">{{ item.lastError || '没记报错缘由' }}</p>
+            <div class="mt-2.5 flex items-center gap-2">
+              <button v-if="!item.requireClaim" class="lbs-btn-ghost !px-2.5 !py-0.5 !text-[11px]" :disabled="failedBusy === item.id" @click="failedAction(item, 'retry')">重试</button>
+              <button v-else class="lbs-btn !px-2.5 !py-0.5 !text-[11px]" :disabled="failedBusy === item.id" title="挂到站长名下并退回队列（后端补归属顺手把 Failed 退回队）" @click="failedAction(item, 'claim')">挂我名下重投</button>
+              <button
+                class="rounded-md px-2 py-0.5 text-[11px] text-white/35 transition hover:bg-rose-500/20 hover:text-rose-300"
+                :disabled="failedBusy === item.id"
+                :title="failedArmed === item.id ? '再点一下坐实：进回收站（可捞）' : '进回收站（可捞）'"
+                @click="failedDestroy(item)"
+              >
+                {{ failedArmed === item.id ? '真销毁？再点一下' : '销毁' }}
+              </button>
+              <span v-if="failedBusy === item.id" class="text-[10px] text-white/30">处理中…</span>
+            </div>
+          </li>
+        </ul>
       </section>
 
       <section class="lbs-card order-[23] border-l-2 border-l-adminAccent/50">
@@ -4038,12 +4247,12 @@ onUnmounted(() => {
       >
         <span class="h-3 w-[3px] rounded-full bg-white/20"></span>
         货架
-        <span class="ml-2 font-mono text-[11px] text-white/22">预览 · 下载设置 · 成员席位 · 全站公告 · 备份与搬家 · 设好就不碰</span>
+        <span class="ml-2 font-mono text-[11px] text-white/22">预览 · 下载设置 · 成员席位 · 全站公告 · 看板娘性格卡 · 备份与搬家 · 设好就不碰</span>
         <span class="ml-auto font-mono text-[11px] text-white/25">点开取出</span>
       </button>
       <div v-else id="grp-quiet" class="order-[55] md:col-span-2 flex items-baseline gap-2.5 pt-3">
         <h2 class="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">货架</h2>
-        <span class="font-mono text-[11px] text-white/20">盖子已开 · 八张卡都在下面</span>
+        <span class="font-mono text-[11px] text-white/20">盖子已开 · 九张卡都在下面</span>
         <span class="ml-1 h-px flex-1 bg-white/5"></span>
         <button type="button" class="text-[11px] text-white/30 transition hover:text-white/60" @click="quietOpen = false">盖回去</button>
       </div>

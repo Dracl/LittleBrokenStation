@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginDialog from './LoginDialog.vue'
+import MemberRecycleDialog from './MemberRecycleDialog.vue'
 import CrownBadge from './CrownBadge.vue'
 import { defaultAvatar, onAvatarError } from '../utils/avatar.js'
 import { useHoverGate } from '../utils/useHoverGate.js'
@@ -12,14 +13,14 @@ const route = useRoute()
 const router = useRouter()
 const searchText = ref(typeof route.query.q === 'string' ? route.query.q : '')
 const menuOpen = ref(false)
+const recycleOpen = ref(false) // 成员回收站弹窗（11-16 站长拍板：头像菜单点开，自己删的视频与自己收回的弹幕都在这）
 
 // 结果页改词/回首页清词时，搜索框跟着页面走
 watch(() => route.query.q, (v) => { searchText.value = typeof v === 'string' ? v : '' })
-// 换页时收起头像菜单与信箱预览，不给导航完还悬着一张卡
+// 换页时收起头像菜单与信箱预览，不给导航完还悬着一张卡（回收站弹窗也一并收）
 watch(() => route.fullPath, () => {
-  menuOpen.value = false
-  menuFromHover = false
-  previewOpen.value = false
+  closeTopPopovers()
+  recycleOpen.value = false
 })
 
 function doSearch() {
@@ -93,12 +94,15 @@ onMounted(() => {
   // 未读角标三把锁：登录时 load 顺手拉一次，回到前台立刻补拉，30s 心跳兜底。
   unreadTimer = setInterval(() => { refreshUnread() }, 30000)
   document.addEventListener('visibilitychange', onVisible)
+  // Esc 与点外遮罩同一只手：两张浮窗都在时键盘也有一等公民的收法
+  document.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
   if (unreadTimer) clearInterval(unreadTimer)
-  cancelMarkRead()
+  closeTopPopovers() // 顺带撤掉悬停门里可能还在途的开/收表与停留计时
   document.removeEventListener('visibilitychange', onVisible)
+  document.removeEventListener('keydown', onKeydown)
 })
 
 // ─── 悬停门：铃铛预览与头像菜单共用一把尺子（门本身在 utils/useHoverGate.js，放映厅的封面浮窗同款）───
@@ -124,6 +128,23 @@ let previewAt = 0
 const PREVIEW_TTL_MS = 30000
 
 const bellHover = useHoverGate(previewOpen, { onOpen: () => { loadPreview() }, openMs: TOP_HOVER_OPEN_MS })
+
+// 顶栏两张浮窗的统一收场：点外遮罩、Esc、换页、点铃铛、卸载都走这一只。
+// 先把两扇门的在途开/收表撤了（不然收完卡片，那发没落地的「延时开」还会把卡再弹回来），
+// 再撤「停留即读」计时，最后把菜单与预览一并落帘。
+function closeTopPopovers() {
+  avatarHover.cancel()
+  bellHover.cancel()
+  bellInside = false
+  cancelMarkRead()
+  menuOpen.value = false
+  previewOpen.value = false
+  menuFromHover = false
+}
+
+function onKeydown(e) {
+  if (e.key === 'Escape') closeTopPopovers()
+}
 
 // 未读合流数一动（读掉、新到、登出）就作废缓存，下次 hover 拿新的
 watch(unread, () => { previewAt = 0 })
@@ -199,24 +220,31 @@ async function markPreviewRead() {
   }
 }
 
-// 面板摊开且有东西可看才开始计时；收起来就撤表
-watch([previewOpen, preview], ([open]) => {
-  if (!open || !preview.value) {
-    cancelMarkRead()
-    return
-  }
+// 停留即读只认指针真在热区（按钮或面板）内：按钮/面板各自进区都重排计时，
+// 中间缝隙触发的 leave 后回面板，由 onBellEnter 续表；leave 后迟到的 loadPreview 回调也不再排表。
+let bellInside = false
+
+function schedulePreviewRead() {
+  cancelMarkRead()
+  if (!bellInside || !previewOpen.value || !preview.value) return
   const snap = preview.value
   const hasUnread = snap.inbox.some((m) => !m.readAtUtc) || snap.dm.some((t) => (t.unread || 0) > 0)
-  if (!hasUnread) {
-    cancelMarkRead()
-    return
-  }
-  cancelMarkRead()
+  if (!hasUnread) return
   markTimer = setTimeout(() => { markTimer = null; markPreviewRead() }, MARK_READ_DWELL_MS)
-})
+}
+
+// 面板开关或数据变化都走同一个排表入口；不满足条件时它自己撤表
+watch([previewOpen, preview], schedulePreviewRead)
+
+function onBellEnter() {
+  bellInside = true
+  bellHover.onEnter()
+  schedulePreviewRead() // 面板未收时回来：续上停留计时
+}
 
 function onBellLeave() {
-  cancelMarkRead() // 刚开就溜：没看过就是没看过
+  bellInside = false
+  cancelMarkRead() // 停留不够：不落账
   bellHover.onLeave()
 }
 
@@ -227,16 +255,14 @@ function commitPreviewRead() {
 }
 
 function openPreviewItem(target) {
-  previewOpen.value = false
-  menuFromHover = false
+  closeTopPopovers()
   commitPreviewRead()
   if (target.type === 'dm') router.push({ path: '/messages', query: { dm: target.peerMemberId } })
   else router.push({ path: '/messages', query: { msg: target.id } })
 }
 
 function openAllMessages() {
-  previewOpen.value = false
-  menuFromHover = false
+  closeTopPopovers()
   commitPreviewRead()
   router.push('/messages')
 }
@@ -280,8 +306,7 @@ function relTime(v) {
 
 // 铃铛只对成员亮：访客连信箱的门都看不见，扫码按钮已经在旁边了
 function goMessages() {
-  previewOpen.value = false
-  cancelMarkRead()
+  closeTopPopovers() // 已经在 /messages 时 push 不触发换页表，靠这一手把在途的开表也撤干净
   router.push('/messages')
 }
 // 顶栏壳：版式按 B 站网页版对齐的大致轮廓，M2 对基准截图逐像素打磨
@@ -289,6 +314,14 @@ function goMessages() {
 
 <template>
   <header class="h-10 bg-cardBg shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
+    <!-- 顶栏两张浮窗共用的透明点外遮罩（11-17 站长拍板：铃铛预览与头像菜单同一条待遇）：
+         全屏铺一层，外面一点就清场。挂在 header 最外层，落在两颗的热区之外——热区本体（按钮与卡片）
+         都抬到 z-40 压在遮罩之上，指针不会因遮罩压在按钮顶上而进出抖动。 -->
+    <div
+      v-if="member && (menuOpen || previewOpen)"
+      class="fixed inset-0 z-30"
+      @click="closeTopPopovers"
+    ></div>
     <div class="mx-auto flex h-full max-w-[1400px] items-center gap-5 px-6">
       <RouterLink to="/" class="flex shrink-0 items-center gap-2" aria-label="分站首页">
         <img src="/logo.png" class="h-7 w-7" alt="小破分站台标" />
@@ -344,16 +377,15 @@ function goMessages() {
              鼠标停上去摊开未读快照（两本账各前 5，一个 read 都不打），点条目才进 /messages 真读。
              常态不带描边（站长 11-02 试过加一圈 lineSoft，跟旁边不像一家、反而更怪，当日驳回）：
              它靠 hover 才出淡粉底，与头像那颗裸圆同族。 -->
-        <div
-          v-if="member"
-          class="relative"
-          @mouseenter="bellHover.onEnter"
-          @mouseleave="onBellLeave"
-        >
+        <div v-if="member" class="relative">
+          <!-- 热区从包裹层挪到按钮与面板本体：包裹层没有 z，遮罩一铺就盖在它头上，
+               指针底下的元素在按钮与遮罩之间来回换，260ms 收表被反复推翻就是闪。 -->
           <button
-            class="relative flex h-8 w-8 items-center justify-center rounded-full text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+            class="relative z-40 flex h-8 w-8 items-center justify-center rounded-full text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
             title="站内信箱"
             aria-label="站内信箱"
+            @mouseenter="onBellEnter"
+            @mouseleave="onBellLeave"
             @click="goMessages"
           >
             <svg viewBox="0 0 24 24" class="h-[18px] w-[18px]" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -370,6 +402,8 @@ function goMessages() {
           <div
             v-if="previewOpen"
             class="absolute right-0 top-full z-40 mt-1.5 w-80 overflow-hidden rounded-xl border border-lineSoft bg-cardBg shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)]"
+            @mouseenter="onBellEnter"
+            @mouseleave="onBellLeave"
           >
             <div class="flex items-baseline justify-between border-b border-lineSoft/70 px-3.5 py-2">
               <span class="text-[12px] font-medium text-inkMain">信箱</span>
@@ -435,8 +469,8 @@ function goMessages() {
         </div>
 
         <!-- 总门小头像：不分访客/成员都是这个圆——访客点开登录窗（内含注册入口），成员点开下拉菜单 -->
-        <!-- 悬停热区只罩头像本身与那张卡，不挂在包裹层上：
-             点外遮罩是 fixed inset-0 的子孙，挂在包裹层上指针永远停在子孙里，mouseleave 永不响，悬停开的卡会赖着不走。 -->
+        <!-- 悬停热区照旧只罩头像本体与那张卡（中间那 6px 缝隙由 260ms 收尾补上）；
+             点外遮罩已升格为 header 上的共用层，不再坐在这颗的包裹层里。 -->
         <div class="relative">
           <!-- 头像必须抬到遮罩之上（z-40 > 遮罩的 z-30）：否则菜单一开，fixed inset-0 的遮罩就盖在头像上，
                指针底下的元素从按钮变成遮罩 → mouseleave → 260ms 后关 → 遮罩拆掉 → 指针又落到按钮上 → mouseenter → 开，
@@ -469,7 +503,6 @@ function goMessages() {
 
           <!-- B 站式个人卡：名片头 + 菜单行，退出登录垫底整条灰底 -->
           <template v-if="member && menuOpen">
-            <div class="fixed inset-0 z-30" @click="menuOpen = false"></div>
             <div
               class="absolute right-0 top-full z-40 mt-1.5 w-52 overflow-hidden rounded-xl border border-lineSoft bg-cardBg shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)]"
               @mouseenter="avatarHover.onEnter"
@@ -528,6 +561,18 @@ function goMessages() {
                   </svg>
                   历史记录
                 </button>
+                <button
+                  class="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-inkSub transition hover:bg-stationPink/10 hover:text-stationPink"
+                  @click="recycleOpen = true; menuOpen = false; menuFromHover = false"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M4 7h16" stroke-linecap="round" />
+                    <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                    <path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" stroke-linecap="round" />
+                    <path d="M10 11v6M14 11v6" stroke-linecap="round" />
+                  </svg>
+                  回收站
+                </button>
               </div>
 
               <div class="border-t border-lineSoft/70 p-1.5">
@@ -546,4 +591,6 @@ function goMessages() {
   </header>
   <!-- admit 实例：全站顶栏页共用的扫码进站窗（bind 实例由个人空间自己挂） -->
   <LoginDialog />
+  <!-- 成员回收站弹窗：自己删的视频与自己收回的弹幕都在这里点名（11-16 站长拍板） -->
+  <MemberRecycleDialog v-if="recycleOpen && member" @close="recycleOpen = false" />
 </template>

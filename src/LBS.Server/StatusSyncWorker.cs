@@ -26,6 +26,7 @@ public sealed class StatusSyncWorker(
     DownloadPauseBoard board,
     DownloadQueue queue,
     MediaStreamProber streams,
+    EventRecorder events,
     ILogger<StatusSyncWorker> logger) : BackgroundService
 {
     private static readonly TimeSpan Interval = TimeSpan.FromSeconds(5);
@@ -273,6 +274,10 @@ public sealed class StatusSyncWorker(
                     continue;
                 }
 
+                // video.arrived 台账的头一处写笔（M2 铺库）：脏数据判到站也是到站，巡出来的货照落账。
+                // 这是系统侧巡出来的到站，EventActors.System 是四档身份里最贴切的一档；不是人：
+                // mid/席位/ip 全留 null（worker 没有 HTTP 上下文，没有 RemoteIpAddress 可拄）；payload 只带 videoId，不另查库报 bvid。
+                events.RecordWithPayload(EventActors.System, null, EventNames.VideoArrived, "video", videoId.ToString(), new { videoId });
                 MemberMail.NotifyVideoArrived(db, logger, videoId);
                 _stalled.Remove(videoId);
                 continue;
@@ -335,6 +340,9 @@ public sealed class StatusSyncWorker(
                     continue;
                 }
 
+                // 引擎全消的真到站，与上一处同笔账（口径同彼：系统侧巡出，四栏身份位全留 null）；
+                // 抢输的分支上面已 continue，不会把假到站落进台账。
+                events.RecordWithPayload(EventActors.System, null, EventNames.VideoArrived, "video", videoId.ToString(), new { videoId });
                 MemberMail.NotifyVideoArrived(db, logger, videoId);
                 _stalled.Remove(videoId);
                 // 引擎实发规格趁热盖章（在途拄的那份）：清晰度菜单直接照报「1080P 60帧」，

@@ -255,6 +255,43 @@
   display: none;
 }
 
+/* 看板娘聊天卡展开时（html.agent-open，11-17 站长终稿：面板右对齐贴角），
+   右下角那族黑玻璃圆钮（切换模式/日夜/看板娘，均挂 .home-dock）整族淡出让位，不收点击；收起后淡回。 */
+.home-dock { transition: opacity 0.2s ease, transform 0.2s ease; }
+html.agent-open .home-dock { opacity: 0; pointer-events: none; transform: scale(0.8); }
+
+/* 全站滚动条（11-16 站长令：看板娘聊天卡那根细胶囊好看，全站铺开）：
+   5px 半透明胶囊，平日几乎隐形，悬停才深一档表意；横滚容器同径。
+   .no-scrollbar（横滚行与弹层）的 display:none / none 是类选择器，压过这里的通配选择器，各自隐条规矩不变。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(130, 133, 148, 0.3) transparent;
+}
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(130, 133, 148, 0.3);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(130, 133, 148, 0.5);
+}
+/* 夜底上胶囊要提亮一档才看得见 */
+html.dark {
+  scrollbar-color: rgba(214, 218, 228, 0.28) transparent;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(214, 218, 228, 0.28);
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(214, 218, 228, 0.48);
+}
+
 /* 封面微光帘：图未到位时扫一道高光。用 transform 而非 background-position，
    动画交给合成层，四十张同时闪也不吃主线程绘制。
    原先这一条只住在 VideoCard 的 scoped 里，大屏幕模式的分区行卡要同一份效果就得再拄一份，

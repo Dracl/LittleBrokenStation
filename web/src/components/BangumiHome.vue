@@ -419,7 +419,7 @@ onBeforeUnmount(() => {
         class="absolute bottom-[52px] right-[calc(max(20px,(100vw-1400px)/2+20px))] z-10 flex max-w-[min(560px,72%)] items-center gap-2.5 rounded-full bg-black/60 py-1.5 pl-1.5 pr-4 text-white shadow-lg backdrop-blur transition hover:bg-black/72"
       >
         <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#1ba4d6]">
-          <svg viewBox="0 0 24 24" class="ml-0.5 h-4 w-4" fill="currentColor">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="currentColor">
             <path d="M8 5v14l11-7z" />
           </svg>
         </span>
@@ -525,7 +525,8 @@ onBeforeUnmount(() => {
       </RouterLink>
     </div>
 
-    <!-- ═══ 分区横滚行：新到站置顶，其余按瓷砖计数降序；行头右侧「查看全部」跳分区页 ═══ -->
+    <!-- ═══ 分区横滚行：新到站置顶，其余按瓷砖计数降序；行头右侧「查看全部」跳分区页 ═══
+         （11-16 站长重排令：本行上方的看板娘 inline 坞已拆，AI 入口搬去首页右下角悬浮钮） -->
     <section v-for="row in rows" :key="row.key" class="group/row relative mt-9">
       <div class="mb-3 flex items-center gap-2">
         <span v-if="!row.fresh" class="text-[19px] leading-none" aria-hidden="true">🔥</span>

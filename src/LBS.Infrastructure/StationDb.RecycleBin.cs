@@ -78,6 +78,10 @@ public sealed partial class StationDb
         command.ExecuteNonQuery();
         // 老库补列：CREATE TABLE IF NOT EXISTS 对已经存在的表一个字节都不动，旧回收站的这一栏得单独补上。
         EnsureColumn(connection, RecycleTable, "deleted_by_member_id", "INTEGER");
+        // 成员回收站（11-16 站长拍板）：成员那头的「删掉」只盖隐藏戳——货、清单、站长账本都不动，
+        // 只是成员那边从此看不见这一件（真销毁的话语权仍旧只在站长那侧）。
+        EnsureColumn(connection, RecycleTable, "hidden_by_member_id", "INTEGER");
+        EnsureColumn(connection, RecycleTable, "hidden_at_utc", "TEXT");
     }
 
     /// <summary>把一条馆藏收进回收站：先点清文件、搬进回收站，再删原表行、落清单。</summary>
@@ -194,24 +198,91 @@ public sealed partial class StationDb
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            list.Add(new RecycleEntry(
-                reader.GetInt64(0),
-                reader.GetInt64(1),
-                reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4),
-                DateTimeOffset.Parse(reader.GetString(5)),
-                reader.IsDBNull(6) ? null : reader.GetString(6),
-                reader.IsDBNull(7) ? null : reader.GetInt64(7),
-                reader.GetInt32(8),
-                reader.GetInt64(9),
-                reader.GetInt32(10),
-                reader.GetInt32(11),
-                reader.GetInt32(12)));
+            list.Add(ReadRecycleEntry(reader));
         }
 
         return list;
     }
+
+    /// <summary>成员视角的回收站清单（11-16 站长拍板：头像菜单那张弹窗）：只递<b>自己动手按过删除</b>
+    /// （deleted_by_member_id = 本席）且<b>没被成员侧藏过</b>的行——站长替人删的、以及成员自己点过
+    /// 「删掉」的，一律不递。与弹幕回收站的 source='self' 同一把尺：谁的手封进去的，谁看得见。</summary>
+    public IReadOnlyList<RecycleEntry> ListRecycleForSelf(long memberId)
+    {
+        using var connection = Open(_dbPath);
+        EnsureRecycleTable(connection);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT id, video_id, bvid, title, up_name, deleted_at_utc, deleted_by, deleted_by_member_id,
+                   file_count, bytes, page_count, danmaku_count, comment_count
+            FROM {RecycleTable}
+            WHERE deleted_by_member_id = $m AND hidden_by_member_id IS NULL
+            ORDER BY id DESC;
+            """;
+        command.Parameters.AddWithValue("$m", memberId);
+        var list = new List<RecycleEntry>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(ReadRecycleEntry(reader));
+        }
+
+        return list;
+    }
+
+    /// <summary>回收站一行的归属（成员侧三道闸的判据）：没这行回 null，有行回（谁动的手, bvid, 被成员藏过没）。
+    /// 查无此行与不是你自己删的分开报，免得拿一串 id 试探别人删过什么（弹幕回收站同款口径）；
+    /// Hidden 为真的行在成员视角就是「已彻底销毁」——端点据此一律报 404，不泄露它其实还封着。</summary>
+    public (long? DeletedByMemberId, string Bvid, bool Hidden)? GetRecycleOwner(long id)
+    {
+        using var connection = Open(_dbPath);
+        EnsureRecycleTable(connection);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT deleted_by_member_id, bvid, hidden_by_member_id FROM {RecycleTable} WHERE id = $id;";
+        command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        return (reader.IsDBNull(0) ? null : reader.GetInt64(0), reader.GetString(1), !reader.IsDBNull(2));
+    }
+
+    /// <summary>成员那头的「删掉」：只盖隐藏戳，货与清单一根毛都不动（真销毁走站长的 PurgeRecycle）。
+    /// 归属闸焊在 WHERE 里：只有自己动手删的且还没藏过的行才盖得着，盖不着回 false。</summary>
+    public bool HideRecycleForSelf(long id, long memberId)
+    {
+        using var connection = Open(_dbPath);
+        EnsureRecycleTable(connection);
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            UPDATE {RecycleTable} SET hidden_by_member_id = $m, hidden_at_utc = $now
+            WHERE id = $id AND deleted_by_member_id = $m AND hidden_by_member_id IS NULL;
+            """;
+        command.Parameters.AddWithValue("$m", memberId);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$id", id);
+        return command.ExecuteNonQuery() > 0;
+    }
+
+    private static RecycleEntry ReadRecycleEntry(SqliteDataReader reader) => new(
+        reader.GetInt64(0),
+        reader.GetInt64(1),
+        reader.GetString(2),
+        reader.IsDBNull(3) ? null : reader.GetString(3),
+        reader.IsDBNull(4) ? null : reader.GetString(4),
+        DateTimeOffset.Parse(reader.GetString(5)),
+        reader.IsDBNull(6) ? null : reader.GetString(6),
+        reader.IsDBNull(7) ? null : reader.GetInt64(7),
+        reader.GetInt32(8),
+        reader.GetInt64(9),
+        reader.GetInt32(10),
+        reader.GetInt32(11),
+        reader.GetInt32(12));
 
     /// <summary>
     /// 把一件馆藏原样请回分站：文件搬回原位，六张表的行按原主键塞回去。

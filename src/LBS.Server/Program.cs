@@ -84,6 +84,9 @@ builder.Services.AddHostedService<StartupReviverWorker>();
 builder.Services.AddSingleton<DownloadPauseBoard>();
 // 站长室锁闸：管理类端点的口令门，朋友共用分站前上锁；访客路由不受影响。
 builder.Services.AddSingleton<AdminGate>();
+// 分站 AI（成员自带干粮版）：每人自己的 key/model 存 member_ai 表，站级设定（agent-* KV）已退役；
+// LlmClient 单例共享一张嘴（静态 HttpClient 流式与试炮共用），门只一色：MemberGate。
+builder.Services.AddSingleton<LlmClient>();
 // 台账备份员：station.db 在线快照到 data/backups，周期巡工 + 站长室手动补拍。
 builder.Services.AddSingleton<LedgerBackup>();
 // 数据交换：勾选式导出打包（大包走内存任务牌）+ 导入暂存（开机换库）。
@@ -242,6 +245,8 @@ app.MapEngineSettingsApi();
 app.MapShareLinkEndpoints();
 app.MapAdminRecycleEndpoints();
 app.MapPreviewApi();
+// 分站 AI：成员侧 status/chat（SSE）+ 站长室 settings/test（/api/admin/ 前缀由站长门盖兵）。
+app.MapAgentEndpoints();
 
 // 卡阵与搜索都递看客尺子：站长全见 / 席位看公开 + 自己的 / 访客只看公开（递错了就是 fail-closed：私有稿连本人与站长都看不见）。
 app.MapGet("/api/videos", (StationDb db, HttpContext http) =>
@@ -691,7 +696,8 @@ app.MapAdminDanmakuReportEndpoints();
 // 弹幕回收站（11-08）：单删的弹幕在这里点名、恢复、销毁（与馆藏回收站同属站长话语权）。
 app.MapAdminDanmakuRecycleEndpoints();
 app.MapAdminCodecRecycleEndpoints(); // 加档版本回收站（11-08 站长拍板）：删掉的加档连行带件封在这里，整组恢复 / 整组销毁都只站长按得动
-app.MapMemberDanmakuRecycleEndpoints(); // 个人空间「我收回的弹幕」：自己收回的那几条自己恢复，不必求站长
+app.MapMemberDanmakuRecycleEndpoints(); // 成员回收站「我收回的弹幕」段：自己收回的那几条自己恢复，不必求站长（入口已搬进头像菜单的回收站弹窗）
+app.MapMemberRecycleEndpoints(); // 成员回收站弹窗（11-16 站长拍板）：自己删的视频在这里点名/恢复/销毁（销毁=盖隐藏戳，真销毁只站长握）
 app.MapWeeklyReportEndpoints(); // 分站周报：成员登录后 /api/weekly 看本周战报（/weekly 页）
 app.MapVideoHistoryEndpoints(); // 观看历史：报看片进度、续播点位、个人空间历史列表
 app.MapMemberWallApi(); // 会员墙（馆藏壁）：投稿+历史聚合，喂个人空间顶上的画布窗口

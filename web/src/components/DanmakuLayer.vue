@@ -113,9 +113,21 @@ function parseAss(text) {
   return { list: result, resX, resY }
 }
 
+function isDefaultWhite(c) {
+  // 白色判定的护笼：解析器无 \c 的默认色是裸形 '#ffffff'（小写），显式 \c 色走 assColorToRgba 出 '#RRGGBB'（大写），
+  // 站内自发的还可能带 white/rgb() 类写法——「彩色」开关只该拦非白，白色永不拦（11-16 站长判：默认色不该被屏蔽）。
+  // 早先只比一枚 '#FFFFFF'，满库小写 '#ffffff' 全被判成彩色，彩色一关弹幕全灭。
+  if (!c) return true
+  const s = String(c).trim().toLowerCase()
+  if (s === '#ffffff' || s === '#fff' || s === 'white') return true
+  const m = s.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/)
+  if (m) return +m[1] === 255 && +m[2] === 255 && +m[3] === 255
+  return false
+}
+
 function itemVisible(item) {
   const modes = props.modes ?? {}
-  if (modes.color === false && item.color && item.color !== '#FFFFFF') return false
+  if (modes.color === false && !isDefaultWhite(item.color)) return false
   if (props.keywords?.length) {
     for (const kw of props.keywords) {
       if (kw && item.text.includes(kw)) return false

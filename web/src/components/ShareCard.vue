@@ -36,10 +36,11 @@ function summary(dyn) {
       <div class="mb-2 mt-2 border-t border-dashed border-lineSoft"></div>
     </template>
 
-    <!-- 来源行：小头像 + 名号 + 类型 pill + 时间，压灰让位 -->
+    <!-- 来源行：小头像 + 名号 + 类型 pill + 时间，压灰让位；video 型的 upFace 是看板娘片卡现取的 UP 名片脸，
+         私信那种定格快照没这栏，照旧默认灰人。 -->
     <div class="flex items-center gap-1.5">
       <img
-        :src="(kind === 'dynamic' ? dyn.authorFace : dyn.cover) && kind === 'dynamic' ? dyn.authorFace : defaultAvatar"
+        :src="kind === 'dynamic' ? (dyn.authorFace || defaultAvatar) : (dyn.upFace || defaultAvatar)"
         referrerpolicy="no-referrer"
         class="h-4 w-4 shrink-0 rounded-full object-cover"
         alt=""

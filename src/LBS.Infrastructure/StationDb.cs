@@ -323,6 +323,10 @@ public sealed partial class StationDb
         // Skipped 出口旗：引擎历史台账里有同名行时，重投会在门口被打回（判重键 = (cid, 需要下载的内容)）。
         // 站长点「销档重下」时置 1，提交链读到它就带 RedownloadCompleted 走正门，提交完（无论成败）自动清零。
         EnsureColumn(connection, "videos", "force_redownload", "INTEGER NOT NULL DEFAULT 0");
+        // 真到站时刻（ISO "O"，与其它 _utc 列同尺一把）：MarkArrived 落笔那一刻由 ExecuteUpdate 顺手盖，
+        // COALESCE 只盖第一次——重投/重试再进 Arrived 不刷已盖的时刻（真到站只有那一次）。
+        // 存量老行此列为 NULL，读侧（AI 到货名录等）回落 created_at_utc 近似（与上架落格同一把尺）。
+        EnsureColumn(connection, "videos", "arrived_at_utc", "TEXT");
         // 字幕轨真名（lan_doc）：扫盘那一刻从文件名解析落库（_中文.srt → 中文），面板不再猜。
         // 引擎写盘后元数据就只剩文件名（vendor 只交路径），这是唯一的认名时机；其余 kind 用不上这列。
         EnsureColumn(connection, "artifacts", "label", "TEXT");
@@ -351,6 +355,10 @@ public sealed partial class StationDb
         EnsureColumn(connection, "video_codecs", "fps", "REAL");
         EnsureColumn(connection, "video_codecs", "audio_codec", "TEXT");
         EnsureColumn(connection, "video_codecs", "shape_probed", "INTEGER");
+        // 11-16 美化令：每席位的上下文窗口大小（单位 k token），NULL/0 = 未配（聊天工具条不显已用%）
+        EnsureColumn(connection, "member_ai", "context_k", "INTEGER");
+        // 席位工具调用开关（看板娘 M2）：NULL=开，0=关——没存过默认开，只有明确关掉才置 0。
+        EnsureColumn(connection, "member_ai", "tools_enabled", "INTEGER");
         // 引擎实发规格真值（到站/定档那一刻从在途任务 Metadata 拄下来）：Resolution 是替换完
         // 可用性降级后的真实档位（id 116=1080P 60帧），AudioCodec 是实发音频档（id 30251/31251=Hi-Res 系）。
         // 这是比 ffprobe 实测更硬的真相（B 站页面菜单同源），有它就直接照报，没它才退回实测链。
@@ -428,9 +436,23 @@ public sealed partial class StationDb
                     created_at_utc TEXT NOT NULL,
                     expires_at_utc TEXT NOT NULL
                 );
+                -- 分站 AI 自带干粮（11-16 站长拍板）：每人自己接自己的 AI，一人一行；
+                -- key 只进不出（对外只漏 keyHint 尾四位），清空即删行——站级设定（agent-* KV）同批退役。
+                CREATE TABLE IF NOT EXISTS member_ai (
+                    member_id         INTEGER PRIMARY KEY,
+                    base_url          TEXT,
+                    api_key           TEXT,
+                    model             TEXT,
+                    reasoning_options TEXT,
+                    updated_at_utc    TEXT NOT NULL
+                );
                 """;
             members.ExecuteNonQuery();
         }
+
+        // 推理强度选型（11-16 站长拍板）：成员自配可选的 reasoning_effort 档位（竖线分隔，如 none|low|medium|xhigh），
+        // 前台 AI 坞工具条按这份清单切换；没存就不摆思考钮、请求体也不带 reasoning_effort（上游自己定默认）。
+        EnsureColumn(connection, "member_ai", "reasoning_options", "TEXT");
 
         // M5.2 站内信箱：系统传票（欢迎/归档/失败回执）与全站公告都落行；
         // 读态按 (to_mid, read_at_utc) 索引扫，标读永远带 to_mid 条件防越席。
@@ -1649,12 +1671,22 @@ public sealed partial class StationDb
     /// expectFrom 非 null 时追加「当前状态在集内」守卫（照 CancelPendingDownloads 的既有先例），
     /// 返影响行数：巡视快照读到半路、另一写手已抢改时返 0，调用方据此跳过后续副作用（通知/归档），
     /// 免得把已被重投的馆藏盖成假到站。
+    /// 目标状态是 Arrived 时同一句 UPDATE 顺手盖真到站时刻（arrived_at_utc，COALESCE 只盖第一次，
+    /// 重进 Arrived 不刷已盖的时刻）；非 Arrived 路径的 SQL 与这列无干，一个字节不带。
     /// </summary>
     private int ExecuteUpdate(long id, VideoStatus status, string? taskIdsJson, string? error, IReadOnlyCollection<VideoStatus>? expectFrom = null)
     {
         using var connection = Open(_dbPath);
         using var command = connection.CreateCommand();
-        var sql = "UPDATE videos SET status = $status, engine_task_ids = $taskIds, last_error = $error, force_redownload = 0 WHERE id = $id";
+        var sql = "UPDATE videos SET status = $status, engine_task_ids = $taskIds, last_error = $error, force_redownload = 0";
+        if (status == VideoStatus.Arrived)
+        {
+            // 到站盖章与到站时刻同笔落：COALESCE 只认第一次——重投/重试再进 Arrived 不刷已盖的时刻，
+            // 真到站只有那一次（AI 的「近 N 日到货」名录吃这列，被刷成新值就是把老货算进新账）。
+            sql += ", arrived_at_utc = COALESCE(arrived_at_utc, $arrivedNow)";
+        }
+
+        sql += " WHERE id = $id";
         if (expectFrom is { Count: > 0 })
         {
             var names = new List<string>(expectFrom.Count);
@@ -1675,6 +1707,12 @@ public sealed partial class StationDb
         command.Parameters.AddWithValue("$taskIds", (object?)taskIdsJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$error", (object?)error ?? DBNull.Value);
         command.Parameters.AddWithValue("$id", id);
+        if (status == VideoStatus.Arrived)
+        {
+            // 只在 SET 里带过 $arrivedNow 的那条 SQL 才绑它（非 Arrived 路径多绑一个没人读的参数会白占坑）。
+            command.Parameters.AddWithValue("$arrivedNow", DateTimeOffset.UtcNow.ToString("O"));
+        }
+
         return command.ExecuteNonQuery();
     }
 

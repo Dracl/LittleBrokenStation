@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import TopBar from '../components/TopBar.vue'
 import LoginDialog from '../components/LoginDialog.vue'
 import CrownBadge from '../components/CrownBadge.vue'
@@ -44,6 +44,123 @@ async function goBindFromHint() {
   if (bindFlashTimer) clearTimeout(bindFlashTimer)
   bindFlashTimer = setTimeout(() => (bindFlash.value = false), 1400)
 }
+
+// ─── 分站 AI 接线（11-16 站长拍板：从站长室搬进个人空间，成员自带干粮）───
+// 每人自己配 OpenAI 兼容的 baseUrl / key / model，三件套齐了首页 AI 坞才上岗，token 花自己的。
+// apiKey 只进不出：GET 回的是 hasKey/keyHint（尾四位），草稿永远从空白起步，留空保存 = 不改；拆线连行拔除。
+const aiCfg = ref(null) // /api/member/ai 原样（{hasKey,baseUrl,model,keyHint,configured}）
+const aiDraft = ref(null) // 可改副本
+const aiBusy = ref(false)
+const aiTestBusy = ref(false)
+const aiNotice = ref(null) // {kind:'ok'|'err', text}：保存/拆线结果行
+const aiTest = ref(null) // {ok,latencyMs,error?}：上一次连通测试的结果行
+
+function fillAiDraft(cfg) {
+  return { baseUrl: cfg?.baseUrl ?? '', apiKey: '', model: cfg?.model ?? '', reasoningOptions: cfg?.reasoningOptions ?? '', contextK: cfg?.contextK != null ? String(cfg.contextK) : '', toolsEnabled: cfg?.toolsEnabled !== false } // key 永远从空白起步：留空 = 不改
+}
+
+async function loadAi() {
+  try {
+    const res = await fetch('/api/member/ai')
+    if (!res.ok) throw new Error(String(res.status))
+    const data = await res.json()
+    aiCfg.value = data
+    aiDraft.value = fillAiDraft(data)
+  } catch {
+    aiCfg.value = null
+    aiDraft.value = null
+  }
+}
+
+async function saveAi() {
+  if (aiBusy.value || !aiDraft.value) return
+  aiBusy.value = true
+  aiNotice.value = null
+  try {
+    const d = aiDraft.value
+    const payload = { baseUrl: d.baseUrl, model: d.model, reasoningOptions: d.reasoningOptions } // 推理选型整串直递：清空即拆栏（后端判格式）
+    const key = (d.apiKey || '').trim()
+    if (key) payload.apiKey = key // 留空 = 不改：空字段不递，免得把存好的 key 抹成空
+    // 上下文窗口（单位 k）：留空 = 清栏（递 0）；非整数发送前就拦，后端 0~1000000 同尺把关
+    const ck = String(d.contextK ?? '').trim()
+    if (ck && (!/^\d+$/.test(ck) || Number(ck) < 1 || Number(ck) > 1_000_000)) {
+      aiNotice.value = { kind: 'err', text: '上下文大小填 1~1000000 的整数（单位 k），留空 = 清掉' }
+      return
+    }
+    payload.contextK = ck ? Number(ck) : 0
+    payload.toolsEnabled = d.toolsEnabled !== false // 工具开关（M2）：勾选框每回整块递，缺省当开
+    const res = await fetch('/api/member/ai', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await res.json().catch(() => null)
+    if (res.ok) {
+      aiNotice.value = { kind: 'ok', text: '接线已落库' }
+      aiCfg.value = data
+      aiDraft.value = fillAiDraft(data) // 刚递出去的 key 落回空白，下回留空还是「不改」
+      aiTest.value = null
+    } else {
+      aiNotice.value = { kind: 'err', text: data?.message ?? '保存没成' }
+    }
+  } catch {
+    aiNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    aiBusy.value = false
+  }
+}
+
+// 试炮递的是表单草稿（缺栏后端回落存好的值）：配完先试再存，不用先落库才知道通不通。
+async function testAi() {
+  if (aiTestBusy.value || !aiDraft.value) return
+  aiTestBusy.value = true
+  aiTest.value = null
+  try {
+    const d = aiDraft.value
+    const res = await fetch('/api/member/ai/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl: d.baseUrl, apiKey: d.apiKey, model: d.model }),
+    })
+    const data = await res.json().catch(() => null)
+    aiTest.value = data ?? { ok: false, error: `HTTP ${res.status}` }
+  } catch {
+    aiTest.value = { ok: false, error: '分站后端没有应答' }
+  } finally {
+    aiTestBusy.value = false
+  }
+}
+
+// 拆线是毁钥动作（key 跟着行没，下次要用得重贴）：走全站统一的确认窗，danger 走玫红。
+async function clearAi() {
+  if (aiBusy.value) return
+  const yes = await requestConfirm({
+    title: '拆掉看板娘的线？',
+    message: '地址、密钥、模型会一并抹掉，首页的 AI 坞回到待接线；想再用得重新填一遍。',
+    confirmText: '拆了',
+    danger: true,
+  })
+  if (!yes) return
+  aiBusy.value = true
+  aiNotice.value = null
+  try {
+    const res = await fetch('/api/member/ai', { method: 'DELETE' })
+    const data = await res.json().catch(() => null)
+    if (res.ok) {
+      aiNotice.value = { kind: 'ok', text: data?.message ?? '线拆了' }
+      await loadAi()
+    } else {
+      aiNotice.value = { kind: 'err', text: data?.message ?? '拆线没成' }
+    }
+  } catch {
+    aiNotice.value = { kind: 'err', text: '分站后端没有应答' }
+  } finally {
+    aiBusy.value = false
+  }
+}
+
+// 抽屉掀开才拉牌面：这块藏在「设置」抽屉里，盖子没开就拉纯属白跑一趟（AdminPage 同族手法）。
+watch(settingsOpen, (open) => { if (open && aiCfg.value === null) loadAi() })
 
 const displayName = computed(() => {
   const m = member.value
@@ -200,66 +317,6 @@ async function removeCollection(c) {
   }
 }
 
-// ─── 我收回的弹幕（11-09 站长拍板）：自己在放映厅收回的那几条，自己恢复去，不必求站长。
-// 只此一口 GET /api/member/danmaku-recycle：站长替人删的（source=admin/report）后端根本不递，这里不必再判 source。
-// 判据与措辞口径向站长室那张卡（AdminPage 的弹幕回收站）看齐，成员这头只留「恢复」一个动作——销毁与清空是站长的手。
-const dmRecycle = ref(null) // null = 没拉到（与真空仓分两脸，照抽屉清单那套口径）
-const dmRecycleLoading = ref(false)
-const dmRecycleBusy = ref(null) // 正在恢复的行 id
-const dmRecycleNotice = ref(null) // { kind, text }：后端那句人话原样上屏，前端不改写
-
-async function loadDmRecycle() {
-  if (dmRecycleLoading.value) return
-  dmRecycleLoading.value = true
-  try {
-    const res = await fetch('/api/member/danmaku-recycle')
-    if (!res.ok) {
-      dmRecycle.value = null // 401/500 都当「没拿到」，不拿空数组冒充「没收回过」
-      return
-    }
-    const d = await res.json().catch(() => null)
-    dmRecycle.value = Array.isArray(d?.items) ? d.items : []
-  } catch {
-    dmRecycle.value = null
-  } finally {
-    dmRecycleLoading.value = false
-  }
-}
-
-// 片内点位：后端递的是秒，摆成分:秒（过一小时的片子仍旧累加分钟，不装成时:分:秒，与站长室那把尺子同一个算法）。
-// pageIdx 是 0 基，上桌才 +1。
-function dmClock(sec) {
-  const n = Number(sec)
-  if (!Number.isFinite(n) || n < 0) return '—'
-  const pad = (x) => String(x).padStart(2, '0')
-  const total = Math.floor(n)
-  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`
-}
-
-async function restoreDmRecycle(item) {
-  if (dmRecycleBusy.value !== null) return
-  dmRecycleBusy.value = item.id
-  dmRecycleNotice.value = null
-  try {
-    // 不带 body，也不手加 Content-Type：这口是纯路径参数的活，挂了 application/json 反会吃上「必须 application/json」
-    // 那道路由门槛顶成 404（claim 那口踩过的坑，别再踩第二回）
-    const res = await fetch(`/api/member/danmaku-recycle/${item.id}/restore`, { method: 'POST' })
-    const d = await res.json().catch(() => null)
-    // 成功 200 / 403 / 404 / 409 一律照后端那句话原样念（含「这条不是你自己在放映厅里收回的」与「片子已不在架」），
-    // 只有它没回话时才落兵底句——后端的人话不许前端改写、更不许吞
-    dmRecycleNotice.value = {
-      kind: res.ok ? 'ok' : 'err',
-      text: d?.message ?? (res.ok ? '已恢复，这条重新飘得起来' : '恢复没成，这条还躺在回收站里'),
-    }
-    // 捐成的这条从列表里摘掉：后端已认它出仓，整节重拉只是多闪一下
-    if (res.ok) dmRecycle.value = (dmRecycle.value ?? []).filter((x) => x.id !== item.id)
-  } catch {
-    dmRecycleNotice.value = { kind: 'err', text: '分站后端没有应答' }
-  } finally {
-    dmRecycleBusy.value = null
-  }
-}
-
 // 改密表单：首设（扫码客从未设过）免旧密码，验旧与否后端说了算，前端只递参数
 const pwdForm = ref({ oldPassword: '', newPassword: '', confirm: '' })
 const pwdBusy = ref(false)
@@ -304,12 +361,9 @@ async function submitPasswordChange() {
 
 async function loadMe() {
   await loadMember()
-  // 只有认得人才问抽屉与收回柜：访客那两发必吃 401，白敲两下后端。
-  if (member.value) await Promise.all([loadMyCollections(), loadDmRecycle()])
-  else {
-    myCollections.value = null
-    dmRecycle.value = null
-  }
+  // 只有认得人才问抽屉：访客那发必吃 401，白敲后端（收回柜与删档清单 11-16 搬进了头像菜单的回收站弹窗，这页不再敲）。
+  if (member.value) await loadMyCollections()
+  else myCollections.value = null
 }
 
 onMounted(() => {
@@ -682,54 +736,6 @@ async function doLogout() {
           <p v-if="collNotice" class="mt-2 text-[12px]" :class="collNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">{{ collNotice.text }}</p>
         </section>
 
-        <!-- 我收回的弹幕：自己在放映厅收回的那几条自己恢复去（站长替人删的那批在后端就不递，这里看不见也捐不动）。
-             卡形与行形直接吃本页「我的合集」与「外部账号绑定」那两族的料，不另起炉灶 -->
-        <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
-          <div class="mb-3 flex items-center justify-between gap-4">
-            <h2 class="text-[15px] font-semibold text-inkMain">我收回的弹幕</h2>
-            <button
-              class="text-[12px] text-stationPink transition hover:opacity-80 disabled:opacity-50"
-              :disabled="dmRecycleLoading"
-              title="重拉一次收回柜"
-              @click="loadDmRecycle"
-            >
-              {{ dmRecycleLoading ? '翻箱中…' : '重拉' }}
-            </button>
-          </div>
-          <ul v-if="dmRecycle?.length" class="space-y-2">
-            <li
-              v-for="item in dmRecycle"
-              :key="item.id"
-              class="flex flex-wrap items-center gap-3 rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-4 py-3"
-            >
-              <div class="min-w-0 flex-1">
-                <p class="text-sm leading-6 text-inkMain" :title="item.text">{{ item.text }}</p>
-                <p class="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-inkFaint">
-                  <span class="truncate font-mono">{{ item.bvid || '—' }} · 第 {{ (item.pageIdx ?? 0) + 1 }} P · {{ dmClock(item.tSec) }}</span>
-                  <span>· {{ friendlyTime(item.deletedAtUtc) }}收回</span>
-                  <span
-                    v-if="item.inStation === false"
-                    class="shrink-0 rounded-full border border-rose-300 px-1.5 py-0.5 text-[10px] leading-none text-rose-500"
-                  >
-                    片子已不在架，恢复不了
-                  </span>
-                </p>
-              </div>
-              <button
-                class="shrink-0 rounded-lg border border-lineSoft bg-cardBg px-3 py-1 text-xs text-inkSub transition hover:border-stationPink/50 hover:text-stationPink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-lineSoft disabled:hover:text-inkSub"
-                :disabled="dmRecycleBusy !== null || item.inStation === false"
-                :title="item.inStation === false ? '片子已不在架，恢复不了' : '把这条恢复回片里重新飘'"
-                @click="restoreDmRecycle(item)"
-              >
-                {{ dmRecycleBusy === item.id ? '恢复中…' : '恢复' }}
-              </button>
-            </li>
-          </ul>
-          <p v-else-if="dmRecycle === null" class="py-6 text-center text-sm text-inkFaint">{{ dmRecycleLoading ? '正在翻你的收回柜……' : '收回柜没拉回来' }}</p>
-          <p v-else class="py-6 text-center text-sm text-inkFaint">没有在放映厅里收回过弹幕</p>
-          <p v-if="dmRecycleNotice" class="mt-2 text-[12px]" :class="dmRecycleNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">{{ dmRecycleNotice.text }}</p>
-        </section>
-
         <!-- 账号与登录设置弹层：登录方式与外部账号绑定两块收在这里，门口那枚「设置」钮开合；
              弹层就长在两块料原来的位置，没搬 DOM，展开时浮在全页之上 -->
         <div
@@ -926,6 +932,110 @@ async function doLogout() {
             }"
           >
             {{ notice.text }}
+          </p>
+        </section>
+
+        <!-- 分站 AI 接线（11-16 站长拍板：配置从站长室搬到这里，成员自带干粮）：
+             OpenAI 兼容的上游三件套自己填，齐了首页 AI 坞才上岗；key 只进不出，存过只显尾号 -->
+        <section class="mt-4 rounded-2xl border border-lineSoft bg-cardBg p-6 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+          <h3 class="mb-1 text-sm font-semibold text-inkMain">看板娘</h3>
+          <p class="mb-4 text-[11px] leading-4 text-inkFaint">
+            接你自己的 AI：地址、密钥、模型三样齐了才上岗，首页的看板娘就归你使；token 花你自己的（每日 100 次封顶，防脚本失控）。
+            OpenAI 兼容的都行：OpenAI / DeepSeek / Kimi / 硅基流动 / 本机 Ollama。
+          </p>
+          <div v-if="aiDraft" class="flex flex-col gap-2.5">
+            <label class="text-[12px] font-medium text-inkSub">
+              接口地址（baseUrl）
+              <input
+                v-model="aiDraft.baseUrl"
+                type="text"
+                placeholder="https://api.deepseek.com/v1"
+                class="mt-1 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-3.5 py-2 text-[13px] font-normal text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+                :disabled="aiBusy"
+              />
+            </label>
+            <label class="text-[12px] font-medium text-inkSub">
+              密钥
+              <span v-if="aiCfg?.hasKey" class="ml-1 text-[11px] font-normal text-inkFaint">（已存有 key · 尾号 {{ aiCfg.keyHint }} · 留空 = 不改）</span>
+              <input
+                v-model="aiDraft.apiKey"
+                type="password"
+                autocomplete="new-password"
+                placeholder="sk-…"
+                class="mt-1 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-3.5 py-2 text-[13px] font-normal text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+                :disabled="aiBusy"
+              />
+            </label>
+            <label class="text-[12px] font-medium text-inkSub">
+              模型（model）
+              <input
+                v-model="aiDraft.model"
+                type="text"
+                placeholder="deepseek-chat / gpt-4o-mini"
+                class="mt-1 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-3.5 py-2 text-[13px] font-normal text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+                :disabled="aiBusy"
+              />
+            </label>
+            <label class="text-[12px] font-medium text-inkSub">
+              推理强度（reasoning_effort）
+              <span class="ml-1 text-[11px] font-normal text-inkFaint">可选强度级别，支持哪些值取决于模型；用 | 分隔多个值，聊天时可按填写顺序切换；默认请留空（不摆思考钮、请求也不带这字段）</span>
+              <input
+                v-model="aiDraft.reasoningOptions"
+                type="text"
+                placeholder="none|low|medium|xhigh"
+                class="mt-1 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-3.5 py-2 text-[13px] font-normal text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+                :disabled="aiBusy"
+              />
+            </label>
+            <label class="text-[12px] font-medium text-inkSub">
+              上下文大小（k）
+              <span class="ml-1 text-[11px] font-normal text-inkFaint">模型一轮能吃多少字（单位 k token，如 128 即 128k）；填了聊天工具条才摆「已用 x%」，留空 = 清掉</span>
+              <input
+                v-model="aiDraft.contextK"
+                type="text"
+                inputmode="numeric"
+                placeholder="128"
+                class="mt-1 w-full rounded-xl border border-lineSoft bg-[#f6f7f8] dark:bg-[#23262e] px-3.5 py-2 text-[13px] font-normal text-inkMain placeholder:text-inkFaint transition focus:border-stationPink focus:bg-white focus:outline-none focus:ring-2 focus:ring-stationPink/20"
+                :disabled="aiBusy"
+              />
+            </label>
+            <label class="flex cursor-pointer items-start gap-2 text-[12px] font-medium text-inkSub">
+              <input v-model="aiDraft.toolsEnabled" type="checkbox" class="mt-0.5 h-3.5 w-3.5 shrink-0 accent-stationPink" :disabled="aiBusy" />
+              <span>让看板娘查站内数据（工具调用）
+                <span class="block text-[11px] font-normal leading-4 text-inkFaint">四把只读口：搜片 / 到货名录 / 全站总览 / 自己的账；关掉后她只按每轮概况作答，上游不吃 tools 字段时也会自动降级</span>
+              </span>
+            </label>
+          </div>
+          <p v-else class="text-xs leading-5 text-inkFaint">牌面没拉回来（后端没应或还没登录），合上抽屉再掀开重试一次。</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              class="rounded-xl bg-stationPink px-4 py-2 text-[13px] text-white transition hover:bg-stationPink/90 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="aiBusy || !aiDraft"
+              @click="saveAi"
+            >
+              {{ aiBusy ? '落库中…' : '保存接线' }}
+            </button>
+            <button
+              class="rounded-xl border border-lineSoft bg-cardBg px-4 py-2 text-[13px] text-inkSub transition hover:border-stationPink/50 hover:text-stationPink disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="aiTestBusy || aiBusy || !aiDraft"
+              @click="testAi"
+            >
+              {{ aiTestBusy ? '试炮中…' : '测试连通' }}
+            </button>
+            <button
+              v-if="aiCfg && (aiCfg.hasKey || aiCfg.baseUrl || aiCfg.model)"
+              class="rounded-xl border border-lineSoft bg-cardBg px-3 py-2 text-[13px] text-inkSub transition hover:border-rose-300 hover:text-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="aiBusy"
+              @click="clearAi"
+            >
+              拆线
+            </button>
+          </div>
+          <p v-if="aiNotice" class="mt-2.5 text-xs leading-5" :class="aiNotice.kind === 'ok' ? 'text-emerald-600' : 'text-rose-500'">
+            {{ aiNotice.text }}
+          </p>
+          <p v-if="aiTest" class="mt-1.5 text-xs leading-5" :class="aiTest.ok ? 'text-emerald-600' : 'text-rose-500'">
+            {{ aiTest.ok ? `连通 ok · ${aiTest.latencyMs != null ? Math.round(aiTest.latencyMs) + ' ms' : '—'}` : `试炮没成：${aiTest.error ?? '未知错'}${aiTest.latencyMs != null ? ` · ${Math.round(aiTest.latencyMs)} ms` : ''}` }}
           </p>
         </section>
             </div>

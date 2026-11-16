@@ -29,8 +29,14 @@ export function useHoverGate(openRef, { onOpen = null, shouldClose = () => true,
       }, openMs)
     },
     onLeave() {
-      if (!canHover || !openRef.value) return
+      if (!canHover) return
+      // 无论开没开，先撤销一切在途的开/收定时——指针都已经走了，那发还没落地的「延时开」绝不能落地。
+      // 旧版在「尚未开」时直接 return 不清 openTimer：指针路过顶栏、320ms 内离开，卡片仍会在人走之后
+      // 凭空弹开，且再没有任何事件会去收它（站长 11-17 报：顶栏两颗浮窗偶尔卡住不回收；同型幽灵另烧一枚
+      // 「停留即读」计时，人不在也把未读抹了）。现在这一刀从根上堵死。
+      const wasOpen = openRef.value
       clear()
+      if (!wasOpen) return
       if (!shouldClose()) return
       closeTimer = setTimeout(() => { openRef.value = false }, closeMs)
     },

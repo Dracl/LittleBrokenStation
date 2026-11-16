@@ -909,13 +909,11 @@ const coverFresh = computed(() => {
                   {{ data.danmakuCount ?? 0 }}
                 </span>
                 <span v-if="data.publishText">{{ data.publishText }}</span>
-                <span>{{ data.bvid }}</span>
-                <span v-if="data.upName">UP 主：{{ data.upName }}</span>
-                <span>入站：{{ new Date(data.createdAtUtc).toLocaleString('zh-CN') }}</span>
+                <span class="opacity-55">入站：{{ new Date(data.createdAtUtc).toLocaleString('zh-CN') }}</span>
               </div>
 
               <!-- B 站式互动栏：真数来自 view 接口快照，采不到显「—」；右侧访客下载 -->
-              <div class="mt-6 flex items-center justify-between gap-4 border-t border-b border-black/5 dark:border-white/10 py-2">
+              <div class="mt-10 flex items-center justify-between gap-4 border-t border-b border-black/5 dark:border-white/10 py-2">
                 <VideoActions :stat="{ like: data.statLike, coin: data.statCoin, favorite: data.statFavorite, share: data.statShare, reply: data.statReply }" :store-key="data.bvid" @share="openShare" @share-poster="openPosterStudio" />
                 <div class="relative flex shrink-0 items-center gap-2">
                   <!-- 投稿人自管两钮（往左提一位，让「合集」紧贴下载胶囊的左侧）：白底描边，hover 才上色，不抢下载胶囊的风头 -->
